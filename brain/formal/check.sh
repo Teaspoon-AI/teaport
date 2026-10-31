@@ -332,6 +332,7 @@ run SttSlice.tla ss_interimAll      "(expected: FAILS NoLateInterim — every de
 run SttSlice.tla ss_peekAsTurn      "(expected: FAILS NoSplitOnResume — the turn closed at the stop, as a commit there would: the caller resumes, the sentence is two turns)"
 run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the peek not dropped when the caller resumes: a close adopts a stop they talked past)"
 run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
+run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleAsk — a later preview's words the turn before still expects, asked again)"
 if [ "$FULL" = 1 ]; then
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~22M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~18M states)"

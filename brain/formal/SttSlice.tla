@@ -79,6 +79,10 @@
 (*                           the caller talked past).                       *)
 (*          "noTimeout"   -- a final waits for the bound however long       *)
 (*                           (fails NoStuckFinal: the bound froze).         *)
+(*          "noTrim"      -- a preview's words an earlier turn's preview    *)
+(*                           still vouches for are asked again (fails       *)
+(*                           NoDoubleAsk: a commit soon after another, the  *)
+(*                           word not yet sent, is asked in both turns).    *)
 (*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
 (* MaxCommits, pos <= MaxPos, stops <= MaxStops.                            *)
@@ -98,7 +102,7 @@ CONSTANTS MaxPos,      \* the audio the client sends, in steps
                        \* ("complete": false)
           DESIGN       \* "shipped" | "arrival" | "interimAll" | "decoded" | "noVouch"
                        \* | "endOnly" | "noStartWait" | "endMargin" | "peekAsTurn"
-                       \* | "noDrop" | "noTimeout"
+                       \* | "noDrop" | "noTimeout" | "noTrim"
 
 Words == 1..NWords
 Min(a, b) == IF a < b THEN a ELSE b
@@ -346,14 +350,21 @@ RecvDelta ==
     /\ chan' = Tail(chan)
     /\ UNCHANGED <<engine, commits, seen, speaking, stops, peekIdx, atStop, split>>
 
+\* _past_earlier: the words a turn before `at`, previewed and not final, still expects --
+\* a later preview's are that turn's ("noTrim": asked again).
+Owed(at) == IF DESIGN = "noTrim" THEN {}
+            ELSE UNION {turns[j].expect : j \in {j \in 1..Len(turns) :
+                            turns[j].previewed /\ ~turns[j].final /\ turns[j].at < at}}
+
 \* _handle_preview: the provisional text is the words in hand that end before the
-\* position, then the preview's. A turn's (or a peek's adopted already) is pushed and
-\* vouches for the preview's words; a peek out holds it; a dropped one, nothing.
+\* position, then the preview's, less what an earlier turn still expects. A turn's (or a
+\* peek's adopted already) is pushed and vouches for the preview's words; a peek out
+\* holds it; a dropped one, nothing.
 RecvPreview ==
     /\ chan /= <<>> /\ Head(chan)[1] = "preview"
     /\ LET k == Head(chan)[2]
-           pv == Head(chan)[3]
            c == commits[k]
+           pv == Head(chan)[3] \ Owed(c.at)
        IN IF c.turn /= 0
           THEN /\ turns' = Finalize([turns EXCEPT
                                        ![c.turn].previewed = TRUE,
@@ -422,6 +433,10 @@ NoLateInterim == ~lateInterim
 \* No turn was closed at a stop the caller then talked past before its verdict: a peek
 \* never splits a sentence.
 NoSplitOnResume == ~split
+
+\* No word is asked in two turns' provisional texts.
+NoDoubleAsk ==
+    \A j, k \in 1..Len(turns) : j < k => turns[j].asked \cap turns[k].asked = {}
 
 \* No turn waits on its final past the timeout: one the decoder is D past is final,
 \* whatever the bounds did.

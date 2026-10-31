@@ -753,8 +753,13 @@ after a commit may come before that commit's preview. The brain closes turns at 
 | `peekAsTurn` | the commit at the stop closes the turn there | | | | | ✗ | |
 | `noDrop` | the caller resuming does not drop the peek | | | | | ✗ | |
 | `noTimeout` | a final waits for the bound however long | | | | | | ✗ |
+| `noTrim` | a preview's words an earlier turn's preview still vouches for are asked again | | | | | | |
 
-`NoWordTwice` (no word in two places) is checked with the shipped rows.
+`NoWordTwice` (no word in two places) and `NoDoubleAsk` (no word asked in two turns'
+provisional texts) are checked with the shipped rows; `noTrim` fails `NoDoubleAsk`: a commit
+soon after another (the backstop's, then the VAD stop's, half a second apart) is answered
+with the word the turn before vouched for and the main stream has not sent, and without the
+trim (`_past_earlier`) both turns are asked on it (seen twice in 301 turns on 377508d).
 
 - **`RightTurn`** — a turn holds only words of its stretch: none ending before the turn
   before it closed, and none past its own close unless the word began before it -- never

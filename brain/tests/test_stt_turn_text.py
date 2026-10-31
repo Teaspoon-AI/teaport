@@ -625,6 +625,26 @@ async def test_a_words_later_pieces_follow_it_into_its_turn():
     assert not s._open_words
 
 
+async def test_a_preview_soon_after_a_commit_does_not_ask_the_turn_befores_word_again():
+    # A commit inside a word (the backstop), then the VAD stop's commit half a second
+    # later: the second preview is answered with the word the first turn's preview
+    # vouched for, which the main stream has not sent yet. It is the first turn's: the
+    # second turn is not asked on it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, " further?")
+    await preview(s, 2000, " further? Okay.")
+    assert s.finals() == [("further?", 1), ("Okay.", 2)], s.finals()
+    await delta(s, " further", 1150, start=800)
+    await delta(s, "?", 1150, start=800)
+    await delta(s, " Okay", 1800, start=1500)
+    await delta(s, ".", 1800, start=1500)
+    await progress(s, 2000)
+    assert not s._turns and s.corrections() == [], s.corrections()
+
+
 async def test_a_word_past_the_cut_the_preview_did_not_have_is_the_next_turns():
     s = Service(peeks=True)
     await created(s)

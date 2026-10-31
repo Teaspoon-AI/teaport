@@ -2324,8 +2324,16 @@ class TeaportSTTService(WebsocketSTTService):
                         "false) -- no preview: the turn closes on its final")
             msg = {**msg, "delta": ""}
         # The provisional text: the words in hand that end before the position, then the
-        # preview's.
+        # preview's -- less, from its front, words an earlier turn's preview vouched for
+        # that have not come yet: a commit soon after another (the backstop's, then the
+        # VAD stop's) is answered with the turn before's words the main stream has not
+        # sent, which are that turn's (THE CUT'S MARGIN).
         owner = turn if turn is not None else peek.turn
+        trimmed = self._past_earlier(msg.get("delta") or "", at)
+        if trimmed != (msg.get("delta") or ""):
+            logger.debug(f"{self}: the preview at {at} ms repeats words an earlier turn's "
+                         "preview vouched for -- they are that turn's")
+            msg = {**msg, "delta": trimmed}
         in_hand = (owner.words if owner is not None
                    else [w for w in self._open_words if w[1] < at])
         asked = ("".join(w[0] for w in in_hand) + (msg.get("delta") or "")).strip()
@@ -2349,6 +2357,16 @@ class TeaportSTTService(WebsocketSTTService):
                         and self._peek is None and not self._commits):
                     await self._send_commit(final=True, why="peek", peek=True)
                 self._peek_wanted = None
+
+    def _past_earlier(self, delta: str, at: int) -> str:
+        """`delta`, a preview's text at `at`, less the words at its front that a turn
+        before `at` -- previewed, not yet final -- still expects (THE CUT'S MARGIN)."""
+        owed = [k for t in self._turns if t.previewed and t.at_ms < at for k in t.expect]
+        pieces = re.findall(r"\s*\S+", delta)
+        n = 0
+        while n < len(pieces) and n < len(owed) and _word_key(pieces[n]) == owed[n]:
+            n += 1
+        return "".join(pieces[n:]) if n else delta
 
     def _callers(self, text: str, since: Optional[float]) -> str:
         """`text` less the bot's own words heard back off its front (the echo guard's
