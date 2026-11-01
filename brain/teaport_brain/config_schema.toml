@@ -1633,7 +1633,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Connect a laptop, phone or tablet browser to the box by voice (\"add my laptop\"): the box shows a QR code on its screen for the device's camera, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes."
+help = "Connect a laptop, phone or tablet to the box by voice (\"add my laptop\"), its browser or the OpenClaw app: the box shows a QR code on its screen for the device's camera, opening a page with both choices, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes."
 
 # ---- talk client context notes
 

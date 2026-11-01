@@ -235,21 +235,33 @@ laptop's microphone and speaker.
 
 ## Pair another laptop or phone
 
-You can add a browser to the device without the token or a terminal.
+You can add a browser, or the OpenClaw app on a phone, to the device without the
+token or a terminal.
 
 1. In a conversation with the device, say "add my laptop" or "connect my phone". The
    request works in the room and in a Talk session. It does not work on a phone call.
 2. The device shows a QR code on its screen. Point the laptop's or the phone's camera at
    the screen, and open the link.
-3. The browser opens the dashboard and is paired. The screen shows **Paired**, and the
-   device says that the new device is connected.
+3. The page in the browser offers two choices. Nothing is used until you press one.
+   - **Open the dashboard here** opens the dashboard in this browser and pairs it.
+   - **Use the OpenClaw app** shows a setup code for the app. Press **Copy code**, open
+     the OpenClaw app, open **Add Gateway** from its menu (or **Settings**, then
+     **Gateway**, if the app already has a gateway), paste the code, and connect. Paste
+     it within a few minutes: it works one time.
+4. After you choose, the screen shows **Finish on your device**. When the new device is
+   connected, the screen shows **Paired**, and the device says so.
+   The app gets limited access: everything except the administrator's settings.
 
-The code works one time, and for 5 minutes at most. If you need a new code, ask again.
+The code works one time, and for 5 minutes at most. If you need a new code, ask again:
+the screen shows a new code, the old one stops working, and a device that is still
+connecting with the old code is still recognized.
+Either choice can take a few seconds to start.
 
 The link opens over HTTPS. A phone that has not trusted the device's certificate yet
 must do that first: see [The phone does not pair](/guides/troubleshooting/#the-phone-does-not-pair),
-steps 1 to 3. The first scan uses the code up even when the dashboard does not open, so
-after you trust the certificate, ask the device for a new code.
+steps 1 to 3. The OpenClaw app always needs that; a browser can sometimes go past the
+warning. Pressing a choice uses the code up even when the dashboard or the app then does
+not connect, so after you trust the certificate, ask the device for a new code.
 
 <!-- source: install.sh:1708-1714#4326c857 -->
 
