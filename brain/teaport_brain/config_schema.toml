@@ -1245,6 +1245,27 @@ help = "The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing 
 note = "The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen."
 
 [[settings]]
+name = "TEAPORT_FRONTDOOR_CERT"
+store = "brain_env"
+group = "agent"
+type = "enum"
+values = ["local", "trusted"]
+default = "local"
+read = "startup"
+tier = "installer"
+help = "Which certificate the front door serves. local: the box's own (Caddy's tls internal), which each device must install and trust first, so the pairing pages link to it and say how. trusted: one the operator provides (TEAPORT_TLS_CERT and TEAPORT_TLS_KEY at install), which devices already trust, so the pages leave that step out."
+
+[[settings]]
+name = "TEAPORT_FRONTDOOR_CA_NAME"
+store = "brain_env"
+group = "agent"
+type = "string"
+default = "Caddy Local Authority"
+read = "startup"
+tier = "installer"
+help = "The name of the box's own certificate authority, the one the pairing pages tell people to look for when they trust the box (a device lists it as `<name> - <year> ECC Root`). The installer names a new one `Teaport <id> Local Authority`, where <id> is the end of the box's Wi-Fi MAC address, and reads an existing one's name back from it."
+
+[[settings]]
 name = "TEAPORT_AGENT_FIRST"
 store = "brain_env"
 group = "agent"

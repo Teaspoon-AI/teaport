@@ -23,7 +23,7 @@ sudo systemctl disable --now teaport-local-audio
 
 A bridge you disabled stays off when the installer runs again without the flag.
 
-<!-- source: install.sh:46-51,2313-2316#3b3d7be1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
+<!-- source: install.sh:46-51,2472-2475#3b3d7be1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
 
 ## Talk to the agent
 
@@ -41,19 +41,19 @@ Matching is exact, on whole words: "teapot" does not wake a device listening for
 
 To send the bridge back to sleep when you are done, say "that's all", "goodnight", or "go to sleep"; the agent says a short goodbye and the microphone sleeps immediately. This works only while wake words are set.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1616#4ab9e105 -->
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1637#4ab9e105 -->
 
 ## The ring during a phone call
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1105-1116#d37a478f; brain/teaport_brain/config_schema.toml:1693-1705#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1112-1123#d37a478f; brain/teaport_brain/config_schema.toml:1714-1726#44d773d1 -->
 
 ## Echo
 
 The XVF3800 cancels echo in hardware, and the bridge keeps the chip's echo suppression following the measured echo: how loud the device's own voice is at the microphone, against yours. `LOCAL_AUDIO_ECHO_CONTROL`, `LOCAL_AUDIO_MIC_GAIN_DB`, and `LOCAL_AUDIO_ECHO_MARGIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2341-2381#c927325b -->
+<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2362-2402#c927325b -->
 
 ## What's next
 
