@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2500#fa3b9e8d -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2500#49575168 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -200,7 +200,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
 | `TEAPORT_TOOL_END_CONVERSATION` | **on** | Go back to sleep when the user says they are done ("that's all", "goodnight", "go to sleep", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). |
 | `TEAPORT_TOOL_ANSWER_PHONE_CALL` | **on** | How the user answers "should I step away?" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake. |
-| `TEAPORT_TOOL_PAIR_DEVICE` | **on** | Connect a laptop, phone or tablet browser to the box by voice ("add my laptop"): the box shows a QR code on its screen for the device's camera, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes. |
+| `TEAPORT_TOOL_PAIR_DEVICE` | **on** | Connect a laptop, phone or tablet to the box by voice ("add my laptop"), its browser or the OpenClaw app: the box shows a QR code on its screen for the device's camera, opening a page with both choices, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes. |
 | `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
 
 ## Wi-Fi setup

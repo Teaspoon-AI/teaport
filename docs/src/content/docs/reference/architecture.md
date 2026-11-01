@@ -121,7 +121,7 @@ In agent mode (`TEAPORT_AGENT=openclaw`), the brain calls the co-resident OpenCl
 
 A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway, a configured front door, and a room or Talk conversation behind `pair_device`, which is never offered on a phone call or through the Discord bridge. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
 
-<!-- source: brain/teaport_brain/tools.py:19-25,1435-1459,1472-1483,1484-1486,1489-1490,1496-1500,1501-1506#6cf4ebb0; brain/teaport_brain/wifi_voice.py:192-194#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
+<!-- source: brain/teaport_brain/tools.py:19-25,1430-1454,1467-1478,1479-1481,1484-1485,1491-1495,1496-1501#6cf4ebb0; brain/teaport_brain/wifi_voice.py:192-194#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces features; the plugin, the phone, and Discord announce none and never see these tools.
 

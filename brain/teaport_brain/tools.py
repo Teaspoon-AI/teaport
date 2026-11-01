@@ -1392,11 +1392,6 @@ async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None)
                      "has to be at the box.")
         note += " You get a notice when it is used or runs out."
         await params.result_callback({"ok": True, "note": note})
-    elif outcome == pd.BUSY:
-        await params.result_callback(
-            {"ok": False, "error": "the device that opened the last code is still being "
-                                   "connected. Ask the user in a few plain words to wait a "
-                                   "moment and then ask again."})
     elif outcome == pd.STOPPED:
         await params.result_callback(
             {"ok": False, "error": "the code was stopped before it was shown; nothing is on "
@@ -1663,6 +1658,17 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
                 "it": "Ci lavoro subito, un attimo.",
                 "cmn": "我来处理，请稍等。"}.get(
                     lang, "I'll work on that — give me a moment.")
+    if name == "pair_device":
+        # The code takes a few seconds to come up (pairing reads the device list first),
+        # and the model mostly calls this without a word, leaving the room in silence.
+        # A plain "one moment" that promises nothing: the outcome (a code up, no screen,
+        # unavailable, stopped) is not known yet, and the tool's result has the model
+        # say what to do. A cancel is instant and says its own line.
+        if _flag(args.get("cancel", False)):
+            return None
+        return {"es": "Un momento, déjame prepararlo.",
+                "it": "Un attimo, lo preparo.",
+                "cmn": "稍等，我来准备一下。"}.get(lang, "One moment, let me set that up.")
     return None  # instant tools: speaking would take longer than the call
 
 
