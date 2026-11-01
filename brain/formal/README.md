@@ -2758,11 +2758,16 @@ tool round lands when they release it, and a reply released by a timer but not y
 started is still the one a continuation drops. With
 `EARLY_FINAL = FALSE` (every row above) no commit finds the gate armed, so
 `retryOnQuiet` and `retryMerges` are one machine and those rows keep `retryOnQuiet`.
-Talk and the room mic run the same turn machine and fence, without the hold
-(`TEAPORT_REPLY_HOLD_TALK` defaults off) or the pause (their transport cannot pause):
-`HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as before
-#85 — and without a gate nothing knows the first reply has not played, so the second
-commit stays a second message there. The room's own turn timing (`ROOM_*`, #159) and
+Talk and the room mic run the same turn machine, fence and barge-in pause (the `/talk`
+transport pauses as the SIP one does, `playout_pause.py`), without the hold
+(`TEAPORT_REPLY_HOLD_TALK` defaults off): `HOLD = "none"`, `PAUSE = "shipped"`.
+`ut_talk_shipped_all` holds every property but `NoStaleReply` and `NoSplitTurn`, which
+fail as before #85 (`ut_talk_shipped_nostalereply`, `ut_talk_shipped_nosplitturn`) —
+without a gate nothing knows the first reply has not played, so the second commit stays
+a second message there. Nothing in the pause's own properties leans on the hold:
+`ut_talk_judge_all` holds them with the judge on as well, and the witnesses
+(`ut_talk_pause_reach`, `ut_talk_judge_reach`) show the pause and the judging are
+reached without it. The room's own turn timing (`ROOM_*`, #159) and
 `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
 ### Known limits of this model

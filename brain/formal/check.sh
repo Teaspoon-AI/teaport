@@ -256,6 +256,12 @@ run UserTurn.tla ut_post_gate_timed_rest                    "(expected: holds �
 run UserTurn.tla ut_post_asWritten_noskippedanswer          "(expected: FAILS NoSkippedAnswer — pipecat's skip for an open turn whose commit already ran: a result nothing answers (#196, not #17's fix))"
 run UserTurn.tla ut_shipped_all                      "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
 run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_talk_pause_reach                  "(expected: FAILS NoPauseInTailBand — witness: Talk and the room pause too, without the reply hold)"
+run UserTurn.tla ut_talk_judge_reach                  "(expected: FAILS NoJudging — witness: words held for a verdict are reachable on Talk)"
+run UserTurn.tla ut_talk_shipped_all                  "(expected: holds — Talk and the room as shipped: the pause, no reply hold; every property but the two only the hold gives)"
+run UserTurn.tla ut_talk_judge_all                    "(expected: holds — the barge-in judge on Talk: the same, with NoResumeOverWords)"
+run UserTurn.tla ut_talk_shipped_nostalereply         "(expected: FAILS NoStaleReply — Talk has no reply hold (TEAPORT_REPLY_HOLD_TALK off): the reply plays over the resumed user, pause or not)"
+run UserTurn.tla ut_talk_shipped_nosplitturn          "(expected: FAILS NoSplitTurn — the same: nothing drops the unplayed reply, so the continuation is a second message)"
 echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"

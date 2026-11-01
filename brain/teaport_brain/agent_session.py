@@ -907,9 +907,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                        f"changing for {settle}" if speculator.on_decode
                        else f"-- after they stop changing for {settle}"))
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
-    # if no words follow (barge_pause.py). Only where the transport can pause without
-    # losing audio: SIP. The Talk relay's client buffers what we send and can only
-    # clear it, so there is no pauser on that path.
+    # if no words follow (barge_pause.py). Wherever the transport can pause without
+    # losing audio (playout_pause.PausablePlayout): the SIP transport and /talk's both
+    # send at real time, a frame ahead at most, so the unplayed reply is still here.
     barge_pauser = (barge_pause.BargeInPauser(transport_output)
                     if barge_pause.ENABLED
                     and getattr(transport_output, "supports_playout_pause", False)

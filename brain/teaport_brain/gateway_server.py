@@ -45,10 +45,7 @@ from pipecat.frames.frames import (
     OutputTransportMessageUrgentFrame,
 )
 from pipecat.pipeline.runner import PipelineRunner
-from pipecat.transports.websocket.fastapi import (
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
-)
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
@@ -57,6 +54,7 @@ from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain import thinking_sound
+from teaport_brain.talk_transport import TalkWebsocketTransport
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -363,7 +361,9 @@ async def run_relay_bot(websocket: WebSocket):
                       else host_context.PATIENCE_S))
     if gate is not None and awake:
         gate.store.clear()  # a fresh conversation, by request
-    transport = FastAPIWebsocketTransport(
+    # Pipecat's websocket transport with a playout pause (talk_transport.py), so a
+    # barge-in stops the voice at the caller's first syllable here as on the phone.
+    transport = TalkWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,

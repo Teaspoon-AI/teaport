@@ -4,7 +4,7 @@
 (* and the TTS's playout model when two things stop playout at once.        *)
 (*                                                                          *)
 (*   brain/teaport_brain/barge_pause.py      -- the pause                   *)
-(*   brain/teaport_brain/sip_transport.py    -- set_playout_paused          *)
+(*   brain/teaport_brain/playout_pause.py    -- set_playout_paused          *)
 (*   brain/teaport_brain/transcript_ledger.py -- _pause / _resume / cut     *)
 (*   brain/teaport_brain/engine_tts.py       -- _freeze_playout,            *)
 (*                                              _note_playout               *)

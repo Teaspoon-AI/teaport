@@ -924,9 +924,9 @@ async def _run_talk(should_end=False, query=None):
         order.append(json.loads(text))
 
     saved = {k: getattr(gs, k) for k in
-             ("FastAPIWebsocketTransport", "build_agent_session", "PipelineRunner")}
+             ("TalkWebsocketTransport", "build_agent_session", "PipelineRunner")}
     saved_arbiter = gs.arb.ARBITER
-    gs.FastAPIWebsocketTransport = make_transport
+    gs.TalkWebsocketTransport = make_transport
     gs.build_agent_session = build
     gs.arb.ARBITER = _Arbiter()
     gs.PipelineRunner = _Runner

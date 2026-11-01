@@ -199,7 +199,9 @@ async def test_speech_then_no_words_pauses_at_once_and_resumes_without_loss():
         assert rig.pause_frames(FrameDirection.DOWNSTREAM) == [True, False]
         lags = [f.lag_secs for _, d, f in rig.bottom.frames
                 if isinstance(f, PlayoutPauseFrame) and f.paused]
-        assert lags and 0.0 < lags[0] <= 0.021, f"pause lag {lags}: the rest of one 20 ms slot"
+        # What was sent and is still to play: the frame playing and the one queued
+        # behind it (the send clock runs one frame ahead).
+        assert lags and 0.015 <= lags[0] <= 0.041, f"pause lag {lags}: one to two 20 ms frames"
         tails = [f.tail_secs for _, d, f in rig.bottom.frames
                  if isinstance(f, PlayoutPauseFrame) and f.paused]
         assert 1.2 <= tails[0] <= 1.5, f"tail at the pause {tails}: ~1.4 s of 2.0 s left"
@@ -627,8 +629,8 @@ async def test_renewed_speech_cancels_a_pending_resume():
 
 
 async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
-    from teaport_brain import sip_transport
-    guard, sip_transport._PAUSE_GUARD_S = sip_transport._PAUSE_GUARD_S, 0.3
+    from teaport_brain import playout_pause
+    guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
     try:
         async with Rig(with_pauser=False) as rig:
             await rig.speak()
@@ -639,7 +641,7 @@ async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
             assert len(gaps) == 1 and 0.25 <= gaps[0][1] - gaps[0][0] <= 0.4, gaps
             assert rig.pause_frames(FrameDirection.DOWNSTREAM) == [True, False]
     finally:
-        sip_transport._PAUSE_GUARD_S = guard
+        playout_pause._PAUSE_GUARD_S = guard
 
 
 async def test_an_interruption_clears_the_pause_everywhere():

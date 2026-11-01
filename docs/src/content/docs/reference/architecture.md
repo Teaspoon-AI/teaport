@@ -27,13 +27,13 @@ The brain owns the conversation: barge-in, the heard-grounding ledger, memory re
 
 <!-- source: README.md:6-8#f5cf0fb3; brain/teaport_brain/persona.py:2-7#6b43c813; brain/teaport_brain/engine_tts.py:4-12#8b2db407; brain/README.md:27#147b489c -->
 
-The heard-grounding ledger records what you actually heard, the endpointing policy adds voice activity detection (VAD) gates, a Smart Turn threshold, and a barge-in guard, and on a phone call the playout pauses the moment you talk over the brain.
+The heard-grounding ledger records what you actually heard, the endpointing policy adds voice activity detection (VAD) gates, a Smart Turn threshold, and a barge-in guard, and the playout pauses the moment you talk over the brain, on a phone call and on Talk alike.
 
-<!-- source: brain/README.md:26-31#3abc9795 -->
+<!-- source: brain/README.md:26-31#99041b12 -->
 
 One process serves every front end: the `/talk` WebSocket and the phone line live in `teaport-brain`. Each session still gets a pipeline of its own, so one session's failure ends that session only.
 
-<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:653-656#50aa8078 -->
+<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:673-676#50aa8078 -->
 
 ## The plugin
 
