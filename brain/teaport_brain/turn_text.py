@@ -4,9 +4,10 @@
 # With TEAPORT_STT_TURN_TEXT=slice (stt.py, TURN TEXT) a turn goes downstream at its
 # commit's preview as PROVISIONAL text -- the words the engine had sent, then its preview
 # of the rest -- and the reply starts on it, as early as it does on today's done. The
-# turn's FINAL text is known ~0.5 s later, once the engine's bound passes the commit. On
-# the measured corpus the two agreed on 97 % of turns; where they do not, the STT pushes a
-# TurnTextFinalFrame and TurnTextCorrector, below the user aggregator, applies it:
+# turn's FINAL text is known ~0.7 s later (up to ~2 s on the box's Orin Nano), once the
+# engine's bound passes the commit. On the measured corpus the two agreed on 97 % of
+# turns; where they do not, the STT pushes a TurnTextFinalFrame and TurnTextCorrector,
+# below the user aggregator, applies it:
 #
 #   amended    The turn has not been committed yet (the caller resumed, the strategy is
 #              still waiting): its words in the aggregator are replaced, and the turn is
@@ -71,7 +72,8 @@ from teaport_brain.heard_context import _set_msg_text, msg_text
 __all__ = ["TurnTextCorrector", "TurnTextFinalFrame"]
 
 # The commits a correction may look in: the latest few, each with when it passed and
-# the user message it carried. The final follows its provisional by ~0.5 s.
+# the user message it carried. The final follows its provisional by ~0.5 s (up to ~2 s on
+# the box).
 _COMMITS_KEPT = 8
 
 

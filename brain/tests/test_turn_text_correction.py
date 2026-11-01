@@ -9,8 +9,8 @@
 #   * corrected: words committed into a user message are rewritten IN PLACE, the reply
 #     kept: no message added, removed or moved; the newest message or one a few back;
 #     never an injected system notice;
-#   * unplaced: words found nowhere go back up to the STT only when the final ADDS words
-#     (the "okay" the barge-in guard dropped, the "okay stop" it would not have);
+#   * unplaced: words found nowhere are logged only, never pushed again
+#     (test_turn_text_taken.py has why);
 #   * the rewrite trips nothing into a spurious miss, re-ask or double count:
 #       - the speculative reply: a live snapshot holding the rewritten message is
 #         rewritten with it, so the next commit is a hit (and without that, the

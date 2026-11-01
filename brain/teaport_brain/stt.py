@@ -464,7 +464,9 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #              provisional  those received by the preview, then the preview's text. Pushed
 #                           at once as the turn's final, so the reply starts when it does
 #                           today: commit -> preview is the done's ~0.15 s.
-#              final        all of them, once end_through_ms >= P (~0.5 s later): the
+#              final        all of them, once end_through_ms >= P (~0.7 s after the
+#                           commit on jetson05's Orin NX, up to ~2 s on the box's Orin
+#                           Nano, whose decoder runs behind real time): the
 #                           authoritative text. It equalled the provisional on 97 % of the
 #                           288 turns measured on jetson05 (~/rbf/RESULTS2.md, "Spike
 #                           2b"), and the provisional was, overall, MORE accurate than
