@@ -1655,7 +1655,11 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # The plain-HTTP block exists for phones. A browser can click through an untrusted cert; the
 # OpenClaw mobile app cannot, so pairing over wss:// needs Caddy's local root installed on the
 # device first — and that download cannot itself sit behind the cert it is meant to fix. Hence
-# exactly one path on :80, everything else redirected.
+# exactly one path on :80, everything else redirected. The same path is served over HTTPS
+# too (the teaport_ca snippet, imported by both blocks): browsers that upgrade http:// links
+# on their own (Brave by default, Chrome's and Safari's HTTPS upgrades) otherwise land on
+# https://<host>/teaport-ca.crt, which the catch-all below handed to the dashboard -- an
+# HTML page where the certificate should be (seen on the box, 2026-11-01).
 #
 # It is served straight out of Caddy's PKI directory rather than copied: 'tls internal' issues
 # ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
@@ -1673,14 +1677,14 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$FRONTDOOR_HOST"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, tls internal, + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
     "" \
-    "# Cleartext, one path only: the local CA, so a phone can trust us before it connects." \
-    "http://$FRONTDOOR_HOST {" \
+    "# The local CA, so a phone can trust us before it connects: served by both blocks." \
+    "(teaport_ca) {" \
     "    handle /teaport-ca.crt {" \
     "        root * $CADDY_PKI" \
     "        rewrite * /root.crt" \
@@ -1688,6 +1692,11 @@ write_caddyfile() {
     "        header Content-Type application/x-x509-ca-cert" \
     "        header Content-Disposition \"attachment; filename=teaport-ca.crt\"" \
     "    }" \
+    "}" \
+    "" \
+    "# Cleartext, one path only: the CA above; everything else goes to https." \
+    "http://$FRONTDOOR_HOST {" \
+    "    import teaport_ca" \
     "    handle {" \
     "        redir https://{host}{uri} permanent" \
     "    }" \
@@ -1695,6 +1704,7 @@ write_caddyfile() {
     "" \
     "$FRONTDOOR_HOST {" \
     "    tls internal" \
+    "    import teaport_ca" \
     "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
     "    handle /p/* {" \
     "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
