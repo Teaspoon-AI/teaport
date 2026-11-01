@@ -508,7 +508,10 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #     decided as the barge-in they are, with the reply paused -- not later, unpaused;
 #   * otherwise the empty provisional closed the turn wordless, and a final with words
 #     goes on as new words, stamped NO_STOP, through the close every final goes through
-#     (_close): the echo guard and the wake gate decide them as they would any.
+#     (_close): the echo guard and the wake gate decide them as they would any;
+#   * a turn after one of these, while that one's final is still to come, waits on its own
+#     final too: the earlier turn's words, unsent when the later commit was answered,
+#     are in the later preview's text, and would go on twice and out of order.
 # The words are the caller's; a preview that missed them must not lose them. A preview
 # the engine could not take whole ("complete": false, PROTOCOL3 difference 7: its text is
 # a held word's pieces) is no preview: nothing is speculated on it, and the turn closes
@@ -2188,14 +2191,14 @@ class TeaportSTTService(WebsocketSTTService):
         if late:
             keep, follow = [], None
             for w in self._open_words:
-                took = (follow[2] if self._goes_on(w, follow)
-                        else id(w) in late and self._vouch(turn, *w))
+                took = self._file(w, follow, [turn] if id(w) in late else [])
                 follow = (w[2], w[1], took)
-                (turn.words if took else keep).append(w)
+                (turn.words if took is not None else keep).append(w)
             if len(keep) < len(self._open_words):
                 self._keep_open(keep)
                 last = self._last_piece
-                if last is not None and last[2] is None and follow[2] and follow[:2] == last[:2]:
+                if (last is not None and last[2] is None and follow[2] is not None
+                        and follow[:2] == last[:2]):
                     self._last_piece = (*last[:2], turn)
         if msg.get("complete") is False:
             turn.deferred = "its preview cut short"
@@ -2203,6 +2206,9 @@ class TeaportSTTService(WebsocketSTTService):
               and not _words_of(self._callers(asked, turn.since))):
             # Nothing of the caller's: no words, or only the bot's own heard back.
             turn.deferred = "its preview over the bot's reply having had none of the caller's"
+        elif self._owed_before(turn.at_ms):
+            # An earlier turn's final may still deliver words: this one's go after them.
+            turn.deferred = "an earlier turn's words still to come"
         if turn.deferred:
             # Nothing goes on now: the turn closes on its final -- over the bot still the
             # barge-in its words are, the reply's pause held until then -- or, if that
@@ -2293,35 +2299,36 @@ class TeaportSTTService(WebsocketSTTService):
         if not isinstance(start, (int, float)):
             start = end
         w = (piece, end, start)
-        last, self._last_piece = self._last_piece, None
-        if self._goes_on(w, last) and (last[2] is None
-                                       or any(t is last[2] for t in self._turns)):
-            self._last_piece = last
-            if last[2] is not None:
-                last[2].words.append(w)
-                return True
-            self._open_words.append(w)
-            return False
-        for turn in self._turns:
-            if end < turn.at_ms:
-                turn.words.append(w)
-                self._claim_expected(turn, piece)
-                self._last_piece = (start, end, turn)
-                return True
-            if self._vouch(turn, piece, end, start):
-                turn.words.append(w)
-                self._last_piece = (start, end, turn)
-                return True
-        if end < self._final_through:
-            # The engine's end_through_ms promised this cannot come. Kept, not lost: the
-            # open turn has it.
+        if end < self._final_through and not self._goes_on(w, self._last_piece):
+            # A word of a turn already settled: the engine's end_through_ms did not hold,
+            # or that turn's final timed out. Kept, not lost: the open turn has it --
+            # never a later turn, whose stretch it is not in (its correction would add it
+            # a second time).
             self._warn_once("bound", f"a word ending at {end} ms arrived after the turn "
                             f"through {self._final_through} ms was settled -- the engine's "
                             "end_through_ms did not hold, or that turn's final timed out; "
                             "the open turn takes it")
-        self._open_words.append(w)
-        self._last_piece = (start, end, None)
-        return False
+            target = None
+        else:
+            target = self._file(w, self._last_piece, self._turns)
+        self._last_piece = (start, end, target)
+        (target.words if target is not None else self._open_words).append(w)
+        return target is not None
+
+    def _file(self, w: tuple, last: Optional[tuple], turns) -> Optional[_Turn]:
+        """Where main piece `w` (piece, end_ms, audio_ms) goes among `turns`, oldest first
+        (THE CUT'S MARGIN): where the rest of its word went (`last`: audio_ms, end_ms, its
+        turn or None), else the turn it ends before or whose preview vouched for it;
+        None: the open turn. _slice_delta's rule, and an adopted peek's reclaim."""
+        if self._goes_on(w, last) and (last[2] is None or any(t is last[2] for t in turns)):
+            return last[2]
+        for turn in turns:
+            if w[1] < turn.at_ms:
+                self._claim_expected(turn, w[0])
+                return turn
+            if self._vouch(turn, *w):
+                return turn
+        return None
 
     def _forget_turn(self, turn: _Turn):
         with contextlib.suppress(ValueError):
@@ -2388,14 +2395,22 @@ class TeaportSTTService(WebsocketSTTService):
                 self._peek_wanted = None
 
     def _past_earlier(self, delta: str, at: int) -> str:
-        """`delta`, a preview's text at `at`, less the words at its front that a turn
-        before `at` -- previewed, not yet final -- still expects (THE CUT'S MARGIN)."""
+        """`delta`, a preview's text at `at`, less the words in its front run that a turn
+        before `at` -- previewed, not yet final -- still expects, in their order (THE CUT'S
+        MARGIN). The front run: the preview's first words, as many as are owed and two
+        more, so an earlier preview that missed a word the later one has does not stop
+        the trim, and a later word that only reads the same is never taken."""
         owed = [k for t in self._turns if t.previewed and t.at_ms < at for k in t.expect]
+        if not owed:
+            return delta
         pieces = re.findall(r"\s*\S+", delta)
-        n = 0
-        while n < len(pieces) and n < len(owed) and _word_key(pieces[n]) == owed[n]:
-            n += 1
-        return "".join(pieces[n:]) if n else delta
+        kept, i = [], 0
+        for n, piece in enumerate(pieces):
+            if i < len(owed) and n < len(owed) + 2 and _word_key(piece) == owed[i]:
+                i += 1
+            else:
+                kept.append(piece)
+        return "".join(kept) if i else delta
 
     def _callers(self, text: str, since: Optional[float]) -> str:
         """`text` less the bot's own words heard back off its front (the echo guard's
@@ -2404,11 +2419,22 @@ class TeaportSTTService(WebsocketSTTService):
             return self.echo_guard.strip(text, final=True, since=since)
         return text
 
+    def _owed_before(self, at: int) -> bool:
+        """A turn before `at`, previewed and not yet final, put nothing with words
+        downstream at its preview -- deferred, an empty provisional, the bot's own words
+        -- so its final may still deliver words, which a turn after it must not go ahead
+        of (TURN TEXT). Its words are in a later preview's text too, unsent then."""
+        return any(t.previewed and t.at_ms < at and (t.deferred or not t.pushed)
+                   for t in self._turns)
+
     async def _offer_preview(self, peek: _Peek):
         """A peek's provisional text, before any verdict has closed the turn on it, for
         the speculative reply (SpeechPreviewFrame): as the turn will push it -- the bot's
-        own words off its front -- and never while the wake gate sleeps."""
+        own words off its front -- and never while the wake gate sleeps, nor while an
+        earlier turn's words may still come (the turn will wait on its final)."""
         if self.wake_gate is not None and self.wake_gate.asleep:
+            return
+        if self._owed_before(peek.at_ms):
             return
         text = self._callers(peek.asked, self._seg_since)
         if text:

@@ -680,6 +680,20 @@ async def test_a_preview_soon_after_a_commit_does_not_ask_the_turn_befores_word_
     assert not s._turns and s.corrections() == [], s.corrections()
 
 
+async def test_the_turn_before_s_words_are_trimmed_past_one_its_preview_missed():
+    # The earlier preview missed its turn's first word but had its second; the later
+    # preview has both. The second is the earlier turn's and is not asked again; the
+    # first, which the earlier turn never vouched for, stays (its final adds it there).
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await delta(s, " so", 300, start=100)
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, " true.")
+    await preview(s, 2000, " very true. Thanks.")
+    assert s.finals() == [("so true.", 1), ("very Thanks.", 2)], s.finals()
+
+
 async def test_a_word_past_the_cut_the_preview_did_not_have_is_the_next_turns():
     s = Service(peeks=True)
     await created(s)
@@ -812,6 +826,53 @@ async def test_a_lost_session_closes_a_deferred_turn_on_the_words_in_hand():
     assert order == ["FinalTranscriptionFrame", "SegmentResetFrame"], order
 
 
+async def test_a_turn_after_one_still_owing_its_words_waits_on_its_own_final():
+    # The earlier turn put nothing with words on at its preview -- deferred over the bot,
+    # cut short, or an empty provisional -- and the next commit comes before its final:
+    # the next preview has its words too (unsent then). Each turn delivers its own words,
+    # in order, once.
+    s = Service()                                     # deferred over the bot
+    await created(s)
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    for _ in range(2):
+        await vad_start(s)
+        await audio(s, 600)
+        await vad_stop(s)
+    await preview(s, 600, "")
+    await preview(s, 1200, " Stop. Go back.")
+    assert s.finals() == [], s.finals()
+    await delta(s, " Stop.", 450)
+    await delta(s, " Go", 900)
+    await delta(s, " back.", 1100)
+    await progress(s, 1400)
+    assert s.finals() == [("Stop.", 1), ("Go back.", 2)] and s.corrections() == []
+
+    s = Service()                                     # cut short
+    await created(s)
+    await turn(s)
+    await s._handle_message({"type": "transcription.preview", "through_ms": 1000,
+                             "delta": " wea", "complete": False})
+    await turn(s)
+    await preview(s, 2000, " weather today?")
+    await delta(s, " weather", 900)
+    await delta(s, " today?", 1800)
+    await progress(s, 2200)
+    assert s.finals() == [("weather", 1), ("today?", 2)] and s.corrections() == []
+
+    s = Service()                                     # an empty provisional
+    await created(s)
+    await turn(s)
+    await preview(s, 1000, "")
+    await turn(s)
+    await preview(s, 2000, " Yes. And also tea.")
+    await delta(s, " Yes.", 900)
+    for w, e in ((" And", 1300), (" also", 1500), (" tea.", 1800)):
+        await delta(s, w, e)
+    await progress(s, 2200)
+    assert s.finals() == [("Yes.", NO_STOP), ("And also tea.", 2)], s.finals()
+    assert s.corrections() == []
+
+
 async def test_an_empty_provisionals_words_go_through_the_wake_gate():
     from teaport_brain import wake_gate
     from teaport_brain.wake_words import parse_phrases
@@ -938,6 +999,36 @@ async def test_a_timeout_says_what_it_waited_for_and_a_backstop_after_it_is_coun
         assert any("[TURN]" in m and "timed out without" in m and "backstop" in m
                    for m in lines), lines
     finally:
+        stt_mod.logger.remove(sink)
+
+
+async def test_a_timed_out_turn_s_late_word_goes_to_the_open_turn_not_the_next():
+    # After the wall-clock backstop (an engine that stopped reporting), the timed-out
+    # turn's words come at last, with the next turn not yet final: they are not that
+    # turn's (they end before its stretch) and its correction must not add them.
+    saved = stt_mod._FINAL_BACKSTOP_SECS
+    stt_mod._FINAL_BACKSTOP_SECS = 0.3
+    lines, sink = _lines()
+    try:
+        s = Service()
+        await created(s)
+        await turn(s)                              # at 1000
+        await delta(s, " in", 400, start=200)
+        await preview(s, 1000, " the kitchen.")
+        await asyncio.sleep(0.2)
+        await turn(s)                              # at 2000
+        await preview(s, 2000, " Thanks.")
+        await asyncio.sleep(0.15)                  # the first's final: the backstop
+        assert [t.at_ms for t in s._turns] == [2000]
+        await delta(s, " the", 600, start=450)
+        await delta(s, " kitchen.", 900, start=650)
+        await delta(s, " Thanks.", 1700, start=1500)
+        await progress(s, 2000)
+        assert s.corrections() == [], [(c.kind, c.final) for c in s.corrections()]
+        assert [w for w, *_ in s._open_words] == [" the", " kitchen."], s._open_words
+        assert any("was settled" in m for m in lines), lines
+    finally:
+        stt_mod._FINAL_BACKSTOP_SECS = saved
         stt_mod.logger.remove(sink)
 
 
