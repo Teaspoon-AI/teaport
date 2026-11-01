@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2522#3c2978a2 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2522#25d1d90f -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -135,7 +135,7 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `TEAPORT_ONSET_MIN_MS` | **128** ms (≥ 32) | Consecutive speech at TEAPORT_ONSET_CONFIDENCE that makes an onset (32 ms per Silero chunk, rounded up). |
 | `TEAPORT_BARGE_PAUSE` | **on** | SIP only: the moment the caller starts talking over the bot (the fast speech-onset test, or the VAD), pause playout. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. No effect on Talk, whose relay can only clear its client's buffer. |
 | `TEAPORT_BARGE_PAUSE_RESUME_S` | **0.8** s (0–8) | The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). With the VAD's own stop delay a cough stalls the bot about ENDPOINT_STOP_SECS + this. At most 8. |
-| `TEAPORT_BARGE_PAUSE_MAX_S` | **6.0** s (0–8) | The longest one pause lasts before the reply resumes anyway. Capped at 8 s: a write held past pipecat's 10 s deadline loses the call its voice. |
+| `TEAPORT_BARGE_PAUSE_MAX_S` | **6.0** s (0–7.75) | The longest one pause lasts before the reply resumes anyway. At most 7.75 s: the call's audio resumes on its own at 8 s (a write held past pipecat's 10 s deadline loses the call its voice), and the reply's own resume, up to 0.15 s after the cap, comes first. |
 | `TEAPORT_BARGE_JUDGE` | **off** | SIP only, with TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer ("okay", "mm-hmm") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause. |
 | `TEAPORT_STOP_WORDS` | `stop,wait,hold on,hold,pause,enough,quiet,shh,shush` | Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so "don't stop" does not; any "shh" spelling is shh. "No" is left out on purpose: over the bot it is as often an answer as an objection. |
 | `TEAPORT_ECHO_GUARD` | **on** | On the room mic, drop the bot's own words when the mic hears them back from the speaker, so the bot does not interrupt itself or answer its own sentence. Words that follow what the bot just said are taken off the front of a transcript; one made only of them is ignored. Off: every transcript goes through as heard. |

@@ -1066,11 +1066,11 @@ group = "turn_taking"
 type = "float"
 unit = "s"
 min = 0
-max = 8
+max = 7.75
 default = 6.0
 read = "startup"
 tier = "tuning"
-help = "The longest one pause lasts before the reply resumes anyway. Capped at 8 s: a write held past pipecat's 10 s deadline loses the call its voice."
+help = "The longest one pause lasts before the reply resumes anyway. At most 7.75 s: the call's audio resumes on its own at 8 s (a write held past pipecat's 10 s deadline loses the call its voice), and the reply's own resume, up to 0.15 s after the cap, comes first."
 
 [[settings]]
 name = "TEAPORT_BARGE_JUDGE"

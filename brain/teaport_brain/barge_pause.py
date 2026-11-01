@@ -154,9 +154,8 @@ ENABLED = setting("TEAPORT_BARGE_PAUSE")
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
 # at the latest (the STT commits at once while the bot is speaking), ~0.1-0.5 s after it.
 RESUME_SECS = min(8.0, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
-# The longest a pause lasts, from its start. Kept well under pipecat's
-# audio_out_write_timeout_secs (10 s), past which a stalled write writes the transport
-# off for the rest of the call; the transport resumes on its own at 8 s regardless.
+# The longest a pause lasts, from its start: at most MAX_CAP_S, below the transport's
+# own end to a pause (PAUSE_GUARD_S).
 MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
 # What ends a paused reply on its own, whatever TEAPORT_INTERRUPT_MIN_WORDS says: with
 # the bot silent there is no echo to garble into one, and a lone "Stop." is the most
@@ -175,6 +174,17 @@ _BLIP_S = 0.25
 _BLIP_RESUME_S = 0.3
 # After the STT's close of the speech came back with no turn, resume this much later.
 _FINAL_GRACE_S = 0.15
+# The transport's own end to a pause (sip_transport._wait_if_paused, which takes it from
+# here): a write blocked this long resumes whatever the pauser asks, since pipecat's
+# MediaSender bounds a write at audio_out_write_timeout_secs (10 s) and treats running
+# past it as the transport dead for the rest of the call.
+PAUSE_GUARD_S = 8.0
+# The longest cap, TEAPORT_BARGE_PAUSE_MAX_S's maximum (a test holds the schema to it):
+# the cap's own resume, up to _FINAL_GRACE_S after its close of a held barge-in (_cap),
+# comes before the transport's guard -- with _CAP_SLACK_S for that close itself and a
+# stalled event loop -- so the close is decided paused whatever the cap.
+_CAP_SLACK_S = 0.1
+MAX_CAP_S = PAUSE_GUARD_S - _FINAL_GRACE_S - _CAP_SLACK_S
 # Echo-like pauses (resumed on a blip) per bot-speaking window before the onset test
 # alone stops pausing.
 _MAX_NOWORD_PAUSES = 2
@@ -264,7 +274,7 @@ class BargeInPauser(FrameProcessor):
         super().__init__()
         self._output = output
         self._resume_secs = min(8.0, max(0.0, resume_secs))
-        self._max_secs = max(self._resume_secs, min(max_secs, 8.0))
+        self._max_secs = min(MAX_CAP_S, max(self._resume_secs, max_secs))
         self._near_end_secs = near_end_secs
         self._max_noword = max_noword_pauses
         self._bot_speaking = False
