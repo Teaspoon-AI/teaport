@@ -53,6 +53,7 @@ from pipecat.transports.websocket.fastapi import (
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import host_context
+from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
@@ -403,6 +404,8 @@ async def run_relay_bot(websocket: WebSocket):
         # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings),
         # or the room's (ROOM_*): across a room people pause mid-sentence (issue #159).
         front_end="room" if room else "talk",
+        # The Discord bridge (?client=discord) is Talk too, but relays someone far away.
+        via=client if not room and client in host_context.NAMED_CLIENTS else None,
         host=host,
     )
     session_holder["s"] = session
@@ -447,10 +450,10 @@ async def run_relay_bot(websocket: WebSocket):
             # greet() spoke the can't-hear line instead of greeting. Nothing read this
             # before, so the session stayed up: the client saw a connected assistant
             # that answered once and then never again, while holding the slot.
-            # docs/CONFIG.md and docs/FAQ.md both promise the session ends here, and
-            # the SIP path already does it (hangs the caller up). Let the line play,
-            # then end the pipeline — the client sees a clean disconnect. It never says
-            # "ready", so the plugin keeps notes out of a session being torn down.
+            # The session ends here, as the SIP path already ends it (hangs the caller
+            # up). Let the line play, then end the pipeline — the client sees a clean
+            # disconnect. It never says "ready", so the plugin keeps notes out of a
+            # session being torn down.
             logger.info("STT unavailable — ending the session after the warning plays")
             await session.followup_gate.wait_until_delivered()
             await session.task.cancel()
@@ -551,6 +554,9 @@ app = FastAPI(lifespan=_lifespan)
 # own: on the 8 GB box a second Python service is memory the engine reserve
 # wants. They share /talk's GATEWAY_TOKEN. See config_ui.py.
 app.include_router(config_ui.router)
+# /p/<code>, the short link a pairing QR code holds (pairing.py): unauthenticated, as a
+# fresh browser has no token; Caddy routes /p/* here.
+app.include_router(pairing.router)
 
 
 @app.get("/health")
@@ -641,21 +647,27 @@ class _ReadyServer(uvicorn.Server):
         await super().shutdown(sockets=sockets)
 
 
-# A ?token= in a request line uvicorn logs: the access line of an HTTP request, the
-# "WebSocket /talk?...&token=..." [accepted] line of every Talk connect.
-_TOKEN_IN_URL = re.compile(r"(token=)[^&\s\"']+")
+# What a request line uvicorn logs must not carry: a ?token= (the access line of an
+# HTTP request, the "WebSocket /talk?...&token=..." [accepted] line of every Talk
+# connect), and a pairing code, the path segment after /p/ (pairing.py: a live one is
+# the owner's access until it is used).
+_SECRETS_IN_URL = re.compile(r"(token=|(?:^|(?<=[\s\"']))/p/)[^&/?#\s\"']+")
+
+
+def _redact(text: str) -> str:
+    return _SECRETS_IN_URL.sub(r"\1<redacted>", text)
 
 
 class _RedactTokens(logging.Filter):
-    """Blank the token in uvicorn's request lines, so the journal never holds it. Only
-    the arguments are rewritten: uvicorn's access formatter unpacks them by position."""
+    """Blank the token and the pairing code in uvicorn's request lines, so the journal
+    never holds them. Only the arguments are rewritten: uvicorn's access formatter
+    unpacks them by position."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
-            record.args = tuple(_TOKEN_IN_URL.sub(r"\1<redacted>", a) if isinstance(a, str) else a
-                                for a in record.args)
+            record.args = tuple(_redact(a) if isinstance(a, str) else a for a in record.args)
         if isinstance(record.msg, str):
-            record.msg = _TOKEN_IN_URL.sub(r"\1<redacted>", record.msg)
+            record.msg = _redact(record.msg)
         return True
 
 

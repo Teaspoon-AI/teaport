@@ -1655,23 +1655,36 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # The plain-HTTP block exists for phones. A browser can click through an untrusted cert; the
 # OpenClaw mobile app cannot, so pairing over wss:// needs Caddy's local root installed on the
 # device first — and that download cannot itself sit behind the cert it is meant to fix. Hence
-# exactly one path on :80, everything else redirected.
+# exactly one path on :80, everything else redirected. The same path is served over HTTPS
+# too (the teaport_ca snippet, imported by both blocks): browsers that upgrade http:// links
+# on their own (Brave by default, Chrome's and Safari's HTTPS upgrades) otherwise land on
+# https://<host>/teaport-ca.crt, which the catch-all below handed to the dashboard -- an
+# HTML page where the certificate should be (seen on the box, 2026-11-01).
 #
 # It is served straight out of Caddy's PKI directory rather than copied: 'tls internal' issues
 # ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
 # twice a day, and would go stale silently if the CA were ever regenerated. The path matcher is
 # exact and rewrites to a fixed file, so root.key next to it stays unreachable.
+#
+# /p/* is the one brain path the front door serves: the short pairing links the OLED shows
+# as a QR code (#243), which redirect to OpenClaw's one-time owner handoff. Only that
+# prefix, and only over HTTPS (the code is a bearer secret until used); the rest of the
+# brain (the config page, /talk) stays off the front door, and the http block above never
+# matches it, so a cleartext /p/ hit is just redirected to https first. The brain's own
+# port is open to the LAN (the config page), so the brain itself answers /p/ only to a
+# loopback peer that says X-Forwarded-Proto https -- this proxy, which sets that header
+# itself -- and gives anything else a 404 (pairing.py _via_front_door).
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$FRONTDOOR_HOST"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, tls internal, + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
     "" \
-    "# Cleartext, one path only: the local CA, so a phone can trust us before it connects." \
-    "http://$FRONTDOOR_HOST {" \
+    "# The local CA, so a phone can trust us before it connects: served by both blocks." \
+    "(teaport_ca) {" \
     "    handle /teaport-ca.crt {" \
     "        root * $CADDY_PKI" \
     "        rewrite * /root.crt" \
@@ -1679,6 +1692,11 @@ write_caddyfile() {
     "        header Content-Type application/x-x509-ca-cert" \
     "        header Content-Disposition \"attachment; filename=teaport-ca.crt\"" \
     "    }" \
+    "}" \
+    "" \
+    "# Cleartext, one path only: the CA above; everything else goes to https." \
+    "http://$FRONTDOOR_HOST {" \
+    "    import teaport_ca" \
     "    handle {" \
     "        redir https://{host}{uri} permanent" \
     "    }" \
@@ -1686,7 +1704,14 @@ write_caddyfile() {
     "" \
     "$FRONTDOOR_HOST {" \
     "    tls internal" \
-    "    reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
+    "    import teaport_ca" \
+    "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
+    "    handle /p/* {" \
+    "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
+    "    }" \
+    "    handle {" \
+    "        reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
+    "    }" \
     "}" | SUDO tee "$path" >/dev/null
 }
 
@@ -1743,7 +1768,10 @@ phase_services() {
   # loses its gateway is switched on the page.
   local agent=("?TEAPORT_AGENT=none")
   if [ -n "$AGENT_MODE" ]; then
-    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT")
+    # TEAPORT_FRONTDOOR_HOST: the name the pairing links (#243) are built on; phase_frontdoor
+    # fronts exactly these installs (any agent), so it is written exactly here.
+    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT"
+           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST")
   fi
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
@@ -1757,8 +1785,10 @@ phase_services() {
   # voice-only box (and a gateway box whose gateway cannot answer) reads a file that
   # does not exist, load_persona() silently falls through to the baked-in
   # FALLBACK_PERSONA, and the box quietly ships the generic assistant instead of the
-  # editable one docs/FAQ.md says it reads. Seed it once with that same text — never
-  # overwrite an existing file, so an operator's persona edit survives every repair.
+  # editable one the docs say it reads (docs/src/content/docs/guides/configuration.md,
+  # "Where secrets live"; reference/settings.md, TEAPORT_PERSONA_FILE). Seed it once
+  # with that same text — never overwrite an existing file, so an operator's persona
+  # edit survives every repair.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] write %s if absent (starter persona text)\n' "$SECRETS/persona.md"
   elif [ ! -f "$SECRETS/persona.md" ]; then

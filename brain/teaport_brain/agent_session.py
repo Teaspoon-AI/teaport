@@ -17,6 +17,7 @@
 # GAINS the full stack by adopting the factory.
 #
 import asyncio
+import contextlib
 import dataclasses
 
 from loguru import logger
@@ -98,6 +99,7 @@ from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords
 from teaport_brain.wifi_voice import WifiSetupVoice
+from teaport_brain.pair_device import DevicePairing
 from teaport_brain.tools import (
     AGENT_FIRST,
     ANSWER_TOOLS,
@@ -403,8 +405,32 @@ class AgentSession:
             return None
         return text
 
-    # How long say_last_line lets the interruption clear the way before the line goes in.
-    _LAST_LINE_SETTLE_S = 0.2
+    # How long own_line lets the interruption clear the way before the line goes in.
+    _OWN_LINE_SETTLE_S = 0.2
+
+    @contextlib.asynccontextmanager
+    async def own_line(self, line: str, *, append_to_context: bool):
+        """Stop whatever is being said and put `line` in its place, yielding the watch on
+        its delivery (FollowupGate.watch_delivery): the session's last line
+        (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
+        The cut is the brain's, not the caller's: the owed book counts no cut telling and
+        reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
+        not a timer the ledger's charting of the cut could lose to."""
+        owed = getattr(self.llm, "owed", None)
+        if owed is not None:
+            owed.own_cut = True
+        try:
+            await self.task.queue_frames([InterruptionWorkerFrame()])
+            await asyncio.sleep(self._OWN_LINE_SETTLE_S)
+            # Armed after the interruption has gone through (it settles every watched
+            # reply as cut) and before the line is queued.
+            delivery = self.followup_gate.watch_delivery()
+            await self.task.queue_frames([TTSSpeakFrame(line,
+                                                        append_to_context=append_to_context)])
+            yield delivery
+        finally:
+            if owed is not None:
+                owed.own_cut = False
 
     async def say_last_line(self, line: str, max_secs: float, *,
                             append_to_context: bool = False) -> bool:
@@ -417,20 +443,15 @@ class AgentSession:
         phone call), or puts it on hold (hold())."""
         if self.input_mute is not None:
             self.input_mute.muted = True
-        await self.task.queue_frames([InterruptionWorkerFrame()])
-        await asyncio.sleep(self._LAST_LINE_SETTLE_S)
-        # Armed after the interruption has gone through (it settles every watched reply
-        # as cut) and before the line is queued.
-        delivery = self.followup_gate.watch_delivery()
-        await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=append_to_context)])
-        try:
-            await asyncio.wait_for(delivery.done.wait(), max_secs)
-        except asyncio.TimeoutError:
-            self.followup_gate.drop_delivery(delivery)
-            logger.info(f"the session's last line did not finish within {max_secs:g} s — "
-                        "ending it anyway")
-            return False
-        return not delivery.interrupted
+        async with self.own_line(line, append_to_context=append_to_context) as delivery:
+            try:
+                await asyncio.wait_for(delivery.done.wait(), max_secs)
+            except asyncio.TimeoutError:
+                self.followup_gate.drop_delivery(delivery)
+                logger.info(f"the session's last line did not finish within {max_secs:g} s — "
+                            "ending it anyway")
+                return False
+            return not delivery.interrupted
 
     # --- On hold for a phone call (the session arbiter's PROMPT, issue #111) ------------
     # While held, the pipeline runs on with nothing to do: the engine's STT session is
@@ -603,6 +624,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
+                        via: str | None = None,
                         host=None,
                         run_control: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
@@ -639,6 +661,10 @@ def build_agent_session(transport, *, voice: str | None = None,
       over the shared values). Only the turn-taking and a tool call's filler caption
       (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
+    - via: the named bridge a "talk" session comes through ("discord":
+      host_context.NAMED_CLIENTS, its ?client=), None for the plugin and the room. A
+      bridge relays someone far from the box: no tool that needs someone at it
+      (pair_device) is offered.
     - host: what the OpenClaw host composed for this session (host_context.HostContext:
       a Talk session's session_config frame, or what the plugin's voice-context route
       gives every other front end, host_context.fetch). Its instructions start the
@@ -703,7 +729,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt,
                            host_schemas=host_tool_schemas(host.tools) if host else (),
-                           run_control=run_control)
+                           run_control=run_control, front_end=front_end, via=via)
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
@@ -713,6 +739,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # It speaks the voice's language, read live (a switch_voice switches it too).
     wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
             if any(t.name == "wifi_setup" for t in session_tools) else None)
+    # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
+    # that tool is active (switched on, a gateway, the room or a Talk session).
+    pairing = (DevicePairing() if any(t.name == "pair_device" for t in session_tools)
+               else None)
     # Words something else answers -- Wi-Fi setup's, OpenClaw's run control's (built below
     # once the gate exists) -- go on emptied, and this ends the turn they opened
     # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
@@ -983,10 +1013,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # cut tellings (owed.py, #203/#204): the LLM renders its note into every request, the
     # ledger settles each reply into it -- judged by the session's own model for the gist
     # (llm.judge_gist, asked as the reply's stream ends) and, cut, for the rest
-    # (llm.judge_cut) --, the gate is the door its runs go through, and a room's sleep
-    # keeps it with the conversation.
+    # (llm.judge_cut) and for whether the caller still wants it (llm.judge_decline,
+    # #231) --, the gate is the door its runs go through, and a room's sleep keeps it
+    # with the conversation.
     owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS, judge=llm.judge_cut,
-                gist=llm.judge_gist)
+                gist=llm.judge_gist, decline=llm.judge_decline)
     llm.owed = owed
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
@@ -1004,6 +1035,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
+    if pairing is not None:
+        pairing.notes = client_notes  # how an offer ended (pair_device._watch)
     # A final said while a consult runs waits for the plugin to say whether OpenClaw's
     # spoken run control took it (run_control.py, #230); what it took leaves a notice.
     claims = (RunControlClaims(lambda: followup_gate.consults_running, notes=client_notes)
@@ -1201,7 +1234,14 @@ def build_agent_session(transport, *, voice: str | None = None,
                    notes=client_notes,
                    # OpenClaw's Talk relay stores every final in the session a
                    # consult starts from (captions.py, caption_ahead).
-                   captions_ahead=front_end == "talk")
+                   captions_ahead=front_end == "talk",
+                   front_end=front_end, via=via, pairing=pairing)
+
+    if pairing is not None:
+        @task.event_handler("on_pipeline_finished")
+        async def _close_pairing(_task, _frame):
+            # Ended or disconnected: no code left on the screen, no task left waiting.
+            pairing.close()
 
     session = AgentSession(
         task=task,

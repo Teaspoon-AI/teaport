@@ -13,13 +13,16 @@
 #
 # THE TOOL CONTRACT. Every tool is one `Tool` record in TOOLS (bottom of the schemas):
 #   - its schema (what the model sees) and its handler (bound per session);
-#   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default (docs/CONFIG.md
-#     "Tools"; all of today's tools default on, restart_session off);
+#   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default
+#     (docs/src/content/docs/reference/settings.md, "Tools"; all of today's tools
+#     default on, restart_session off);
 #   - what it NEEDS to work: "agent" (the co-resident OpenClaw gateway,
 #     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice),
 #     "client:<feature>" (the connected client can do it, announced on /talk as
-#     ?features=...), "host:<part>" (something installed on this box: HOST_CHECKS), or
-#     "call_prompt" (a conversation a phone call can ask to make way: call_prompt.py);
+#     ?features=...), "host:<part>" (something installed on this box: HOST_CHECKS),
+#     "call_prompt" (a conversation a phone call can ask to make way: call_prompt.py), or
+#     "room_or_talk" (the session is the room mic or a Talk session, never a phone call
+#     nor a named bridge such as Discord: ToolContext.front_end and .via);
 #   - its call timeout and the phrase the system prompt names it with.
 # active_tools() is the ONE place that decides which tools a session has: the schema
 # the model is offered, the handlers registered on the LLM and the tools the system
@@ -76,7 +79,8 @@ from teaport_brain.settings import setting
 # both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
 # alone, leaving the mode half-enabled — the strict router directive installed while this
 # module still spoke the "I'll work on that" ack the directive exists to suppress. It also
-# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
+# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while
+# docs/src/content/docs/guides/configuration.md ("Change a setting in a configuration file")
 # promised otherwise; setting() reads it by the documented table.
 AGENT_FIRST = setting("TEAPORT_AGENT_FIRST")
 # Agent-first routes EVERY turn through openclaw_agent_consult; without a gateway that tool
@@ -345,6 +349,19 @@ WIFI_SETUP = FunctionSchema(
         "phone; say nothing yourself."
     ),
     properties={},
+    required=[],
+)
+
+PAIR_DEVICE = FunctionSchema(
+    name="pair_device",
+    description=(
+        "Connect the user's laptop, phone or tablet to you, when they ask to add, pair or "
+        "connect one. It shows a code on the box's screen for the device's camera to scan; "
+        "the code is never read out. cancel=true takes the code off the screen again, "
+        "when the user says to stop or never mind."
+    ),
+    properties={"cancel": {"type": "boolean",
+                           "description": "true: stop showing the code"}},
     required=[],
 )
 
@@ -1215,8 +1232,9 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
 @dataclass(frozen=True)
 class ToolContext:
     """What a session can offer its tools. The availability of a tool depends only on
-    tts and client_features, so a context built before the PipelineTask exists (for
-    the schema and the prompt) and the one register_tools builds later agree."""
+    tts, client_features, call_prompt, run_control, front_end and via, so a context built
+    before the PipelineTask exists (for the schema and the prompt) and the one
+    register_tools builds later agree."""
     tts: object = None
     has_tts: bool = False
     client_features: frozenset = frozenset()
@@ -1239,6 +1257,14 @@ class ToolContext:
     # The session's ClientNotes (client_notes.py): a control result that came after its
     # call was cancelled is said through it, as a host note.
     notes: object = None
+    # "sip", "talk" or "room" (agent_session's front_end), None when unknown, and the
+    # named bridge a Talk session comes through ("discord": host_context.NAMED_CLIENTS),
+    # None for the plugin or the room: the need "room_or_talk" (never a phone call, and
+    # never someone a bridge relays from far away).
+    front_end: str | None = None
+    via: str | None = None
+    # The session's DevicePairing (pair_device.py), which the pair_device tool hands to.
+    pairing: object = None
 
 
 @dataclass(frozen=True)
@@ -1277,7 +1303,7 @@ class Tool:
         lets the model call these itself rather than through openclaw_agent_consult
         (agent_session.agent_first_directive)."""
         return (self.client or "tts" in self.needs or "call_prompt" in self.needs
-                or "run_control" in self.needs)
+                or "run_control" in self.needs or "room_or_talk" in self.needs)
 
 
 def _plain(handler):
@@ -1298,9 +1324,7 @@ async def _wifi_setup(params: FunctionCallParams, voice=None):
 
 async def _answer_phone_call(params: FunctionCallParams, prompt=None):
     from teaport_brain import call_prompt as cp
-    take = (params.arguments or {}).get("take")
-    if not isinstance(take, bool):
-        take = str(take).strip().lower() in ("true", "1", "yes")
+    take = _flag((params.arguments or {}).get("take"))
     outcome = cp.NONE if prompt is None else prompt.answer(take)
     logger.info(f"answer_phone_call(take={take}) -> {outcome}")
     if outcome == cp.TAKEN:
@@ -1333,6 +1357,56 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
     else:
         await params.result_callback(
             {"ok": False, "error": "no phone call is waiting for an answer"})
+
+
+def _flag(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes")
+
+
+async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None):
+    from teaport_brain import pair_device as pd
+    args = params.arguments or {}
+    if pairing is None:
+        await params.result_callback({"ok": False, "error": "pairing is not available here"})
+        return
+    if _flag(args.get("cancel", False)):
+        stopped = pairing.cancel()
+        await params.result_callback(
+            {"ok": True, "note": "The code is off the screen; nothing was paired. Say so in "
+                                 "a few words."} if stopped == pd.GONE else
+            {"ok": True, "note": "The code is off the screen, but it was already opened on a "
+                                 "device, which may still connect; you get a notice if it "
+                                 "does. Say so in a few words."} if stopped == pd.CONFIRMING else
+            {"ok": True, "note": "No code was on the screen; nothing to stop."})
+        return
+    outcome, info = await pairing.start()
+    if outcome == pd.SHOWN:
+        note = (f"Your screen on the box is showing a code for the next {info['minutes']} "
+                "minutes. Tell the user, in plain words, to point their phone or laptop "
+                "camera at your screen and open what it finds. Never read out a code or a "
+                "link, and use no technical words.")
+        if front_end == "talk":
+            note += (" The user is talking to you from elsewhere: say that whoever scans "
+                     "has to be at the box.")
+        note += " You get a notice when it is used or runs out."
+        await params.result_callback({"ok": True, "note": note})
+    elif outcome == pd.STOPPED:
+        await params.result_callback(
+            {"ok": False, "error": "the code was stopped before it was shown; nothing is on "
+                                   "the screen. Say nothing more about it unless asked."},
+            properties=no_inference())
+    elif outcome == pd.NO_SCREEN:
+        await params.result_callback(
+            {"ok": False, "error": "this box has no screen that can show the code, and the "
+                                   "code is never read out. Say in plain words that you "
+                                   "can't connect a device this way here."})
+    else:
+        await params.result_callback(
+            {"ok": False, "error": f"no code could be made right now ({info.get('reason')}). "
+                                   "Say in plain words that you couldn't start it and to "
+                                   "try again in a little while; don't repeat the reason."})
 
 
 def _bind_openclaw_agent_consult(ctx: ToolContext):
@@ -1419,6 +1493,12 @@ TOOLS: tuple[Tool, ...] = (
          setting("TEAPORT_TOOL_ANSWER_PHONE_CALL"), frozenset({"call_prompt"}),
          hint="answer_phone_call (the user's yes or no when you have asked whether to step "
               "away for an incoming phone call)"),
+    # room_or_talk -- someone can be at the box to scan its screen; never on a phone call.
+    Tool(PAIR_DEVICE, lambda ctx: functools.partial(_pair_device, pairing=ctx.pairing,
+                                                    front_end=ctx.front_end),
+         setting("TEAPORT_TOOL_PAIR_DEVICE"), frozenset({"agent", "room_or_talk", "host:pairing"}),
+         hint="pair_device (connect the user's laptop or phone to you: it shows a code on "
+              "your screen for its camera)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
@@ -1454,13 +1534,21 @@ def parse_client_features(raw: str | None) -> frozenset:
     return frozenset(names & CLIENT_FEATURES)
 
 
+def _pairing_set_up() -> bool:
+    # The front door the QR link points at (TEAPORT_FRONTDOOR_HOST, written by
+    # install.sh): a box upgraded without it has nowhere to send a phone.
+    from teaport_brain import pairing
+    return pairing.available()
+
+
 def _wifi_setup_installed() -> bool:
     from teaport_brain import wifi_voice
     return wifi_voice.available()
 
 
 # "host:<part>" needs: is that part installed on this box. Checked per session.
-HOST_CHECKS: dict[str, Callable[[], bool]] = {"wifi_setup": _wifi_setup_installed}
+HOST_CHECKS: dict[str, Callable[[], bool]] = {"wifi_setup": _wifi_setup_installed,
+                                              "pairing": _pairing_set_up}
 
 
 def _has(need: str, ctx: ToolContext) -> bool:
@@ -1475,6 +1563,8 @@ def _has(need: str, ctx: ToolContext) -> bool:
         return ctx.call_prompt is not None
     if need == "run_control":
         return ctx.run_control
+    if need == "room_or_talk":
+        return ctx.front_end in ("room", "talk") and ctx.via is None
     if need == "consult":
         # The consult switched on: a control with nothing it could control is not offered.
         return any(t.name == OPENCLAW_AGENT_CONSULT.name and t.enabled for t in TOOLS)
@@ -1568,6 +1658,17 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
                 "it": "Ci lavoro subito, un attimo.",
                 "cmn": "我来处理，请稍等。"}.get(
                     lang, "I'll work on that — give me a moment.")
+    if name == "pair_device":
+        # The code takes a few seconds to come up (pairing reads the device list first),
+        # and the model mostly calls this without a word, leaving the room in silence.
+        # A plain "one moment" that promises nothing: the outcome (a code up, no screen,
+        # unavailable, stopped) is not known yet, and the tool's result has the model
+        # say what to do. A cancel is instant and says its own line.
+        if _flag(args.get("cancel", False)):
+            return None
+        return {"es": "Un momento, déjame prepararlo.",
+                "it": "Un attimo, lo preparo.",
+                "cmn": "稍等，我来准备一下。"}.get(lang, "One moment, let me set that up.")
     return None  # instant tools: speaking would take longer than the call
 
 
@@ -1666,7 +1767,8 @@ def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
 def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                    client_features: frozenset = frozenset(), wifi_voice=None,
                    call_prompt=None, run_control: bool = False, notes=None,
-                   captions_ahead: bool = False) -> None:
+                   captions_ahead: bool = False, front_end: str | None = None,
+                   via: str | None = None, pairing=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `owed`, if given,
     is the session's owed records (owed.Owed), which a background consult is dispatched
@@ -1675,7 +1777,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     before speaking its progress lines. `run_control`: a Talk session whose plugin answers
     run-control questions (ToolContext.run_control), where openclaw_agent_control is
     offered. `notes`: the session's ClientNotes (ToolContext.notes). `captions_ahead`
-    charts a tool call's filler before the call (Talk: captions.caption_ahead)."""
+    charts a tool call's filler before the call (Talk: captions.caption_ahead).
+    `front_end`, `via` and `pairing`: ToolContext's."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session
@@ -1688,7 +1791,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                       owed=owed if HAS_AGENT else None, gate=gate,
                       wifi_voice=wifi_voice, call_prompt=call_prompt,
-                      run_control=run_control, notes=notes)
+                      run_control=run_control, notes=notes, front_end=front_end,
+                      via=via, pairing=pairing)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
         llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn,

@@ -785,8 +785,7 @@ def test_without_a_gateway_nothing_is_asked(monkeypatch):
 
 def test_the_old_consult_name_is_gone():
     """One consult tool, OpenClaw's, on every front end: the brain's own name for it is
-    not kept anywhere, not even as an alias. The historical run logs (brain/test/RUNLOG-*)
-    record what ran then and keep it, and the two settings named after it keep rows
+    not kept anywhere, not even as an alias. The two settings named after it keep rows
     under their old names (settings.py: a renamed setting is still read, with a warning)."""
     old = "ask_" + "openclaw"
     renamed = ("teaport_tool_" + old, "teaport_" + old + "_timeout")
@@ -797,7 +796,7 @@ def test_the_old_consult_name_is_gone():
         dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "__pycache__",
                                                 ".claude")]
         for f in files:
-            if f.startswith("RUNLOG-") or not f.endswith(
+            if not f.endswith(
                     (".py", ".js", ".mjs", ".md", ".toml", ".sh", ".tla", ".json", ".html",
                      ".txt", ".cfg", ".service", ".conf")):
                 continue

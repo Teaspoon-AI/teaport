@@ -13,7 +13,7 @@
 #     python3 -m teaport_brain.i18n --glyphs  # every shown character has a font (dev:
 #                                             # fontTools + the fonts a phone has)
 #
-# (tests/test_i18n.py runs the check, the same way docs/CONFIG.md is held to its schema.)
+# (tests/test_i18n.py runs the check, the same way docs/src/content/docs/reference/settings.md is held to its schema.)
 #
 # The language of a session is its voice's: the engine's TTS language (engine_tts.py,
 # TTS_VOICE / TTS_LANGUAGE / OpenClaw's per-session choice / switch_voice), mapped to a

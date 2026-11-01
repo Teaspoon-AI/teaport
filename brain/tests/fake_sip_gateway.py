@@ -53,8 +53,9 @@
 #       python -m tests.fake_sip_gateway --socket ~/fake-sip/gw.sock \
 #           --from +15551234567 --wav test/question.wav --record /tmp/bot.wav
 #   with a brain whose TEAPORT_SIP_SOCKET is the same path. On the box that is the
-#   default path, served with teaport-sip guarded: docs/CONFIG.md, "Testing the phone
-#   path without a line".
+#   default path, served with teaport-sip guarded: docs/src/content/docs/guides/phone-calls.md,
+#   "Test the phone path without a line" (the other flags and the restart-mid-call
+#   recipe: tests/README.md, "Driving the phone path by hand").
 #
 from __future__ import annotations
 

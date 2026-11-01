@@ -7,21 +7,13 @@
 # divergence was a bug).
 set -u
 
-# Find the shared rig next to this script, else in the appliance checkout. Both are
-# needed: RUNLOG-sip-tools.md's recorded run copied this runner ALONE to /tmp and ran
-# `bash /tmp/run_sip_tools_test.sh`, where a bare dirname finds no helper.
-_common=
-for _c in "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" \
-          "${TEAPORT_BRAIN_SRC:-$HOME/teaport-src/brain}/test"; do
-  if [ -r "$_c/sip_test_common.sh" ]; then _common=$_c/sip_test_common.sh; break; fi
-done
-[ -n "$_common" ] || { echo "sip_test_common.sh not found (set TEAPORT_BRAIN_SRC)" >&2; exit 1; }
-. "$_common"
-unset _c _common
+# The shared rig sits next to this script; run it from a checkout.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sip_test_common.sh"
 
 SOCK=${SOCK:-/tmp/teaport-fakegw.sock}
 QWAV=$TEST/question_host_status.wav
-OUTWAV=/tmp/sip-tools-audio-out.wav
+OUTPREFIX=/tmp/sip-tools
+OUTWAV=$OUTPREFIX-call1-audio-out.wav
 GWLOG=/tmp/sip-tools-fakegw.log
 BRAINLOG=/tmp/sip-tools-brain.log
 # One call's worst case: greeting 14s + question ~5s + reply cap 75s, plus room for
@@ -35,7 +27,7 @@ sip_test_clean_stale "$SOCK"
 
 # Fake gateway (SERVER) first, so the brain client can connect.
 timeout -k 10 "$GW_TIMEOUT" "$PY" "$TEST/fake_gateway.py" \
-    --socket "$SOCK" --wav "$QWAV" --out-wav "$OUTWAV" \
+    --socket "$SOCK" --wav "$QWAV" --out-prefix "$OUTPREFIX" --calls 1 \
     --greet-wait 14 --reply-idle 3 --reply-cap 75 > "$GWLOG" 2>&1 &
 GWPID=$!
 sleep 1

@@ -4,36 +4,31 @@
 # Shared rig for the offline SIP-brain drivers (run_sip_tools_test.sh,
 # run_sip_percall_test.sh). Both runs load the same env the same way, snapshot the
 # same host state, sweep the same stale processes and stop the brain the same way;
-# they differ only in WHICH fake gateway they launch and with what flags. That is
+# they differ only in the flags they pass the fake gateway (fake_gateway.py). That is
 # all that is left in the runners — everything else lives here.
 #
 # This is not tidiness, it is the bug that produced it. The two runners had already
-# drifted, and the drift was live: run_sip_percall_test.sh swept BOTH drivers before
-# binding /tmp/teaport-fakegw.sock, run_sip_tools_test.sh swept only 'fake_gateway.py'
-# — and `pkill -f 'fake_gateway.py'` does NOT match fake_gateway_multicall.py (the
-# pattern is a regex, so the '.' is any-char and it needs "py" two characters past
-# "fake_gateway", where the multicall driver has "_m"). Interrupt a per-call run and
-# then start a tools run and the surviving multicall driver still owned the socket:
-# `rm -f "$SOCK"` unlinked the path out from under it, the new fake_gateway.py bound
-# a fresh socket at the same name, and the run then sat in `wait $GWPID` until the
-# stale driver's own caps expired. One sweep, used by both, cannot drift like that.
+# drifted, and the drift was live: one swept only its own driver before binding
+# /tmp/teaport-fakegw.sock, so a driver left by an interrupted run of the other still
+# owned the socket. `rm -f "$SOCK"` unlinked the path out from under it, the new
+# driver bound a fresh socket at the same name, and the run then sat in
+# `wait $GWPID` until the stale driver's own caps expired. One sweep, used by both,
+# cannot drift like that.
 #
 # Source it, do not execute it:
 #   . "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sip_test_common.sh"
 
 # --- Where we are, and what to run with --------------------------------------
-# Derived from this file's own location so the tests run from a git checkout. They
-# used to hardcode $HOME/teaport-src/brain and /opt/teaport/venv, which meant they
-# ran on exactly one machine (the Jetson) and nowhere else — a contributor could
-# read them but never run them. The appliance layout is now the FALLBACK, taken
-# only when this file is not sitting inside a source tree (e.g. copied to /tmp,
-# which is how RUNLOG-sip-tools.md records the original run).
+# Derived from this file's own location, so the tests run from any git checkout.
+# They used to hardcode $HOME/teaport-src/brain and /opt/teaport/venv, which meant
+# they ran on exactly one machine (the Jetson) and nowhere else — a contributor
+# could read them but never run them.
 SIP_TEST_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 TEST=$SIP_TEST_DIR
 BRAIN=$(dirname -- "$SIP_TEST_DIR")
 if [ ! -f "$BRAIN/teaport_brain/sip_server.py" ]; then
-  BRAIN=${TEAPORT_BRAIN_SRC:-$HOME/teaport-src/brain}
-  TEST=$BRAIN/test
+  echo "$SIP_TEST_DIR is not brain/test in a teaport checkout; run the SIP rigs from one." >&2
+  exit 1
 fi
 
 # The interpreter is load-bearing: brain/tests/pinned_pipecat.py exists because the
@@ -115,7 +110,7 @@ sip_test_load_env() {
   export SIP_HALF_DUPLEX=0     # full-duplex offline: nothing here can echo back
   export LOGURU_LEVEL=DEBUG    # STT session-created/disconnect + the tool handlers'
                                # own debug lines with their REAL return values —
-                               # those lines are the evidence the RUNLOGs quote
+                               # what a run is judged by
   export HF_HUB_OFFLINE=1
 
   echo "brain src : $BRAIN"
@@ -186,9 +181,8 @@ sip_test_clean_stale() {
   # would kill its telephony.
   local brain_pat="teaport_brain\\.sip_server .*--socket $sock"
 
-  # Name what is being killed. "No leftover sip_server / fake_gateway processes" is a
-  # claim every RUNLOG makes about the box it ran on, and a silent sweep gives the next
-  # run log no way to say whether the box was already dirty when it started.
+  # Name what is being killed: a silent sweep leaves no way to tell from a run's
+  # output whether the box was already dirty when it started.
   local stale
   stale=$(sip_test_driver_pids "$gw_pat"; sip_test_driver_pids "$brain_pat")
   # shellcheck disable=SC2086  # deliberate split: one line of pids, not one per line
@@ -230,7 +224,7 @@ sip_test_clean_stale() {
 sip_test_stop_brain() {
   local pid=$1
   # The pause is not politeness: the assistant ledger and the tool-call lines are
-  # flushed at end of turn, and they are the whole record the RUNLOG quotes. Then
+  # flushed at end of turn, and they are the whole record of what the call did. Then
   # make sure it is really dead — a survivor holds the engine's single STT slot and
   # the next run gets a brain that connects and can never transcribe.
   sleep 2

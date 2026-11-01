@@ -305,8 +305,13 @@ def _not_voice(pid: int):
 async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tuple[int, bytes, bytes]:
     """Run the `openclaw` CLI as a subprocess, returning (returncode, stdout, stderr).
     Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — kills the child
-    on CancelledError so a barge-in can abort an in-flight consult. Raises on spawn/timeout."""
-    env = dict(os.environ)
+    on CancelledError so a barge-in can abort an in-flight consult. Raises on spawn/timeout.
+    OPENCLAW_GATEWAY_URL is left out of the child's environment: here it is the brain's
+    own setting (the HTTP lane, brain.env), but the CLI reads the same name as a gateway
+    override and then refuses its configured credentials ("gateway url override requires
+    explicit credentials", rc 1). Without it the CLI talks to the gateway its own config
+    names, as it does when an operator runs it."""
+    env = {k: v for k, v in os.environ.items() if k != "OPENCLAW_GATEWAY_URL"}
     env["PATH"] = os.path.dirname(OPENCLAW_BIN) + os.pathsep + env.get("PATH", "")
     proc = await asyncio.create_subprocess_exec(
         OPENCLAW_BIN, *args,
@@ -519,18 +524,39 @@ async def agent_consult(message: str, *, session_key: str | None = None,
     return ConsultOutcome(text)
 
 
+def cli_json(out: bytes, want=lambda d: True) -> dict | None:
+    """The CLI's --json result: the last top-level JSON object on stdout that `want`
+    accepts. Plugin and proxy banners can come before it (and, from a --local run,
+    after it), so stdout is not one document; each object starts on a line of its own,
+    one line (dashboard) or pretty-printed (devices list, agent). Objects nested inside
+    one already read are not candidates. None when no object qualifies: a caller that
+    needs a key says so in `want` rather than reading a banner's object as an empty
+    result."""
+    raw = out.decode("utf-8", "ignore")
+    decoder = json.JSONDecoder()
+    found, pos = None, 0
+    for m in re.finditer(r"^[ \t]*\{", raw, re.M):
+        start = m.end() - 1
+        if start < pos:
+            continue  # inside an object already read
+        try:
+            obj, end = decoder.raw_decode(raw, start)
+        except ValueError:
+            continue
+        pos = end
+        if isinstance(obj, dict) and want(obj):
+            found = obj
+    return found
+
+
 def _consult_payload_text(out: bytes) -> str | None:
+    # --local runs interleave plugin/proxy banners on stdout ahead of the payload;
+    # strict whole-stdout json.loads broke on those banners and silently ate every
+    # consult. cli_json skips them.
+    d = cli_json(out, lambda d: "payloads" in d or isinstance(d.get("result"), dict))
+    if d is None:
+        return None
     try:
-        raw = out.decode("utf-8", "ignore")
-        # --local runs interleave plugin/proxy banners on stdout ahead of the
-        # payload; the --json object is pretty-printed, so it starts at the
-        # first bare "{" line. Strict whole-stdout json.loads broke on those
-        # banners and silently ate every consult.
-        lines = raw.splitlines()
-        start = next((i for i, ln in enumerate(lines) if ln.strip() == "{"), None)
-        if start is None:
-            return None
-        d = json.loads("\n".join(lines[start:]))
         payloads = d.get("payloads") or (d.get("result") or {}).get("payloads") or []
         text = (payloads[0].get("text") if payloads else "") or ""
         return text.strip() or None

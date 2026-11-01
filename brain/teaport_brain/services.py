@@ -77,7 +77,7 @@ def get_llm_api_key() -> str:
         return key
     raise RuntimeError(
         "no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
-        "(see docs/CONFIG.md)"
+        "(see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model)"
     )
 
 
@@ -96,7 +96,8 @@ def get_llm_api_key() -> str:
 #
 # The cap is sized for the reasoning effort ACTUALLY IN FORCE. gpt-oss bills hidden
 # chain-of-thought as completion tokens, and LLM_REASONING_EFFORT is an independent
-# knob an operator is invited to turn (docs/CONFIG.md) — so a cap sized for "low"
+# knob an operator is invited to turn (docs/src/content/docs/reference/settings.md,
+# "Language model") — so a cap sized for "low"
 # starves "high": the reasoning alone exhausts the budget, the completion comes back
 # finish_reason=length with zero visible content, no LLMTextFrame is ever pushed, and
 # the room hears dead air. That is the SAME silent assistant this cap exists to
@@ -111,10 +112,11 @@ def get_llm_api_key() -> str:
 # openclaw_agent_consult request is the realistic case.
 #
 # "" is deliberately NOT in this table. LLM_REASONING_EFFORT="" is a configuration
-# docs/CONFIG.md invites ("for models that don't support it"), and _llm_extra() then omits
-# reasoning_effort from the request entirely — so the model runs at ITS OWN default, which
-# is typically medium. Mapping "" to the 1024-token low budget billed a medium-effort
-# completion against the cheapest cap and produced exactly the failure described above:
+# docs/src/content/docs/reference/settings.md ("Language model") invites ('Set "" to
+# disable for models that do not'), and _llm_extra() then omits reasoning_effort from the
+# request entirely — so the model runs at ITS OWN default, which is typically medium.
+# Mapping "" to the 1024-token low budget billed a medium-effort completion against the
+# cheapest cap and produced exactly the failure described above:
 # finish_reason=length, zero visible content, dead air. Falling through to the
 # unknown-effort headroom is correct, because the effort in force is unknown by
 # construction.
@@ -654,8 +656,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
             if reply is not None and reply.kind in owed_mod.RUNS:
                 await self.speculator.stand_down_ownerless("a run of ours")
             else:
-                adopted = await self.speculator.take(context)
-                if adopted is not None:
+                if self.owed is not None:
+                    await self.owed.settled()
+                if self.owed is not None and self.owed.decline_due():
+                    # The words that cut a telling are read before this renders (owed.py,
+                    # #231); the speculation's render read none, so it cannot stand for it.
+                    await self.speculator.cancel("a decline check is due")
+                elif (adopted := await self.speculator.take(context)) is not None:
                     if self.owed is not None:
                         self._rendered(reply, adopted.owed_noted, context)
                     return adopted
@@ -683,8 +690,9 @@ class BoundedOpenAILLMService(OpenAILLMService):
         noted = ()
         if self.owed is not None:
             kind = reply.kind if reply is not None else "caller"
-            view, noted = await self.owed.view(context, kind,
-                                               reply.keys if reply is not None else ())
+            view, noted = await self.owed.view(
+                context, kind, reply.keys if reply is not None else (),
+                speculative=reply is None and SPECULATION_NOTED.get() is not None)
             if view is None:
                 logger.info(f"{self}: the {kind} has nothing owed to tell -- no request")
                 return _NothingToSay()
@@ -709,6 +717,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
         """The gist judge owed.Owed asks (Owed._gist, #210): whether what the caller heard
         of a record gave them the answer to their question. As judge_cut."""
         return await self._judge(owed_mod.gist_judge_messages(question, outcome, heard))
+
+    async def judge_decline(self, question: str, heard: str, rest: str, words: str):
+        """The decline check owed.Owed asks (Owed._ask_decline, #231): whether the caller,
+        cutting a telling of an owed answer, still wants the rest. True for DECLINED, False
+        for WANTED, None for anything else. As judge_cut."""
+        return await self._judge(owed_mod.decline_judge_messages(question, heard, rest, words),
+                                 owed_mod.decline_verdict)
 
     async def judge_barge(self, asked: str, reply: str, heard: str, said: str):
         """The barge-in judge barge_pause.BargeInJudgeGate asks (#224): whether the
@@ -856,7 +871,7 @@ def make_llm():
             "LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
             "point it at your OpenAI-compatible endpoint "
             "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
-            "local server); see docs/CONFIG.md"
+            "local server); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model"
         )
     # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from

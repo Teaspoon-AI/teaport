@@ -357,6 +357,35 @@ async def test_a_speculation_in_flight_is_adopted_before_its_first_chunk():
     await out.close()
 
 
+async def test_no_speculation_is_adopted_while_a_decline_check_is_due():
+    """owed.py (#231): the words that cut a telling of an owed answer are read before the
+    commit renders, and a speculation's render read none (its words were interim). While
+    a check is due the speculation is cancelled and the commit renders itself; with none
+    due it is adopted as ever."""
+    for due, hits, opens in ((True, 0, 2), (False, 1, 1)):
+        ctx, agg, llm, spec, opened = _rig()
+
+        class Book:
+            async def settled(self):
+                pass
+
+            def decline_due(self):
+                return due
+
+            gate = None
+
+            def noted(self, *args):
+                pass
+
+        llm.owed = Book()
+        await spec.start(spec.candidate())
+        await _settle()
+        ctx.add_message({"role": "user", "content": "what time is it"})
+        out = await llm.get_chat_completions(ctx)
+        assert spec.hits == hits and len(opened) == opens, (due, spec.hits, len(opened))
+        await out.close()
+
+
 async def test_an_empty_completed_speculation_is_a_miss():
     """A 200 whose body closed at once: nothing buffered, no error. Adopting it would be
     a turn that says nothing; the ordinary request is made instead."""
