@@ -890,6 +890,35 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
 
 
+async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_pauser():
+    # The S1 fix's production wiring (stt.py TURN TEXT): on SIP, where the pauser is, a
+    # sliced barge-in waiting on its final holds the pause through stt.barge_hold, and
+    # the pause's cap closes it first through before_cap.
+    from teaport_brain import stt as stt_mod
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.sip_transport import SipGatewayTransport, make_sip_params
+
+    wire = _Wire()
+    saved = stt_mod.TURN_TEXT
+    stt_mod.TURN_TEXT = "slice"
+    try:
+        session = build_agent_session(SipGatewayTransport(wire.connection, make_sip_params()))
+    finally:
+        stt_mod.TURN_TEXT = saved
+    try:
+        pauser = session.ledger._output.previous
+        assert isinstance(pauser, BargeInPauser)
+        assert session.stt.slices_asked
+        session.stt.barge_hold(True)
+        assert pauser._holds == {"the turn's final"}, pauser._holds
+        session.stt.barge_hold(False)
+        assert pauser._holds == set()
+        assert pauser.before_cap == session.stt.close_held
+    finally:
+        wire.connection.close()
+        wire.gw_sock.close()
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

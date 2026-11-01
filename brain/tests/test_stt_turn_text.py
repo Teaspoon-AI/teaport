@@ -838,6 +838,71 @@ async def test_a_barge_in_waiting_on_its_final_holds_the_reply_s_pause():
         await run
 
 
+async def test_the_pause_s_cap_closes_a_held_barge_in_before_it_resumes():
+    # The decoder far behind, the end bound frozen: the barge-in's final never comes
+    # before the pause's cap. At the cap it closes on the words in hand -- the reply still
+    # paused -- and only then does the reply resume.
+    import test_barge_pause as tbp
+    from pipecat.frames.frames import (TTSAudioRawFrame, VADUserStartedSpeakingFrame,
+                                       VADUserStoppedSpeakingFrame)
+    out, p, task, run = await tbp._pauser_rig(max_secs=1.0)
+    try:
+        await task.queue_frames([TTSAudioRawFrame(tbp._pcm(0), tbp.SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), UP)
+        await asyncio.sleep(0.05)
+        s = Service()
+        await created(s)
+        s.barge_hold = lambda on: p.hold_resume(on, who="the turn's final")
+        p.before_cap = s.close_held
+        paused_at_final = []
+        pushed = s.push_frame
+
+        async def push(frame, direction=None):
+            if isinstance(frame, FinalTranscriptionFrame):
+                paused_at_final.append(p.paused)
+            await pushed(frame) if direction is None else await pushed(frame, direction)
+        s.push_frame = push
+        await s.process_frame(BotStartedSpeakingFrame(), UP)
+        await task.queue_frame(VADUserStartedSpeakingFrame())
+        await vad_start(s)
+        await audio(s, 600)
+        await asyncio.sleep(0.4)
+        await task.queue_frame(VADUserStoppedSpeakingFrame())
+        await vad_stop(s)
+        await preview(s, 600, "")                     # held
+        await delta(s, " Stop.", 450)                 # in hand; the final never comes
+        await asyncio.sleep(1.0)                      # past the cap
+        assert s.finals() == [("Stop.", 1)], s.finals()
+        assert paused_at_final == [True], "closed after the reply resumed"
+        assert [c[1] for c in out.calls] == [True, False], out.calls
+        assert not s._turns
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_two_held_barge_ins_hold_the_pause_until_the_last_one_closes():
+    s = Service()
+    await created(s)
+    held = []
+    s.barge_hold = held.append
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    for _ in range(2):
+        await vad_start(s)
+        await audio(s, 600)
+        await vad_stop(s)
+    await preview(s, 600, "")
+    await preview(s, 1200, "")
+    assert held == [True]
+    await delta(s, " Stop.", 450)
+    await progress(s, 600)                            # the first closes
+    assert held == [True], f"the first of two let go the pause: {held}"
+    await delta(s, " now.", 1000)
+    await progress(s, 1200)
+    assert held == [True, False] and s.finals() == [("Stop.", 1), ("now.", 2)], (
+        held, s.finals())
+
+
 async def test_a_lost_session_closes_a_deferred_turn_on_the_words_in_hand():
     from teaport_brain.endpointing import SegmentResetFrame
     s = Service()

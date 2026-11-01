@@ -921,8 +921,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     if barge_pauser is not None:
         pause_link["pauser"] = barge_pauser
         vad_analyzer.onset_listeners.append(barge_pauser.on_onset)
-        # A sliced barge-in turn waiting on its final holds the pause (stt.py TURN TEXT).
+        # A sliced barge-in turn waiting on its final holds the pause, and is closed on the
+        # words in hand at its cap, before it resumes (stt.py TURN TEXT).
         stt.barge_hold = lambda on: barge_pauser.hold_resume(on, who="the turn's final")
+        barge_pauser.before_cap = stt.close_held
         logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
                     "speech and resumes if no words follow")
     # Words over a paused reply go to a one-word judge before they start the turn

@@ -278,6 +278,9 @@ class BargeInPauser(FrameProcessor):
         # (BargeInJudgeGate), the STT waiting on a barge-in's final (stt.py TURN TEXT): no
         # resume on the quiet window meanwhile. The cap still ends the pause.
         self._holds: set = set()
+        # Called (async) at the cap, before it resumes, while anyone holds: the STT's
+        # close of a held barge-in on the words in hand (set by build_agent_session).
+        self.before_cap = None
         # Echo-like pauses (resumed on a blip, no words) in this bot-speaking window.
         self._noword = 0
         # Tallies, for the log and the tests.
@@ -439,6 +442,15 @@ class BargeInPauser(FrameProcessor):
     async def _cap(self):
         await asyncio.sleep(self._max_secs)
         self._cap_task = None
+        if self._holds and self.before_cap is not None:
+            # Whoever still holds it decides first, while the reply is paused: the STT
+            # closes a barge-in still waiting on its final on the words in hand
+            # (stt.close_held, wired by build_agent_session).
+            try:
+                await self.before_cap()
+            except Exception as e:  # noqa: BLE001 -- the cap must still resume
+                logger.warning("BARGE-PAUSE: the cap's close of the held words failed "
+                               f"({e!r})")
         await self._resume(f"pause cap {self._max_secs:.1f}s")
 
     @staticmethod

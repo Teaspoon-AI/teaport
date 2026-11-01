@@ -987,6 +987,9 @@ class TeaportSTTService(WebsocketSTTService):
         # pause to hold. And how many turns hold it now.
         self.barge_hold = None
         self._barge_holds = 0
+        # Set while the pause's cap settles the turns up to the last one holding it
+        # (close_held): their position, else None.
+        self._settle_through: Optional[int] = None
         # When the open segment's first words arrived (the guard's clock): it
         # decides by when the speech began, not when its final lands. None: no words yet.
         self._seg_since = None
@@ -2476,6 +2479,22 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._settle_turn(turn, timed_out=not final)
             await self._time_final()
 
+    async def close_held(self):
+        """The reply's barge-in pause is at its cap (barge_pause.BargeInPauser.before_cap,
+        wired by build_agent_session) and will resume now: every turn up to the last one
+        holding it settles first -- one waiting on its final closes on the words in hand
+        -- so that close is decided with the reply still paused, not by the unpaused
+        guard after it (the cap, counted from the pause, comes before the final's own
+        backstop, counted from the commit)."""
+        held = [t.at_ms for t in self._turns if t.holds]
+        if not held:
+            return
+        self._settle_through = max(held)
+        try:
+            await self._finalize_turns()
+        finally:
+            self._settle_through = None
+
     def _final_overdue(self, turn: _Turn) -> bool:
         """The turn's final has had _FINAL_TIMEOUT_MS past its position by the engine's
         decoded_through_ms -- past its position plus the margin while its preview still
@@ -2484,7 +2503,9 @@ class TeaportSTTService(WebsocketSTTService):
         went out."""
         due = turn.at_ms + _FINAL_TIMEOUT_MS + (_VOUCH_MS if turn.expect else 0)
         return (self._decoded_ms >= due
-                or time.monotonic() >= turn.sent_at + _FINAL_BACKSTOP_SECS)
+                or time.monotonic() >= turn.sent_at + _FINAL_BACKSTOP_SECS
+                or (self._settle_through is not None
+                    and turn.at_ms <= self._settle_through))
 
     async def _time_final(self):
         """(Re)arm the timer for the oldest turn waiting for its final, if it changed."""
@@ -2512,7 +2533,9 @@ class TeaportSTTService(WebsocketSTTService):
         final = "".join(w[0] for w in turn.words).strip()
         if timed_out:
             self._final_timeouts += 1
-            head = (f"[TURN] VAD stop {turn.stop_n}: final timeout, "
+            what = ("the reply's pause at its cap" if self._settle_through is not None
+                    else "final timeout")
+            head = (f"[TURN] VAD stop {turn.stop_n}: {what}, "
                     f"{time.monotonic() - turn.preview_at:.2f}s after the preview (position "
                     f"{turn.at_ms} ms; end_through_ms {self._end_through}, "
                     f"audio_through_ms {self._audio_through}, "
