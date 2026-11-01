@@ -854,6 +854,9 @@ class _Turn:
     deferred: str = ""
     msg: Optional[dict] = None
     commit: Optional[_Commit] = None
+    # Over the bot's reply and deferred: it holds the reply's barge-in pause until it
+    # closes (barge_hold).
+    holds: bool = False
     # When its commit went out (the wall clock its final's timeout counts from).
     sent_at: float = 0.0
 
@@ -970,6 +973,12 @@ class TeaportSTTService(WebsocketSTTService):
         # the bot's own words, heard back through the speaker, are taken off the front of
         # every transcript before it is pushed. None: nothing is taken off.
         self.echo_guard = None
+        # The SIP line's barge-in pause (barge_pause.BargeInPauser.hold_resume, as
+        # `on` -> None), set by build_agent_session: a barge-in turn waiting on its final
+        # holds it, so its words are decided with the reply paused (TURN TEXT). None: no
+        # pause to hold. And how many turns hold it now.
+        self.barge_hold = None
+        self._barge_holds = 0
         # When the open segment's first words arrived (the guard's clock): it
         # decides by when the speech began, not when its final lands. None: no words yet.
         self._seg_since = None
@@ -2196,9 +2205,11 @@ class TeaportSTTService(WebsocketSTTService):
             turn.deferred = "its preview over the bot's reply having had none of the caller's"
         if turn.deferred:
             # Nothing goes on now: the turn closes on its final -- over the bot still the
-            # barge-in its words are -- or, if that never comes, on the words in hand
-            # (TURN TEXT).
+            # barge-in its words are, the reply's pause held until then -- or, if that
+            # never comes, on the words in hand (TURN TEXT).
             turn.msg, turn.commit = msg, commit
+            if commit.why == "bot-speaking":
+                self._hold_barge(turn, True)
             logger.debug(f"{self}: VAD stop {turn.stop_n}: {turn.deferred} -- the turn "
                          "closes on its final")
         else:
@@ -2210,6 +2221,23 @@ class TeaportSTTService(WebsocketSTTService):
         if self._interim_buffer.strip():
             await self._arm_stranded_commit()
         await self._finalize_turns()
+
+    def _hold_barge(self, turn: _Turn, on: bool):
+        """`turn`, a barge-in waiting on its final, holds the reply's pause (`on`) or lets
+        it go, before its close goes out; the pause is held while any such turn waits."""
+        if turn.holds == on:
+            return
+        turn.holds = on
+        self._barge_holds += 1 if on else -1
+        if self.barge_hold is not None and self._barge_holds == (1 if on else 0):
+            self.barge_hold(on)
+
+    async def _close_deferred(self, turn: _Turn, words: str):
+        """A deferred turn's close, on `words` (its final's, or those in hand): stamped
+        with its stop, the pause it held let go first so the close is decided under it
+        and the reply then resumes or is cut by what the close starts."""
+        self._hold_barge(turn, False)
+        await self._close(turn.msg, turn.commit, words, words, turn.since)
 
     @staticmethod
     def _goes_on(w: tuple, last: Optional[tuple]) -> bool:
@@ -2452,7 +2480,7 @@ class TeaportSTTService(WebsocketSTTService):
             if turn.deferred:
                 logger.warning(f"{head} -- closed on the {len(_words_of(final))} word(s) in "
                                f"hand, {turn.deferred}")
-                await self._close(turn.msg, turn.commit, final, final, turn.since)
+                await self._close_deferred(turn, final)
             else:
                 logger.warning(f"{head} -- settled as its provisional text")
             return
@@ -2471,7 +2499,7 @@ class TeaportSTTService(WebsocketSTTService):
             # final, stamped with its stop -- over the bot, the barge-in its words are.
             logger.info(f"{head}: closed on its final ({len(_words_of(final))} word(s)), "
                         f"{turn.deferred} ({tally})")
-            await self._close(turn.msg, turn.commit, final, final, turn.since)
+            await self._close_deferred(turn, final)
             return
         if kind == "same":
             logger.info(f"{head}: as asked ({tally})")
@@ -2706,6 +2734,18 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._websocket.close()
         finally:
             self._websocket = None
+            # A turn waiting to close on its final (TURN TEXT) closes now, on the words
+            # in hand -- before the reset, which pays every stop the STT had seen -- and
+            # lets go the pause it held.
+            for turn in [t for t in self._turns if t.deferred and t.previewed]:
+                try:
+                    if self._ending:
+                        self._hold_barge(turn, False)
+                    else:
+                        await self._close_deferred(
+                            turn, "".join(w[0] for w in turn.words).strip())
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"{self}: could not close a deferred turn ({e})")
             # The open segment's words go with the session, and no final or wordless
             # close will ever come for them: say so, or the stop strategy keeps the last
             # interim as words that settled long ago (SegmentResetFrame). Not at the
@@ -2723,7 +2763,7 @@ class TeaportSTTService(WebsocketSTTService):
             if self._turns:
                 logger.info(f"{self}: the engine session closed with "
                             f"{len(self._turns)} turn(s) not yet final -- their "
-                            "provisional text stands")
+                            "provisional text stands, a deferred one's words in hand")
             self._open_words = []
             self._last_piece = None
             self._turns.clear()

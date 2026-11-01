@@ -747,6 +747,71 @@ async def test_a_barge_in_heard_only_as_the_bots_own_words_closes_on_its_final()
     assert s.finals() == [("stop", 1)], s.finals()
 
 
+async def test_a_barge_in_waiting_on_its_final_holds_the_reply_s_pause():
+    # The pause resumes TEAPORT_BARGE_PAUSE_RESUME_S after the caller stops; a barge-in
+    # whose final comes later (the decoder behind, ~2 s on the box) holds it until its
+    # close, so a lone "Stop." is decided with the reply paused -- the unpaused guard
+    # would drop it as one word.
+    import time
+    import test_barge_pause as tbp
+    from pipecat.frames.frames import (TTSAudioRawFrame, VADUserStartedSpeakingFrame,
+                                       VADUserStoppedSpeakingFrame)
+    out, p, task, run = await tbp._pauser_rig()           # resumes 0.3 s after a stop
+    try:
+        await task.queue_frames([TTSAudioRawFrame(tbp._pcm(0), tbp.SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), UP)
+        await asyncio.sleep(0.05)
+        s = Service()
+        await created(s)
+        s.barge_hold = lambda on: p.hold_resume(on, who="the turn's final")
+        await s.process_frame(BotStartedSpeakingFrame(), UP)
+        await task.queue_frame(VADUserStartedSpeakingFrame())
+        await vad_start(s)
+        await audio(s, 600)
+        await asyncio.sleep(0.4)                          # 0.4 s of speech: no blip
+        await task.queue_frame(VADUserStoppedSpeakingFrame())
+        await vad_stop(s)
+        await preview(s, 600, "")                         # over the bot: deferred
+        await asyncio.sleep(tbp.RESUME_S + 0.4)           # past the resume window
+        assert [c[1] for c in out.calls] == [True], f"resumed under the deferral {out.calls}"
+        await delta(s, " Stop.", 450)
+        await progress(s, 600)
+        assert s.finals() == [("Stop.", 1)]
+        assert [c[1] for c in out.calls] == [True], "resumed before the close went out"
+        # Its close out, the hold is let go: a quiet line resumes on the window.
+        await asyncio.sleep(tbp.RESUME_S + 0.2)
+        assert [c[1] for c in out.calls] == [True, False], out.calls
+        # And the judge letting go does not let go a turn's hold, nor the other way.
+        p._paused, p._holds = True, set()
+        p.hold_resume(True, who="the turn's final")
+        p.hold_resume(True)
+        p.hold_resume(False)
+        assert p._held and p._resume_task is None
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_a_lost_session_closes_a_deferred_turn_on_the_words_in_hand():
+    from teaport_brain.endpointing import SegmentResetFrame
+    s = Service()
+    await created(s)
+    held = []
+    s.barge_hold = held.append
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)
+    await preview(s, 600, "")                         # deferred, the pause held
+    await delta(s, " Stop.", 450)                     # its word in hand, no final yet
+    s._websocket = None                               # the session goes
+    await s._disconnect_websocket()
+    assert s.finals() == [("Stop.", 1)] and held == [True, False], (s.finals(), held)
+    order = [type(f).__name__ for f in s.pushed
+             if isinstance(f, (FinalTranscriptionFrame, SegmentResetFrame))]
+    assert order == ["FinalTranscriptionFrame", "SegmentResetFrame"], order
+
+
 async def test_an_empty_provisionals_words_go_through_the_wake_gate():
     from teaport_brain import wake_gate
     from teaport_brain.wake_words import parse_phrases

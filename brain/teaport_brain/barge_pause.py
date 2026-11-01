@@ -274,9 +274,10 @@ class BargeInPauser(FrameProcessor):
         self._pause_t0 = 0.0
         self._resume_task = None
         self._cap_task = None
-        # The judge is deciding the caller's words (BargeInJudgeGate): no resume on the
-        # quiet window meanwhile. The cap still ends the pause.
-        self._held = False
+        # Who is still deciding the caller's words over the pause -- the judge
+        # (BargeInJudgeGate), the STT waiting on a barge-in's final (stt.py TURN TEXT): no
+        # resume on the quiet window meanwhile. The cap still ends the pause.
+        self._holds: set = set()
         # Echo-like pauses (resumed on a blip, no words) in this bot-speaking window.
         self._noword = 0
         # Tallies, for the log and the tests.
@@ -306,16 +307,25 @@ class BargeInPauser(FrameProcessor):
             self._schedule_resume(_FINAL_GRACE_S, "the STT's close of it had no turn in it",
                                   echo=False)
 
-    def hold_resume(self, on: bool):
-        """BargeInJudgeGate: words over the pause are being judged (`on`), or no longer
-        are. While they are, nothing but the cap resumes; after, a quiet line resumes on
-        the usual window if nothing sooner does (the close the gate lets on)."""
-        self._held = on
+    @property
+    def _held(self) -> bool:
+        return bool(self._holds)
+
+    def hold_resume(self, on: bool, who: str = "the judge"):
+        """Words over the pause are being decided (`on`), or no longer are, by `who`: the
+        judge (BargeInJudgeGate), or the STT, whose barge-in turn waits on its final
+        (stt.py TURN TEXT). Each holds and lets go its own. While any holds, nothing but
+        the cap resumes; after, a quiet line resumes on the usual window if nothing sooner
+        does (the close that follows)."""
         if on:
+            self._holds.add(who)
             self._cancel(self._resume_task)
             self._resume_task = None
-        elif self._paused and not self._speaking and self._resume_task is None:
-            self._schedule_resume(self._resume_secs, "the judge let the reply carry on",
+            return
+        self._holds.discard(who)
+        if (not self._holds and self._paused and not self._speaking
+                and self._resume_task is None):
+            self._schedule_resume(self._resume_secs, f"{who} let the reply carry on",
                                   echo=False)
 
     async def _speech(self, source: str, started: bool):
@@ -409,7 +419,7 @@ class BargeInPauser(FrameProcessor):
 
     def _end(self):
         self._paused = False
-        self._held = False
+        self._holds.clear()
         for task in (self._resume_task, self._cap_task):
             self._cancel(task)
         self._resume_task = self._cap_task = None
