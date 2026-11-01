@@ -152,7 +152,7 @@ The installer does these tasks:
 - It starts the services and checks the installation.
 
 <!-- source: install.sh:66,273,1033,1443,1456,2633,2804,2810,1541,1893#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
-<!-- source: install.sh:1674-1685,1712-1757#12502d2b -->
+<!-- source: install.sh:1674-1685,1712-1757#0dba2a43 -->
 
 ## Optional components
 
@@ -274,7 +274,7 @@ installer was given your own certificate (see
 nothing to trust, and the page leaves the step out.
 
 <!-- source: install.sh:1881-1887#4326c857 -->
-<!-- source: install.sh:1712-1757#ad730aea; brain/teaport_brain/pairing.py:131-134,767-770#03054554 -->
+<!-- source: install.sh:1712-1757#cd323bfa; brain/teaport_brain/pairing.py:131-134,767-770#03054554 -->
 
 ## What's next
 

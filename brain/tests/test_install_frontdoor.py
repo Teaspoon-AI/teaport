@@ -160,6 +160,9 @@ def test_the_name_an_earlier_run_settled_on_stays_unless_taken_and_teaport_host_
     assert _resolved(out)["HOST"] == "kitchen.local"
     out = _run(t, RESOLVE, {"TEAPORT_HOST": "Kitchen.LOCAL"})[1]
     assert _resolved(out)["HOST"] == "kitchen.local"
+    # A saved name written with capitals is lowercased too, so it stays an mDNS name.
+    pathlib.Path(t, "etc", "brain.env").write_text("TEAPORT_FRONTDOOR_HOST=Teaport.LOCAL\n")
+    assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport.local"  # this box answers
     # A DNS name is not second-guessed: it may resolve to a proxy, not to this box.
     pathlib.Path(t, "etc", "brain.env").write_text("TEAPORT_FRONTDOOR_HOST=box.example.com\n")
     assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "box.example.com"

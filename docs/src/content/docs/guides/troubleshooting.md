@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1818-1866#fb689c3c; install.sh:1712-1757#ad730aea -->
+<!-- source: install.sh:1818-1866#fb689c3c; install.sh:1712-1757#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 

@@ -110,7 +110,7 @@ The installer honors the overrides in this table; the default applies when the v
 | `TEAPORT_TLS_CERT`, `TEAPORT_TLS_KEY` | The certificate an earlier run was given, else none | Your own certificate and key for the front door, in place of the device's own. Set both empty to go back to the device's own. See [Use your own certificate](#use-your-own-certificate). |
 | `TEAPORT_REGENERATE_CA` | `0` | `1` replaces the device's own certificate authority, on every run where it is set. See [Replace the device's certificate](#replace-the-devices-certificate). |
 
-<!-- source: install.sh:55-61,1712-1757#1a285422 -->
+<!-- source: install.sh:55-61,1712-1757#f8ed4839 -->
 
 ## The front door's certificate
 
@@ -159,7 +159,7 @@ Renewal is up to you. Replace both files, then reload Caddy:
 sudo systemctl reload caddy.service
 ```
 
-<!-- source: install.sh:55-61,1761-1786,1712-1757#9d8fc900 -->
+<!-- source: install.sh:55-61,1761-1786,1712-1757#9a229b8c -->
 
 ### Replace the device's certificate
 

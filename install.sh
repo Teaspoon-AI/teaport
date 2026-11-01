@@ -1727,7 +1727,7 @@ resolve_frontdoor() {
   fi
   if [ -z "${TEAPORT_HOST:-}" ]; then
     local had; had="$(read_env_file "$ETC/brain.env" --lenient | grep -E '^TEAPORT_FRONTDOOR_HOST=' | tail -1 || true)"
-    had="${had#*=}"
+    had="$(printf '%s' "${had#*=}" | tr 'A-Z' 'a-z')"   # lowercased like TEAPORT_HOST above
     if [ -n "$had" ]; then FRONTDOOR_HOST="$had"; fi
     # A .local name another machine answers to does not reach this box at all (avahi
     # renamed it on the wire), so keeping it only keeps phones on the other box: a saved
