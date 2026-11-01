@@ -1235,6 +1235,16 @@ tier = "installer"
 help = "The openclaw CLI used as the consult fallback. Auto-detected; the host might have none when OpenClaw runs only inside the sandbox."
 
 [[settings]]
+name = "TEAPORT_FRONTDOOR_HOST"
+store = "brain_env"
+group = "agent"
+type = "string"
+read = "startup"
+tier = "installer"
+help = "The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing a laptop or phone shows a QR code of https://<this>/p/<code> and points the new browser's dashboard at wss://<this>; the installer writes the name it gave the front door (teaport.local unless TEAPORT_HOST says otherwise). Unset: no front door is known, and the pair_device tool is not offered."
+note = "The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen."
+
+[[settings]]
 name = "TEAPORT_AGENT_FIRST"
 store = "brain_env"
 group = "agent"
@@ -1614,6 +1624,16 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "How the user answers \"should I step away?\" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake."
+
+[[settings]]
+name = "TEAPORT_TOOL_PAIR_DEVICE"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Connect a laptop, phone or tablet browser to the box by voice (\"add my laptop\"): the box shows a QR code on its screen for the device's camera, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes."
 
 # ---- talk client context notes
 

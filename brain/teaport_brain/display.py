@@ -165,10 +165,12 @@ class Screen:
             self._held = None
             self._put({"screen": {"id": self.id}})
 
-    def close(self) -> None:
+    def close(self, take_down: bool = True) -> None:
+        """`take_down` False: the sender leaves a held screen to whoever now shows one by
+        the same id (it is no longer this sender's to take down)."""
         with self._lock:
             held, self._held, self._closed = self._held, None, True
-            if held:
+            if held and take_down:
                 self._put({"screen": {"id": self.id}})
         self._wake.set()
 

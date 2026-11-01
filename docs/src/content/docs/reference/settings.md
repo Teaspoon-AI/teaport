@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2480#030b837b -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2500#f898ba4e -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -159,6 +159,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_GATEWAY_TOKEN` | file `~/.config/teaport/openclaw_token` | Bearer token for that gateway. Prefer the file; the env var, if set, wins over it. |
 | `OPENCLAW_AGENT_ID` | — | The OpenClaw agent this box's consults reach (model openclaw/<id> on /v1/chat/completions, --agent on the CLI fallback) and whose voice context (agent paragraph and profile) the room mic, the phone and the Discord bridge get from the teaport plugin. Must be a configured agent. Unset: the gateway's default agent, with the CLI fallback and the memory reindex run as --agent main. Memory and the web tools (remember, search_memory, web_search, web_fetch) stay with the gateway's default agent either way: remember writes OPENCLAW_MEMORY_DIR, and /tools/invoke names no agent. |
 | `OPENCLAW_BIN` | — | The openclaw CLI used as the consult fallback. Auto-detected; the host might have none when OpenClaw runs only inside the sandbox. *Set by the installer.* |
+| `TEAPORT_FRONTDOOR_HOST` | — | The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing a laptop or phone shows a QR code of https://<this>/p/<code> and points the new browser's dashboard at wss://<this>; the installer writes the name it gave the front door (teaport.local unless TEAPORT_HOST says otherwise). Unset: no front door is known, and the pair_device tool is not offered. The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen. *Set by the installer.* |
 | `TEAPORT_AGENT_FIRST` | **off** | Agent-first routing: install the strict router directive and drop the "I'll work on that" ack. |
 | `TEAPORT_RECALL_TIMEOUT` | **1.5** s (≥ 0.1) | Memory-recall budget. Never awaited on the frame path, so a generous value adds no turn latency; 1.5 s clears a cold embedder (~1.14 s on the device). |
 | `TEAPORT_CONSULT_TIMEOUT` | **45** s (≥ 5) | Gateway/CLI consult ceiling on the synchronous path (TEAPORT_AGENT_FIRST, or a client with no follow-up injector). Otherwise the async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts. |
@@ -199,6 +200,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
 | `TEAPORT_TOOL_END_CONVERSATION` | **on** | Go back to sleep when the user says they are done ("that's all", "goodnight", "go to sleep", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). |
 | `TEAPORT_TOOL_ANSWER_PHONE_CALL` | **on** | How the user answers "should I step away?" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake. |
+| `TEAPORT_TOOL_PAIR_DEVICE` | **on** | Connect a laptop, phone or tablet browser to the box by voice ("add my laptop"): the box shows a QR code on its screen for the device's camera, never reads it out, and says when the device is connected. Only in a room conversation or a Talk session (someone at the box scans it), never on a phone call or through the Discord bridge; needs TEAPORT_AGENT=openclaw, the front door (TEAPORT_FRONTDOOR_HOST, written by the installer) and an OLED avatar that draws QR codes. |
 | `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
 
 ## Wi-Fi setup

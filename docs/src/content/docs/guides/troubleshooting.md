@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1529#2ca3ef5a; install.sh:1660-1680#3592ca37 -->
+<!-- source: install.sh:1529#2ca3ef5a; install.sh:1664-1693#57609149 -->
 
 ## The page opens but nothing happens
 
@@ -330,7 +330,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1660-1680#3592ca37 -->
+<!-- source: install.sh:1664-1693#57609149 -->
 
 ### The phone pairs, but it has no permissions
 
@@ -340,6 +340,37 @@ does not permit operator commands.
 
 **Fix** Pair again over `wss://`. Set `publicUrl` as in
 [`openclaw qr` refuses to make a code](#openclaw-qr-refuses-to-make-a-code).
+
+## The pairing code says expired or already used
+
+**Cause** Each pairing code works one time, for 5 minutes at most. The first scan
+uses the code up, even when the dashboard then does not open. The page says
+**already used** when the code was scanned before: by a second device, or by this
+phone when the dashboard did not open the first time. That is most often a phone
+that does not trust the device's certificate yet. The page says **expired** when
+the 5 minutes passed, when the device restarted after it showed the code, or when
+someone tried several wrong codes, which ends the code for safety.
+
+**Fix** If the dashboard did not open, install the device's certificate first: open
+`http://teaport.local/teaport-ca.crt` on the phone (the page links it) and trust it.
+Then ask the device again, for example "add my laptop", and scan the new code. Do
+not scan a photograph of an old code.
+
+Pairing links work only through the front door, `https://teaport.local/p/...`. The
+same path on the brain's own port, `http://<device>:7861/p/...`, answers
+**Not Found**.
+
+### The pairing link does not open
+
+**Cause** The front door on the device was set up before it served pairing links.
+`./install.sh --only brain` updates the brain only. It does not rewrite the front
+door's configuration or `brain.env`.
+
+**Fix** Run the installer again without `--only`, as in
+[Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
+the installation and keeps your settings. You do this one time.
+
+<!-- source: install.sh:1708-1714#4326c857; install.sh:1773-1774#ee5dc2d7 -->
 
 ## Phone calls go unanswered
 
