@@ -32,7 +32,7 @@ If the device is already online, the phrase is ordinary speech. The agent hears 
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device speaks fresh random digits for each run, so listen for it in the announcement.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-22#cfde57cc; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2490#c8f9533e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-22#cfde57cc; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2517#c8f9533e -->
 
 ## If the device connects
 

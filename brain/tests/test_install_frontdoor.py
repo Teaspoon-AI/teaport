@@ -25,12 +25,13 @@ INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
 
 STUBS = r'''
 set -euo pipefail
-DRY_RUN=0 BRAIN_PORT=7861 GATEWAY_PORT=18789 ETC="$T/etc" CADDY_PKI="$T/pki"
+DRY_RUN=0 BRAIN_PORT=7861 GATEWAY_PORT=18789 ETC="$T/etc" CADDY_PKI="$T/pki" CADDYFILE="$T/Caddyfile"
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}" FRONTDOOR_CA_NAME=""
 TLS_CERT="${TEAPORT_TLS_CERT:-}" TLS_KEY="${TEAPORT_TLS_KEY:-}" REGENERATE_CA="${TEAPORT_REGENERATE_CA:-0}"
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 sudo() { "$@"; }
 SUDO() { case "$1" in tee) command tee "$2" >/dev/null ;; *) "$@" ;; esac; }
@@ -57,7 +58,8 @@ def _run(tmp, script, env=None):
     body = STUBS + "".join(_fn(f) for f in FNS) + script
     e = {**os.environ, "T": str(tmp), "SYSFS_NET": str(pathlib.Path(tmp, "net")), **(env or {})}
     for k in ("TEAPORT_HOST", "TEAPORT_TLS_CERT", "TEAPORT_TLS_KEY", "TEAPORT_REGENERATE_CA"):
-        e.setdefault(k, "")
+        if k not in (env or {}):
+            e.pop(k, None)  # unset, as on a plain re-run
     p = subprocess.run(["bash", "-c", body], capture_output=True, text=True, env=e)
     return p.returncode, p.stdout + p.stderr
 
@@ -138,9 +140,10 @@ def test_a_second_box_on_the_network_takes_its_own_name():
     assert "another box already answers to teaport.local" in out
 
 
-def test_the_name_an_earlier_run_settled_on_stays_and_teaport_host_wins():
-    # Devices already use the box's name: a re-run never moves it because the network
-    # changed meanwhile. TEAPORT_HOST, said out loud, always wins.
+def test_the_name_an_earlier_run_settled_on_stays_unless_taken_and_teaport_host_wins():
+    # Devices already use the box's name: a re-run keeps it, unless another box answers to
+    # it, when it never reached this box anyway (two boxes installed before #251 both saved
+    # teaport.local). TEAPORT_HOST, said out loud, always wins.
     t = tempdir()
     _box(t)
     pathlib.Path(t, "etc").mkdir()
@@ -148,7 +151,10 @@ def test_the_name_an_earlier_run_settled_on_stays_and_teaport_host_wins():
         "BRAIN_PORT=7861\nTEAPORT_FRONTDOOR_HOST=teaport-9e35.local\n")
     assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport-9e35.local"
     pathlib.Path(t, "mdns").write_text("192.168.1.77\n")
+    assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport-9e35.local"
     pathlib.Path(t, "etc", "brain.env").write_text("TEAPORT_FRONTDOOR_HOST=teaport.local\n")
+    assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport-9e35.local"
+    pathlib.Path(t, "mdns").write_text("192.168.1.234\n")
     assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport.local"
     out = _run(t, RESOLVE, {"TEAPORT_HOST": "kitchen.local"})[1]
     assert _resolved(out)["HOST"] == "kitchen.local"
@@ -166,10 +172,10 @@ def test_an_existing_ca_keeps_its_name_unless_it_is_regenerated():
     assert _resolved(_run(t, RESOLVE)[1])["CA"] == "Caddy Local Authority"
     out = _run(t, RESOLVE, {"TEAPORT_REGENERATE_CA": "1"})[1]
     assert _resolved(out)["CA"] == "Teaport 9e35 Local Authority"
-    # A root named some other way is named as it is.
-    _cert(t, "root", "Office box CA", sans=())
+    # A root named some other way is named as it is, commas and all.
+    _cert(t, "root", "Office box\\, 2nd floor CA", sans=())
     shutil.copy(pathlib.Path(t, "root.crt"), pki / "root.crt")
-    assert _resolved(_run(t, RESOLVE)[1])["CA"] == "Office box CA"
+    assert _resolved(_run(t, RESOLVE)[1])["CA"] == "Office box, 2nd floor CA"
 
 
 def test_a_name_too_long_for_the_qr_code_is_warned_about():
@@ -207,6 +213,42 @@ def test_the_operators_certificate_is_checked_before_anything_is_installed():
     crt, _ = _cert(t, "soon", "box.example.com", sans=("box.example.com",), days=3, key=key)
     rc, out = _run(t, RESOLVE, {**good, "TEAPORT_TLS_CERT": str(crt)})
     assert rc == 0 and "expires within 7 days" in out, out
+
+
+def test_a_rerun_keeps_the_operators_certificate_until_told_otherwise():
+    # Re-running is the repair action: without TEAPORT_TLS_CERT it keeps the certificate the
+    # Caddyfile serves (and checks it again); TEAPORT_TLS_CERT= (empty) goes back to the
+    # box's own.
+    t = tempdir()
+    _box(t)
+    crt, key = _cert(t, "good", "box.example.com", sans=("box.example.com",))
+    pathlib.Path(t, "etc").mkdir()
+    pathlib.Path(t, "etc", "brain.env").write_text("TEAPORT_FRONTDOOR_HOST=box.example.com\n")
+    _caddyfile(t, {"TEAPORT_TLS_CERT": str(crt), "TEAPORT_TLS_KEY": str(key)})
+    show = 'echo "CERT=$TLS_CERT KEY=$TLS_KEY"\n'
+    rc, out = _run(t, RESOLVE + show)
+    assert rc == 0 and f"CERT={crt} KEY={key}" in out, out
+    assert "keeping the front door's certificate" in out
+    rc, out = _run(t, RESOLVE + show, {"TEAPORT_TLS_CERT": "", "TEAPORT_TLS_KEY": ""})
+    assert rc == 0 and "CERT= KEY=" in out, out
+    key.unlink()  # kept, so checked again: a vanished key stops the re-run
+    rc, out = _run(t, RESOLVE)
+    assert rc == 1 and "does not exist" in out, out
+
+
+def test_a_passphrase_key_is_refused_without_a_prompt():
+    t = tempdir()
+    _box(t)
+    crt, key = _cert(t, "good", "box.example.com", sans=("box.example.com",))
+    enc = pathlib.Path(t, "enc.key")
+    subprocess.run(["openssl", "pkey", "-in", str(key), "-out", str(enc), "-aes256",
+                    "-passout", "pass:secret"], check=True, capture_output=True)
+    p = subprocess.run(["bash", "-c", STUBS + "".join(_fn(f) for f in FNS) + RESOLVE],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30,
+                       env={**os.environ, "T": str(t), "SYSFS_NET": str(pathlib.Path(t, "net")),
+                            "TEAPORT_HOST": "box.example.com", "TEAPORT_TLS_CERT": str(crt),
+                            "TEAPORT_TLS_KEY": str(enc)})
+    assert p.returncode == 1 and "has a passphrase" in p.stdout, p.stdout + p.stderr
 
 
 def _caddyfile(t, env=None):
