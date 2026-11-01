@@ -2523,12 +2523,20 @@ modelling it.
 ### The barge-in judge (`JUDGE`, #224)
 
 `BargeInJudgeGate` (`barge_pause.py`, `TEAPORT_BARGE_JUDGE`) sits directly above the user
-aggregator. Words that would start a turn over a paused reply are held there while a
+aggregator. Words over a paused reply, a single one included, are held there while a
 one-word judge decides them:
 - **CONTINUE:** the held words are dropped. Their final becomes the segment's wordless
   close, as a cough's does, and the reply resumes.
-- **STOP, ANSWER or no verdict:** the held words go on as they came, and the turn
-  starts as it would have.
+- **STOP or ANSWER:** the held words go on, marked, and start the turn at any length.
+- **No verdict:** the held words go on as they came, and the word count decides as it
+  did before the judge: two words start the turn, one does not (the model's CONTINUE
+  outcome, since words that start no turn are dropped).
+
+`OneWord` enters the gate as `Interject` does. `JUDGE = "minWords"` is the gate as first
+shipped, where a word under the guard was never judged: a lone "What?" started no turn
+and the reply resumed over it. A probe on a scratch copy of the spec (the new branch
+raising a flag the shipped design never raises) shows the branch is reached under
+`ut_judge_shipped_all` and `ut_talk_judge_all`, and never under `minWords`.
 
 Stop words, a reply that would be over by now, and an open user turn are never judged. A
 stop word, or the reply's would-be end passing, while the judge decides lets everything

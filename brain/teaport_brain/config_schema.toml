@@ -780,7 +780,7 @@ min = 1
 default = 2
 read = "startup"
 tier = "setup"
-help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. While the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
+help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. While the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, with TEAPORT_BARGE_JUDGE on the judge decides words of any length, and once the paused reply would have finished anyway one word is enough."
 
 [[settings]]
 name = "SIP_ENDPOINT_STOP_SECS"
@@ -1080,7 +1080,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
+help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS), even a single one, are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, they interrupt at any length (a lone \"What?\" included). If no verdict comes within 1.2 s, TEAPORT_INTERRUPT_MIN_WORDS decides, about a judge's time later. One extra short LLM request per such pause."
 
 [[settings]]
 name = "TEAPORT_STOP_WORDS"

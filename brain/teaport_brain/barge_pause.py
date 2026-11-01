@@ -34,16 +34,19 @@
 #     a cough. A blip under 250 ms resumes after 0.3 s. TEAPORT_BARGE_PAUSE_MAX_S caps a
 #     pause from its start.
 #
-# THE JUDGE (#224, TEAPORT_BARGE_JUDGE). Words that would start the turn over a paused
-# reply -- "Okay.", "Mm-hmm.", as well as "Wait, what?" -- do not start it at once:
-# BargeInJudgeGate, in front of the user aggregator, holds the STT's frames and asks a
-# one-word judge (the cut judge's request path, owed.py) whether the reply should carry
-# on, stop, or answer them. CONTINUE drops the words -- a final becomes the wordless
-# close a cough gives -- and the reply resumes from the sample it paused on, as it does
-# for a cough. STOP or ANSWER, or no verdict within _JUDGE_WAIT_S of being asked,
-# lets the frames on as they came, and the turn starts exactly as it would have without
-# the judge, that much later; so does a stop word, or the reply's would-be end, arriving
-# while it decides. Stop words (below), a pause whose reply would be over by now and an
+# THE JUDGE (#224, TEAPORT_BARGE_JUDGE). Words over a paused reply -- "Okay.",
+# "Mm-hmm.", as well as "Wait, what?" or a lone "What?" -- do not start the turn at once,
+# whatever their length: BargeInJudgeGate, in front of the user aggregator, holds the
+# STT's frames and asks a one-word judge (the cut judge's request path, owed.py) whether
+# the reply should carry on, stop, or answer them. CONTINUE drops the words -- a final
+# becomes the wordless close a cough gives -- and the reply resumes from the sample it
+# paused on, as it does for a cough. STOP or ANSWER lets the frames on marked with the
+# verdict, and they start the turn at any length: TEAPORT_INTERRUPT_MIN_WORDS guards
+# against garble over a voice that is still playing, and the paused one is not, so the
+# judge rather than a word count says whether one word was a question. No verdict within
+# _JUDGE_WAIT_S lets them on unmarked: the word count decides, as it did before the
+# judge, that much later (so a slow judge never makes a "yeah" a cut); so does a stop
+# word, or the reply's would-be end, arriving while it decides. Stop words (below), a pause whose reply would be over by now and an
 # open user turn's own words are not judged. formal/UserTurn.tla's JUDGE rows check the
 # gate around the verdict (formal/README.md). Replayed on gpt-oss-120b (2026-10-25, 7
 # contexts, 1,722 trials): backchannels 459/462 CONTINUE, stops and hold-ons 374/378 and
@@ -194,6 +197,14 @@ JUDGE = setting("TEAPORT_BARGE_JUDGE")
 _JUDGE_WAIT_S = 1.2
 
 CONTINUE, STOP, ANSWER = "continue", "stop", "answer"
+
+# A transcript BargeInJudgeGate let on after a STOP or ANSWER verdict carries it here:
+# PauseAwareMinWordsStrategy starts the turn on it at any length.
+_VERDICT = "teaport_barge_verdict"
+
+
+def _judged_to_interrupt(frame) -> bool:
+    return getattr(frame, _VERDICT, None) in (STOP, ANSWER)
 
 # The replay's prompt (2026-10-25; see the module header), word for word.
 JUDGE_PROMPT = (
@@ -489,7 +500,9 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         pause frame's tail_secs), the bot counts as silent and one word is a turn --
         as it would have been without the pause;
       * a final (or a wordless close) that starts no turn tells the pauser, which then
-        resumes sooner (on_final_without_turn).
+        resumes sooner (on_final_without_turn);
+      * words the barge-in judge let on to interrupt (STOP or ANSWER) start the turn
+        at any length.
 
     Anything else counts words exactly as MinWordsUserTurnStartStrategy does, so a
     backchannel ("yeah") still does not cut the bot, and the pause it caused resumes."""
@@ -523,11 +536,10 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         return await super().process_frame(frame)
 
     def judges(self, text: str) -> bool:
-        """BargeInJudgeGate: would `text` start a turn now as a barge-in into a paused
-        reply -- one the judge decides instead? Not a stop word, nor once the reply would
-        have been over anyway: those start it here as they always did."""
-        return (self.paused_for_judging() and len(text.split()) >= self._min_words
-                and not self.stops(text))
+        """BargeInJudgeGate: are `text`'s words, said over a paused reply, the judge's
+        to decide? Any words at all, one included -- not a stop word, nor once the reply
+        would have been over anyway: those start the turn here as they always did."""
+        return self.paused_for_judging() and bool(text.split()) and not self.stops(text)
 
     def paused_for_judging(self) -> bool:
         """The bot is paused mid-reply, and its held-back audio would not be over yet."""
@@ -545,6 +557,11 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
     async def _handle_transcription(self, frame):
         if not (self._bot_speaking and self._playout_paused):
             return await super()._handle_transcription(frame)
+        if _judged_to_interrupt(frame) and (frame.text or "").strip():
+            logger.debug(f"{self}: the barge-in judge let {frame.text!r} interrupt the "
+                         "paused reply -- starting the turn")
+            await self.trigger_user_turn_started()
+            return ProcessFrameResult.STOP
         if is_stop_utterance(frame.text, self._stop_words):
             logger.debug(f"{self}: stop word while playout is paused "
                          f"({frame.text!r}) -- starting the turn")
@@ -721,7 +738,7 @@ class BargeInJudgeGate(FrameProcessor):
             if verdict == CONTINUE:
                 await self._carry_on(said)
             else:
-                await self._release(f"verdict {verdict or 'none'}")
+                await self._release(f"verdict {verdict or 'none'}", verdict=verdict)
 
     async def _carry_on(self, said: str):
         """CONTINUE: the held words are dropped, and the reply resumes as for a cough."""
@@ -740,8 +757,10 @@ class BargeInJudgeGate(FrameProcessor):
         if self._hold_resume is not None:
             self._hold_resume(False)
 
-    async def _release(self, why: str):
-        """The held frames go on as they came: the turn starts on them as it would have."""
+    async def _release(self, why: str, verdict=None):
+        """The held frames go on as they came: the turn starts on them as it would have
+        -- or, on a STOP or ANSWER verdict, marked with it, so that it starts on them at
+        any length (PauseAwareMinWordsStrategy)."""
         task, self._task = self._task, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
@@ -750,6 +769,9 @@ class BargeInJudgeGate(FrameProcessor):
         held, self._held = self._held, []
         logger.debug(f"BARGE-JUDGE: letting {len(held)} frame(s) on ({why})")
         for f in held:
+            if verdict in (STOP, ANSWER) and \
+                    isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame)):
+                setattr(f, _VERDICT, verdict)
             await self.push_frame(f)
         if self._hold_resume is not None:
             self._hold_resume(False)

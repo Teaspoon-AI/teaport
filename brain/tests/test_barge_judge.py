@@ -302,13 +302,60 @@ async def test_stop_words_and_words_over_an_unpaused_bot_are_not_judged():
     assert judge.asked == []
 
 
-async def test_words_under_the_guard_are_not_judged():
-    judge = _Judge({})
-    async with GateRig(judge, min_words=3) as rig:
-        await rig.task.queue_frame(final("Okay."))
-        await asyncio.sleep(0.05)
-        assert rig.out() == [("final", "Okay.")], "no turn either way: nothing to decide"
-    assert judge.asked == []
+def _starts(strategy):
+    """Whether the start strategy opens the turn on a frame: (feed, started list)."""
+    started = []
+
+    async def on_started(_s, *a, **k):
+        started.append(True)
+    strategy.add_event_handler("on_user_turn_started", on_started)
+
+    async def feed(frame):
+        started.clear()
+        await strategy.process_frame(frame)
+        return bool(started)
+    return feed
+
+
+def _released(rig):
+    return [f for _, d, f in rig.bottom.frames
+            if d == FrameDirection.DOWNSTREAM and isinstance(f, TranscriptionFrame)]
+
+
+async def test_a_single_word_is_judged_and_interrupts_on_its_verdict():
+    # Under the word guard (2 words) a lone "What?" over the paused reply used to start
+    # no turn, and the reply resumed over the question. The judge decides it now.
+    judge = _Judge({"What?": ANSWER})
+    async with GateRig(judge, min_words=2) as rig:
+        feed = _starts(rig.strategy)
+        assert not await feed(final("What?")), "unjudged, one word stays under the guard"
+        await rig.task.queue_frame(final("What?"))
+        await asyncio.sleep(0.2)
+        assert judge.asked == ["What?"], judge.asked
+        assert rig.out() == [("final", "What?")], rig.out()
+        assert await feed(_released(rig)[-1]), (
+            "the judge said it needs an answer: it must start the turn at one word")
+
+
+async def test_a_single_backchannel_is_judged_and_the_reply_carries_on():
+    judge = _Judge({"Yeah.": CONTINUE})
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(final("Yeah."))
+        await asyncio.sleep(0.2)
+        assert judge.asked == ["Yeah."]
+        assert rig.out() == [("close", 3)], rig.out()
+
+
+async def test_a_single_word_with_no_verdict_keeps_the_word_count():
+    # A slow judge falls back to the rule as it was: one word under the guard is no
+    # turn, so a "yeah" never becomes a cut because the judge was late.
+    judge = _Judge({"Yeah.": ANSWER}, delay=WAIT_S + 0.3)
+    async with GateRig(judge, min_words=2) as rig:
+        feed = _starts(rig.strategy)
+        await rig.task.queue_frame(final("Yeah."))
+        await asyncio.sleep(WAIT_S + 0.15)
+        assert rig.out() == [("final", "Yeah.")], rig.out()
+        assert not await feed(_released(rig)[-1]), "no verdict: the word count decides"
 
 
 async def test_an_interruption_while_judging_lets_the_words_on():
