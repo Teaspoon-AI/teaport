@@ -1184,6 +1184,25 @@ async def test_a_late_word_is_spent_from_the_first_later_turn_only():
     assert not s._turns and not s._open_words and s.corrections() == []
 
 
+async def test_a_late_word_is_spent_from_the_first_later_turn_that_has_it():
+    # The second turn's preview lacks the first turn's word (a lossy drain); the third's
+    # has it, untrimmed, at its front. The word is spent there, and the third turn is
+    # final at its position.
+    s = Service()
+    await created(s)
+    for _ in range(3):
+        await turn(s)                              # at 1000, 2000, 3000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " Go.")
+    await preview(s, 3000, " Yes. Go. Now.")
+    await delta(s, " Yes.", 900)                   # the first turn's, late
+    await delta(s, " Go.", 1800)                   # the second's
+    await delta(s, " Now.", 2800)                  # the third's
+    await progress(s, 3000)
+    assert s.finals() == [("Yes.", NO_STOP), ("Go.", 2), ("Now.", 3)], s.finals()
+    assert not s._turns and not s._open_words
+
+
 async def test_a_late_word_a_turn_was_spent_is_not_spent_from_the_peek_too():
     # Two backstop turns, the first's preview empty, the second's the first's word; the
     # stop's peek has it trimmed, then its own same word. The first's word, when it
