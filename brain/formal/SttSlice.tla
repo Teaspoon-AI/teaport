@@ -81,8 +81,13 @@
 (*                           (fails NoStuckFinal: the bound froze).         *)
 (*          "noTrim"      -- a preview's words an earlier turn's preview    *)
 (*                           still vouches for are asked again (fails       *)
-(*                           NoDoubleAsk: a commit soon after another, the  *)
-(*                           word not yet sent, is asked in both turns).    *)
+(*                           NoDoubleDeliver: a commit soon after another,  *)
+(*                           the word not yet sent, is asked in both).      *)
+(*          "noOrder"     -- a turn after one that put nothing with words   *)
+(*                           on (an empty provisional, deferred) goes on at *)
+(*                           its preview (fails NoDoubleDeliver: its        *)
+(*                           preview has the earlier turn's unsent words,   *)
+(*                           which that turn's final delivers again).       *)
 (*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
 (* MaxCommits, pos <= MaxPos, stops <= MaxStops.                            *)
@@ -102,7 +107,7 @@ CONSTANTS MaxPos,      \* the audio the client sends, in steps
                        \* ("complete": false)
           DESIGN       \* "shipped" | "arrival" | "interimAll" | "decoded" | "noVouch"
                        \* | "endOnly" | "noStartWait" | "endMargin" | "peekAsTurn"
-                       \* | "noDrop" | "noTimeout" | "noTrim"
+                       \* | "noDrop" | "noTimeout" | "noTrim" | "noOrder"
 
 Words == 1..NWords
 Min(a, b) == IF a < b THEN a ELSE b
@@ -143,7 +148,8 @@ brain == <<commits, turns, open, seen, speaking, stops, peekIdx, atStop, split,
 vars == <<engine, chan, brain>>
 
 Turn == [at: 0..MaxPos, words: SUBSET Words, previewed: BOOLEAN, asked: SUBSET Words,
-         expect: SUBSET Words, final: BOOLEAN, fwords: SUBSET Words, timedOut: BOOLEAN]
+         expect: SUBSET Words, final: BOOLEAN, fwords: SUBSET Words, timedOut: BOOLEAN,
+         deferred: BOOLEAN]
 Commit == [peek: BOOLEAN, at: 0..MaxPos, turn: 0..MaxCommits, stop: 0..MaxStops,
            dropped: BOOLEAN, resumed: BOOLEAN, previewed: BOOLEAN, asked: SUBSET Words,
            pv: SUBSET Words]
@@ -225,7 +231,8 @@ Preview ==
 (* ----------------------------------------------------------------- the brain *)
 
 NewTurn(at, mine) == [at |-> at, words |-> mine, previewed |-> FALSE, asked |-> {},
-                      expect |-> {}, final |-> FALSE, fwords |-> {}, timedOut |-> FALSE]
+                      expect |-> {}, final |-> FALSE, fwords |-> {}, timedOut |-> FALSE,
+                      deferred |-> FALSE]
 TurnCommit(t, at) == [peek |-> FALSE, at |-> at, turn |-> t, stop |-> 0, dropped |-> FALSE,
                       resumed |-> FALSE, previewed |-> FALSE, asked |-> {}, pv |-> {}]
 \* _turn_at: the open words that end before `at` ("arrival": all of them; "endMargin":
@@ -256,6 +263,14 @@ Finalize(ts, b) ==
         THEN [ts[k] EXCEPT !.final = TRUE, !.fwords = ts[k].words,
                            !.timedOut = ~Bounded(ts[k], b)]
         ELSE ts[k]]
+
+\* _owed_before: a turn before `at`, previewed and not final, put nothing with words on
+\* at its preview (an empty provisional, or deferred) and its final may still deliver
+\* words; a turn after it then waits on its own final ("noOrder": does not).
+OwedBefore(at) ==
+    /\ DESIGN /= "noOrder"
+    /\ \E j \in 1..Len(turns) : turns[j].previewed /\ ~turns[j].final /\ turns[j].at < at
+                                /\ (turns[j].asked = {} \/ turns[j].deferred)
 
 \* The caller speaks: a peek out is no one's now (_drop_peek) -- "noDrop": it stays out,
 \* talked past.
@@ -304,7 +319,8 @@ Close ==
                 mine == Mine(c.at)
                 t0 == [NewTurn(c.at, mine) EXCEPT
                           !.previewed = c.previewed, !.asked = c.asked,
-                          !.expect = IF c.previewed /\ Vouch THEN c.pv \ mine ELSE {}]
+                          !.expect = IF c.previewed /\ Vouch THEN c.pv \ mine ELSE {},
+                          !.deferred = c.previewed /\ OwedBefore(c.at)]
                 back == IF c.previewed THEN {i \in open \ mine : Vouched(t0, i)} ELSE {}
                 t == [t0 EXCEPT !.words = mine \cup back, !.expect = t0.expect \ back]
             IN /\ turns' = IF c.previewed THEN Finalize(Append(turns, t), seen)
@@ -351,7 +367,9 @@ RecvDelta ==
     /\ UNCHANGED <<engine, commits, seen, speaking, stops, peekIdx, atStop, split>>
 
 \* _past_earlier: the words a turn before `at`, previewed and not final, still expects --
-\* a later preview's are that turn's ("noTrim": asked again).
+\* a later preview's are that turn's ("noTrim": asked again). The code trims them in
+\* their order within the preview's front run; words being unique here, that is this set
+\* subtraction.
 Owed(at) == IF DESIGN = "noTrim" THEN {}
             ELSE UNION {turns[j].expect : j \in {j \in 1..Len(turns) :
                             turns[j].previewed /\ ~turns[j].final /\ turns[j].at < at}}
@@ -368,6 +386,7 @@ RecvPreview ==
        IN IF c.turn /= 0
           THEN /\ turns' = Finalize([turns EXCEPT
                                        ![c.turn].previewed = TRUE,
+                                       ![c.turn].deferred = OwedBefore(turns[c.turn].at),
                                        ![c.turn].asked = turns[c.turn].words \cup pv,
                                        ![c.turn].expect = IF Vouch
                                                           THEN pv \ turns[c.turn].words
@@ -434,9 +453,15 @@ NoLateInterim == ~lateInterim
 \* never splits a sentence.
 NoSplitOnResume == ~split
 
-\* No word is asked in two turns' provisional texts.
-NoDoubleAsk ==
-    \A j, k \in 1..Len(turns) : j < k => turns[j].asked \cap turns[k].asked = {}
+\* What a turn delivers downstream: its provisional, pushed at its preview -- or, if it
+\* waits on its final or its provisional had no words, its final's words once final (a
+\* timed-out empty provisional settles as it went: nothing). No word delivered by two
+\* turns: none asked twice, none delivered again after a later turn's.
+Delivered(t) == CASE t.deferred   -> IF t.final THEN t.fwords ELSE {}
+                  [] t.asked = {} -> IF t.final /\ ~t.timedOut THEN t.fwords ELSE {}
+                  [] OTHER        -> t.asked
+NoDoubleDeliver ==
+    \A j, k \in 1..Len(turns) : j < k => Delivered(turns[j]) \cap Delivered(turns[k]) = {}
 
 \* No turn waits on its final past the timeout: one the decoder is D past is final,
 \* whatever the bounds did.

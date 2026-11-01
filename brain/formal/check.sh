@@ -332,7 +332,8 @@ run SttSlice.tla ss_interimAll      "(expected: FAILS NoLateInterim — every de
 run SttSlice.tla ss_peekAsTurn      "(expected: FAILS NoSplitOnResume — the turn closed at the stop, as a commit there would: the caller resumes, the sentence is two turns)"
 run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the peek not dropped when the caller resumes: a close adopts a stop they talked past)"
 run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
-run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleAsk — a later preview's words the turn before still expects, asked again)"
+run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleDeliver — a later preview's words the turn before still expects, asked again)"
+run SttSlice.tla ss_noOrder         "(expected: FAILS NoDoubleDeliver — a turn after one that put nothing with words on goes on at its preview: its words delivered twice, out of order)"
 if [ "$FULL" = 1 ]; then
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~19M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
@@ -340,13 +341,14 @@ if [ "$FULL" = 1 ]; then
 fi
 echo
 echo "TurnText.tla — a sliced turn's final, from the STT through run control / the judge and the aggregator to the context"
-run TurnText.tla tt_shipped         "(expected: holds — AS SHIPPED: delivered, stamped, decided once, applied)"
+run TurnText.tla tt_shipped         "(expected: holds — AS SHIPPED: delivered, stamped, decided once, applied, decided paused)"
 run TurnText.tla tt_noNewWords      "(expected: FAILS NoLostWords — an empty provisional's final words dropped)"
 run TurnText.tla tt_emptyCloses     "(expected: FAILS BargeStamped — BEFORE 2026-10-27: over the bot an empty preview closes the turn wordless, its words new words after the pause)"
 run TurnText.tla tt_echoCloses      "(expected: FAILS BargeStamped — the first fix: over the bot a provisional of the bot's own words still closes wordless)"
 run TurnText.tla tt_repush          "(expected: FAILS DecidedOnce — BEFORE 2026-10-27: a correction placed nowhere pushed back, words taken or judged reach the model)"
 run TurnText.tla tt_overtake        "(expected: FAILS CorrectionApplied — BEFORE 2026-10-27: the holder holds the words, not their correction, which overtakes them)"
 run TurnText.tla tt_byFrame         "(expected: FAILS CorrectionApplied — BEFORE 2026-10-27: commits recorded by their context frame, which trails the correction)"
+run TurnText.tla tt_noHold          "(expected: FAILS BargePaused — before the re-review: the pause ends while a barge-in turn waits on its final)"
 echo
 echo "SttSlot.tla — the engine's single STT slot: has the engine let go when the brain thinks so"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy — two arbiters, before #58 step 2: one connect attempt)"

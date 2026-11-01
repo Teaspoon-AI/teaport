@@ -10,10 +10,10 @@
 (*                                                                          *)
 (* The STT pushes the provisional at the preview: the turn's words (F,     *)
 (* stamped with its stop), or a wordless close (D) -- or nothing, the      *)
-(* turn closing on its final, when the preview came back cut short or was  *)
-(* had none of the caller's words over the bot's reply. The wake gate or   *)
-(* echo guard may have taken                                               *)
-(* it ("asleep": nothing went on; "echo": the words were the bot's own;    *)
+(* turn closing on its final, when the preview came back cut short or had  *)
+(* none of the caller's words over the bot's reply. The wake gate or echo  *)
+(* guard may have taken it ("asleep": nothing went on; "echo": the words   *)
+(* were the bot's own;                                                     *)
 (* "wokeLost": it woke the gate, and the final lacks the phrase). At the   *)
 (* final it delivers: the deferred close on the final; nothing if they     *)
 (* agree, or for the branches that leave it as it went; the final's words  *)
@@ -24,6 +24,10 @@
 (* ("judge"), holds the first final with words and every STT frame after   *)
 (* it (endpointing.STT_FRAMES), then decides once -- take it, judge it a   *)
 (* backchannel, or let it go -- and the state it decided under is over.   *)
+(* The reply's pause also ends on its own, its resume window out, once no  *)
+(* final is on its way to the holder -- but never while a barge-in turn    *)
+(* waits to close on its final (stt.py barge_hold). The window is assumed  *)
+(* to outlast the preview (0.8 s against 0.15-0.46 s measured).             *)
 (* The AGGREGATOR adds a final's words as a part, commits them as a user   *)
 (* message on its own task at any time, and forwards the rest. The         *)
 (* CORRECTOR rewrites the part (amended) or the committed message          *)
@@ -49,6 +53,10 @@
 (*                           (fails DecidedOnce: words the holder took or  *)
 (*                           judged reach the model, decided again under    *)
 (*                           another state).                                *)
+(*          "noHold"      -- the pause may end while a barge-in turn waits   *)
+(*                           on its final, as before the re-review (fails  *)
+(*                           BargePaused: a lone "Stop." then meets the     *)
+(*                           unpaused guard).                               *)
 (*          "byFrame"     -- commits recorded when their context frame      *)
 (*                           passes the corrector (fails CorrectionApplied:*)
 (*                           a commit of the aggregator's own task trails   *)
@@ -57,7 +65,7 @@
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS DESIGN   \* "shipped" | "noNewWords" | "emptyCloses" | "echoCloses" | "overtake"
-                   \* | "repush" | "byFrame"
+                   \* | "repush" | "byFrame" | "noHold"
 
 Words == {1, 2}
 Gates == {"open", "asleep", "echo", "wokeLost"}
@@ -80,7 +88,8 @@ VARIABLES
     q1,         \* STT -> holder
     held,       \* the holder's held frames
     active,     \* the holder will decide on the next final with words
-    fate,       \* the held final: "none" | "taken" | "judged" | "released"
+    fate,       \* the held final: "none" | "taken" | "judged" | "released" -- or
+                \* "unpaused": a barge-in's words reached the holder after the pause
     q2,         \* holder -> aggregator
     agg,        \* the aggregator's parts (sets of words), in order
     ctx,        \* the user messages committed (sets of words), in order
@@ -187,10 +196,23 @@ HolderRecv ==
           ELSE IF active /\ f.k \in {"F", "N"}
                THEN /\ held' = <<f>> /\ UNCHANGED q2
                ELSE /\ q2' = Append(q2, f) /\ UNCHANGED held
+    /\ fate' = IF held = <<>> /\ ~active /\ barge /\ holder = "judge" /\ fate = "none"
+                  /\ Head(q1).k \in {"F", "N"} /\ Head(q1).w /= {}
+               THEN "unpaused" ELSE fate
     /\ q1' = Tail(q1)
     /\ UNCHANGED <<asked, final, cut, barge, gate, holder, phase, deferred, pushed, none,
-                   sentF, sentN, cFrom, cTo, cSent, active, fate, agg, ctx, recorded, q3,
-                   up>>
+                   sentF, sentN, cFrom, cTo, cSent, active, agg, ctx, recorded, q3, up>>
+
+\* The reply's pause ends on its own: its window out, no final on its way to the
+\* holder, and no barge-in turn waiting on its final ("noHold": regardless of that).
+PauseEnds ==
+    /\ holder = "judge" /\ active /\ held = <<>> /\ phase /= "preview"
+    /\ \A i \in 1..Len(q1) : q1[i].k \notin {"F", "N"}
+    /\ (DESIGN = "noHold" \/ ~(deferred /\ phase = "final"))
+    /\ active' = FALSE
+    /\ UNCHANGED <<asked, final, cut, barge, gate, holder, phase, deferred, pushed, none,
+                   sentF, sentN, cFrom, cTo, cSent, q1, held, fate, q2, agg, ctx, recorded,
+                   q3, up>>
 
 \* Taken (run control) or judged a backchannel: the final goes on wordless; or let go.
 \* Its frames held behind it go on as they came.
@@ -266,12 +288,25 @@ CorrRecv ==
     /\ UNCHANGED <<asked, final, cut, barge, gate, holder, phase, deferred, pushed, none,
                    sentF, sentN, cFrom, cTo, cSent, q1, held, active, fate, q2>>
 
-Next == Provisional \/ Settle \/ Repush \/ HolderRecv \/ HolderDecide \/ AggRecv
-        \/ Commit \/ CorrRecv
+Next == Provisional \/ Settle \/ Repush \/ HolderRecv \/ HolderDecide \/ PauseEnds
+        \/ AggRecv \/ Commit \/ CorrRecv
 
 Spec == Init /\ [][Next]_vars
 
 (* --------------------------------------------------------------- properties *)
+
+TypeOK ==
+    /\ asked \subseteq Words /\ final \subseteq Words /\ cut \in BOOLEAN /\ barge \in BOOLEAN
+    /\ gate \in Gates /\ holder \in {"none", "claim", "judge"}
+    /\ phase \in {"preview", "final", "done"} /\ deferred \in BOOLEAN /\ none \in BOOLEAN
+    /\ pushed \subseteq Words /\ sentF \subseteq Words /\ sentN \subseteq Words
+    /\ cFrom \subseteq Words /\ cTo \subseteq Words /\ cSent \in BOOLEAN /\ active \in BOOLEAN
+    /\ fate \in {"none", "taken", "judged", "released", "unpaused"}
+    /\ recorded \subseteq 1..2 /\ Len(ctx) <= 2
+
+\* A barge-in's words are decided with the reply paused: they reach the judging holder
+\* while the pause holds.
+BargePaused == fate /= "unpaused"
 
 \* The final's words a branch leaves as they went, by design: the gate slept through
 \* them, they were the bot's own, or the final lacks the phrase that woke the gate.

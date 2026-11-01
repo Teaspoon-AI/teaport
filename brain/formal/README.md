@@ -739,27 +739,34 @@ cut short (`"complete": false`, which the brain takes as no preview); and a word
 after a commit may come before that commit's preview. The brain closes turns at any point
 (when is SttCommit.tla's business); its VAD speaks and stops.
 
-| DESIGN | | `RightTurn` | `FinalComplete` | `NoDropAtCut` | `NoLateInterim` | `NoSplitOnResume` | `NoStuckFinal` |
-|---|---|---|---|---|---|---|---|
-| `shipped`, `PEEKS` FALSE | the preview at the verdict (`ss_shipped`; frozen bounds and lossy previews `ss_shipped_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `arrival` | a turn is the words received by its preview | ✗ | | | | | |
-| `endMargin` | every word ending less than the margin past the cut is the turn's | ✗ | | | | | |
-| `decoded` | final once `decoded_through_ms` passes the commit | | ✗ | | | | |
-| `noStartWait` | vouched by start, final on the end bound alone | | ✗ | | | | |
-| `noVouch` | sliced by `end_ms` alone (before the 2026-10-27 review) | | | ✗ | | | |
-| `endOnly` | vouched only if it ends less than the margin past the cut (as first written) | | | ✗ | | | |
-| `interimAll` | every delta announced as an interim | | | | ✗ | | |
-| `peekAsTurn` | the commit at the stop closes the turn there | | | | | ✗ | |
-| `noDrop` | the caller resuming does not drop the peek | | | | | ✗ | |
-| `noTimeout` | a final waits for the bound however long | | | | | | ✗ |
-| `noTrim` | a preview's words an earlier turn's preview still vouches for are asked again | | | | | | |
+| DESIGN | | `RightTurn` | `FinalComplete` | `NoDropAtCut` | `NoLateInterim` | `NoSplitOnResume` | `NoStuckFinal` | `NoDoubleDeliver` |
+|---|---|---|---|---|---|---|---|---|
+| `shipped`, `PEEKS` FALSE | the preview at the verdict (`ss_shipped`; frozen bounds and lossy previews `ss_shipped_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `arrival` | a turn is the words received by its preview | ✗ | | | | | | |
+| `endMargin` | every word ending less than the margin past the cut is the turn's | ✗ | | | | | | |
+| `decoded` | final once `decoded_through_ms` passes the commit | | ✗ | | | | | |
+| `noStartWait` | vouched by start, final on the end bound alone | | ✗ | | | | | |
+| `noVouch` | sliced by `end_ms` alone (before the 2026-10-27 review) | | | ✗ | | | | |
+| `endOnly` | vouched only if it ends less than the margin past the cut (as first written) | | | ✗ | | | | |
+| `interimAll` | every delta announced as an interim | | | | ✗ | | | |
+| `peekAsTurn` | the commit at the stop closes the turn there | | | | | ✗ | | |
+| `noDrop` | the caller resuming does not drop the peek | | | | | ✗ | | |
+| `noTimeout` | a final waits for the bound however long | | | | | | ✗ | |
+| `noTrim` | a preview's words an earlier turn's preview still vouches for are asked again | | | | | | | ✗ |
+| `noOrder` | a turn after one that put nothing with words on goes on at its preview | | | | | | | ✗ |
 
-`NoWordTwice` (no word in two places) and `NoDoubleAsk` (no word asked in two turns'
-provisional texts) are checked with the shipped rows; `noTrim` fails `NoDoubleAsk`: a commit
-soon after another (the backstop's, then the VAD stop's, half a second apart) is answered
-with the word the turn before vouched for and the main stream has not sent, and without the
-trim (`_past_earlier`) both turns are asked on it (seen twice in 301 turns on 377508d).
+`NoWordTwice` (no word in two places) is checked with the shipped rows. `NoDoubleDeliver`
+counts what each turn delivers downstream -- its provisional, or, when it waits on its
+final (deferred) or its provisional had no words, its final's words -- and no word may be
+delivered by two turns. A commit soon after another (the backstop's, then the VAD stop's,
+half a second apart) is answered with the turn before's words the main stream has not sent:
+`noTrim` asks a word the turn before vouched for in both (seen twice in 301 turns on
+377508d, before `_past_earlier`); `noOrder` lets a turn go on at its preview while the turn
+before, which put nothing with words on, still has its final to come, whose words then go
+on again, after it (the re-review's S2). The code trims an earlier turn's owed words in
+their order within the preview's front run; with every word unique here that is the
+model's set subtraction (`Owed`).
 
 - **`RightTurn`** — a turn holds only words of its stretch: none ending before the turn
   before it closed, and none past its own close unless the word began before it -- never
@@ -810,7 +817,11 @@ on five cores).
   modelled (the code's `end_ms < P + 200` clause covers a start stamped at or past P).
 - The final's timeout is modelled on `decoded_through_ms`; its wall-clock half (for an
   engine that stops reporting) and the timeout's settle as the provisional are the code's,
-  unit-tested. What a timed-out or deferred turn delivers is TurnText.tla's.
+  unit-tested. The code also waits the margin longer while a preview still vouches (a
+  vouched word's start estimate may be up to the margin past the cut; the model's starts
+  are exact). What a timed-out or deferred turn delivers is TurnText.tla's.
+- A cut-short preview is a `LOSSY` preview with no words here; the code also makes its
+  turn wait on its final, which is what an empty provisional's `Delivered` counts.
 - The peek waits for nothing in flight; the stop that finds a commit in flight peeks when
   its answer lands (`_peek_wanted`), which the model leaves out (that stop's turn closes
   with a commit of its own, as `PEEKS` FALSE does). `_adopt_peek` settles at once when it
@@ -843,15 +854,16 @@ is paused, holds the first final with words and every STT frame after it, then d
 once -- take it, judge it a backchannel, let it go -- and the state it decided under is
 over. The aggregator adds words as a part and commits on its own task at any time.
 
-| DESIGN | | `NoLostWords` | `BargeStamped` | `DecidedOnce` | `CorrectionApplied` |
-|---|---|---|---|---|---|
-| `shipped` | as above | ✓ | ✓ | ✓ | ✓ |
-| `noNewWords` | an empty provisional's final words dropped | ✗ | | | |
-| `emptyCloses` | over the bot an empty preview closes the turn wordless | | ✗ | | |
-| `echoCloses` | over the bot only an empty provisional waits, not the bot's own words | | ✗ | | |
-| `repush` | a correction placed nowhere pushed back as new words (before the review) | | | ✗ | |
-| `overtake` | the holder holds the words, not their correction (before the review) | | | | ✗ |
-| `byFrame` | commits recorded when their context frame passes the corrector (before the review) | | | | ✗ |
+| DESIGN | | `NoLostWords` | `BargeStamped` | `DecidedOnce` | `CorrectionApplied` | `BargePaused` |
+|---|---|---|---|---|---|---|
+| `shipped` | as above | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `noNewWords` | an empty provisional's final words dropped | ✗ | | | | |
+| `emptyCloses` | over the bot an empty preview closes the turn wordless | | ✗ | | | |
+| `echoCloses` | over the bot only an empty provisional waits, not the bot's own words | | ✗ | | | |
+| `repush` | a correction placed nowhere pushed back as new words (before the review) | | | ✗ | | |
+| `overtake` | the holder holds the words, not their correction (before the review) | | | | ✗ | |
+| `byFrame` | commits recorded when their context frame passes the corrector (before the review) | | | | ✗ | |
+| `noHold` | the pause may end while a barge-in turn waits on its final (before the re-review) | | | | | ✗ |
 
 `NoDuplicate` (the turn's words in one part or one message) is checked with `shipped`.
 
@@ -868,6 +880,11 @@ over. The aggregator adds words as a part and commits on its own task at any tim
   is quiet, the turn's words downstream are the final's. `overtake` lets it pass the
   holder ahead of the words it corrects; `byFrame` misses a commit the aggregator made on
   its own task while the correction was on its way.
+- **`BargePaused`** — a barge-in's words reach the judging holder while the reply's pause
+  holds. The pause ends on its own once its window is out and no final is on its way; a
+  barge-in turn that waits on its final holds it (`stt.barge_hold`), and `noHold`, where it
+  does not, delivers a lone "Stop." after the reply resumed -- to the unpaused two-word
+  guard (the re-review's S1). The window is assumed to outlast the preview.
 
 Run: each row is a few thousand states, ~1 s.
 
