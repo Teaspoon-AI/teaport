@@ -84,7 +84,7 @@ def _box(tmp):
 def _cert(tmp, name, cn, sans=("teaport.local",), days=30, key=None):
     """A self-signed certificate (and its key unless `key` names one to reuse)."""
     crt, k = pathlib.Path(tmp, f"{name}.crt"), key or pathlib.Path(tmp, f"{name}.key")
-    args = ["openssl", "req", "-x509", "-nodes", "-subj", f"/CN={cn}", "-out", str(crt)]
+    args = ["openssl", "req", "-x509", "-nodes", "-utf8", "-subj", f"/CN={cn}", "-out", str(crt)]
     if key:
         args += ["-key", str(k)]
     else:
@@ -158,6 +158,11 @@ def test_the_name_an_earlier_run_settled_on_stays_unless_taken_and_teaport_host_
     assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "teaport.local"
     out = _run(t, RESOLVE, {"TEAPORT_HOST": "kitchen.local"})[1]
     assert _resolved(out)["HOST"] == "kitchen.local"
+    out = _run(t, RESOLVE, {"TEAPORT_HOST": "Kitchen.LOCAL"})[1]
+    assert _resolved(out)["HOST"] == "kitchen.local"
+    # A DNS name is not second-guessed: it may resolve to a proxy, not to this box.
+    pathlib.Path(t, "etc", "brain.env").write_text("TEAPORT_FRONTDOOR_HOST=box.example.com\n")
+    assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "box.example.com"
 
 
 def test_an_existing_ca_keeps_its_name_unless_it_is_regenerated():
@@ -173,9 +178,9 @@ def test_an_existing_ca_keeps_its_name_unless_it_is_regenerated():
     out = _run(t, RESOLVE, {"TEAPORT_REGENERATE_CA": "1"})[1]
     assert _resolved(out)["CA"] == "Teaport 9e35 Local Authority"
     # A root named some other way is named as it is, commas and all.
-    _cert(t, "root", "Office box\\, 2nd floor CA", sans=())
+    _cert(t, "root", "B\u00fcro box\\, 2nd floor CA", sans=())
     shutil.copy(pathlib.Path(t, "root.crt"), pki / "root.crt")
-    assert _resolved(_run(t, RESOLVE)[1])["CA"] == "Office box, 2nd floor CA"
+    assert _resolved(_run(t, RESOLVE)[1])["CA"] == "B\u00fcro box, 2nd floor CA"
 
 
 def test_a_name_too_long_for_the_qr_code_is_warned_about():
@@ -231,9 +236,12 @@ def test_a_rerun_keeps_the_operators_certificate_until_told_otherwise():
     assert "keeping the front door's certificate" in out
     rc, out = _run(t, RESOLVE + show, {"TEAPORT_TLS_CERT": "", "TEAPORT_TLS_KEY": ""})
     assert rc == 0 and "CERT= KEY=" in out, out
+    # Either one set, even empty, is the operator speaking: nothing is read back.
+    rc, out = _run(t, RESOLVE + show, {"TEAPORT_TLS_KEY": ""})
+    assert rc == 0 and "CERT= KEY=" in out, out
     key.unlink()  # kept, so checked again: a vanished key stops the re-run
     rc, out = _run(t, RESOLVE)
-    assert rc == 1 and "does not exist" in out, out
+    assert rc == 1 and "does not exist" in out and "TEAPORT_TLS_CERT= TEAPORT_TLS_KEY=" in out, out
 
 
 def test_a_passphrase_key_is_refused_without_a_prompt():

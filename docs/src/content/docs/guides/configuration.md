@@ -15,7 +15,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:1941-1950#38d9c1ca; install.sh:1908#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:1941-1950#38d9c1ca; install.sh:1913#31d4462b -->
 
 ## Change a setting in the configuration page
 
@@ -70,11 +70,11 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:1952,2114#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1421-1423,1510-1511,1526-1528#d7455a4b -->
+<!-- source: install.sh:1957,2119#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1421-1423,1510-1511,1526-1528#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 
-<!-- source: install.sh:1961-1974#7403c329 -->
+<!-- source: install.sh:1966-1979#7403c329 -->
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 

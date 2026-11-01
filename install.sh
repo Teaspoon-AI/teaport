@@ -1711,11 +1711,13 @@ frontdoor_name_taken() {
 # "<name> - <year> ECC Root"; the pages tell people to look for <name>.
 resolve_frontdoor() {
   local id; id="$(box_id)"
+  # Host names are case-insensitive; avahi and the QR link get one spelling.
+  FRONTDOOR_HOST="$(printf '%s' "$FRONTDOOR_HOST" | tr 'A-Z' 'a-z')"
   have openssl || die "openssl is needed to read the front door's certificates: sudo apt-get install openssl"
   # The operator's certificate is kept across re-runs the way the name is: a repair run
   # without TEAPORT_TLS_CERT must not quietly put every device back on an untrusted one.
   # The Caddyfile is ours, so its tls line is the record of what an earlier run was given.
-  if [ -z "${TEAPORT_TLS_CERT+set}" ]; then
+  if [ -z "${TEAPORT_TLS_CERT+set}${TEAPORT_TLS_KEY+set}" ]; then
     local tl
     tl="$(sudo cat "$CADDYFILE" 2>/dev/null | sed -n 's/^    tls "\([^"]*\)" "\([^"]*\)"$/\1 \2/p' | head -1 || true)"
     if [ -n "$tl" ]; then
@@ -1727,10 +1729,13 @@ resolve_frontdoor() {
     local had; had="$(read_env_file "$ETC/brain.env" --lenient | grep -E '^TEAPORT_FRONTDOOR_HOST=' | tail -1 || true)"
     had="${had#*=}"
     if [ -n "$had" ]; then FRONTDOOR_HOST="$had"; fi
-    # A name another machine answers to does not reach this box at all (avahi renamed it
-    # on the wire), so keeping it only keeps phones on the other box: a saved name too,
-    # such as two boxes installed before #251 that both wrote teaport.local.
+    # A .local name another machine answers to does not reach this box at all (avahi
+    # renamed it on the wire), so keeping it only keeps phones on the other box: a saved
+    # name too, such as two boxes installed before #251 that both wrote teaport.local.
+    # Any other name is DNS, which may well resolve to an address not on this box (a
+    # proxy, NAT): not ours to second-guess.
     if [ -z "$TLS_CERT" ] && [ "$FRONTDOOR_HOST" != "teaport-$id.local" ] \
+       && [ "${FRONTDOOR_HOST%.local}" != "$FRONTDOOR_HOST" ] \
        && frontdoor_name_taken "$FRONTDOOR_HOST"; then
       log "another box already answers to $FRONTDOOR_HOST — this one is teaport-$id.local"
       FRONTDOOR_HOST="teaport-$id.local"
@@ -1745,7 +1750,7 @@ resolve_frontdoor() {
   if [ "$REGENERATE_CA" != 1 ]; then
     # A read, so a dry run does it too (plain sudo, as read_env_file).
     local cn
-    cn="$(sudo cat "$CADDY_PKI/root.crt" 2>/dev/null | openssl x509 -noout -subject -nameopt multiline,utf8 2>/dev/null \
+    cn="$(sudo cat "$CADDY_PKI/root.crt" 2>/dev/null | openssl x509 -noout -subject -nameopt multiline,utf8,-esc_msb 2>/dev/null \
           | sed -n 's/^ *commonName *= //p' | head -1 | tr -d '"\\' || true)"
     if [ -n "$cn" ]; then FRONTDOOR_CA_NAME="${cn% - [0-9][0-9][0-9][0-9] ECC Root}"; fi
   fi
@@ -1760,7 +1765,7 @@ check_own_cert() {
       /*) ;; *) die "TEAPORT_TLS_CERT and TEAPORT_TLS_KEY must be absolute paths, not '$f'" ;;
     esac
     case "$f" in *[[:space:]\"{}]*) die "'$f': a certificate path with spaces, quotes or braces cannot go in the Caddyfile" ;; esac
-    sudo test -f "$f" || die "$f does not exist"
+    sudo test -f "$f" || die "$f does not exist (to go back to the box's own certificate: TEAPORT_TLS_CERT= TEAPORT_TLS_KEY= ./install.sh)"
   done
   local pem pub key out
   pem="$(sudo cat "$TLS_CERT")"
@@ -2073,7 +2078,7 @@ phase_frontdoor() {
   # mDNS publishes single-label .local names only (avahi refuses a dotted host-name and
   # does not start): any other name is the operator's DNS to resolve.
   case "$FRONTDOOR_HOST" in
-    *.*.local|*..*) warn "$FRONTDOOR_HOST is not a name mDNS can publish — make your DNS resolve it to this box" ;;
+    .local|*.*.local|*..*) warn "$FRONTDOOR_HOST is not a name mDNS can publish — make your DNS resolve it to this box" ;;
     *.local) set_avahi_hostname "${FRONTDOOR_HOST%.local}" ;;
     *) log "front door name $FRONTDOOR_HOST is not .local: your DNS must resolve it to this box" ;;
   esac

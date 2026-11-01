@@ -5,7 +5,7 @@ description: Install the optional Discord bridge so teaport joins you in a voice
 
 The Discord bridge is an optional host service that carries a Discord voice channel into teaport. When the user it follows joins a voice channel on your server, the teaport bot joins the same channel: you talk to the assistant through Discord, and it answers there. The installer adds the bridge only when you ask for it; a plain install leaves no bridge behind.
 
-<!-- source: bridge/discord/README.md:1-19#adc3e30a; install.sh:2109-2118#9125a571 -->
+<!-- source: bridge/discord/README.md:1-19#adc3e30a; install.sh:2114-2123#9125a571 -->
 
 ## How the bridge works
 
@@ -23,7 +23,7 @@ The brain holds one conversation at a time. When the bot joins, a live dashboard
 - Node.js 22 or later on the host. The installer stops when it is missing.
 - The ID of your Discord server (the guild ID) and your Discord user ID, both numeric.
 
-<!-- source: bridge/discord/index.js:5-8#7578d7f1; bridge/discord/index.js:25#448d6113; bridge/discord/index.js:45-52#07dbad15; install.sh:2122#c8db4d8e -->
+<!-- source: bridge/discord/index.js:5-8#7578d7f1; bridge/discord/index.js:25#448d6113; bridge/discord/index.js:45-52#07dbad15; install.sh:2127#c8db4d8e -->
 
 ## Create the Discord bot
 
@@ -41,13 +41,13 @@ The brain holds one conversation at a time. When the bot joins, a live dashboard
    Replace `DISCORD_BOT_TOKEN` with the token from the application you created.
    The file now holds the token, and only your user can read it.
 
-<!-- source: bridge/discord/README.md:30-34#e127e2a2; install.sh:2139-2141#bd40f660 -->
+<!-- source: bridge/discord/README.md:30-34#e127e2a2; install.sh:2144-2146#bd40f660 -->
 
 ## Install and enable the bridge
 
 The installer does the rest: it copies the bridge, installs its dependencies, writes `/etc/teaport/bridge.env` and the `teaport-discord-bridge` unit, and enables the service.
 
-<!-- source: install.sh:2156-2172#661f6e8a; bridge/discord/README.md:36-39#214091a7 -->
+<!-- source: install.sh:2161-2177#661f6e8a; bridge/discord/README.md:36-39#214091a7 -->
 
 - On the Jetson, re-run the installer with the bridge turned on:
 
@@ -65,11 +65,11 @@ The installer writes both values to `/etc/teaport/bridge.env`.
 
 Leave the variables out and the installer prompts for the server and the user, and for the token when no token file exists. The installer also accepts the token as `DISCORD_BOT_TOKEN` and writes it to the token file. A repair run keeps the values already in `bridge.env` unless you set the variables again.
 
-<!-- source: install.sh:2124-2141#b5b61c2e -->
+<!-- source: install.sh:2129-2146#b5b61c2e -->
 
 The token itself never lands in the unit or in `bridge.env`: the env file records the token path, `DISCORD_BOT_TOKEN_FILE`, `~/.config/teaport/discord_bot_token` by default. The bridge reads the token from that file at startup, and a `DISCORD_BOT_TOKEN` environment variable wins when set. A new token needs a bridge restart to take effect.
 
-<!-- source: install.sh:2137-2138#8e83a59d; brain/teaport_brain/config_schema.toml:2283-2303#282a1296 -->
+<!-- source: install.sh:2142-2143#8e83a59d; brain/teaport_brain/config_schema.toml:2283-2303#282a1296 -->
 
 ## Check the bridge
 

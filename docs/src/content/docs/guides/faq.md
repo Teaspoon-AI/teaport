@@ -33,7 +33,7 @@ The brain and the plugin are MIT. The engine is a separate component with its ow
 
 Yes. Install without an agent and teaport runs in voice-only mode: the brain offers only the tools that live on the device, and the installer writes `TEAPORT_AGENT=none`. Anything that needs the OpenClaw gateway, such as web search, memory, or the agent consult, is not available in this mode. Installing OpenClaw later and running the installer again turns the agent on; the choices are in [Install an agent](/getting-started/installation/#install-an-agent).
 
-<!-- source: install.sh:1922-1943#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
+<!-- source: install.sh:1927-1948#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
 
 ## Can teaport answer phone calls?
 
