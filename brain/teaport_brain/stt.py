@@ -513,7 +513,10 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #     (_close): the echo guard and the wake gate decide them as they would any;
 #   * a turn after one of these, while that one's final is still to come, waits on its own
 #     final too: the earlier turn's words, unsent when the later commit was answered,
-#     are in the later preview's text, and would go on twice and out of order.
+#     are in the later preview's text, and would go on twice and out of order. (The
+#     earlier turn's words, going on as new words with the later stop's close still owed,
+#     may start a speculative reply that misses when that close adds its words: one
+#     wasted request, in this rare shape, left as it is.)
 # The words are the caller's; a preview that missed them must not lose them. A preview
 # the engine could not take whole ("complete": false, PROTOCOL3 difference 7: its text is
 # a held word's pieces) is no preview: nothing is speculated on it, and the turn closes
@@ -2324,9 +2327,29 @@ class TeaportSTTService(WebsocketSTTService):
             target = None
         else:
             target = self._file(w, self._last_piece, self._turns)
+            if target is not None and not self._goes_on(w, self._last_piece):
+                self._spend_later(target, piece)
         self._last_piece = (start, end, target)
         (target.words if target is not None else self._open_words).append(w)
         return target is not None
+
+    def _spend_later(self, turn: _Turn, piece: str):
+        """A word (its first piece) went to `turn`: a turn after it whose preview has the
+        word at its front -- one waiting behind it, whose preview the trim could not
+        clean (the earlier turn owed words nothing vouched for) -- does not wait for it
+        too, nor does a peek's preview not yet adopted (THE CUT'S MARGIN)."""
+        key = _word_key(piece)
+        if not key:
+            return
+        for later in [t for t in self._turns if t.at_ms > turn.at_ms]:
+            if later.expect and later.expect[0].startswith(key):
+                later.expect.pop(0)
+        peek = self._peek
+        if (peek is not None and peek.previewed and peek.turn is None
+                and peek.at_ms > turn.at_ms):
+            pieces = re.findall(r"\s*\S+", peek.msg.get("delta") or "")
+            if pieces and _word_key(pieces[0]).startswith(key):
+                peek.msg = {**peek.msg, "delta": "".join(pieces[1:])}
 
     def _file(self, w: tuple, last: Optional[tuple], turns) -> Optional[_Turn]:
         """Where main piece `w` (piece, end_ms, audio_ms) goes among `turns`, oldest first

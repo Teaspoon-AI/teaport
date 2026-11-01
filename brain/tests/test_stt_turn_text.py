@@ -990,8 +990,52 @@ async def test_a_peek_previewed_while_a_turn_owed_words_waits_even_once_that_set
     assert s.finals() == [("Yes.", NO_STOP)], s.finals()
     await complete(s)                                         # adopts the peek
     await delta(s, " Please.", 1250)
-    await progress(s, at + stt_mod._VOUCH_MS)                # ("Yes." still vouched for)
+    await progress(s, at)        # final at its position: "Yes.", the first turn's, is spent
     assert s.finals() == [("Yes.", NO_STOP), ("Please.", 1)], s.finals()
+
+
+async def test_no_speculation_on_a_peek_while_an_earlier_turn_owes_words():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 1000: an empty preview
+    await preview(s, 1000, "")
+    await audio(s, 300)
+    await vad_stop(s)
+    await preview(s, s._peek.at_ms, " Yes. Please.")
+    assert s.of(SpeechPreviewFrame) == [], "speculated on words an earlier turn owes"
+
+
+async def test_a_turn_after_one_of_only_the_bot_s_words_waits_on_its_final():
+    # Only the bot's own words heard back went on (a wordless close): that turn's final
+    # may still deliver the caller's words, so the next turn goes after them.
+    from teaport_brain import echo_guard
+
+    class Clock:
+        t = 100.0
+
+        def __call__(self):
+            return self.t
+    clock = Clock()
+    s = Service()
+    await created(s)
+    s.echo_guard = echo_guard.EchoGuard(clock=clock)
+    for w in "the weather today is sunny and warm".split():
+        s.echo_guard.bot.played(w)
+        clock.t += 0.3
+    clock.t = 100.5
+    await vad_start(s)
+    await audio(s, 1000)
+    for w, e in ((" the", 200), (" weather", 400), (" today", 600), (" is", 700)):
+        await delta(s, w, e)
+    await vad_stop(s)
+    await complete(s)                                         # at 1000, not over the bot
+    await preview(s, 1000, " sunny")
+    assert s.finals() == [] and [f.stop_n for f in s.of(SegmentDoneFrame)] == [1]
+    await turn(s)                                             # at 2000
+    await preview(s, 2000, " stop now.")
+    assert s.finals() == [], "went on ahead of the turn before's words"
 
 
 async def test_a_wake_turn_after_room_talk_the_gate_kept_does_not_wait():
