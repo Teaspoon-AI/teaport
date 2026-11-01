@@ -52,7 +52,6 @@
 from dataclasses import dataclass
 
 from loguru import logger
-from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.settings import setting
 
 import time
@@ -301,12 +300,6 @@ class CaptionTap(FrameProcessor):
     committed bubble is the record of what was heard, no final is emitted, and
     straggler word frames already released by the transport clock are dropped."""
 
-    # What the transport clock releases on the wall clock, held through a playout pause,
-    # and the bot-stopped of a pause in a gap between sentences (MediaSender's queue ran
-    # dry, so it says the bot stopped while words are held): replayed in order.
-    _HELD_IN_PAUSE = (AggregatedTextProgressFrame, LLMFullResponseEndFrame,
-                      BotStoppedSpeakingFrame)
-
     # Barged context ids kept to reject stragglers; bounded, they're short uuids.
     # The lines charted ahead and their contexts are bounded the same way.
     _DEAD_MAX = 16
@@ -327,7 +320,6 @@ class CaptionTap(FrameProcessor):
         self._playing_ctx = None  # the context the transport is writing (its TTSStartedFrame)
         self._ahead = []        # lines charted ahead (caption_ahead), not playing yet
         self._ahead_ctx = {}    # their contexts once they play: their words chart nothing
-        self._paused = None     # while playout is paused: the clock's releases, held
 
     def _user_active(self) -> bool:
         return bool(self._activity) and self._activity.user_active()
@@ -345,8 +337,6 @@ class CaptionTap(FrameProcessor):
         # A line charted ahead that has not started playing is flushed with the rest
         # of the queued speech; its bubble stays, as a barged one does.
         self._ahead.clear()
-        # Words released while the voice was paused were never heard (PAUSE-HOLD).
-        self._paused = None
         if _TRACE:
             logger.info(f"[CAP] barge → ctx {self._ctx} dead; bubble is the client's")
         self._reset()
@@ -410,31 +400,7 @@ class CaptionTap(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM:
-            if isinstance(frame, PlayoutPauseFrame):
-                await self._playout_pause(frame.paused)
-                return
-            if self._paused is not None and isinstance(frame, self._HELD_IN_PAUSE):
-                self._paused.append(frame)
-                return
-        await self._caption(frame, direction)
 
-    async def _playout_pause(self, paused: bool):
-        """PAUSE-HOLD. The transport clock releases the words by their pts on the wall
-        clock, paused voice or not (barge_pause.py); what it releases while the voice is
-        paused has not been heard. So it waits here, and goes on as released at the
-        resume -- or, if the pause ends in a barge-in, is the cut reply's stragglers and
-        goes with it (_start_interruption): the bubble the client commits is then what
-        was heard."""
-        if paused:
-            if self._paused is None:
-                self._paused = []
-            return
-        held, self._paused = self._paused or [], None
-        for f in held:
-            await self._caption(f, FrameDirection.DOWNSTREAM)
-
-    async def _caption(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, AggregatedTextProgressFrame) \
                 and direction == FrameDirection.DOWNSTREAM:
             ctx = frame.context_id

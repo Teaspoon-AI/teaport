@@ -408,6 +408,38 @@ async def test_past_the_cap_a_judge_that_never_answers_lets_the_words_on_in_its_
         assert not await feed(_released(rig)[-1]), "no verdict: the word count decides"
 
 
+async def test_past_the_cap_a_stop_word_takes_the_turn():
+    # The cap resumed the reply while "What" was judged; then "Stop". The stop word is its
+    # own verdict: let on marked STOP, it takes the turn though the bot is no longer paused.
+    judge = _Judge({"What": ANSWER}, delay=1.0)
+    async with GateRig(judge, min_words=2, wait=1.2) as rig:
+        await rig.task.queue_frame(interim("What"))
+        await asyncio.sleep(0.05)
+        await _cap(rig)
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(final("Stop."))
+        await asyncio.sleep(0.05)
+        released = _released(rig)
+        assert [f.text for f in released] == ["Stop."], rig.out()
+        feed = _starts(rig.strategy)
+        assert await feed(released[-1]), "a stop word past the cap must take the turn"
+
+
+async def test_past_the_cap_a_continue_on_fewer_words_asks_no_more():
+    # Past the cap the reply plays over the held words: a CONTINUE on fewer words than
+    # are held lets them on for the word count instead of asking again, and again.
+    judge = _Judge({"What": CONTINUE}, delay=0.2)
+    async with GateRig(judge, min_words=2, wait=1.2) as rig:
+        await rig.task.queue_frame(interim("What"))
+        await asyncio.sleep(0.05)
+        await _cap(rig)
+        await asyncio.sleep(0.02)
+        await rig.task.queue_frame(interim("What I mean"))
+        await asyncio.sleep(0.4)
+        assert judge.asked == ["What"], judge.asked
+        assert [t for _, t in rig.out()] == ["What", "What I mean"], rig.out()
+
+
 async def test_a_cap_with_no_verdict_awaited_lets_the_words_on_at_once():
     # A CONTINUE already given: nothing is awaited, so the cap lets on what is held as
     # it always did (here nothing: the CONTINUE dropped it).

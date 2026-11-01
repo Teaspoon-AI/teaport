@@ -2601,6 +2601,12 @@ What is not modelled:
   for that verdict (bounded by the judge's own wait): a STOP or ANSWER then takes the
   turn over the resumed reply. The model has no cap, so `ResumeP` never runs under a
   pending verdict here; `test_barge_judge.py` covers that path.
+- A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
+  finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
+  dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
+  pauser then lifts the pause (`BargeInPauser`, `test_a_bot_stopped_in_a_pause_lifts_it`),
+  and a user still talking as the next sentence starts pauses it again. An underrun
+  without a pause is not modelled either.
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.

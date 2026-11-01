@@ -33,7 +33,6 @@ from starlette.websockets import WebSocketState  # noqa: E402
 
 from pipecat.frames.frames import (  # noqa: E402
     InterruptionFrame,
-    LLMFullResponseEndFrame,
     OutputAudioRawFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -45,13 +44,12 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams  # noqa: E402
 
 from teaport_brain.barge_pause import BargeInPauser, PlayoutPauseFrame  # noqa: E402
-from teaport_brain.captions import CaptionTap  # noqa: E402
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTransport  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
-from test_captions import END, P  # noqa: E402
 from test_barge_pause import (  # noqa: E402
+    CHUNK_S,
     RESUME_S,
     SPEECH,
     SR,
@@ -288,66 +286,116 @@ async def test_a_talk_session_builds_the_pauser():
             [PauseAwareMinWordsStrategy]
 
 
-# --- The Talk view's captions through a pause (captions.CaptionTap, PAUSE-HOLD) --------
+# --- The words' clock through a pause (playout_pause.py, THE WORDS' CLOCK) ----------
 
-def _word(ctx, text, acc, pts=None):
-    return P(ctx, 1, text, acc, pts)
-
-
-class _Captions:
-    """A CaptionTap whose sends are kept: the partials and finals the client gets."""
-
-    def __init__(self):
-        self.tap = CaptionTap(every_final=True)
-        self.sent = []
-
-        async def push(frame, direction=FrameDirection.DOWNSTREAM):
-            msg = getattr(frame, "message", None)
-            if isinstance(msg, dict) and msg.get("type") == "transcript":
-                self.sent.append((msg["text"], msg["final"]))
-        self.tap.push_frame = push
-
-    async def feed(self, *frames):
-        for f in frames:
-            await self.tap.process_frame(f, FrameDirection.DOWNSTREAM)
+def _words_out(rig):
+    """(arrival, word) of each TTSTextFrame the transport released downstream."""
+    from pipecat.frames.frames import TTSTextFrame
+    return [(t, f.text) for t, d, f in rig.bottom.frames
+            if d == FrameDirection.DOWNSTREAM and isinstance(f, TTSTextFrame)]
 
 
-async def test_captions_hold_through_a_pause_and_drop_it_on_a_cut():
-    c = _Captions()
-    s = "one two three four"
-    await c.feed(_word("c", s, "one"), _word("c", s, "one two"),
-                 PlayoutPauseFrame(paused=True),
-                 _word("c", s, "one two three"))          # released, never heard
-    assert c.sent == [("one", False), ("one two", False)], c.sent
-    await c.tap._start_interruption()                    # the words take the turn
-    await c.feed(_word("c", s, "one two three four"), LLMFullResponseEndFrame())
-    assert c.sent == [("one", False), ("one two", False)], (
-        f"the cut bubble must stay at what was heard: {c.sent}")
+def _pause_times(rig):
+    return [(t, f.paused) for t, d, f in rig.bottom.frames
+            if d == FrameDirection.DOWNSTREAM and isinstance(f, PlayoutPauseFrame)]
 
 
-async def test_a_bot_stopped_in_a_pause_waits_with_the_held_words():
-    # A pause in a gap between sentences: MediaSender's queue runs dry and it says the
-    # bot stopped while words are held. Committing then, and opening a second bubble for
-    # the held words at the resume, is the duplicate USER-HOLD exists to prevent.
-    from pipecat.frames.frames import BotStoppedSpeakingFrame
-    c = _Captions()
-    s = "one two"
-    await c.feed(_word("c", s, "one", pts=1), PlayoutPauseFrame(paused=True),
-                 _word("c", s, "one two", pts=2), BotStoppedSpeakingFrame())
-    assert c.sent == [("one", False)], c.sent
-    await c.feed(PlayoutPauseFrame(paused=False))
-    assert c.sent == [("one", False), ("one two", False), ("one two", True)], c.sent
+async def test_the_words_keep_the_voices_time_through_a_pause():
+    # pipecat's clock releases each word at its pts on the wall clock. Paused, nothing
+    # plays: no word is released; resumed, each word of the reply comes the pause's length
+    # later than scheduled -- when its audio plays -- not all at once, nor early.
+    from test_barge_pause import WORDS
+    from teaport_brain.tts_text import CAPTION_LEAD_SECS
+    async with TalkRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.pauser.on_onset(False)
+        await _at(rig, 3.4)
+        (t_pause, _), (t_resume, _) = _pause_times(rig)
+        held = t_resume - t_pause
+        words = _words_out(rig)
+        assert [w for _, w in words] == WORDS, words
+        assert not [w for t, w in words if t_pause + 0.06 < t < t_resume - 0.01], (
+            f"words released while paused: {words}")
+        for i, (t, w) in enumerate(words):
+            due = rig.t0 + i * CHUNK_S - CAPTION_LEAD_SECS
+            if due > t_pause + 0.06:
+                assert abs(t - (due + held)) <= 0.06, (
+                    f"{w!r} came {t - due:.2f}s after its pts; the pause held {held:.2f}s")
 
 
-async def test_captions_go_on_at_the_resume():
-    c = _Captions()
-    s = "one two three"
-    await c.feed(_word("c", s, "one", pts=1), PlayoutPauseFrame(paused=True),
-                 _word("c", s, "one two", pts=2), END(3),
-                 PlayoutPauseFrame(paused=True, tail_secs=0.5))   # re-announced: still held
-    assert c.sent == [("one", False)], c.sent
-    await c.feed(PlayoutPauseFrame(paused=False))
-    assert c.sent == [("one", False), ("one two", False), ("one two three", True)], c.sent
+async def test_a_cut_drops_the_words_a_pause_held():
+    async with TalkRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.1)
+        await rig.task.queue_frame(InterruptionFrame())
+        await _at(rig, 2.6)
+        (t_pause, _), = _pause_times(rig)
+        late = [w for t, w in _words_out(rig) if t > t_pause + 0.06]
+        assert not late, f"words of the cut reply released after the pause: {late}"
+
+
+async def test_a_reply_after_the_resume_is_on_time():
+    # A reply whose audio comes after the resume is anchored by the TTS on its moved
+    # clock: the transport must not shift its words again.
+    from pipecat.frames.frames import TTSTextFrame
+    async with TalkRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.pauser.on_onset(False)
+        await _at(rig, 3.4)
+        word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
+        word.pts = rig.out.get_clock().get_time() + int(0.3e9)
+        t_queued = time.monotonic()
+        await rig.task.queue_frames([TTSStartedFrame(context_id="r2"),
+                                     TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r2"),
+                                     word, TTSStoppedFrame(context_id="r2")])
+        await asyncio.sleep(0.6)
+        t_next = [t for t, w in _words_out(rig) if w == "next"]
+        assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
+
+
+async def test_the_end_of_a_session_in_a_pause_says_the_pause_is_over():
+    from pipecat.frames.frames import EndFrame
+    rig = TalkRig(with_pauser=False)
+    await rig.__aenter__()
+    await rig.speak()
+    await _at(rig, 0.4)
+    await rig.out.set_playout_paused(True)
+    await rig.task.queue_frame(EndFrame())
+    await asyncio.wait_for(rig._run, timeout=6.0)
+    assert [p for _, p in _pause_times(rig)] == [True, False], _pause_times(rig)
+
+
+async def test_an_uninterruptible_block_is_written_though_the_pause_was_dropped():
+    sock = _Socket()
+    out = _talk_transport(sock).output()
+    out._playing.clear()
+    block = OutputAudioRawFrame(_pcm(0), SR, 1)
+    block.interruptible = False
+    writer = asyncio.create_task(out.write_audio_frame(block))
+    await asyncio.sleep(0.05)
+    out._drop_pause()
+    assert await asyncio.wait_for(writer, 1.0) is True
+    assert sock.payload() == _pcm(0), "pipecat keeps an uninterruptible block: so must we"
+
+
+async def test_a_block_that_was_not_sent_is_not_counted_as_heard():
+    sock = _Socket()
+    out = _talk_transport(sock).output()
+    out._sample_rate = SR      # as its StartFrame sets it: otherwise nothing is counted
+    sock.client_state = WebSocketState.DISCONNECTED
+    assert await out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)) is False
+    assert out._heard_until == 0.0
+    sock.client_state = WebSocketState.CONNECTED            # the control: one that went out
+    assert await out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)) is True
+    assert out._heard_until > 0.0
 
 
 def main():

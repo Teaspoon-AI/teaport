@@ -523,7 +523,7 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
             return False
         self._audio_send_buffer.extend(bytes(frame.audio))
         while len(self._audio_send_buffer) >= BYTES_PER_FRAME:
-            if not await self._wait_if_paused() \
+            if (not await self._wait_if_paused() and frame.interruptible) \
                     or len(self._audio_send_buffer) < BYTES_PER_FRAME:
                 break  # an interruption dropped the pause and cleared the buffer
             chunk = bytes(self._audio_send_buffer[:BYTES_PER_FRAME])

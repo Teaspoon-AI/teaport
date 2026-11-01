@@ -46,8 +46,9 @@
 # judge rather than a word count says whether one word was a question. No verdict within
 # _JUDGE_WAIT_S lets them on unmarked: the word count decides, as it did before the
 # judge, that much later (so a slow judge never makes a "yeah" a cut); so does a stop
-# word, or the reply's would-be end, arriving while it decides. Stop words (below), a pause whose reply would be over by now and an
-# open user turn's own words are not judged. formal/UserTurn.tla's JUDGE rows check the
+# word, or the reply's would-be end, arriving while it decides. Stop words (below), a
+# pause whose reply would be over by now and an open user turn's own words are not
+# judged. formal/UserTurn.tla's JUDGE rows check the
 # gate around the verdict (formal/README.md). Replayed on gpt-oss-120b (2026-10-25, 7
 # contexts, 1,722 trials): backchannels 459/462 CONTINUE, stops and hold-ons 374/378 and
 # questions and corrections 331/336 not; its first token p50 0.21 s, p90 0.40 s from the
@@ -108,14 +109,13 @@
 #     the client's jitter margin, and the network; what played before it is heard.
 #   * That margin is measured for the room bridge (its 120 ms card lead) and for SIP,
 #     not for the OpenClaw Talk view: a browser that buffers more plays on that much
-#     longer after the pause, and the ledger's heard cut (lag_secs) and the held
+#     longer after the pause, and the ledger's heard cut (lag_secs) and the
 #     captions are short of what was heard by the same amount -- the same assumption
 #     the ledger already made on Talk for every cut, pause or not.
-#   * While paused, the transport keeps releasing word captions on the wall clock (the
-#     assistant aggregator's running text runs ahead of the voice; the heard
-#     correction at a cut trims it back to what was heard, as on any cut). The Talk
-#     view's captions are held through a pause (captions.CaptionTap), so a cut leaves
-#     the bubble at what was heard; after a resume they run ahead by the pause.
+#   * The words keep the voice's time through a pause because the transport holds and
+#     re-times pipecat's word clock (playout_pause.py, THE WORDS' CLOCK): the echo
+#     guard, the captions and the assistant aggregator see a word when it plays. A
+#     reply's words already queued when a pause ENDS early (a cut) go with the cut.
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
 #
@@ -259,14 +259,16 @@ class PlayoutPauseFrame(SystemFrame):
     SpeakingFrame, with sibling ids."""
 
     paused: bool = True
-    # How long after this frame the audio really stops: the frame already written plays
-    # out its 20 ms slot first. The ledger credits playout up to then.
+    # How long after this frame the audio really stops: what was already sent still
+    # plays out -- the frame playing and the one queued behind it, up to two 20 ms
+    # frames on SIP and two 40 ms blocks on /talk (playout_pause.PausablePlayout._wrote).
+    # The ledger credits playout up to then.
     lag_secs: float = 0.0
     # On a pause: the audio it held back, when the reply is fully synthesized (so this is
     # all that is left to play), else -1. The start strategy treats the bot as silent
     # once this much time has passed since the pause began: it would have finished by
     # then without the pause. A reply whose synthesis completes DURING the pause gets
-    # the pause announced again with its tail (sip_transport._track_tail).
+    # the pause announced again with its tail (playout_pause.PausablePlayout.process_frame).
     tail_secs: float = -1.0
 
 
@@ -385,6 +387,13 @@ class BargeInPauser(FrameProcessor):
             self._bot_speaking = False
             self._noword = 0
             self._reply_audio = False
+            if self._paused:
+                # The pause landed in a gap the TTS had not filled yet (the transport's
+                # queue ran dry, so it says the bot stopped): the turn strategies and the
+                # judge's gate now count the bot silent, and a pause held on would hold
+                # the next sentence to a timer. Lift it; a user still talking as that
+                # sentence starts pauses it again (the already-under-way path).
+                await self._resume("the reply's audio ran out while it was paused")
         elif isinstance(frame, TTSAudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
             self._reply_audio = getattr(frame, "context_id", None) is not None
         elif isinstance(frame, VADUserStartedSpeakingFrame):
@@ -706,8 +715,12 @@ class BargeInJudgeGate(FrameProcessor):
                     # "Stop." while it decides, or the reply would be over by now: no
                     # verdict to wait for, the words take the turn as they would have.
                     # Past the cap they wait for the verdict asked before it.
-                    await self._release("a stop word" if self._strategy.stops(frame.text)
-                                        else "the reply would be over")
+                    stop = self._strategy.stops(frame.text)
+                    # A stop word is its own verdict: marked STOP, it takes the turn past
+                    # the cap too, where the strategy no longer counts the bot paused.
+                    await self._release(
+                        "a stop word" if stop else "the reply would be over",
+                        verdict=STOP if stop else None)
                 else:
                     self._said = _held_words(self._held)
             return True
@@ -756,6 +769,11 @@ class BargeInJudgeGate(FrameProcessor):
             if not self._held:
                 return  # released meanwhile: the pause ended
             if verdict == CONTINUE and _key(self._said) != _key(said):
+                if self._past_pause:
+                    # Past the cap the reply is playing over these words: no more asking,
+                    # however long they talk -- the word count decides them now.
+                    await self._release("past the cap, a CONTINUE on fewer words than held")
+                    return
                 # They said more while it was deciding: ask on all of it.
                 self._ask(self._said)
                 return

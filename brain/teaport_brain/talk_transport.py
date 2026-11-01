@@ -21,19 +21,30 @@ from teaport_brain.playout_pause import PausablePlayout
 class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     """pipecat's websocket output, held at a block boundary while playout is paused."""
 
+    _sending_secs = 0.0  # the block write_audio_frame is sending, until it is counted
+
     async def write_audio_frame(self, frame) -> bool:
         # One audio block per call (MediaSender's audio_chunk_size, 40 ms at pipecat's
         # default audio_out_10ms_chunks) -- or a whole buffer on the base class's direct
         # paths (the end's silence), which plays whole once it starts. A block the pause
-        # held for a reply an interruption then cancelled is not written.
-        if not await self._wait_if_paused():
+        # held for a reply an interruption then cancelled is not written -- unless
+        # pipecat marked it uninterruptible, which it keeps through an interruption.
+        if not await self._wait_if_paused() and frame.interruptible:
             return False
-        # Sent at the top of the base's write (it sleeps out the slot after), so it is
-        # counted as sent now.
-        if self.sample_rate:
-            self._wrote(len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
-                        / self.sample_rate)
-        return await super().write_audio_frame(frame)
+        # Counted as heard once it is on the wire: the base sends it, then sleeps out its
+        # slot (_write_audio_sleep, which it reaches only after a send that went out).
+        self._sending_secs = (len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
+                              / self.sample_rate) if self.sample_rate else 0.0
+        try:
+            return await super().write_audio_frame(frame)
+        finally:
+            self._sending_secs = 0.0
+
+    async def _write_audio_sleep(self):
+        if self._sending_secs:
+            self._wrote(self._sending_secs)
+            self._sending_secs = 0.0
+        await super()._write_audio_sleep()
 
 
 class TalkWebsocketTransport(FastAPIWebsocketTransport):

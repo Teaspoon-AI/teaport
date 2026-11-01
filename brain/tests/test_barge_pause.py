@@ -334,6 +334,26 @@ async def test_no_pause_while_the_bot_is_silent_and_a_cap_on_a_long_one():
         await run
 
 
+async def test_a_bot_stopped_in_a_pause_lifts_it():
+    # The pause landed in a gap the TTS had not filled: the transport's queue ran dry and
+    # it said the bot stopped. Held on, the pause would hold the next sentence to a timer
+    # while the turn strategies count the bot silent.
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert p.paused
+        await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        assert not p.paused and [x[1] for x in out.calls] == [True, False], out.calls
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_an_echo_like_burst_does_not_pause():
     # Residual echo shows up as a short run of confident frames. The onset test wants
     # TEAPORT_ONSET_MIN_MS (128 ms) of it; 96 ms is not enough, 160 ms is.
