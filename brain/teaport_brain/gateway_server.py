@@ -187,22 +187,37 @@ def _close_with(websocket, code: int, reason: str) -> None:
 
 async def _greet_as_response(websocket, session) -> asyncio.Task:
     """Greet a Talk client as one framed response: start, the greeting, then done once it
-    has played. The greeting is said at connect, before the client's mic has sent
+    is over. The greeting is said at connect, before the client's mic has sent
     anything, so OpenClaw's relay may have no turn to put it in yet, and it fails the
     session on output nobody owns ("Realtime provider output has no live response owner";
     plugin/provider.js, _onResponseMarker) -- as it did for the iPhone app, whose mic
     starts after the greeting, while the dashboard's started first and hid it. Framed the
     way the busy line is (_refuse); a start with no output yet is safe either way, since
     the relay then gives the response the turn the mic opened, or a turn of its own.
-    Returns the task that sends the done, for a caller that must wait it out."""
+    Returns the task that sends the done, for a caller that must wait it out; it is
+    cancelled when the client leaves (on_client_disconnected)."""
     await websocket.send_text(json.dumps({"type": "response", "state": "start"}))
     await session.greet()
+    gate = session.followup_gate
+
+    async def over():
+        # Activity started by the greeting, then a debounced quiet window after it, not
+        # the first idle moment: a failed completion speaks its error line just after
+        # the reply ends (LLMErrorSpeaker), and a done before it would leave that line
+        # with no owner. "Over" is sent, not played: the transport sends ahead of real
+        # time, which is all the relay's rule needs (it judges output as it arrives).
+        await gate.wait_until_delivered()
+        while not await gate.wait_until_idle(GREETING_DONE_MAX_SECS):
+            pass
 
     async def done():
         try:
-            # Activity started by the greeting, then its end: the line has played (or
-            # was cut, which ends it too). After it, output goes back to the mic's turns.
-            await session.followup_gate.wait_until_delivered()
+            # Bounded: a gate whose session was torn down mid-greeting may never go idle
+            # again (a cancel sends no bot-stopped), and this task holds the session.
+            await asyncio.wait_for(over(), GREETING_DONE_MAX_SECS)
+        except asyncio.TimeoutError:
+            logger.info("greeting: no quiet window in time -- closing its response anyway")
+        try:
             await websocket.send_text(json.dumps({"type": "response", "state": "done"}))
         except Exception as e:  # noqa: BLE001 -- the client left first
             logger.debug(f"greeting done not delivered: {e!r}")
@@ -214,6 +229,9 @@ async def _greet_as_response(websocket, session) -> asyncio.Task:
 
 
 _GREETINGS: set[asyncio.Task] = set()
+# The longest a greeting's response stays open: well past any greeting (a sentence or two),
+# so it only ends one whose session can no longer say it is over.
+GREETING_DONE_MAX_SECS = 60.0
 
 
 async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
@@ -476,7 +494,7 @@ async def run_relay_bot(websocket: WebSocket):
                 [OutputTransportMessageUrgentFrame(message={"type": "ready"})])
             return
         logger.info("OpenClaw relay client connected — greeting")
-        greeted = await _greet_as_response(websocket, session)
+        greeted = session_holder["greeting"] = await _greet_as_response(websocket, session)
         if session.should_end:
             # greet() spoke the can't-hear line instead of greeting. Nothing read this
             # before, so the session stayed up: the client saw a connected assistant
@@ -496,6 +514,8 @@ async def run_relay_bot(websocket: WebSocket):
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
         logger.info("OpenClaw relay client disconnected — stopping")
+        if (greeting := session_holder.get("greeting")) is not None:
+            greeting.cancel()       # nobody to tell the greeting is over; frees the session
         await session.task.cancel()
 
     # --- The session arbiter -------------------------------------------------
