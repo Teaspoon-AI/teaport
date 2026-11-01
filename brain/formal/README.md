@@ -2523,20 +2523,12 @@ modelling it.
 ### The barge-in judge (`JUDGE`, #224)
 
 `BargeInJudgeGate` (`barge_pause.py`, `TEAPORT_BARGE_JUDGE`) sits directly above the user
-aggregator. Words over a paused reply, a single one included, are held there while a
+aggregator. Words that would start a turn over a paused reply are held there while a
 one-word judge decides them:
 - **CONTINUE:** the held words are dropped. Their final becomes the segment's wordless
   close, as a cough's does, and the reply resumes.
-- **STOP or ANSWER:** the held words go on, marked, and start the turn at any length.
-- **No verdict:** the held words go on as they came, and the word count decides as it
-  did before the judge: two words start the turn, one does not (the model's CONTINUE
-  outcome, since words that start no turn are dropped).
-
-`OneWord` enters the gate as `Interject` does. `JUDGE = "minWords"` is the gate as first
-shipped, where a word under the guard was never judged: a lone "What?" started no turn
-and the reply resumed over it. A probe on a scratch copy of the spec (the new branch
-raising a flag the shipped design never raises) shows the branch is reached under
-`ut_judge_shipped_all` and `ut_talk_judge_all`, and never under `minWords`.
+- **STOP, ANSWER or no verdict:** the held words go on as they came, and the turn
+  starts as it would have.
 
 Stop words, a reply that would be over by now, and an open user turn are never judged. A
 stop word, or the reply's would-be end passing, while the judge decides lets everything
@@ -2597,16 +2589,12 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 What is not modelled:
 - The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
 - The 8 s pause cap: a caller still talking keeps the pause; the cap ends it as a pause end.
-  A cap that lands while a verdict is awaited resumes the reply, and the held words wait
-  for that verdict (bounded by the judge's own wait): a STOP or ANSWER then takes the
-  turn over the resumed reply. The model has no cap, so `ResumeP` never runs under a
-  pending verdict here; `test_barge_judge.py` covers that path.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
   dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
-  pauser then lifts the pause (`BargeInPauser`, `test_a_bot_stopped_in_a_pause_lifts_it`),
-  and a user still talking as the next sentence starts pauses it again. An underrun
-  without a pause is not modelled either.
+  pause stays until its own quiet window, verdict or cap ends it
+  (`test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end`), so the model's pause
+  ends are the code's. An underrun without a pause is not modelled either.
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.

@@ -229,6 +229,55 @@ async def test_a_block_held_by_a_pause_an_interruption_dropped_is_not_written():
     assert not sock.datagrams, "the held block was written after its reply was cut"
 
 
+async def test_a_write_woken_by_a_resume_the_next_pause_undoes_stays_held():
+    # A resume and a new pause in the same turn of the loop: the waiting write wakes with
+    # playout paused again, and must not send its block into the new pause.
+    sock = _Socket()
+    out = _talk_transport(sock).output()
+    out._sample_rate = SR
+    out._playing.clear()
+    writer = asyncio.create_task(out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)))
+    await asyncio.sleep(0.05)
+    out._playing.set()
+    out._playing.clear()                                  # paused again before it ran
+    await asyncio.sleep(0.05)
+    assert not writer.done() and not sock.datagrams, "a block went out into the new pause"
+    out._playing.set()
+    assert await asyncio.wait_for(writer, 1.0) is True and sock.payload() == _pcm(0)
+
+
+async def test_a_pause_shifts_only_the_replies_still_to_play():
+    # r1 has played out when r2 is paused: only r2's words (and the ledger's cut for it)
+    # move. A finished reply has nothing left to move, and keeps no shift.
+    async with TalkRig() as rig:
+        await rig.speak()
+        await _at(rig, 2.3)                               # r1's 2 s are over
+        await rig.task.queue_frames([TTSStartedFrame(context_id="r2")]
+                                    + [TTSAudioRawFrame(_pcm(i), SR, 1, context_id="r2")
+                                       for i in range(5)]
+                                    + [TTSStoppedFrame(context_id="r2")])
+        await _at(rig, 2.6)
+        await rig.out.set_playout_paused(True)
+        await _at(rig, 3.0)
+        await rig.out.set_playout_paused(False)
+        await asyncio.sleep(0.05)
+        resume = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
+                  and isinstance(f, PlayoutPauseFrame) and not f.paused][0]
+        assert resume.shifted == ("r2",), resume.shifted
+        assert "r1" not in rig.out._shift_ns, rig.out._shift_ns
+
+
+def test_the_timed_frames_awaited_are_bounded():
+    from pipecat.frames.frames import TextFrame
+    from teaport_brain.playout_pause import _MAX_TIMED
+    out = _talk_transport(_Socket()).output()
+    for i in range(_MAX_TIMED + 50):
+        f = TextFrame("w")
+        f.pts = i + 1
+        out._track_tail(f, FrameDirection.DOWNSTREAM)
+    assert len(out._timed_ids) == _MAX_TIMED
+
+
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
@@ -398,7 +447,10 @@ def main():
 
     async def run_aio():
         for fn in tests:
-            await fn()
+            if asyncio.iscoroutinefunction(fn):
+                await fn()
+            else:
+                fn()
             print(f"  ok {fn.__name__}")
     asyncio.run(run_aio())
 

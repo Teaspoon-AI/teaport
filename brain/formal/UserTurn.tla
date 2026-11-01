@@ -158,11 +158,10 @@
 (*                              interruption cancels the reply.             *)
 (*                                                                          *)
 (* The barge-in judge (BargeInJudgeGate, #224, TEAPORT_BARGE_JUDGE). Words  *)
-(* over a paused reply, a single one included, are held while a one-word    *)
+(* that would start a turn over a paused reply are held while a one-word    *)
 (* judge decides them: CONTINUE drops them (their segment closes as a       *)
 (* cough's does) and the reply resumes; anything else lets them on and the  *)
-(* turn starts. (A single word with no verdict starts none, as a CONTINUE.) *)
-(* Stop words and a reply that would be over                                *)
+(* turn starts as it would have. Stop words and a reply that would be over  *)
 (* by now are not judged, and either, arriving while the judge decides,    *)
 (* lets everything held on at once. What the judge decides is the           *)
 (* environment: the model checks the gate around it, any verdict anywhere.  *)
@@ -171,10 +170,6 @@
 (* JUDGE = "shipped"  -- barge_pause.py: the pauser's quiet resume is held  *)
 (*                       while a verdict is awaited, and a CONTINUE on      *)
 (*                       words that grew since it was asked is asked again. *)
-(*                       A single word over the pause is judged too.        *)
-(* JUDGE = "minWords" -- #224 as first shipped: words under the word guard  *)
-(*                       are not judged, so a lone "What?" starts no turn   *)
-(*                       and the reply resumes over it.                     *)
 (* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
 (*                       resume (0.8 s of quiet) can come first.            *)
 (* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
@@ -775,12 +770,6 @@ OneWord ==
               /\ StartTurn
               /\ JudgeRelease
               /\ UNCHANGED missedBargeIn
-         ELSE IF Judged /\ JUDGE /= "minWords"
-         THEN \* As shipped, the gate holds one word as it does more: the judge, not
-              \* the word count, says whether it was a question.
-              /\ judging' = TRUE /\ grown' = FALSE
-              /\ UNCHANGED <<stopHeld, resumedUnder, resumeOverWords>>
-              /\ HeldWords
          ELSE IF OneWordStarts
          THEN /\ StartTurn
               /\ UNCHANGED missedBargeIn
@@ -1815,7 +1804,7 @@ TypeOK ==
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
-    /\ JUDGE \in {"off", "shipped", "minWords", "noHold", "noReask"}
+    /\ JUDGE \in {"off", "shipped", "noHold", "noReask"}
     /\ judging \in BOOLEAN /\ grown \in BOOLEAN /\ stopHeld \in BOOLEAN
     /\ resumedUnder \in BOOLEAN /\ resumeOverWords \in BOOLEAN
     /\ (JUDGE = "off" => ~judging)

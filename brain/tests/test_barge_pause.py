@@ -530,6 +530,33 @@ def test_the_tts_freezes_its_playout_model_and_passes_the_pause_on():
     asyncio.run(run())
 
 
+def test_the_tts_moves_a_reply_queued_behind_by_the_pause_less_its_lag():
+    # One owner for a pause's shift: the transport moves the paused reply's words by the
+    # pause less its lag (what was sent played on that long). A reply anchored behind it
+    # at the TTS (_prev_audio_end_ns) must move by the same, not the whole pause.
+    from teaport_brain.engine_tts import EngineTTSService
+
+    async def run():
+        tts = EngineTTSService(voice="af_heart")
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            pass
+
+        tts.push_frame = push
+        clock_ns = [10_000_000_000]
+        tts._clock_ns = lambda: clock_ns[0]
+        tts._prev_audio_end_ns = clock_ns[0] + 2_000_000_000   # 2 s still to play
+        before = tts._prev_audio_end_ns
+        await tts.process_frame(PlayoutPauseFrame(paused=True, lag_secs=0.08),
+                                FrameDirection.UPSTREAM)
+        clock_ns[0] += 1_000_000_000                             # paused 1 s
+        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        moved = (tts._prev_audio_end_ns - before) / 1e9
+        assert abs(moved - 0.92) < 0.005, f"moved {moved:.3f}s: the pause less its lag"
+
+    asyncio.run(run())
+
+
 def test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well():
     # formal/README, PlayoutPause pp_late_ahead_heard: the first clause has played out
     # and the next is not synthesized yet; the caller makes a sound, the transport pauses

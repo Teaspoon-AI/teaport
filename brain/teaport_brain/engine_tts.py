@@ -739,9 +739,13 @@ class EngineTTSService(TTSService):
             self._freeze_playout("hold", frame.active)
             return  # pushed for us alone
         elif isinstance(frame, PlayoutPauseFrame):
-            # The transport paused mid-reply (barge_pause.py): the same freeze. Passed
-            # on -- the turn-start strategy reads it too.
-            self._freeze_playout("pause", frame.paused)
+            # The transport paused mid-reply (barge_pause.py): the same freeze, from when
+            # the audio really stopped -- what was sent before the pause plays on for its
+            # lag -- so a reply anchored behind moves by the pause less its lag, as the
+            # transport moves the paused reply's words (playout_pause._shift_words).
+            # Passed on -- the turn-start strategy reads it too.
+            self._freeze_playout("pause", frame.paused,
+                                 lag=frame.lag_secs if frame.paused else 0.0)
         await super().process_frame(frame, direction)
 
     def _now(self) -> float:
@@ -774,7 +778,7 @@ class EngineTTSService(TTSService):
         base = self._initial_word_timestamp
         return max(then, base) if base != -1 else None
 
-    def _freeze_playout(self, source: str, held: bool):
+    def _freeze_playout(self, source: str, held: bool, lag: float = 0.0):
         """Playout downstream stopped (`source` holds or pauses it) or started again.
 
         What was emitted and not yet played when it stopped plays that much later, so
@@ -797,8 +801,12 @@ class EngineTTSService(TTSService):
         would count them twice."""
         if held:
             if not self._freezes:
-                self._frozen_at = time.monotonic()
-                self._frozen_from = self._stop_holds_from(self._clock_ns())
+                # `lag`: the stop takes effect that much later (a pause: what was sent
+                # before it still plays).
+                self._frozen_at = time.monotonic() + max(0.0, lag)
+                now = self._clock_ns()
+                self._frozen_from = self._stop_holds_from(
+                    None if now is None else now + round(max(0.0, lag) * 1e9))
             self._freezes.add(source)
             return
         if source not in self._freezes:
@@ -813,11 +821,11 @@ class EngineTTSService(TTSService):
         # -- or its words carry the stop twice (formal/README: pp_late_ahead_heard).
         # A model already in the past stays in the past, so pacing is unchanged.
         if self._play_end:
-            self._play_end += time.monotonic() - self._frozen_at
+            self._play_end += max(0.0, time.monotonic() - self._frozen_at)
         now, since = self._clock_ns(), self._frozen_from
         if now is not None and since is not None:
             if self._prev_audio_end_ns > since:
-                self._prev_audio_end_ns += now - since
+                self._prev_audio_end_ns += max(0, now - since)
             if self._initial_word_timestamp != -1:
                 self._ctx_held_ns += max(0, now - since)
         self._frozen_at = self._frozen_from = None
