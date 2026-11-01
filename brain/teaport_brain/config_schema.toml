@@ -1044,7 +1044,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "The moment the user starts talking over the bot (the fast speech-onset test, or the VAD), pause playout, on the phone and on Talk (the app, the dashboard, Discord, the box's mic) alike. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. On Talk the voice stops after the client's own playout margin (about 0.1 s on the box's speaker)."
+help = "The moment the user starts talking over the bot (the fast speech-onset test, or the VAD), pause playout, on the phone and on Talk (the app, the dashboard, Discord, the box's mic) alike. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. On Talk the voice stops after what the client already holds (on the box's speaker, one 40 ms block and the bridge's 120 ms lead: about 0.15-0.2 s)."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_RESUME_S"

@@ -405,15 +405,10 @@ class BargeInPauser(FrameProcessor):
             self._bot_speaking = False
             self._noword = 0
             self._reply_audio = False
-            if self._paused and not self._speaking and not self._held:
-                # The pause landed in a gap the TTS had not filled yet (the transport's
-                # queue ran dry, so it says the bot stopped -- after 0.35 s, or pipecat's
-                # 3 s fallback). With the caller quiet and no verdict awaited, a pause
-                # held on would only hold the next sentence to a timer: lift it, through
-                # the one end every pause has (_resume). A caller still talking, or words
-                # being judged, keep it: the quiet window or the verdict ends it, as for
-                # any pause, and the next sentence does not start over them.
-                await self._resume("the reply's audio ran out while it was paused")
+            # A pause the bot stopped under (its audio ran dry in a gap the TTS had not
+            # filled) stays: its quiet window, a verdict or its cap ends it, as any
+            # pause's, and the next sentence waits for that rather than start over words
+            # still on their way to the judge. Every pause ends through _resume.
         elif isinstance(frame, TTSAudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
             self._reply_audio = getattr(frame, "context_id", None) is not None
         elif isinstance(frame, VADUserStartedSpeakingFrame):

@@ -165,6 +165,11 @@ async def test_talk_speech_then_no_words_pauses_at_once_and_resumes_without_loss
             f"pause lag {pauses[0].lag_secs}: one to two blocks")
         assert 1.2 <= pauses[0].tail_secs <= 1.5, (
             f"tail at the pause {pauses[0].tail_secs}: ~1.4 s of 2.0 s left")
+        sent = sum(len(d) for d, t in zip(rig.wire.datagrams, rig.wire.times)
+                   if t <= stopped) / 2 / SR
+        # What was not sent, plus what was sent and still playing (the lag).
+        assert abs(pauses[0].tail_secs - (2.0 - sent + pauses[0].lag_secs)) <= 0.01, (
+            f"tail {pauses[0].tail_secs:.3f}: what was not sent, plus the lag still playing")
         said = rig.assistant()
         assert said and not said[0].interrupted and said[0].heard_fraction == 1.0, said
 
@@ -317,6 +322,9 @@ async def test_a_reply_after_the_resume_is_on_time():
     # clock: the transport must not shift its words again.
     from pipecat.frames.frames import TTSTextFrame
     async with TalkRig() as rig:
+        # The thinking sound's plain audio first: no words, so no reply to shift.
+        await rig.task.queue_frames([OutputAudioRawFrame(_pcm(0)[:640], SR, 1)])
+        await asyncio.sleep(0.1)
         await rig.speak()
         await _at(rig, 0.6)
         await rig.pauser.on_onset(True)
@@ -354,6 +362,8 @@ async def test_the_end_of_a_session_in_a_pause_says_the_pause_is_over():
     await rig.task.queue_frame(EndFrame())
     await asyncio.wait_for(rig._run, timeout=6.0)
     assert [p for _, p in _pause_times(rig)] == [True, False], _pause_times(rig)
+    assert rig.pause_frames(FrameDirection.UPSTREAM) == [True], (
+        "the end's resume reaches no processor above the transport: they had the EndFrame")
     assert rig.wire.payload() == SPEECH and len(SPEECH) > sent_in_pause, (
         "the end plays out what the pause held, the held block included")
 

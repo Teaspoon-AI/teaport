@@ -336,49 +336,27 @@ async def test_no_pause_while_the_bot_is_silent_and_a_cap_on_a_long_one():
         await run
 
 
-async def test_a_bot_stopped_in_a_pause_lifts_it():
+async def test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end():
     # The pause landed in a gap the TTS had not filled: the transport's queue ran dry and
-    # it said the bot stopped. Held on, the pause would hold the next sentence to a timer
-    # while the turn strategies count the bot silent.
+    # it said the bot stopped (after 0.35 s, or pipecat's 3 s fallback). The pause is not
+    # lifted for it: a caller's lone word may still be on its way to the judge, and the
+    # next sentence must not start over it. Its quiet window ends it, as any pause's.
     out, p, task, run = await _pauser_rig(max_secs=3.0)
     try:
         await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
         await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
         await p.on_onset(True)
-        await asyncio.sleep(0.05)
-        assert p.paused
-        await p.on_onset(False)                          # the user went quiet
+        await asyncio.sleep(0.3)
+        await p.on_onset(False)                          # quiet: the window starts
         await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
+        assert p.paused and [x[1] for x in out.calls] == [True], out.calls
+        await asyncio.sleep(RESUME_S + 0.1)
         assert not p.paused and [x[1] for x in out.calls] == [True, False], out.calls
     finally:
         await task.cancel()
         await run
-
-
-async def test_a_bot_stopped_keeps_the_pause_over_a_user_still_talking_or_judged():
-    # pipecat also says the bot stopped after its 3 s fallback, while the TTS holds the
-    # next clause for a user still talking. Lifting then would let that clause start over
-    # them, and end a pause the judge is holding: it stays, for the quiet window or the
-    # verdict to end, as any pause.
-    for still_talking in (True, False):
-        out, p, task, run = await _pauser_rig(max_secs=3.0)
-        try:
-            await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
-            await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-            await asyncio.sleep(0.05)
-            await p.on_onset(True)
-            await asyncio.sleep(0.05)
-            if not still_talking:
-                await p.on_onset(False)
-                p.hold_resume(True)                      # a verdict is awaited
-            await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
-            await asyncio.sleep(0.05)
-            assert p.paused and [x[1] for x in out.calls] == [True], (still_talking, out.calls)
-        finally:
-            await task.cancel()
-            await run
 
 
 async def test_an_echo_like_burst_does_not_pause():
@@ -736,7 +714,7 @@ async def test_a_write_woken_with_its_buffer_gone_sends_no_empty_datagram():
     assert not writer.done(), "the write should be holding at the pause"
     out._audio_send_buffer.clear()
     out._drop_pause()
-    await asyncio.wait_for(writer, 1.0)
+    assert await asyncio.wait_for(writer, 1.0) is False, "a cut frame was not written"
     await wire.stop()
     assert all(len(d) == 1 + BYTES_PER_FRAME for d in wire.datagrams), (
         [len(d) for d in wire.datagrams])

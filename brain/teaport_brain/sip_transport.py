@@ -421,9 +421,6 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
         # SEQPACKET send() happily returns 64001 — the gateway's MAX_FRAME_BYTES-sized
         # recv then TRUNCATES it to 2048 and 62 KB of playout vanishes silently.
         self._audio_send_buffer = bytearray()
-        # Whether what is in it may be dropped by an interruption: pipecat keeps an
-        # uninterruptible frame through one, and so does this buffer.
-        self._buffer_interruptible = True
         self._started = False
         # The playout pause (barge_pause.BargeInPauser) is PausablePlayout's: the write
         # loop below holds between two 640-byte datagrams, so what has not been written
@@ -480,15 +477,13 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
         # an interruption.
         await super().process_frame(frame, direction)
         if isinstance(frame, InterruptionFrame):
-            # Barge-in. Drop any partially buffered playout so stale PCM isn't replayed --
-            # not an uninterruptible frame's, which pipecat keeps through an interruption
+            # Barge-in. Drop any partially buffered playout so stale PCM isn't replayed
             # (the media sender already dropped its queued chunks), reset the clock, and
             # OFFER the interruption to the serializer — the hook pipecat's Twilio
             # serializer uses for {"event":"clear"} and fastapi.py:508-515 wires up.
             # Protocol v0 has no playout flush, so it serializes to None today; wiring
             # it now means a v1 flush control needs no change on this side.
-            if self._buffer_interruptible:
-                self._audio_send_buffer.clear()
+            self._audio_send_buffer.clear()
             await self._write_frame(frame)
             self._next_send_time = 0.0
 
@@ -527,11 +522,13 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
         if self._connection.is_closing or not self._connection.is_connected:
             return False
         self._audio_send_buffer.extend(bytes(frame.audio))
-        self._buffer_interruptible = frame.interruptible
         while len(self._audio_send_buffer) >= BYTES_PER_FRAME:
-            if (not await self._wait_if_paused() and frame.interruptible) \
+            if not await self._wait_if_paused() \
                     or len(self._audio_send_buffer) < BYTES_PER_FRAME:
-                break  # an interruption dropped the pause and cleared the buffer
+                # An interruption dropped the pause and cleared the buffer: what this
+                # frame had left was not written. (Unlike /talk, the buffer goes whole,
+                # an uninterruptible frame's included: at most one datagram's worth.)
+                return False
             chunk = bytes(self._audio_send_buffer[:BYTES_PER_FRAME])
             del self._audio_send_buffer[:BYTES_PER_FRAME]
             # Cut BEFORE tagging: the 0x11 tag is per datagram, so pipecat's own
