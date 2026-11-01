@@ -543,6 +543,22 @@ def test_a_device_is_named_for_a_person_never_by_its_client_id():
                                 "platform": "iPad"}) == "Kitchen tablet"
 
 
+def test_every_page_with_the_certificate_link_says_how_to_trust_it():
+    # One collapsible block per kind of device, closed until tapped, no script needed;
+    # the failure page has no certificate link and no help.
+    _setup(FakeCli())
+    pages = {"choose": pairing._choose("K7Q2XM"), "app": pairing._app_code("SETUP"),
+             "used": pairing._used(), "expired": pairing._expired()}
+    for name, r in pages.items():
+        body = r.body.decode()
+        assert 'href="http://teaport.local/teaport-ca.crt"' in body, name
+        for device in ("iPhone or iPad", "Android", "Windows", "Mac"):
+            assert f"<summary>{device}</summary>" in body, (name, device)
+        assert body.count("<details>") == 4 and "<details open" not in body, name
+        assert "Certificate Trust Settings" in body and "Always Trust" in body, name
+    assert "<details>" not in pairing._failed().body.decode()
+
+
 def test_available_needs_a_front_door():
     _setup(FakeCli([DEV_A]), host="")
     assert pairing.available() is False

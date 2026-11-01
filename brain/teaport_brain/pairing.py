@@ -677,7 +677,9 @@ form{margin:0}button.alt{background:var(--surface);color:var(--text);border:1px 
 button[disabled]{opacity:.6}ol{color:var(--muted);padding-left:1.4em;margin:0 0 16px}
 textarea{width:100%;box-sizing:border-box;min-height:7.5em;padding:10px 12px;font:13px/1.4 ui-monospace,monospace;
 border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);color:inherit;
-word-break:break-all;resize:none}.small{font-size:14px}"""
+word-break:break-all;resize:none}.small{font-size:14px}
+details{border:1px solid var(--border-strong);border-radius:var(--radius);padding:8px 12px;margin:0 0 8px}
+summary{cursor:pointer;font-weight:600}details ol{margin:8px 0 4px}details p{margin:4px 0}"""
 
 # The choice page's buttons go grey on the first tap: a second tap would post again,
 # find the code spent, and replace the first answer (the handoff) with "already used".
@@ -699,6 +701,60 @@ else{try{document.execCommand("copy")&&done()}catch(e){}}})})()</script>"""
 def _ca_link() -> str:
     url = html.escape(f"http://{FRONTDOOR_HOST}/teaport-ca.crt", quote=True)
     return f'<a href="{url}">Teaport\'s certificate</a>'
+
+
+# How to trust the box's certificate, per kind of device: one <details> each, closed until
+# tapped (no script needed). The certificate's name is Caddy's ("Caddy Local Authority"),
+# so that is what the steps tell people to look for. Steps follow each system's own menu
+# names as of 2026; Android's differ between makers, so its steps name the search term.
+_CA_NAME = "Caddy Local Authority"
+
+
+def _ca_help() -> str:
+    link = _ca_link()
+    name = f"<strong>{_CA_NAME}</strong>"
+
+    def block(title: str, steps: list[str], note: str = "") -> str:
+        items = "".join(f"<li>{x}</li>" for x in steps)
+        return (f"<details><summary>{html.escape(title)}</summary><ol>{items}</ol>"
+                + (f'<p class="small">{note}</p>' if note else "") + "</details>")
+
+    return "".join((
+        _p("How to trust the box on:"),
+        block("iPhone or iPad", [
+            f"Open {link} in <strong>Safari</strong> and tap <strong>Allow</strong>.",
+            "Open <strong>Settings</strong>, tap <strong>Profile Downloaded</strong> (or "
+            "<strong>General</strong>, then <strong>VPN &amp; Device Management</strong>), "
+            "and install the profile.",
+            "Go to <strong>Settings</strong>, <strong>General</strong>, <strong>About</strong>, "
+            f"<strong>Certificate Trust Settings</strong>, and turn on {name}. This is a "
+            "separate step: without it the phone still does not trust the box."]),
+        block("Android", [
+            f"Download {link}.",
+            "Open <strong>Settings</strong> and search for <strong>CA certificate</strong> "
+            "(often under <strong>Security</strong>, then <strong>Encryption &amp; "
+            "credentials</strong>, then <strong>Install a certificate</strong>).",
+            "Choose <strong>CA certificate</strong>, confirm, and pick the downloaded "
+            "teaport-ca.crt."],
+            "Chrome and other browsers use it. Some apps ignore certificates you add."),
+        block("Windows", [
+            f"Download {link} and open it.",
+            "Choose <strong>Install Certificate</strong>, then <strong>Current User</strong>.",
+            "Choose <strong>Place all certificates in the following store</strong>, "
+            "<strong>Browse</strong>, and <strong>Trusted Root Certification "
+            "Authorities</strong>. Finish, and answer <strong>Yes</strong> to the warning.",
+            "Close and reopen your browser."],
+            "Firefox keeps its own list: <strong>Settings</strong>, <strong>Privacy &amp; "
+            "Security</strong>, <strong>View Certificates</strong>, <strong>Authorities"
+            "</strong>, <strong>Import</strong>, and tick <strong>Trust this CA to identify "
+            "websites</strong>."),
+        block("Mac", [
+            f"Download {link} and open it. Keychain Access adds it to your login keychain.",
+            f"In Keychain Access, double-click {name}, open <strong>Trust</strong>, and set "
+            "<strong>When using this certificate</strong> to <strong>Always Trust</strong>.",
+            "Close the window, enter your password, and reopen your browser."],
+            "Firefox keeps its own list: see the Firefox step under Windows."),
+    ))
 
 
 def _p(*parts: str) -> str:
@@ -729,7 +785,7 @@ def _choose(code: str) -> HTMLResponse:
         button(APP, "Use the OpenClaw app", ' class="alt"'),
         '<p id="wait" class="small" hidden>Starting, this can take a few seconds…</p>',
         _p("If your phone warns that the connection is not private, install ", _ca_link(),
-           " first, then scan a new code."))), script=_ONE_TAP)
+           " first, then scan a new code."), _ca_help())), script=_ONE_TAP)
 
 
 def _app_code(setup_code: str) -> HTMLResponse:
@@ -746,7 +802,7 @@ def _app_code(setup_code: str) -> HTMLResponse:
         "<li>Paste the code and connect.</li></ol>",
         _p("The app connects only if this phone trusts the box: install ", _ca_link(),
            " and turn on full trust for it in the phone's settings first. Then ask Teaport "
-           "for a new code if this one has run out."))), script=_COPY)
+           "for a new code if this one has run out."), _ca_help())), script=_COPY)
 
 
 def _failed() -> HTMLResponse:
@@ -763,13 +819,13 @@ def _used() -> HTMLResponse:
     return _page("This code was already used", _p(
         "Each code connects one device. If the dashboard did not open on this phone, it "
         "needs to trust the box first: install ", _ca_link(),
-        ", then ask Teaport for a new code."), 410)
+        ", then ask Teaport for a new code.") + _ca_help(), 410)
 
 
 def _expired() -> HTMLResponse:
     return _page("This code has expired", _p(
         "Ask Teaport for a new one, and scan it within a few minutes. If your phone warns "
-        "that the connection is not private, install ", _ca_link(), " first."), 410)
+        "that the connection is not private, install ", _ca_link(), " first.") + _ca_help(), 410)
 
 
 def _via_front_door(request: Request) -> bool:
