@@ -841,45 +841,145 @@ async def test_a_barge_in_waiting_on_its_final_holds_the_reply_s_pause():
 
 async def test_the_pause_s_cap_closes_a_held_barge_in_before_it_resumes():
     # The decoder far behind, the end bound frozen: the barge-in's final never comes
-    # before the pause's cap. At the cap it closes on the words in hand -- the reply still
-    # paused -- and only then does the reply resume.
-    import test_barge_pause as tbp
-    from pipecat.frames.frames import (TTSAudioRawFrame, VADUserStartedSpeakingFrame,
-                                       VADUserStoppedSpeakingFrame)
-    out, p, task, run = await tbp._pauser_rig(max_secs=1.0)
-    try:
-        await task.queue_frames([TTSAudioRawFrame(tbp._pcm(0), tbp.SR, 1, context_id="r")])
-        await task.queue_frame(BotStartedSpeakingFrame(), UP)
-        await asyncio.sleep(0.05)
-        s = Service()
-        await created(s)
-        s.barge_hold = lambda on: p.hold_resume(on, who="the turn's final")
-        p.before_cap = s.close_held
-        paused_at_final = []
-        pushed = s.push_frame
+    # before the pause's cap. At the cap it closes on the words in hand, and the start
+    # strategy sees that close with the reply still paused -- though the close goes down
+    # through seven processors' queues as data and the resume would come up past every
+    # queue, as a system frame, from right below the aggregator: the cap gives the close
+    # its grace. "Stop." then takes the turn, as a stop word over a paused reply does.
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.frames.frames import TTSAudioRawFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineParams, PipelineTask
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair)
+    from pipecat.processors.frame_processor import FrameProcessor
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
+    from test_turn_text_peek import Gated
+    from teaport_brain.agent_session import user_aggregator_params
+    from teaport_brain.barge_pause import (BargeInPauser, PauseAwareMinWordsStrategy,
+                                           PlayoutPauseFrame)
+    from teaport_brain.endpointing import LateStartTurnStopStrategy
+    from teaport_brain.taken_turn import TakenWords
 
-        async def push(frame, direction=None):
-            if isinstance(frame, FinalTranscriptionFrame):
-                paused_at_final.append(p.paused)
-            await pushed(frame) if direction is None else await pushed(frame, direction)
-        s.push_frame = push
-        await s.process_frame(BotStartedSpeakingFrame(), UP)
-        await task.queue_frame(VADUserStartedSpeakingFrame())
-        await vad_start(s)
-        await audio(s, 600)
+    class Hop(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+
+    class Transport(Hop):
+        """The output transport: announces a pause change both ways."""
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def playout_tail_secs(self):
+            return None
+
+        async def set_playout_paused(self, paused):
+            self.calls.append(paused)
+            await self.push_frame(PlayoutPauseFrame(paused=paused))
+            await self.push_frame(PlayoutPauseFrame(paused=paused), UP)
+
+    was = stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP
+    stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP = "slice", False
+    try:
+        stt = TeaportSTTService(url="ws://127.0.0.1:1/none")
+    finally:
+        stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP = was
+    start = PauseAwareMinWordsStrategy(min_words=2)
+    start.taken_words = TakenWords()
+    analyzer = Gated(sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=0.3))
+    analyzer.gate.set()
+    pair = LLMContextAggregatorPair(
+        LLMContext([{"role": "system", "content": "be brief"}]),
+        user_params=user_aggregator_params(
+            user_turn_strategies=UserTurnStrategies(
+                start=[start], stop=[LateStartTurnStopStrategy(turn_analyzer=analyzer)]),
+            user_turn_stop_timeout=3600))
+    out = Transport()
+    p = BargeInPauser(out, resume_secs=0.8, max_secs=1.5)
+    stt.barge_hold = lambda on: p.hold_resume(on, who="the turn's final")
+    p.before_cap = stt.close_held
+    seen = []
+    strategy_frame = start.process_frame
+
+    async def spy(frame):
+        if isinstance(frame, PlayoutPauseFrame):
+            seen.append("paused" if frame.paused else "resumed")
+        elif isinstance(frame, FinalTranscriptionFrame):
+            seen.append(frame.text)
+        return await strategy_frame(frame)
+    start.process_frame = spy
+    task = PipelineTask(Pipeline([stt] + [Hop() for _ in range(7)] + [pair.user(), p, out]),
+                        params=PipelineParams(audio_in_sample_rate=SAMPLE_RATE),
+                        cancel_on_idle_timeout=False)
+    started = asyncio.Event()
+
+    @task.event_handler("on_pipeline_started")
+    async def _started(_task, _frame):
+        started.set()
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        stt._websocket = WireRecorder()
+        stt._session_origin = stt._sent_samples
+        await created(stt)
+        await task.queue_frames([TTSAudioRawFrame(b"\0" * 640, SAMPLE_RATE, 1, context_id="r")])
+        await out.push_frame(BotStartedSpeakingFrame(), UP)
+        await asyncio.sleep(0.1)
+        await task.queue_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        for _ in range(600 // CHUNK_MS):
+            await task.queue_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
+                                                      num_channels=1))
         await asyncio.sleep(0.4)
-        await task.queue_frame(VADUserStoppedSpeakingFrame())
-        await vad_stop(s)
-        await preview(s, 600, "")                     # held
-        await delta(s, " Stop.", 450)                 # in hand; the final never comes
-        await asyncio.sleep(1.0)                      # past the cap
-        assert s.finals() == [("Stop.", 1)], s.finals()
-        assert paused_at_final == [True], "closed after the reply resumed"
-        assert [c[1] for c in out.calls] == [True, False], out.calls
-        assert not s._turns
+        await task.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
+        for _ in range(50):
+            if commits(stt):
+                break
+            await asyncio.sleep(0.02)
+        assert len(commits(stt)) == 1 and stt._turns, "the stop over the bot commits a turn"
+        await preview(stt, stt._turns[-1].at_ms, "")      # held
+        await delta(stt, " Stop.", 400, start=100)        # in hand; the final never comes
+        assert p.paused and p._holds == {"the turn's final"}
+        await asyncio.sleep(2.0)                          # past the cap
+        assert seen[:2] == ["paused", "Stop."], f"the close came after the resume: {seen}"
+        assert p.cancels == 1 and p.resumes == 0, (p.cancels, p.resumes)
+        assert start.taken_words.why("Stop.") is None and not stt._turns
     finally:
         await task.cancel()
         await run
+
+
+async def test_the_cap_s_close_says_what_became_of_a_turn_before_the_barge_in():
+    # A turn before the held barge-in, its final still to come: finals settle in order,
+    # so at the cap it settles as its provisional text, ahead of its final -- and its log
+    # line says so, not that it held the pause.
+    s = Service()
+    await created(s)
+    s.barge_hold = lambda on: None
+    assert await s.close_held() is False, "nothing held, nothing closed"
+    await turn(s)                                     # at 1000
+    await preview(s, 1000, " hi there")
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)                                 # the barge-in, at 1600
+    await preview(s, 1600, "")                        # held
+    await delta(s, " Stop.", 1400)
+    lines, sink = _lines()
+    try:
+        assert await s.close_held() is True
+    finally:
+        stt_mod.logger.remove(sink)
+    first = next(line for line in lines if "VAD stop 1:" in line)
+    assert ("its final not waited for: a barge-in after it closes at the reply's pause "
+            "cap" in first and "settled as its provisional text; any correction its "
+            "final would have made is lost" in first), first
+    second = next(line for line in lines if "VAD stop 2:" in line)
+    assert "the reply's pause at its cap" in second and "closed on the 1 word" in second
+    assert s.finals() == [("hi there", 1), ("Stop.", 2)] and not s._turns, s.finals()
 
 
 async def test_two_held_barge_ins_hold_the_pause_until_the_last_one_closes():

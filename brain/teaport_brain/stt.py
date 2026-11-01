@@ -2523,21 +2523,25 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._settle_turn(turn, timed_out=not final)
             await self._time_final()
 
-    async def close_held(self):
+    async def close_held(self) -> bool:
         """The reply's barge-in pause is at its cap (barge_pause.BargeInPauser.before_cap,
-        wired by build_agent_session) and will resume now: every turn up to the last one
-        holding it settles first -- one waiting on its final closes on the words in hand
-        -- so that close is decided with the reply still paused, not by the unpaused
-        guard after it (the cap, counted from the pause, comes before the final's own
-        backstop, counted from the commit)."""
+        wired by build_agent_session) and will resume: every turn up to the last one
+        holding it settles first -- one waiting on its final closes on the words in hand,
+        and one before it, finals settling in order, as its provisional text, its final
+        not waited for -- so that close is decided with the reply still paused, not by
+        the unpaused guard after it (the cap, counted from the pause, comes before the
+        final's own backstop, counted from the commit). Whether anything closed: the
+        pauser then gives the close its grace to reach the start strategy before it
+        resumes."""
         held = [t.at_ms for t in self._turns if t.holds]
         if not held:
-            return
+            return False
         self._settle_through = max(held)
         try:
             await self._finalize_turns()
         finally:
             self._settle_through = None
+        return True
 
     def _final_overdue(self, turn: _Turn) -> bool:
         """The turn's final has had _FINAL_TIMEOUT_MS past its position by the engine's
@@ -2577,8 +2581,13 @@ class TeaportSTTService(WebsocketSTTService):
         final = "".join(w[0] for w in turn.words).strip()
         if timed_out:
             self._final_timeouts += 1
-            what = ("the reply's pause at its cap" if self._settle_through is not None
-                    else "final timeout")
+            if self._settle_through is None:
+                what = "final timeout"
+            elif turn.holds:
+                what = "the reply's pause at its cap"
+            else:
+                what = ("its final not waited for: a barge-in after it closes at the "
+                        "reply's pause cap, and finals settle in order")
             head = (f"[TURN] VAD stop {turn.stop_n}: {what}, "
                     f"{time.monotonic() - turn.preview_at:.2f}s after the preview (position "
                     f"{turn.at_ms} ms; end_through_ms {self._end_through}, "
@@ -2597,7 +2606,9 @@ class TeaportSTTService(WebsocketSTTService):
                                f"hand, {turn.deferred}")
                 await self._close_deferred(turn, final)
             else:
-                logger.warning(f"{head} -- settled as its provisional text")
+                logger.warning(f"{head} -- settled as its provisional text"
+                               + ("; any correction its final would have made is lost"
+                                  if self._settle_through is not None else ""))
             return
         kind, added, dropped = compare_turn_text(turn.asked, final)
         late = len(turn.words) - turn.asked_n

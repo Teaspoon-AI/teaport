@@ -32,7 +32,9 @@
 #     after the line went quiet -- which, with the VAD's own stop delay, is a stall of
 #     about ENDPOINT_STOP_SECS + TEAPORT_BARGE_PAUSE_RESUME_S (~1.0 s at 0.2 + 0.8) for
 #     a cough. A blip under 250 ms resumes after 0.3 s. TEAPORT_BARGE_PAUSE_MAX_S caps a
-#     pause from its start.
+#     pause from its start; a barge-in the STT still holds there (stt.py TURN TEXT)
+#     closes on the words in hand first, and the reply resumes _FINAL_GRACE_S after
+#     that close, so its words are decided paused.
 #
 # THE JUDGE (#224, TEAPORT_BARGE_JUDGE). Words that would start the turn over a paused
 # reply -- "Okay.", "Mm-hmm.", as well as "Wait, what?" -- do not start it at once:
@@ -442,16 +444,30 @@ class BargeInPauser(FrameProcessor):
     async def _cap(self):
         await asyncio.sleep(self._max_secs)
         self._cap_task = None
+        why = f"pause cap {self._max_secs:.1f}s"
         if self._holds and self.before_cap is not None:
             # Whoever still holds it decides first, while the reply is paused: the STT
             # closes a barge-in still waiting on its final on the words in hand
             # (stt.close_held, wired by build_agent_session).
+            closed = False
             try:
-                await self.before_cap()
+                closed = await self.before_cap()
             except Exception as e:  # noqa: BLE001 -- the cap must still resume
                 logger.warning("BARGE-PAUSE: the cap's close of the held words failed "
                                f"({e!r})")
-        await self._resume(f"pause cap {self._max_secs:.1f}s")
+            if closed and self._paused:
+                # The close goes down the pipeline as data, through each processor's
+                # queue; the resume would go up from the transport as a system frame,
+                # past every queue, and could reach the start strategy first -- the
+                # words then judged as over a reply already playing. So the grace a
+                # close with no turn in it gets: the barge-in's interruption, or that
+                # close itself (on_final_without_turn), ends the pause sooner -- and this
+                # wait with it (_end).
+                self._cap_task = asyncio.current_task()
+                await asyncio.sleep(_FINAL_GRACE_S)
+                self._cap_task = None
+                why += f", {_FINAL_GRACE_S:.2f}s after the held words' close"
+        await self._resume(why)
 
     @staticmethod
     def _cancel(task):
