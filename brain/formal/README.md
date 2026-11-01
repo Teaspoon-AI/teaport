@@ -755,6 +755,7 @@ after a commit may come before that commit's preview. The brain closes turns at 
 | `noTimeout` | a final waits for the bound however long | | | | | | ✗ | |
 | `noTrim` | a preview's words an earlier turn's preview still vouches for are asked again | | | | | | | ✗ |
 | `noOrder` | a turn after one that put nothing with words on goes on at its preview | | | | | | | ✗ |
+| `noPeekOwed` | a peek adopted after the turn that owed words settled goes on at its preview | | | | | | | ✗ |
 
 `NoWordTwice` (no word in two places) is checked with the shipped rows. `NoDoubleDeliver`
 counts what each turn delivers downstream -- its provisional, or, when it waits on its
@@ -764,7 +765,9 @@ half a second apart) is answered with the turn before's words the main stream ha
 `noTrim` asks a word the turn before vouched for in both (seen twice in 301 turns on
 377508d, before `_past_earlier`); `noOrder` lets a turn go on at its preview while the turn
 before, which put nothing with words on, still has its final to come, whose words then go
-on again, after it (the re-review's S2). The code trims an earlier turn's owed words in
+on again, after it (the re-review's S2); `noPeekOwed` adopts a peek whose preview was
+taken while a turn owed words, after that turn settled (`ss_peek_freeze` found it; the
+peek now remembers, `_Peek.owed`). The code trims an earlier turn's owed words in
 their order within the preview's front run; with every word unique here that is the
 model's set subtraction (`Owed`).
 
@@ -803,7 +806,7 @@ Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio 
 word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
 ~20 s; `ss_shipped_freeze` ~9.4M (the bounds frozen or moving, previews lossy), ~1-3 min; the
 witnesses and rejected rows under 1.2M each. `--full` adds three words: `ss_shipped_full`
-~19M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~78M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
+~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
 on five cores).
 
 ### Known limits of this model

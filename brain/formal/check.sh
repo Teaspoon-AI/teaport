@@ -334,8 +334,9 @@ run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the pe
 run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
 run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleDeliver — a later preview's words the turn before still expects, asked again)"
 run SttSlice.tla ss_noOrder         "(expected: FAILS NoDoubleDeliver — a turn after one that put nothing with words on goes on at its preview: its words delivered twice, out of order)"
+run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed)"
 if [ "$FULL" = 1 ]; then
-  run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~19M states)"
+  run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
 fi

@@ -88,6 +88,10 @@
 (*                           its preview (fails NoDoubleDeliver: its        *)
 (*                           preview has the earlier turn's unsent words,   *)
 (*                           which that turn's final delivers again).       *)
+(*          "noPeekOwed"  -- a peek adopted after the turn that owed words      *)
+(*                           settled goes on at its preview (fails          *)
+(*                           NoDoubleDeliver: that preview was taken while  *)
+(*                           the word was owed, and holds it).              *)
 (*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
 (* MaxCommits, pos <= MaxPos, stops <= MaxStops.                            *)
@@ -107,7 +111,7 @@ CONSTANTS MaxPos,      \* the audio the client sends, in steps
                        \* ("complete": false)
           DESIGN       \* "shipped" | "arrival" | "interimAll" | "decoded" | "noVouch"
                        \* | "endOnly" | "noStartWait" | "endMargin" | "peekAsTurn"
-                       \* | "noDrop" | "noTimeout" | "noTrim" | "noOrder"
+                       \* | "noDrop" | "noTimeout" | "noTrim" | "noOrder" | "noPeekOwed"
 
 Words == 1..NWords
 Min(a, b) == IF a < b THEN a ELSE b
@@ -152,7 +156,7 @@ Turn == [at: 0..MaxPos, words: SUBSET Words, previewed: BOOLEAN, asked: SUBSET W
          deferred: BOOLEAN]
 Commit == [peek: BOOLEAN, at: 0..MaxPos, turn: 0..MaxCommits, stop: 0..MaxStops,
            dropped: BOOLEAN, resumed: BOOLEAN, previewed: BOOLEAN, asked: SUBSET Words,
-           pv: SUBSET Words]
+           pv: SUBSET Words, owed: BOOLEAN]
 
 \* The position a turn's words start at: the turn before it, or the session's start.
 Lo(ts, k) == IF k = 1 THEN 0 ELSE ts[k - 1].at
@@ -234,7 +238,8 @@ NewTurn(at, mine) == [at |-> at, words |-> mine, previewed |-> FALSE, asked |-> 
                       expect |-> {}, final |-> FALSE, fwords |-> {}, timedOut |-> FALSE,
                       deferred |-> FALSE]
 TurnCommit(t, at) == [peek |-> FALSE, at |-> at, turn |-> t, stop |-> 0, dropped |-> FALSE,
-                      resumed |-> FALSE, previewed |-> FALSE, asked |-> {}, pv |-> {}]
+                      resumed |-> FALSE, previewed |-> FALSE, asked |-> {}, pv |-> {},
+                      owed |-> FALSE]
 \* _turn_at: the open words that end before `at` ("arrival": all of them; "endMargin":
 \* those ending less than M past it).
 Mine(at) == CASE DESIGN = "arrival"   -> open
@@ -303,7 +308,7 @@ Stop ==
             ELSE /\ commits' = Append(commits, [peek |-> TRUE, at |-> pos, turn |-> 0,
                                                 stop |-> stops + 1, dropped |-> FALSE,
                                                 resumed |-> FALSE, previewed |-> FALSE,
-                                                asked |-> {}, pv |-> {}])
+                                                asked |-> {}, pv |-> {}, owed |-> FALSE])
                  /\ peekIdx' = Len(commits) + 1
                  /\ UNCHANGED <<turns, open, atStop>>
        ELSE UNCHANGED <<commits, turns, open, peekIdx, atStop>>
@@ -312,7 +317,8 @@ Stop ==
 \* A turn closes: on the stop's peek if it is out and the stop's (_adopt_peek), else a
 \* commit now (_take_turn) -- a verdict, a stop over the bot, the backstop with the VAD
 \* stuck. An adopted peek's preview in hand: the turn takes back the open words it
-\* vouched for (_push_turn's reclaim) and is made final at once if it can be.
+\* vouched for (_push_turn's reclaim) and is made final at once if it can be; it waits
+\* on its final if an earlier turn owed words when that preview came, or does now.
 Close ==
     /\ IF peekIdx /= 0 /\ commits[peekIdx].stop = stops
        THEN LET c == commits[peekIdx]
@@ -320,7 +326,8 @@ Close ==
                 t0 == [NewTurn(c.at, mine) EXCEPT
                           !.previewed = c.previewed, !.asked = c.asked,
                           !.expect = IF c.previewed /\ Vouch THEN c.pv \ mine ELSE {},
-                          !.deferred = c.previewed /\ OwedBefore(c.at)]
+                          !.deferred = c.previewed /\ ((c.owed /\ DESIGN /= "noPeekOwed")
+                                                        \/ OwedBefore(c.at))]
                 back == IF c.previewed THEN {i \in open \ mine : Vouched(t0, i)} ELSE {}
                 t == [t0 EXCEPT !.words = mine \cup back, !.expect = t0.expect \ back]
             IN /\ turns' = IF c.previewed THEN Finalize(Append(turns, t), seen)
@@ -397,7 +404,8 @@ RecvPreview ==
                /\ commits' = IF c.dropped THEN commits
                              ELSE [commits EXCEPT ![k].previewed = TRUE, ![k].pv = pv,
                                                   ![k].asked = {i \in open : E[i] < c.at}
-                                                               \cup pv]
+                                                               \cup pv,
+                                                  ![k].owed = OwedBefore(c.at)]
     /\ chan' = Tail(chan)
     /\ UNCHANGED <<engine, open, seen, speaking, stops, peekIdx, atStop, split,
                    lateInterim>>
