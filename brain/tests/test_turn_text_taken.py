@@ -190,6 +190,54 @@ async def test_two_commits_before_their_handlers_run_are_each_on_record():
         [m["content"] for _, m in c._commits])
 
 
+# ---- the session's wiring ---------------------------------------------------------------
+
+async def test_the_session_wires_one_taken_words_to_its_holders_and_the_speculation():
+    # build_agent_session in slice mode: one TakenWords for the corrector, run control and
+    # the start strategy, and its listener stands the speculation down. Segment mode
+    # builds none.
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
+    from test_client_notes import _Transport
+    from teaport_brain import agent_session, speculate as spec_mod, stt as stt_mod
+    from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
+    from teaport_brain.run_control import RunControlClaims
+    from teaport_brain.turn_text import TurnTextCorrector
+
+    def inner(session):
+        return list(next(p for p in session.task.pipeline.processors
+                         if isinstance(p, Pipeline)).processors)
+
+    saved = (stt_mod.TURN_TEXT, spec_mod.ENABLED)
+    stt_mod.TURN_TEXT, spec_mod.ENABLED = "slice", True
+    try:
+        procs = inner(agent_session.build_agent_session(_Transport(), context_notes=True,
+                                                        run_control=True))
+    finally:
+        stt_mod.TURN_TEXT, spec_mod.ENABLED = saved
+    corrector = next(p for p in procs if isinstance(p, TurnTextCorrector))
+    claims = next(p for p in procs if isinstance(p, RunControlClaims))
+    agg = next(p for p in procs if isinstance(p, LLMUserAggregator))
+    start = next(s for s in agg._user_turn_controller.user_turn_strategies.start
+                 if isinstance(s, PauseAwareMinWordsStrategy))
+    taken = corrector.taken_words
+    assert isinstance(taken, TakenWords)
+    assert claims.taken_words is taken and start.taken_words is taken
+    speculator = corrector.speculator
+    cancelled = []
+
+    async def cancel(reason):
+        cancelled.append(reason)
+    speculator.cancel = cancel
+    await taken.took("stop the timer", "taken by OpenClaw's run control")
+    assert cancelled == ["the words were taken by OpenClaw's run control"], cancelled
+
+    plain = inner(agent_session.build_agent_session(_Transport(), context_notes=True,
+                                                    run_control=True))
+    assert not any(isinstance(p, TurnTextCorrector) for p in plain)
+    assert next(p for p in plain if isinstance(p, RunControlClaims)).taken_words is None
+
+
 # ---- a speculation ahead of any turn has an owner --------------------------------------
 
 async def test_taken_words_stand_down_the_speculation_asked_on_them():
