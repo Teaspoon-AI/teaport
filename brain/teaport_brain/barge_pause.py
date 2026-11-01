@@ -652,6 +652,9 @@ class BargeInJudgeGate(FrameProcessor):
         # Words judged CONTINUE, until their segment closes: the final that repeats an
         # interim's verdict is not asked again, nor does it cut the resumed reply.
         self._continued = None
+        # The pause ended (its cap) while a verdict was awaited: the held words wait for
+        # it rather than go on unjudged (process_frame).
+        self._past_pause = False
         # Tallies, for the log and the tests.
         self.verdicts = {CONTINUE: 0, STOP: 0, ANSWER: 0, None: 0}
 
@@ -666,13 +669,26 @@ class BargeInJudgeGate(FrameProcessor):
                 frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
             self._turn_open = isinstance(frame, UserStartedSpeakingFrame)
         new_turn = isinstance(frame, (InterruptionFrame, EndFrame, CancelFrame))
-        if new_turn or isinstance(frame, BotStoppedSpeakingFrame) \
-                or (isinstance(frame, PlayoutPauseFrame) and not frame.paused):
-            # The turn opened some other way, the reply is over, or the pause ended (a
-            # resume the judge did not ask for: its cap): what is held goes on as it
-            # came, to be counted as it always was. A verdict to carry on outlives the
-            # resume it asked for and the reply's end -- its final may still be on its
-            # way, and its segment's close ends it -- but not a new turn.
+        pause_end = isinstance(frame, PlayoutPauseFrame) and not frame.paused
+        if pause_end and self._held and self._task is not None:
+            # The pause ended while a verdict is awaited -- a resume the judge did not
+            # ask for: the pause's cap. Let on now, a lone word ("What?") would be
+            # dropped by the word count whatever the verdict, which commonly lands a
+            # judge's time (p50 0.2-0.3 s) after the cap. So the words wait for it, as
+            # long as the judge's own wait bounds it, and a STOP or ANSWER then takes
+            # the turn over the resumed reply (PauseAwareMinWordsStrategy reads the mark
+            # whether or not it is paused). The cap stays the bound on the pause.
+            async with self._lock:
+                if self._held and self._task is not None:
+                    self._past_pause = True
+                    logger.debug("BARGE-JUDGE: the pause ended under a pending verdict "
+                                 "-- the words wait for it")
+        elif new_turn or isinstance(frame, BotStoppedSpeakingFrame) or pause_end:
+            # The turn opened some other way, the reply is over, or the pause ended with
+            # no verdict awaited: what is held goes on as it came, to be counted as it
+            # always was. A verdict to carry on outlives the resume it asked for and the
+            # reply's end -- its final may still be on its way, and its segment's close
+            # ends it -- but not a new turn.
             async with self._lock:
                 await self._release("the pause is over")
                 if new_turn:
@@ -686,9 +702,10 @@ class BargeInJudgeGate(FrameProcessor):
             if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) \
                     and frame.text.strip():
                 if self._strategy.stops(frame.text) \
-                        or not self._strategy.paused_for_judging():
+                        or not (self._strategy.paused_for_judging() or self._past_pause):
                     # "Stop." while it decides, or the reply would be over by now: no
                     # verdict to wait for, the words take the turn as they would have.
+                    # Past the cap they wait for the verdict asked before it.
                     await self._release("a stop word" if self._strategy.stops(frame.text)
                                         else "the reply would be over")
                 else:
@@ -756,6 +773,7 @@ class BargeInJudgeGate(FrameProcessor):
     async def _carry_on(self, said: str):
         """CONTINUE: the held words are dropped, and the reply resumes as for a cough."""
         held, self._held = self._held, []
+        self._past_pause = False
         # The open segment's words, if the held ones end in one: its final is still to
         # come, and is that segment's close when it does.
         self._continued = _key(_open_words(held)) or None
@@ -777,6 +795,7 @@ class BargeInJudgeGate(FrameProcessor):
         task, self._task = self._task, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
+        self._past_pause = False
         if not self._held:
             return
         held, self._held = self._held, []

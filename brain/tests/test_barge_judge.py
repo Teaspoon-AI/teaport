@@ -369,6 +369,57 @@ async def test_a_marked_verdict_starts_the_turn_even_after_the_pause_ended():
         assert await feed(_released(rig)[-1])
 
 
+async def _cap(rig):
+    """The pause's cap: the transport says the resume both ways -- the strategy below
+    the gate sees it first, then the gate."""
+    await rig.strategy.process_frame(PlayoutPauseFrame(paused=False))
+    await rig.task.queue_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+
+
+async def test_a_verdict_slower_than_the_cap_still_takes_the_turn():
+    # The cap resumes the reply while the judge is still deciding a lone "What?" (the
+    # judge's p50 on the box is 0.2-0.3 s). Let on at the cap, the word would go to the
+    # word count and be dropped; it waits for the verdict, and the ANSWER takes the turn.
+    judge = _Judge({"What": ANSWER}, delay=0.3)
+    async with GateRig(judge, min_words=2, wait=1.2) as rig:
+        await rig.task.queue_frame(interim("What"))
+        await asyncio.sleep(0.1)
+        await _cap(rig)
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(final("What"))    # its final, after the cap
+        await asyncio.sleep(0.05)
+        assert rig.out() == [], "held past the cap until the verdict"
+        await asyncio.sleep(0.3)
+        assert judge.asked == ["What"] and rig.gate.verdicts[ANSWER] == 1
+        feed = _starts(rig.strategy)
+        assert await feed(_released(rig)[-1]), "the ANSWER must take the turn"
+
+
+async def test_past_the_cap_a_judge_that_never_answers_lets_the_words_on_in_its_time():
+    judge = _Judge({"What": ANSWER}, delay=5.0)
+    async with GateRig(judge, min_words=2, wait=WAIT_S) as rig:
+        await rig.task.queue_frame(final("What"))
+        await asyncio.sleep(0.05)
+        await _cap(rig)
+        await asyncio.sleep(WAIT_S + 0.15)
+        assert rig.out() == [("final", "What")], rig.out()
+        assert rig.gate.verdicts[None] == 1
+        feed = _starts(rig.strategy)
+        assert not await feed(_released(rig)[-1]), "no verdict: the word count decides"
+
+
+async def test_a_cap_with_no_verdict_awaited_lets_the_words_on_at_once():
+    # A CONTINUE already given: nothing is awaited, so the cap lets on what is held as
+    # it always did (here nothing: the CONTINUE dropped it).
+    judge = _Judge({"Okay": CONTINUE})
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(interim("Okay"))
+        await asyncio.sleep(0.15)
+        await _cap(rig)
+        await asyncio.sleep(0.05)
+        assert not rig.gate._past_pause and rig.gate._held == []
+
+
 async def test_a_single_backchannel_is_judged_and_the_reply_carries_on():
     judge = _Judge({"Yeah.": CONTINUE})
     async with GateRig(judge, min_words=2) as rig:

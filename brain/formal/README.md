@@ -2597,6 +2597,10 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 What is not modelled:
 - The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
 - The 8 s pause cap: a caller still talking keeps the pause; the cap ends it as a pause end.
+  A cap that lands while a verdict is awaited resumes the reply, and the held words wait
+  for that verdict (bounded by the judge's own wait): a STOP or ANSWER then takes the
+  turn over the resumed reply. The model has no cap, so `ResumeP` never runs under a
+  pending verdict here; `test_barge_judge.py` covers that path.
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.
