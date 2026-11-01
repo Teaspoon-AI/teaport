@@ -99,6 +99,7 @@ from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
 from teaport_brain.taken_turn import TakenTurnCloser
 from teaport_brain.wifi_voice import WifiSetupVoice
+from teaport_brain.pair_device import DevicePairing
 from teaport_brain.tools import (
     AGENT_FIRST,
     ANSWER_TOOLS,
@@ -622,6 +623,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
+                        via: str | None = None,
                         host=None,
                         run_control: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
@@ -658,6 +660,10 @@ def build_agent_session(transport, *, voice: str | None = None,
       over the shared values). Only the turn-taking and a tool call's filler caption
       (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
+    - via: the named bridge a "talk" session comes through ("discord":
+      host_context.NAMED_CLIENTS, its ?client=), None for the plugin and the room. A
+      bridge relays someone far from the box: no tool that needs someone at it
+      (pair_device) is offered.
     - host: what the OpenClaw host composed for this session (host_context.HostContext:
       a Talk session's session_config frame, or what the plugin's voice-context route
       gives every other front end, host_context.fetch). Its instructions start the
@@ -722,7 +728,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt,
                            host_schemas=host_tool_schemas(host.tools) if host else (),
-                           run_control=run_control)
+                           run_control=run_control, front_end=front_end, via=via)
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
@@ -732,6 +738,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # It speaks the voice's language, read live (a switch_voice switches it too).
     wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
             if any(t.name == "wifi_setup" for t in session_tools) else None)
+    # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
+    # that tool is active (switched on, a gateway, the room or a Talk session).
+    pairing = (DevicePairing() if any(t.name == "pair_device" for t in session_tools)
+               else None)
     # Words something else answers -- Wi-Fi setup's, OpenClaw's run control's (built below
     # once the gate exists) -- go on emptied, and this ends the turn they opened
     # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
@@ -996,6 +1006,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
+    if pairing is not None:
+        pairing.notes = client_notes  # how an offer ended (pair_device._watch)
     # A final said while a consult runs waits for the plugin to say whether OpenClaw's
     # spoken run control took it (run_control.py, #230); what it took leaves a notice.
     claims = (RunControlClaims(lambda: followup_gate.consults_running, notes=client_notes)
@@ -1188,7 +1200,14 @@ def build_agent_session(transport, *, voice: str | None = None,
                    notes=client_notes,
                    # OpenClaw's Talk relay stores every final in the session a
                    # consult starts from (captions.py, caption_ahead).
-                   captions_ahead=front_end == "talk")
+                   captions_ahead=front_end == "talk",
+                   front_end=front_end, via=via, pairing=pairing)
+
+    if pairing is not None:
+        @task.event_handler("on_pipeline_finished")
+        async def _close_pairing(_task, _frame):
+            # Ended or disconnected: no code left on the screen, no task left waiting.
+            pairing.close()
 
     session = AgentSession(
         task=task,

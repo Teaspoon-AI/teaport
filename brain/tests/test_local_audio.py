@@ -749,8 +749,9 @@ def test_talk_status_says_who_holds_the_engine(monkeypatch):
 
 
 def test_uvicorn_request_lines_never_carry_the_token():
-    """The access line of a ?token= request and the WebSocket [accepted] line of every
-    Talk connect, formatted the way uvicorn formats them."""
+    """The access line of a ?token= request, the WebSocket [accepted] line of every
+    Talk connect and the access line of a pairing code's /p/<code>, formatted the way
+    uvicorn formats them."""
     import logging
     from uvicorn.logging import AccessFormatter, DefaultFormatter
     gs = _gateway()
@@ -780,13 +781,16 @@ def test_uvicorn_request_lines_never_carry_the_token():
                     "/talk/status?token=s3cr%2Bet&x=1", "1.1", 200)
         error.info('%s - "WebSocket %s" [accepted]', "127.0.0.1:6",
                    "/talk?features=volume,restart,local&token=s3cr%2Bet")
+        # A pairing code is the path itself (pairing.py, /p/<code>).
+        access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:7", "GET", "/p/K7QW2M", "1.1", 302)
     finally:
         for log, h in handlers.items():
             log.removeHandler(h)
             log.setLevel(saved[log][0])
             log.propagate = saved[log][1]
     assert lines == ['127.0.0.1:5 - "GET /talk/status?token=<redacted>&x=1 HTTP/1.1" 200 OK',
-                     '127.0.0.1:6 - "WebSocket /talk?features=volume,restart,local&token=<redacted>" [accepted]'], lines
+                     '127.0.0.1:6 - "WebSocket /talk?features=volume,restart,local&token=<redacted>" [accepted]',
+                     '127.0.0.1:7 - "GET /p/<redacted> HTTP/1.1" 302 Found'], lines
 
 
 def test_face_reply_tail_audio_is_not_the_thinking_sound():

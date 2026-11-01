@@ -444,6 +444,31 @@ async def test_the_reaction_is_to_the_note_that_asked_for_it():
     assert [type(f) for f in h.task.queued] == [LLMRunFrame]
 
 
+async def test_a_notice_is_context_only_unless_it_asks_to_be_said():
+    """add_notice: the brain's own line goes in at a quiet moment under its own tag; a
+    plain one never runs a turn, one with respond=True gets the notice order (a device
+    just paired, pair_device.py), retired at its read like any order."""
+    h = _harness()
+    h.notes.add_notice("Something happened that the model should know.")
+    await _settle(h)
+    tail = h.context.get_messages()[-1]["content"]
+    assert tail == f"{SYSTEM_NOTICE_TAG}\nSomething happened that the model should know."
+    assert h.task.queued == [], "a plain notice ran a turn"
+
+    h.notes.add_notice("The user's laptop is now connected.", respond=True)
+    await _settle(h)
+    msgs = h.context.get_messages()
+    assert msgs[-2]["content"] == f"{SYSTEM_NOTICE_TAG}\nThe user's laptop is now connected."
+    order = msgs[-1]["content"]
+    assert order == f"{SYSTEM_NOTICE_TAG}\n" + cn._NOTICE_ORDER.format(
+        json.dumps("The user's laptop is now connected."))
+    assert ORDER not in order, "a notice was given the app event's order"
+    assert [type(f) for f in h.task.queued] == [LLMRunFrame]
+    await h.trigger.process_frame(LLMTextFrame("Your laptop is connected."),
+                                  FrameDirection.DOWNSTREAM)
+    assert h.context.get_messages()[-1]["content"] != order, "the order was left live"
+
+
 async def test_an_order_nobody_read_is_withdrawn():
     """A reaction whose completion failed or said nothing would stay armed, and any
     later turn would execute it. Past REACT_MAX_WAIT_S it is withdrawn before the next
