@@ -566,6 +566,41 @@ async def test_a_word_the_preview_vouches_for_stays_in_its_turn():
     assert len(commits(s)) == 1, "a backstop committed the turn's own word"
 
 
+async def test_the_cut_s_margin_and_the_correction_hold_in_any_script():
+    # Cyrillic, as the Latin test above: the word the preview vouched for stays in its
+    # turn; and a final that differs is seen to (Cyrillic, Devanagari with its vowel
+    # signs, a run of Han characters).
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " какая", 300)
+    await delta(s, " сегодня", 600)
+    await vad_stop(s, stop_secs=0.2)
+    at = s._peek.at_ms
+    await preview(s, at, " погода")
+    await complete(s)
+    await delta(s, " погода", at + 10)
+    await progress(s, at + 300)
+    assert s.finals() == [("какая сегодня погода", 1)]
+    assert s.corrections() == [] and not s._open_words, s._open_words
+    assert stt_mod.compare_turn_text("Привет друг", "Привет") == ("drops", (), ("друг",))
+    assert stt_mod.compare_turn_text("नमस्ते दुनिया", "नमस्ते") == ("drops", (), ("दुनिया",))
+    assert stt_mod.compare_turn_text("你好世界", "你好")[0] == "changes"
+    assert stt_mod.compare_turn_text("Привет друг", "привет, друг!")[0] == "same"
+
+
+async def test_a_barge_in_in_another_script_goes_on_at_its_preview():
+    s = Service()
+    await created(s)
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)
+    await preview(s, 600, " Стоп.")
+    assert s.finals() == [("Стоп.", 1)], "a barge-in with words, deferred as if it had none"
+
+
 async def test_a_vouched_word_in_before_the_verdict_is_taken_back_from_the_open_turn():
     # The same word, arriving between the peek's preview and the verdict that adopts it:
     # the open turn had it (as every word of a turn not yet closed), and the turn takes it

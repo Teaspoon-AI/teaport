@@ -92,6 +92,7 @@ from teaport_brain.endpointing import (
 )
 from teaport_brain.settings import setting
 from teaport_brain.wake_words import find_wake
+from teaport_brain.word_tokens import word_tokens
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
 # strategies). The engine's realtime STT targets <500 ms delta delay; ~0.8 s end-to-end p99
@@ -858,14 +859,14 @@ class _Turn:
 
 
 def _words_of(text: str) -> list:
-    """The words a turn's texts are compared by: case and punctuation out, as the
-    measurement compared them (~/rbf/harness/textnorm.py)."""
-    return re.findall(r"[0-9a-z']+", (text or "").lower().replace("’", "'"))
+    """The words a turn's texts are compared by: case and punctuation out, in any script
+    (word_tokens, the brain's one rule)."""
+    return word_tokens(text)
 
 
 def _word_key(text: str) -> str:
-    """A word as the preview's and the main stream's are matched: its letters and digits,
-    lower case ("A.D.," -> "ad"); a main word's first piece is a prefix of it."""
+    """A word as the preview's and the main stream's are matched: its letters, marks and
+    digits, casefolded ("A.D.," -> "ad"); a main word's first piece is a prefix of it."""
     return "".join(_words_of(text))
 
 

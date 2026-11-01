@@ -143,6 +143,7 @@ from teaport_brain.endpointing import (
     SegmentResetFrame,
 )
 from teaport_brain.settings import setting
+from teaport_brain.word_tokens import word_tokens
 
 # On for a transport that can pause (SIP); there is none to pause on Talk.
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
@@ -445,17 +446,12 @@ class BargeInPauser(FrameProcessor):
         await super().cleanup()
 
 
-_WORD = re.compile(r"[^\w']+")
 _SHH = re.compile(r"s*h{2,}")
 
 
 def _tokens(text: str) -> list:
-    out = []
-    for w in _WORD.split((text or "").lower()):
-        w = w.strip("'")
-        if w:
-            out.append("shh" if _SHH.fullmatch(w) else w)
-    return out
+    """The words of `text` (word_tokens, the brain's one rule), every "shhh" as "shh"."""
+    return ["shh" if _SHH.fullmatch(w) else w for w in word_tokens(text)]
 
 
 def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
