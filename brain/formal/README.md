@@ -992,6 +992,14 @@ Run: each row is a few thousand states, ~1 s.
   wake on them, unit-tested); the echo guard's strip is abstracted as "the provisional's
   words were the bot's".
 - The speculation the taken words stand down is not modelled (`test_turn_text_taken.py`).
+- The pause's hold is the level `PauseEnds` guards on -- a barge-in turn waits on its
+  final -- for one turn and one pause. The code tells the pauser by message
+  (`stt.barge_hold`), and the pauser forgets every hold when it ends a pause itself (an
+  interruption, the cap, the session's end): a second pause, with the first turn still
+  waiting, was held by no one while only the first turn to hold signalled. Every turn that
+  starts holding now signals (`stt._hold_barge`). With one turn, one pause and no
+  pauser-side end, that is below this model's grain; it is unit-tested
+  (`test_a_held_barge_in_after_an_interruption_ended_the_pause_holds_the_new_one`).
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 

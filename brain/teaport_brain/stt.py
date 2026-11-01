@@ -2251,12 +2251,16 @@ class TeaportSTTService(WebsocketSTTService):
 
     def _hold_barge(self, turn: _Turn, on: bool):
         """`turn`, a barge-in waiting on its final, holds the reply's pause (`on`) or lets
-        it go, before its close goes out; the pause is held while any such turn waits."""
+        it go, before its close goes out; the pause is held while any such turn waits.
+        Every turn that starts holding says so, not only the first: the pauser forgets
+        its holds when it ends a pause itself (an interruption, the cap, the session's
+        end), and a pause begun after that, an earlier turn still waiting, is the new
+        turn's to hold. The pause is let go when the last one closes."""
         if turn.holds == on:
             return
         turn.holds = on
         self._barge_holds += 1 if on else -1
-        if self.barge_hold is not None and self._barge_holds == (1 if on else 0):
+        if self.barge_hold is not None and (on or self._barge_holds == 0):
             self.barge_hold(on)
 
     async def _close_deferred(self, turn: _Turn, words: str):

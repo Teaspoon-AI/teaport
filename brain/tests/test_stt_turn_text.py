@@ -994,14 +994,56 @@ async def test_two_held_barge_ins_hold_the_pause_until_the_last_one_closes():
         await vad_stop(s)
     await preview(s, 600, "")
     await preview(s, 1200, "")
-    assert held == [True]
+    assert held == [True, True], held                 # each holds (the pause may be new)
     await delta(s, " Stop.", 450)
     await progress(s, 600)                            # the first closes
-    assert held == [True], f"the first of two let go the pause: {held}"
+    assert held == [True, True], f"the first of two let go the pause: {held}"
     await delta(s, " now.", 1000)
     await progress(s, 1200)
-    assert held == [True, False] and s.finals() == [("Stop.", 1), ("now.", 2)], (
+    assert held == [True, True, False] and s.finals() == [("Stop.", 1), ("now.", 2)], (
         held, s.finals())
+
+
+async def test_a_held_barge_in_after_an_interruption_ended_the_pause_holds_the_new_one():
+    # The first barge-in waits on its final, holding the pause; the reply is interrupted
+    # some other way, and the pauser ends the pause and forgets its holds. The caller
+    # barges in again over the next reply, and that turn waits on its final too: it
+    # holds the new pause, whose quiet window must not resume it meanwhile.
+    import test_barge_pause as tbp
+    from pipecat.frames.frames import InterruptionFrame, TTSAudioRawFrame
+    out, p, task, run = await tbp._pauser_rig(max_secs=5.0)
+    try:
+        s = Service()
+        await created(s)
+        s.barge_hold = lambda on: p.hold_resume(on, who="the turn's final")
+        await s.process_frame(BotStartedSpeakingFrame(), UP)
+        await task.queue_frames([TTSAudioRawFrame(tbp._pcm(0), tbp.SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), UP)
+        await asyncio.sleep(0.05)
+        for n, at in ((1, 600), (2, 1200)):
+            await p.on_onset(True)                        # the pause
+            await vad_start(s)
+            await audio(s, 600)
+            await vad_stop(s)
+            await p.on_onset(False)
+            await preview(s, at, "")                      # held, its final to come
+            assert p.paused and p._holds == {"the turn's final"}, (n, p.paused, p._holds)
+            if n == 1:
+                await task.queue_frame(InterruptionFrame())   # the reply cut another way
+                await asyncio.sleep(0.05)
+                assert not p.paused and not p._holds
+        await asyncio.sleep(tbp.RESUME_S + 0.2)
+        assert p.paused, "the quiet window resumed the pause a held barge-in waits on"
+        await delta(s, " Stop.", 450)
+        await progress(s, 600)                            # the first closes
+        assert p._holds == {"the turn's final"}, p._holds
+        await delta(s, " now.", 1000)
+        await progress(s, 1200)                           # the second: the pause let go
+        assert not p._holds and s.finals() == [("Stop.", 1), ("now.", 2)], (
+            p._holds, s.finals())
+    finally:
+        await task.cancel()
+        await run
 
 
 async def test_a_lost_session_closes_a_deferred_turn_on_the_words_in_hand():
