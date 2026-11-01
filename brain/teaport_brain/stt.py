@@ -828,6 +828,9 @@ class _Peek:
     asked_n: int = 0
     msg: Optional[dict] = None    # the preview (an empty one, if the engine cut it short)
     seen: int = 0              # open words at its preview: later ones may be vouched for
+    # An earlier turn's final could still deliver words when its preview came, so its
+    # text may hold them: the turn that adopts it waits on its own final (_owed_before).
+    owed: bool = False
     dropped: bool = False      # the caller resumed: it is no one's
     turn: Optional["_Turn"] = None    # the turn that adopted it
 
@@ -2173,13 +2176,15 @@ class TeaportSTTService(WebsocketSTTService):
                      f"{'its preview in hand' if peek.previewed else 'its preview to come'}")
         if peek.previewed:
             await self._push_turn(peek.turn, peek.asked, peek.asked_n, peek.msg,
-                                  peek.commit, late=late)
+                                  peek.commit, late=late, owed=peek.owed)
 
     async def _push_turn(self, turn: _Turn, asked: str, asked_n: int, msg: dict,
-                         commit: _Commit, late: set = frozenset()):
+                         commit: _Commit, late: set = frozenset(), owed: bool = False):
         """A turn goes downstream on its provisional text (TURN TEXT), stamped with its
         commit's VAD stop, and waits for its final. `late`: open words (by id) that came
-        in after the preview, which it may vouch for (an adopted peek's)."""
+        in after the preview, which it may vouch for (an adopted peek's); `owed`: an
+        earlier turn could still deliver words when the preview came (an adopted peek's,
+        that turn perhaps final by now) -- the provisional may hold them."""
         turn.previewed = True
         turn.asked_n = asked_n
         turn.asked = asked
@@ -2210,8 +2215,9 @@ class TeaportSTTService(WebsocketSTTService):
               and not _words_of(self._callers(asked, turn.since))):
             # Nothing of the caller's: no words, or only the bot's own heard back.
             turn.deferred = "its preview over the bot's reply having had none of the caller's"
-        elif self._owed_before(turn.at_ms):
-            # An earlier turn's final may still deliver words: this one's go after them.
+        elif owed or self._owed_before(turn.at_ms):
+            # An earlier turn's final may still deliver words (or could when this preview
+            # came): this one's go after them.
             turn.deferred = "an earlier turn's words still to come"
         if turn.deferred:
             # Nothing goes on now: the turn closes on its final -- over the bot still the
@@ -2383,6 +2389,7 @@ class TeaportSTTService(WebsocketSTTService):
         else:
             peek.previewed, peek.msg, peek.asked, peek.asked_n = True, msg, asked, len(in_hand)
             peek.seen = len(self._open_words)
+            peek.owed = self._owed_before(at)
             if peek.dropped:
                 logger.debug(f"{self}: VAD stop {peek.n}'s peek answered after the caller "
                              "resumed -- no one's")

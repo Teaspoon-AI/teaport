@@ -873,6 +873,30 @@ async def test_a_turn_after_one_still_owing_its_words_waits_on_its_own_final():
     assert s.corrections() == []
 
 
+async def test_a_peek_previewed_while_a_turn_owed_words_waits_even_once_that_settled():
+    # The backstop's turn has an empty preview; the VAD stop's peek is answered with that
+    # turn's unsent word; then that turn's final delivers it, and only then the verdict
+    # adopts the peek. The peek's text was taken while the word was owed: the turn waits
+    # on its own final and does not deliver the word again.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 1000, the VAD stuck
+    await preview(s, 1000, "")
+    await audio(s, 300)
+    await vad_stop(s)                                         # the peek at 1300
+    at = s._peek.at_ms
+    await preview(s, at, " Yes. Please.")
+    await delta(s, " Yes.", 900)
+    await progress(s, 1000)                                   # the first turn's final
+    assert s.finals() == [("Yes.", NO_STOP)], s.finals()
+    await complete(s)                                         # adopts the peek
+    await delta(s, " Please.", 1250)
+    await progress(s, at + stt_mod._VOUCH_MS)                # ("Yes." still vouched for)
+    assert s.finals() == [("Yes.", NO_STOP), ("Please.", 1)], s.finals()
+
+
 async def test_a_wake_turn_after_room_talk_the_gate_kept_does_not_wait():
     # The gate asleep keeps the room's words (nothing goes on, and the final is left as
     # it went): a turn after it owes it nothing and goes on at its preview.
