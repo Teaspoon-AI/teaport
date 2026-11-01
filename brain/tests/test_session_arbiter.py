@@ -965,6 +965,52 @@ async def test_the_busy_line_is_one_framed_response_closed_only_after_it_played(
     _fresh()
 
 
+async def test_the_greeting_is_one_framed_response_done_only_after_it_played():
+    """The greeting goes out at connect, before a Talk client's mic has sent anything (the
+    iPhone app's mic starts after it), so OpenClaw's relay has no turn for it and fails the
+    session on unowned output. Framed like the busy line: start before the greeting, done
+    only once the greeting has played -- not when greet() returns, which is before."""
+    played = asyncio.Event()
+    ws = _WS({"client": "openclaw:a"})
+
+    class _Gate:
+        async def wait_until_delivered(self):
+            await played.wait()
+
+    class _Session:
+        followup_gate = _Gate()
+
+        async def greet(self):
+            ws.sent.append(b"greeting audio")       # what the pipeline sends meanwhile
+
+    task = await gs._greet_as_response(ws, _Session())
+    await asyncio.sleep(0.01)
+    assert ws.sent == [{"type": "response", "state": "start"}, b"greeting audio"], ws.sent
+    played.set()
+    await task
+    assert ws.sent[-1] == {"type": "response", "state": "done"}
+    assert not gs._GREETINGS                                      # nothing held after it
+
+
+async def test_a_client_gone_before_the_done_is_no_error():
+    ws = _WS({"client": "openclaw:a"})
+
+    async def gone(text):
+        raise RuntimeError("websocket closed")
+
+    class _Gate:
+        async def wait_until_delivered(self):
+            ws.send_text = gone
+
+    class _Session:
+        followup_gate = _Gate()
+
+        async def greet(self):
+            pass
+
+    await (await gs._greet_as_response(ws, _Session()))           # logged, not raised
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

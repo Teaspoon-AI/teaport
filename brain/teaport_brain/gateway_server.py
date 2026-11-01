@@ -185,6 +185,37 @@ def _close_with(websocket, code: int, reason: str) -> None:
     websocket.close = close_coded
 
 
+async def _greet_as_response(websocket, session) -> asyncio.Task:
+    """Greet a Talk client as one framed response: start, the greeting, then done once it
+    has played. The greeting is said at connect, before the client's mic has sent
+    anything, so OpenClaw's relay may have no turn to put it in yet, and it fails the
+    session on output nobody owns ("Realtime provider output has no live response owner";
+    plugin/provider.js, _onResponseMarker) -- as it did for the iPhone app, whose mic
+    starts after the greeting, while the dashboard's started first and hid it. Framed the
+    way the busy line is (_refuse); a start with no output yet is safe either way, since
+    the relay then gives the response the turn the mic opened, or a turn of its own.
+    Returns the task that sends the done, for a caller that must wait it out."""
+    await websocket.send_text(json.dumps({"type": "response", "state": "start"}))
+    await session.greet()
+
+    async def done():
+        try:
+            # Activity started by the greeting, then its end: the line has played (or
+            # was cut, which ends it too). After it, output goes back to the mic's turns.
+            await session.followup_gate.wait_until_delivered()
+            await websocket.send_text(json.dumps({"type": "response", "state": "done"}))
+        except Exception as e:  # noqa: BLE001 -- the client left first
+            logger.debug(f"greeting done not delivered: {e!r}")
+
+    task = asyncio.create_task(done())
+    _GREETINGS.add(task)        # held until it ends: the loop keeps only a weak reference
+    task.add_done_callback(_GREETINGS.discard)
+    return task
+
+
+_GREETINGS: set[asyncio.Task] = set()
+
+
 async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
                   voice: str | None = None, language: str | None = None) -> None:
     """End a /talk connection the arbiter refused. Nothing was built for it: no STT, no
@@ -445,7 +476,7 @@ async def run_relay_bot(websocket: WebSocket):
                 [OutputTransportMessageUrgentFrame(message={"type": "ready"})])
             return
         logger.info("OpenClaw relay client connected — greeting")
-        await session.greet()
+        greeted = await _greet_as_response(websocket, session)
         if session.should_end:
             # greet() spoke the can't-hear line instead of greeting. Nothing read this
             # before, so the session stayed up: the client saw a connected assistant
@@ -455,7 +486,7 @@ async def run_relay_bot(websocket: WebSocket):
             # disconnect. It never says "ready", so the plugin keeps notes out of a
             # session being torn down.
             logger.info("STT unavailable — ending the session after the warning plays")
-            await session.followup_gate.wait_until_delivered()
+            await greeted
             await session.task.cancel()
             return
         # The plugin sends notes only after this: the pipeline is running and the STT
