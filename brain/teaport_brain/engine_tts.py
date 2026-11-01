@@ -625,6 +625,7 @@ class EngineTTSService(TTSService):
         self._freezes: set = set()
         self._frozen_at = None
         self._frozen_from = None
+        self._frozen_lag = 0.0   # what still played after a stop began (a pause's lag)
         self._ctx_held_ns = 0
         # The clock instant pipecat's word baseline reads next, instead of the clock's
         # (start_word_timestamps: a context anchored on the frozen schedule).
@@ -801,12 +802,11 @@ class EngineTTSService(TTSService):
         would count them twice."""
         if held:
             if not self._freezes:
-                # `lag`: the stop takes effect that much later (a pause: what was sent
-                # before it still plays).
-                self._frozen_at = time.monotonic() + max(0.0, lag)
-                now = self._clock_ns()
-                self._frozen_from = self._stop_holds_from(
-                    None if now is None else now + round(max(0.0, lag) * 1e9))
+                self._frozen_at = time.monotonic()
+                self._frozen_from = self._stop_holds_from(self._clock_ns())
+                # `lag`: what still played after the stop began (a pause: what was sent
+                # before it). It is not stopped time: taken off what the stop moves.
+                self._frozen_lag = max(0.0, lag)
             self._freezes.add(source)
             return
         if source not in self._freezes:
@@ -820,14 +820,16 @@ class EngineTTSService(TTSService):
         # moves the whole reply's cut by a pause, the gate a held context's every pts
         # -- or its words carry the stop twice (formal/README: pp_late_ahead_heard).
         # A model already in the past stays in the past, so pacing is unchanged.
+        lag = self._frozen_lag
         if self._play_end:
-            self._play_end += max(0.0, time.monotonic() - self._frozen_at)
+            self._play_end += max(0.0, time.monotonic() - self._frozen_at - lag)
         now, since = self._clock_ns(), self._frozen_from
         if now is not None and since is not None:
+            stopped = max(0, now - since - round(lag * 1e9))
             if self._prev_audio_end_ns > since:
-                self._prev_audio_end_ns += max(0, now - since)
+                self._prev_audio_end_ns += stopped
             if self._initial_word_timestamp != -1:
-                self._ctx_held_ns += max(0, now - since)
+                self._ctx_held_ns += stopped
         self._frozen_at = self._frozen_from = None
 
     async def _hold_for_user_speech(self):

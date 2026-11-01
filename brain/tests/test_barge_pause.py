@@ -553,6 +553,17 @@ def test_the_tts_moves_a_reply_queued_behind_by_the_pause_less_its_lag():
         await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
         moved = (tts._prev_audio_end_ns - before) / 1e9
         assert abs(moved - 0.92) < 0.005, f"moved {moved:.3f}s: the pause less its lag"
+        # A pause shorter than its lag stopped nothing: nothing moves, and the model's
+        # clock never runs ahead of the wall's.
+        before = tts._prev_audio_end_ns
+        tts._play_end = time.monotonic() + 1.0
+        play_end = tts._play_end
+        await tts.process_frame(PlayoutPauseFrame(paused=True, lag_secs=0.08),
+                                FrameDirection.UPSTREAM)
+        assert tts._now() <= time.monotonic()
+        clock_ns[0] += 50_000_000
+        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        assert tts._prev_audio_end_ns == before and tts._play_end == play_end
 
     asyncio.run(run())
 
@@ -915,7 +926,9 @@ async def test_the_ledger_shifts_the_replies_the_resume_names_and_no_other():
     ] + b_frames + [
         (started("b"), 1.2, None),                       # B's context, no audio yet
         (PlayoutPauseFrame(paused=True), 1.5, OUT),
-        (PlayoutPauseFrame(paused=False, shift_secs=1.0, shifted=("a",)), 2.5, OUT),
+        # The transport names B too (its audio was handed before the resume); the ledger
+        # still moves only a turn whose audio it has seen pushed.
+        (PlayoutPauseFrame(paused=False, shift_secs=1.0, shifted=("a", "b")), 2.5, OUT),
     ])
     shifts = {t["ctx"]: t["pts_shift"] for t in L._turns}
     assert shifts == {"a": 1.0, "b": 0.0}, shifts

@@ -882,7 +882,10 @@ class TranscriptLedger(BaseObserver):
         if self._win_t0 is not None:
             self._win_t0 = t
         for turn in self._turns:
-            if turn["ctx"] in shifted:
+            # And only a turn with audio already pushed: an untagged turn (ctx None) still
+            # waiting for its first audio shares None with one that played, and is
+            # anchored after the resume.
+            if turn["ctx"] in shifted and turn["pushed"] > 0:
                 turn["pts_shift"] += max(0.0, shift)
 
     def _pts_heard(self, turn: dict, t: float):

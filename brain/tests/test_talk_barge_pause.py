@@ -246,25 +246,33 @@ async def test_a_write_woken_by_a_resume_the_next_pause_undoes_stays_held():
     assert await asyncio.wait_for(writer, 1.0) is True and sock.payload() == _pcm(0)
 
 
-async def test_a_pause_shifts_only_the_replies_still_to_play():
-    # r1 has played out when r2 is paused: only r2's words (and the ledger's cut for it)
-    # move. A finished reply has nothing left to move, and keeps no shift.
+async def test_a_later_sentence_of_a_paused_reply_keeps_its_shift():
+    # The reply was paused and resumed; its next sentence reaches the transport only after
+    # its earlier words were all released. The TTS leaves the stopped context's own words
+    # on their schedule, so the transport's shift must still be there for them.
+    from pipecat.frames.frames import TTSTextFrame
     async with TalkRig() as rig:
         await rig.speak()
-        await _at(rig, 2.3)                               # r1's 2 s are over
-        await rig.task.queue_frames([TTSStartedFrame(context_id="r2")]
-                                    + [TTSAudioRawFrame(_pcm(i), SR, 1, context_id="r2")
-                                       for i in range(5)]
-                                    + [TTSStoppedFrame(context_id="r2")])
-        await _at(rig, 2.6)
+        await _at(rig, 0.6)
         await rig.out.set_playout_paused(True)
-        await _at(rig, 3.0)
+        await _at(rig, 1.6)
         await rig.out.set_playout_paused(False)
-        await asyncio.sleep(0.05)
-        resume = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
-                  and isinstance(f, PlayoutPauseFrame) and not f.paused][0]
-        assert resume.shifted == ("r2",), resume.shifted
-        assert "r1" not in rig.out._shift_ns, rig.out._shift_ns
+        await _at(rig, 4.0)                             # r1's sentence and words are out
+        # Another reply's word goes by meanwhile (where a shift was once pruned).
+        other = TTSTextFrame("other", aggregated_by="word", context_id="r0")
+        other.pts = rig.out.get_clock().get_time()
+        await rig.task.queue_frames([other])
+        await asyncio.sleep(0.1)
+        shift = rig.out._shift_ns.get("r1", 0)
+        assert shift >= 0.8e9, f"r1's shift is gone: {rig.out._shift_ns}"
+        word = TTSTextFrame("later", aggregated_by="word", context_id="r1")
+        word.pts = rig.out.get_clock().get_time() + int(0.1e9)   # on the old schedule
+        t_queued = time.monotonic()
+        await rig.task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r1"), word])
+        await asyncio.sleep(0.1 + shift / 1e9 + 0.3)
+        t_later = [t for t, w in _words_out(rig) if w == "later"]
+        assert t_later and abs(t_later[0] - t_queued - 0.1 - shift / 1e9) <= 0.06, (
+            t_later, t_queued, shift)
 
 
 def test_the_timed_frames_awaited_are_bounded():
@@ -276,6 +284,30 @@ def test_the_timed_frames_awaited_are_bounded():
         f.pts = i + 1
         out._track_tail(f, FrameDirection.DOWNSTREAM)
     assert len(out._timed_ids) == _MAX_TIMED
+
+
+async def test_each_pause_has_a_guard_of_its_own():
+    # A write waiting out a pause near its guard, woken by a resume that a new pause
+    # follows in the same turn of the loop: the new pause gets the whole guard.
+    from teaport_brain import playout_pause
+    guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.4
+    try:
+        sock = _Socket()
+        out = _talk_transport(sock).output()
+        out._sample_rate = SR
+        out._playing.clear()
+        out._pause_seq += 1
+        writer = asyncio.create_task(out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)))
+        await asyncio.sleep(0.3)                          # most of the first guard
+        out._playing.set()
+        out._playing.clear()                              # a new pause at once
+        out._pause_seq += 1
+        await asyncio.sleep(0.25)
+        assert not writer.done(), "the new pause was ended on the first one's guard"
+        out._playing.set()
+        await asyncio.wait_for(writer, 1.0)
+    finally:
+        playout_pause._PAUSE_GUARD_S = guard
 
 
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
