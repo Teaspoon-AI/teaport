@@ -1142,7 +1142,7 @@ default = "segment"
 read = "startup"
 tier = "tuning"
 help = "What the words of a turn are. segment: each commit closes an engine segment, and the engine's final for it is the turn's text. slice: the engine keeps one continuous transcript that commits never change (its preview stream; an engine without it runs on segments as before); a turn is the words that end before its commit, answered at once on the words in hand plus the engine's preview of the rest, then checked against the transcript's own words a moment later (about 0.7 s on an Orin NX, up to 2 s on an Orin Nano), which correct the conversation's record where they differ. In slice mode the carry and the wait for the caller's pause are off; the silence hint stays."
-note = "Prototype: needs a teagram-engine with the preview stream (PROTOCOL3, \"transcription.preview\" in its capabilities)."
+note = "Prototype: needs a teaport-engine with the preview stream (\"transcription.preview\" in its capabilities; engine 1.7 or later)."
 
 [[settings]]
 name = "TEAPORT_STT_PREVIEW_AT_STOP"

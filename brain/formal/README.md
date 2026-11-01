@@ -729,8 +729,9 @@ progress), and the brain's half of it is `_take_turn`/`_turn_at`, `_peek_at_stop
 `_drop_peek`, `_adopt_peek`, `_push_turn`, `_vouch`, `_slice_delta`, `_handle_preview` and
 `_finalize_turns`. What a final then delivers is `TurnText.tla`'s.
 
-The engine is modelled weaker than PROTOCOL3 promises: a word's `end_ms` runs from its
-start to `WLEN` steps past it, so a commit can fall inside a word; a word is sent once the
+The engine is modelled weaker than it promises (teaport-engine #108): a word's `end_ms`
+runs from its start to `WLEN` steps past it, so a commit can fall inside a word; a word is
+sent once the
 decoder is past its `end_ms` or any time later -- but before the decoder is `D` past its
 start, the premise of the final's timeout; both bounds are as high as the engine may put
 them, or (`FREEZE`) held back, as 03e4223 froze the end bound through a pause; a preview
@@ -818,7 +819,8 @@ on five cores).
   preview's "light" where the main stream has "lighthouse") is not expressible; the brain matches by word text
   (the main word's first piece a prefix of the preview's), unit-tested in
   `test_stt_turn_text.py`. Pieces are not modelled: a word arrives whole, as its pieces do
-  (PROTOCOL3 section 2); that its later pieces follow it is unit-tested.
+  (the engine sends a word's pieces together, each with the word's positions); that its
+  later pieces follow it is unit-tested.
 - The margin is one step and `end_ms` the only estimate: a start estimate's error is not
   modelled (the code's `end_ms < P + 200` clause covers a start stamped at or past P).
 - The final's timeout is modelled on `decoded_through_ms`; its wall-clock half (for an

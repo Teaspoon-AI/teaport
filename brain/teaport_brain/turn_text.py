@@ -34,7 +34,8 @@
 #              The one re-push there is is the STT's own, for a provisional that pushed
 #              no words at all (stt.py, _settle_turn).
 #
-# No restart of a reply already asked. Measured (~/rbf/RESULTS2.md, spike 2b, 288 turns):
+# No restart of a reply already asked. Measured (jetson05, teaport-engine #108's spike,
+# 288 turns):
 # the final beats the provisional by 3 word errors in ~3000 words (259 vs 256), and the
 # provisional beats today's done (268), so the reply is already on words at least as good
 # as today's; a restart would cost those turns a whole time-to-first-token, and once any of

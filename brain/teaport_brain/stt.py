@@ -452,8 +452,9 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #            note -- the hold for the verdict, the wait for the caller's pause, the hint's
 #            re-prime floor, the carry -- exists because that close is irreversible and a
 #            misplaced one damages the words on both sides of it.
-#   slice    The engine's preview stream (teagram-engine, ~/rbf/PROTOCOL3.md; opt-in
-#            "preview": true, offered as "transcription.preview" in session.created): ONE
+#   slice    The engine's preview stream (teaport-engine 1.7 or later, teaport-engine
+#            #108; opt-in "preview": true in the session.update, offered as
+#            "transcription.preview" in session.created's capabilities): ONE
 #            continuous decode per session, which commits never touch. A commit at P (the
 #            audio sent so far) is a question: the engine answers it with one
 #            transcription.preview -- the text a finish at P would add now, decoded on a
@@ -468,8 +469,8 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #                           commit on jetson05's Orin NX, up to ~2 s on the box's Orin
 #                           Nano, whose decoder runs behind real time): the
 #                           authoritative text. It equalled the provisional on 97 % of the
-#                           288 turns measured on jetson05 (~/rbf/RESULTS2.md, "Spike
-#                           2b"), and the provisional was, overall, MORE accurate than
+#                           288 turns measured on jetson05 (teaport-engine #108's
+#                           spike), and the provisional was, overall, MORE accurate than
 #                           today's done (calls WER 14.8 vs 15.6 %), most of all at a
 #                           turn's first words: no decoder starts a turn from nothing.
 #            A word ending at or after P is the next turn's, even when it arrives before
@@ -497,8 +498,9 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 # 95.5 %; by word, end + 200, 95.5 % (the slice arm: 94.4 -> 95.5 %); by word, start or
 # end + 200, 95.9 %; +300 96.2 % for +0.08 s on the final's p90. On 03e4223 (288 turns)
 # every vouched rule gave 97.9 % against 96.5 % for end_ms alone. Slicing by audio_ms for
-# every word is worse (PROTOCOL3: 81.6 %; the caller's next word often starts before a
-# commit sent after they resumed): only a word the preview vouched for may.
+# every word is worse (81.6 % agreement in the engine's own measurement, teaport-engine
+# #108: the caller's next word often starts before a commit sent after they resumed):
+# only a word the preview vouched for may.
 #
 # Where the final differs from what was pushed, the STT says so (TurnTextFinalFrame) and
 # turn_text.TurnTextCorrector applies it, without a restart: see there. A provisional
@@ -518,15 +520,15 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #     may start a speculative reply that misses when that close adds its words: one
 #     wasted request, in this rare shape, left as it is.)
 # The words are the caller's; a preview that missed them must not lose them. A preview
-# the engine could not take whole ("complete": false, PROTOCOL3 difference 7: its text is
-# a held word's pieces) is no preview: nothing is speculated on it, and the turn closes
-# on its final, as the one over the bot does -- the final decides.
+# the engine could not take whole ("complete": false: it could not snapshot the decoder,
+# and its text is only a held word's pieces) is no preview: nothing is speculated on it,
+# and the turn closes on its final, as the one over the bot does -- the final decides.
 #
 # Nothing waits on a final: the provisional text is what the reply, the owed records and
 # the speculation run on, and the next turn is sliced whether the last is final or not.
 # Only the order of the finals does -- each settles after the one before -- and a final
 # can fail to come: an engine whose end_through_ms freezes through the pause after the
-# caller stops (teagram-engine 03e4223: until the next utterance starts) never passes a
+# caller stops (the engine's 03e4223 prototype: until the next utterance) never passes a
 # commit sent more than ~1.3 s after the stop, and a session's last commit perhaps never.
 # So a turn's final has _FINAL_TIMEOUT_MS past its position on the engine's
 # decoded_through_ms; then the turn settles as its provisional text ("[TURN] ... final
@@ -546,8 +548,8 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 # next turn whole). What stays: WHEN commits go out (the verdict, the hold, its expiry,
 # the stop over the bot, the backstop) -- the measured design kept the brain's commit
 # schedule -- and the trailing-silence hint, which still shortens the preview's pad
-# exactly as it shortens a finish's (PROTOCOL3: credited_ms; it never reaches the main
-# stream). Without it the engine credits its own fvad count, ~0 on a phone line, and the
+# exactly as it shortens a finish's (the engine answers with what it credited,
+# credited_ms; the hint never reaches the main stream). Without it the engine credits its own fvad count, ~0 on a phone line, and the
 # preview pays the full ~1 s pad: the one remaining dependency on the old machinery.
 #
 # The mode is the setting's ask and the engine session's answer: sent in every
@@ -2264,8 +2266,8 @@ class TeaportSTTService(WebsocketSTTService):
     @staticmethod
     def _goes_on(w: tuple, last: Optional[tuple]) -> bool:
         """Main piece `w` is the rest of the word `last` (audio_ms, end_ms, ...) began: no
-        leading space, and the word's positions (every piece of a word carries them,
-        PROTOCOL3 section 2)."""
+        leading space, and the word's positions (the engine stamps every piece of a word
+        with the word's audio_ms and end_ms, and sends them together)."""
         return (last is not None and not w[0].startswith(" ")
                 and (w[2], w[1]) == tuple(last[:2]))
 
@@ -2762,7 +2764,7 @@ class TeaportSTTService(WebsocketSTTService):
                     update["transcription_progress"] = True
                 if self._slice_asked:
                     # Before any audio, as the engine requires. "continuous" is what the
-                    # spike engine (rbf3) also needed; the production engine ignores it.
+                    # spike engine also needed; the production engine ignores it.
                     # Its bounds ride on the progress report, so that is asked for too.
                     update["preview"] = True
                     update["continuous"] = True

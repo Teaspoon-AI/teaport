@@ -13,7 +13,7 @@
 #                                   transcript, streamed as deltas while the speech
 #                                   lasts and closed by transcription.done on commit.
 #                                   With `preview` it also offers the preview stream
-#                                   (teagram-engine's PROTOCOL3) to a session that opts
+#                                   (teaport-engine #108) to a session that opts
 #                                   in: the transcript is one continuous stream whose
 #                                   deltas carry end_ms; a commit changes nothing in it
 #                                   and is answered by a transcription.preview (its text:

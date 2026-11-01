@@ -1107,7 +1107,7 @@ def _lines():
 
 
 async def test_a_final_that_never_comes_times_out_on_the_decoded_clock():
-    # end_through_ms freezes through the pause (teagram-engine 03e4223): the turn settles
+    # end_through_ms freezes through the pause (the engine's 03e4223 prototype): it settles
     # as its provisional text once the decoder is _FINAL_TIMEOUT_MS past its position (and
     # the margin, its preview vouching for a word still to come).
     s = Service()

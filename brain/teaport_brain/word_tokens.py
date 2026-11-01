@@ -13,7 +13,7 @@
 # phrases rather than counting words: it keeps the same letters, marks and digits in
 # NFKC, casefolded, but makes an apostrophe a space ("don t"), and maps each character
 # back to the source for the guard to cut at. A contraction is one word here, as the
-# turn texts were measured (~/rbf/harness/textnorm.py).
+# turn texts were measured (teaport-engine #108's spike).
 #
 import unicodedata
 
