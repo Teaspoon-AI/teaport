@@ -925,23 +925,38 @@ def _lines():
 
 async def test_a_final_that_never_comes_times_out_on_the_decoded_clock():
     # end_through_ms freezes through the pause (teagram-engine 03e4223): the turn settles
-    # as its provisional text once the decoder is _FINAL_TIMEOUT_MS past its position.
+    # as its provisional text once the decoder is _FINAL_TIMEOUT_MS past its position (and
+    # the margin, its preview vouching for a word still to come).
     s = Service()
     await created(s)
     lines, sink = _lines()
+    due = 1000 + stt_mod._FINAL_TIMEOUT_MS + stt_mod._VOUCH_MS
     try:
         await turn(s)
         await delta(s, " hi", 500)
         await preview(s, 1000, " there")
         assert s.finals() == [("hi there", 1)]
-        await progress(s, 520, decoded=2900)
+        await progress(s, 520, decoded=due - 100)
         assert len(s._turns) == 1, "settled before its timeout"
-        await progress(s, 520, decoded=3000)
+        await progress(s, 520, decoded=due)
         assert not s._turns and s.corrections() == []
         assert any("[TURN]" in m and "final timeout" in m and "provisional" in m
                    for m in lines), lines
     finally:
         stt_mod.logger.remove(sink)
+
+
+async def test_a_vouched_turn_s_timeout_allows_for_the_margin():
+    # The engine sends a word before it has decoded 2 s past the word's start, and a word
+    # the preview vouched for may start up to the margin past the cut.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " there")               # vouches for a word still to come
+    await progress(s, 1100, decoded=1000 + 2000 + stt_mod._VOUCH_MS - 1, audio=900)
+    assert s._turns, "timed out inside the margin"
+    await progress(s, 1100, decoded=1000 + 2000 + stt_mod._VOUCH_MS, audio=900)
+    assert not s._turns
 
 
 async def test_the_next_turn_is_not_held_behind_a_final_that_never_came():
@@ -991,7 +1006,8 @@ async def test_a_timeout_says_what_it_waited_for_and_a_backstop_after_it_is_coun
         await turn(s)                                  # at 1000
         await delta(s, " in", 400, start=200)
         await preview(s, 1000, " the kitchen.")
-        await progress(s, 1250, decoded=3000, audio=700)
+        due = 1000 + stt_mod._FINAL_TIMEOUT_MS + stt_mod._VOUCH_MS
+        await progress(s, 1250, decoded=due, audio=700)
         [line] = [m for m in lines if "final timeout" in m]
         assert "audio_through_ms 700" in line and "2 its preview still vouches for" in line
         await delta(s, " kitchen", 3100, start=3000)   # late: the open turn's now
@@ -1056,6 +1072,22 @@ async def test_a_final_times_out_on_the_wall_clock_too(monkeypatch=None):
         assert s.finals() == [("Stop.", 1)]
     finally:
         stt_mod._FINAL_BACKSTOP_SECS = saved
+
+
+async def test_an_empty_peek_preview_says_audio_in_no_words_out():
+    # The double-talk diagnostic: speech the VAD heard, and the preview at its stop has
+    # no words. With the peek (slice mode's default) that commit is the peek's.
+    s = Service(peeks=True)
+    await created(s)
+    lines, sink = _lines()
+    try:
+        await vad_start(s)
+        await audio(s, 1000)
+        await vad_stop(s)
+        await preview(s, s._peek.at_ms, "")
+        assert any("audio in, no words out" in m for m in lines), lines
+    finally:
+        stt_mod.logger.remove(sink)
 
 
 async def test_a_cut_short_preview_is_no_preview_the_turn_closes_on_its_final():

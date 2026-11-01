@@ -1923,10 +1923,12 @@ class TeaportSTTService(WebsocketSTTService):
         # (the double-talk drop this whole surface is about); a backstop or auto-commit
         # empty is ordinary and logs at debug.
         # In slice mode a turn with words in hand is never wordless, so the interims
-        # since the last line were the open turn's, which this commit does not close.
+        # since the last line were the open turn's, which this commit does not close; and
+        # a peek is a commit at a VAD stop too (THE PEEK), adopted or not.
         if not engine_text and self._seg_interims and answer == "done":
             logger.warning(line + " — engine streamed interims then returned no text")
-        elif not engine_text and why in _VAD_STOP_COMMITS and secs > 0.3:
+        elif (not engine_text and secs > 0.3
+              and (why in _VAD_STOP_COMMITS or why.startswith("peek"))):
             logger.warning(line + " — audio in, no words out")
         else:
             logger.debug(line)
@@ -2459,9 +2461,12 @@ class TeaportSTTService(WebsocketSTTService):
 
     def _final_overdue(self, turn: _Turn) -> bool:
         """The turn's final has had _FINAL_TIMEOUT_MS past its position by the engine's
-        decoded_through_ms -- or, the engine having stopped reporting, _FINAL_BACKSTOP_SECS
-        of the wall clock since its commit went out."""
-        return (self._decoded_ms >= turn.at_ms + _FINAL_TIMEOUT_MS
+        decoded_through_ms -- past its position plus the margin while its preview still
+        vouches for a word, which may start up to _VOUCH_MS past it -- or, the engine
+        having stopped reporting, _FINAL_BACKSTOP_SECS of the wall clock since its commit
+        went out."""
+        due = turn.at_ms + _FINAL_TIMEOUT_MS + (_VOUCH_MS if turn.expect else 0)
+        return (self._decoded_ms >= due
                 or time.monotonic() >= turn.sent_at + _FINAL_BACKSTOP_SECS)
 
     async def _time_final(self):
