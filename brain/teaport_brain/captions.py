@@ -301,8 +301,11 @@ class CaptionTap(FrameProcessor):
     committed bubble is the record of what was heard, no final is emitted, and
     straggler word frames already released by the transport clock are dropped."""
 
-    # What the transport clock releases on the wall clock, held through a playout pause.
-    _HELD_IN_PAUSE = (AggregatedTextProgressFrame, LLMFullResponseEndFrame)
+    # What the transport clock releases on the wall clock, held through a playout pause,
+    # and the bot-stopped of a pause in a gap between sentences (MediaSender's queue ran
+    # dry, so it says the bot stopped while words are held): replayed in order.
+    _HELD_IN_PAUSE = (AggregatedTextProgressFrame, LLMFullResponseEndFrame,
+                      BotStoppedSpeakingFrame)
 
     # Barged context ids kept to reject stragglers; bounded, they're short uuids.
     # The lines charted ahead and their contexts are bounded the same way.

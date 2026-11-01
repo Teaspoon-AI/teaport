@@ -79,8 +79,8 @@ class PausablePlayout:
         self._playing = asyncio.Event()
         self._playing.set()
         self._paused_at = None
-        # Bumped whenever a pause is DROPPED (an interruption, the end): a write that was
-        # waiting on it learns that its audio belongs to a reply that is gone.
+        # Bumped when an interruption drops a pause: a write that was waiting on it
+        # learns that its audio belongs to a reply that is gone.
         self._pause_epoch = 0
         # Audio handed to this transport and not yet written (seconds), and whether the
         # context it belongs to has finished synthesizing: playout_tail_secs().
@@ -118,8 +118,8 @@ class PausablePlayout:
         await self.push_frame(up, FrameDirection.UPSTREAM)
 
     async def _wait_if_paused(self) -> bool:
-        """Hold a write while playout is paused. True: write on. False: the pause was
-        dropped under it (an interruption or the end), and what it holds is not to be
+        """Hold a write while playout is paused. True: write on. False: an interruption
+        dropped the pause under it, and what it holds is the cut reply's, not to be
         written."""
         if self._playing.is_set():
             return True
@@ -133,10 +133,11 @@ class PausablePlayout:
             await self.set_playout_paused(False)
         return epoch == self._pause_epoch
 
-    def _drop_pause(self):
-        """An interruption or the end: the queued audio is gone (or going), so there is
-        nothing to resume -- just stop blocking."""
-        if not self._playing.is_set():
+    def _drop_pause(self, *, discard: bool = True):
+        """An interruption (`discard`: the queued audio is the cut reply's, gone) or the
+        end (not: what is queued plays out as the session ends, the held write's frame
+        with it): nothing to resume -- just stop blocking."""
+        if discard and not self._playing.is_set():
             self._pause_epoch += 1
         self._playing.set()
         self._paused_at = None
@@ -181,7 +182,7 @@ class PausablePlayout:
             self._heard_until = 0.0
 
     async def stop(self, frame: EndFrame):
-        self._drop_pause()
+        self._drop_pause(discard=False)
         await super().stop(frame)
 
     async def cancel(self, frame: CancelFrame):

@@ -31,8 +31,8 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
         # Sent at the top of the base's write (it sleeps out the slot after), so it is
         # counted as sent now.
         if self.sample_rate:
-            self._wrote(len(frame.audio) / 2
-                        / max(1, frame.num_channels or 1) / self.sample_rate)
+            self._wrote(len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
+                        / self.sample_rate)
         return await super().write_audio_frame(frame)
 
 

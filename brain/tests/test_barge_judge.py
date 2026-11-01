@@ -337,6 +337,38 @@ async def test_a_single_word_is_judged_and_interrupts_on_its_verdict():
             "the judge said it needs an answer: it must start the turn at one word")
 
 
+async def test_a_verdict_on_fewer_words_than_held_does_not_mark_them():
+    # The judge is asked on "What"; the words grow to "What a great idea" while it
+    # decides. Its ANSWER speaks for "What" alone: the grown words go on unmarked, for the
+    # word count to decide (4 >= 3 here: the turn starts as it did before single words
+    # were judged) -- not as an ANSWER that would start it at any length.
+    judge = _Judge({"What": ANSWER}, delay=0.15)
+    async with GateRig(judge, min_words=3) as rig:
+        await rig.task.queue_frame(interim("What"))
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(interim("What a"))
+        await asyncio.sleep(0.25)
+        assert judge.asked == ["What"], judge.asked
+        let_on = [f for _, d, f in rig.bottom.frames
+                  if d == FrameDirection.DOWNSTREAM and isinstance(f, InterimTranscriptionFrame)]
+        assert [f.text for f in let_on] == ["What", "What a"], let_on
+        feed = _starts(rig.strategy)
+        assert not await feed(let_on[-1]), (
+            "a verdict on 'What' must not start the turn on 'What a' at two words")
+
+
+async def test_a_marked_verdict_starts_the_turn_even_after_the_pause_ended():
+    # The pause's cap resumes the reply at the moment the verdict lands: the strategy
+    # has seen the resume before the marked words reach it. The verdict still holds.
+    judge = _Judge({"What?": ANSWER})
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(final("What?"))
+        await asyncio.sleep(0.2)
+        await rig.strategy.process_frame(PlayoutPauseFrame(paused=False))
+        feed = _starts(rig.strategy)
+        assert await feed(_released(rig)[-1])
+
+
 async def test_a_single_backchannel_is_judged_and_the_reply_carries_on():
     judge = _Judge({"Yeah.": CONTINUE})
     async with GateRig(judge, min_words=2) as rig:

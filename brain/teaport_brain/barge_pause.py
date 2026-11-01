@@ -106,6 +106,11 @@
 # Known limits:
 #   * A pause is ~150-250 ms behind the caller's onset, plus the gateway's frame or
 #     the client's jitter margin, and the network; what played before it is heard.
+#   * That margin is measured for the room bridge (its 120 ms card lead) and for SIP,
+#     not for the OpenClaw Talk view: a browser that buffers more plays on that much
+#     longer after the pause, and the ledger's heard cut (lag_secs) and the held
+#     captions are short of what was heard by the same amount -- the same assumption
+#     the ledger already made on Talk for every cut, pause or not.
 #   * While paused, the transport keeps releasing word captions on the wall clock (the
 #     assistant aggregator's running text runs ahead of the voice; the heard
 #     correction at a cut trims it back to what was heard, as on any cut). The Talk
@@ -555,13 +560,15 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             await self._on_final_without_turn()
 
     async def _handle_transcription(self, frame):
-        if not (self._bot_speaking and self._playout_paused):
-            return await super()._handle_transcription(frame)
         if _judged_to_interrupt(frame) and (frame.text or "").strip():
+            # Read before the pause state: the pause may have ended (its cap) between
+            # the verdict and these words reaching here, and the verdict still holds.
             logger.debug(f"{self}: the barge-in judge let {frame.text!r} interrupt the "
                          "paused reply -- starting the turn")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
+        if not (self._bot_speaking and self._playout_paused):
+            return await super()._handle_transcription(frame)
         if is_stop_utterance(frame.text, self._stop_words):
             logger.debug(f"{self}: stop word while playout is paused "
                          f"({frame.text!r}) -- starting the turn")
@@ -738,7 +745,13 @@ class BargeInJudgeGate(FrameProcessor):
             if verdict == CONTINUE:
                 await self._carry_on(said)
             else:
-                await self._release(f"verdict {verdict or 'none'}", verdict=verdict)
+                # A verdict speaks for the words it was asked on. Words that grew while it
+                # decided ("What" -> "What a great idea") go on unmarked: the word count
+                # decides them, as it did before single words were judged.
+                fresh = _key(self._said) == _key(said)
+                await self._release(f"verdict {verdict or 'none'}"
+                                    + ("" if fresh else " (on fewer words than held)"),
+                                    verdict=verdict if fresh else None)
 
     async def _carry_on(self, said: str):
         """CONTINUE: the held words are dropped, and the reply resumes as for a cough."""

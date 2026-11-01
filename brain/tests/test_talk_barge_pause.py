@@ -226,6 +226,35 @@ async def test_a_block_held_by_a_pause_an_interruption_dropped_is_not_written():
     assert not sock.datagrams, "the held block was written after its reply was cut"
 
 
+async def test_the_end_of_a_session_plays_out_the_block_a_pause_held():
+    # Only an interruption makes the held block the cut reply's. The end of the session
+    # lifts the pause and the block plays out with the rest of what is queued.
+    sock = _Socket()
+    out = _talk_transport(sock).output()
+    out._playing.clear()
+    writer = asyncio.create_task(out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)))
+    await asyncio.sleep(0.05)
+    out._drop_pause(discard=False)
+    assert await asyncio.wait_for(writer, 1.0) is not False
+    assert sock.payload() == _pcm(0)
+
+
+async def test_the_talk_output_replaces_pipecats_with_the_same_wiring():
+    # TalkWebsocketTransport rebuilds pipecat's output from its private _client, _params
+    # and _output_name. Pinned here so a pipecat bump that renames them, or wires the
+    # first output into something at __init__, fails a test instead of the session.
+    from pipecat.transports.websocket.fastapi import FastAPIWebsocketOutputTransport
+    t = _talk_transport(_Socket())
+    out = t.output()
+    assert type(out) is TalkOutputTransport
+    assert out._client is t._client and out._params is t._params
+    assert out.name == t._output_name or t._output_name is None
+    for holder in (t, t._client, t._input, t._client._callbacks):
+        for v in vars(holder).values():
+            assert not (isinstance(v, FastAPIWebsocketOutputTransport) and v is not out), (
+                f"pipecat's own output is still wired into {type(holder).__name__}")
+
+
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
@@ -294,6 +323,20 @@ async def test_captions_hold_through_a_pause_and_drop_it_on_a_cut():
     await c.feed(_word("c", s, "one two three four"), LLMFullResponseEndFrame())
     assert c.sent == [("one", False), ("one two", False)], (
         f"the cut bubble must stay at what was heard: {c.sent}")
+
+
+async def test_a_bot_stopped_in_a_pause_waits_with_the_held_words():
+    # A pause in a gap between sentences: MediaSender's queue runs dry and it says the
+    # bot stopped while words are held. Committing then, and opening a second bubble for
+    # the held words at the resume, is the duplicate USER-HOLD exists to prevent.
+    from pipecat.frames.frames import BotStoppedSpeakingFrame
+    c = _Captions()
+    s = "one two"
+    await c.feed(_word("c", s, "one", pts=1), PlayoutPauseFrame(paused=True),
+                 _word("c", s, "one two", pts=2), BotStoppedSpeakingFrame())
+    assert c.sent == [("one", False)], c.sent
+    await c.feed(PlayoutPauseFrame(paused=False))
+    assert c.sent == [("one", False), ("one two", False), ("one two", True)], c.sent
 
 
 async def test_captions_go_on_at_the_resume():
