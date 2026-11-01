@@ -119,11 +119,20 @@ class TurnTextCorrector(FrameProcessor):
             self._spoke_at = time.monotonic()
         await self.push_frame(frame, direction)
 
-    async def _message_added(self, _aggregator, _message):
-        """The aggregator has just written a user turn: the newest user message."""
-        msgs = self._agg.context.get_messages()
-        if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
-            self.committed(msgs[-1])
+    async def _message_added(self, _aggregator, message):
+        """The aggregator has written a user turn: the message the event names -- the
+        newest user message reading its content and not yet on record. Matched by
+        content, not taken as the newest when this runs: the handler is a task of its
+        own, and two commits can land before the first one's runs."""
+        content = getattr(message, "content", None)
+        recorded = {id(m) for _, m in self._commits}
+        users = [m for m in self._agg.context.get_messages()
+                 if isinstance(m, dict) and m.get("role") == "user" and id(m) not in recorded]
+        found = next((m for m in reversed(users) if msg_text(m) == content), None)
+        if found is None and users:
+            found = users[-1]          # rewritten since (the reply hold's merge): newest
+        if found is not None:
+            self.committed(found)
 
     def committed(self, message: dict):
         """A commit wrote the user message `message`, now."""

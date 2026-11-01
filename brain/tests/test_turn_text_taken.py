@@ -151,6 +151,45 @@ async def test_every_way_words_go_elsewhere_is_on_record():
     assert taken.why("wait a second please") is None
 
 
+async def test_a_commit_before_the_newest_is_found_by_its_record():
+    # Turn A is committed, then turn B, and only then A's correction arrives: the newest
+    # message is B's, so only the record of A's commit (the aggregator's event) places it.
+    user = ttc._user()
+    c = ttc.Corrector(user)
+
+    async def push(frame, direction=DOWN):
+        pass
+    user.push_frame = push
+    pushed_at = time.monotonic()
+    await user._handle_transcription(TranscriptionFrame("so I was thinking", "u", "t"))
+    await user._push_aggregation()
+    await asyncio.sleep(0.05)                      # the event's handler runs
+    await user._handle_transcription(TranscriptionFrame("and then what", "u", "t"))
+    await user._push_aggregation()
+    await asyncio.sleep(0.05)
+    await c._apply(correction("so I was thinking", "so I was thinking about tea",
+                              added=("about", "tea"), pushed_at=pushed_at))
+    users = [m["content"] for m in user.context.get_messages() if m["role"] == "user"]
+    assert c.corrected == 1 and users == ["so I was thinking about tea", "and then what"], (
+        c._tally(), users)
+
+
+async def test_two_commits_before_their_handlers_run_are_each_on_record():
+    user = ttc._user()
+    c = ttc.Corrector(user)
+
+    async def push(frame, direction=DOWN):
+        pass
+    user.push_frame = push
+    await user._handle_transcription(TranscriptionFrame("first words", "u", "t"))
+    await user._push_aggregation()
+    await user._handle_transcription(TranscriptionFrame("second words", "u", "t"))
+    await user._push_aggregation()
+    await asyncio.sleep(0.05)                      # both handlers run now
+    assert [m["content"] for _, m in c._commits] == ["first words", "second words"], (
+        [m["content"] for _, m in c._commits])
+
+
 # ---- a speculation ahead of any turn has an owner --------------------------------------
 
 async def test_taken_words_stand_down_the_speculation_asked_on_them():
