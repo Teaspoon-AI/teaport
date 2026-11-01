@@ -1066,11 +1066,11 @@ group = "turn_taking"
 type = "float"
 unit = "s"
 min = 0
-max = 8
+max = 7.75
 default = 6.0
 read = "startup"
 tier = "tuning"
-help = "The longest one pause lasts before the reply resumes anyway. Capped at 8 s: a write held past pipecat's 10 s deadline loses the call its voice."
+help = "The longest one pause lasts before the reply resumes anyway. At most 7.75 s: the call's audio resumes on its own at 8 s (a write held past pipecat's 10 s deadline loses the call its voice), and the reply's own resume, up to 0.15 s after the cap, comes first."
 
 [[settings]]
 name = "TEAPORT_BARGE_JUDGE"
@@ -1158,6 +1158,28 @@ default = 500
 read = "startup"
 tier = "tuning"
 help = "After each commit, send the audio from where the silence hint's claim starts again, as the start of the next segment: at most this much, and never back past the previous commit. A word the caller begins just as a segment is closed then reaches the engine whole, with the silence before it, instead of split between two segments; only the hint's margin is decoded by both. Where this much does not reach back to the end of the caller's speech, or the commit was held for the caller's pause, voice heard since the stop stays in the closed segment and the carry starts after it. Needs TEAPORT_STT_SILENCE_HINT: a commit that claims no silence carries nothing. 0: the next segment opens at the commit, as before."
+
+[[settings]]
+name = "TEAPORT_STT_TURN_TEXT"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["segment", "slice"]
+default = "segment"
+read = "startup"
+tier = "tuning"
+help = "What the words of a turn are. segment: each commit closes an engine segment, and the engine's final for it is the turn's text. slice: the engine keeps one continuous transcript that commits never change (its preview stream; an engine without it runs on segments as before); a turn is the words that end before its commit, answered at once on the words in hand plus the engine's preview of the rest, then checked against the transcript's own words a moment later (about 0.7 s on an Orin NX, up to 2 s on an Orin Nano), which correct the conversation's record where they differ. In slice mode the carry and the wait for the caller's pause are off; the silence hint stays."
+note = "Prototype: needs a teaport-engine with the preview stream (\"transcription.preview\" in its capabilities; engine 1.7 or later)."
+
+[[settings]]
+name = "TEAPORT_STT_PREVIEW_AT_STOP"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "With TEAPORT_STT_TURN_TEXT=slice: ask the engine's preview of the turn at the end of the caller's speech, while the turn-end model is still deciding, instead of after it. The turn closes on that preview if the model calls the turn done, the speculative reply is asked on it as soon as it lands, and its final words come sooner; if the caller goes on talking, it is dropped and the next pause asks again. Off: the preview is asked when the turn closes."
 
 [[settings]]
 name = "HEARD_MODE"

@@ -263,6 +263,8 @@ class WifiSetupVoice(FrameProcessor):
     def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
                  lang_fn=lambda: "en-us", alive=None, online=None, **kw):
         super().__init__(**kw)
+        # taken_turn.TakenWords, where the session keeps one (agent_session).
+        self.taken_words = None
         self._lang_fn = lang_fn  # the session's TTS language now ('en-us', 'es', ...)
         self._run = run or _run_helper
         self._alive = alive or _unit_active
@@ -538,6 +540,8 @@ class WifiSetupVoice(FrameProcessor):
         elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
               and not is_taken(frame)):
             if await self._heard(frame.text or ""):
+                if self.taken_words is not None:
+                    await self.taken_words.took(frame.text, "taken by Wi-Fi setup")
                 await self.push_frame(taken(frame), direction)  # ours: no words go on
                 return
             for text in self._returning:

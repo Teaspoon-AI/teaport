@@ -97,7 +97,7 @@ from teaport_brain.services import make_llm, make_stt, make_tts
 from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
-from teaport_brain.taken_turn import TakenTurnCloser
+from teaport_brain.taken_turn import TakenTurnCloser, TakenWords
 from teaport_brain.wifi_voice import WifiSetupVoice
 from teaport_brain.pair_device import DevicePairing
 from teaport_brain.tools import (
@@ -111,6 +111,7 @@ from teaport_brain.tools import (
 )
 from teaport_brain.transcript_ledger import TranscriptLedger
 from teaport_brain.tts_text import strip_urls_for_speech
+from teaport_brain.turn_text import TurnTextCorrector
 from teaport_brain.turn_timing import TurnTimer
 
 
@@ -747,6 +748,13 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
     # dead).
     taken_closer = TakenTurnCloser() if wifi is not None or run_control else None
+    # Where the caller's finals went when not to the model -- taken (Wi-Fi setup, run
+    # control), judged a backchannel, dropped by the barge-in guard: what a sliced turn's
+    # correction reads when its words are nowhere (turn_text.py), and what stands the
+    # speculation asked on them down (below). Only where the setting asks for slices.
+    taken_words = TakenWords() if stt.slices_asked else None
+    if wifi is not None:
+        wifi.taken_words = taken_words
     moods = mood_tag.ENABLED and "mood" in client_features
 
     def compose(host) -> str:
@@ -830,6 +838,7 @@ def build_agent_session(transport, *, voice: str | None = None,
 
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
         min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn)
+    start_strategy.taken_words = taken_words
 
     context_aggregator = LLMContextAggregatorPair(
         context,
@@ -916,6 +925,21 @@ def build_agent_session(transport, *, voice: str | None = None,
                     + ("-- by the engine's report where it gives one, else after they stop "
                        f"changing for {settle}" if speculator.on_decode
                        else f"-- after they stop changing for {settle}"))
+    # A sliced turn's final words, where they differ from those it was asked on
+    # (stt.py TURN TEXT, turn_text.py): only where the setting asks for slices.
+    turn_text = None
+    if stt.slices_asked:
+        turn_text = TurnTextCorrector(
+            context_aggregator.user(),
+            speculator=speculator if speculate.ENABLED else None, taken_words=taken_words)
+        if speculate.ENABLED:
+            # Words that went elsewhere are no turn's: a speculation asked on them -- on
+            # the stop's preview, maybe with no turn open (stt.py THE PEEK) -- stands down.
+            async def _stand_down(why):
+                await speculator.cancel(f"the words were {why}")
+            taken_words.listeners.append(_stand_down)
+        logger.info("turn text: SLICED from the engine's continuous transcript "
+                    "(TEAPORT_STT_TURN_TEXT=slice), where the engine offers it")
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
     # if no words follow (barge_pause.py). Only where the transport can pause without
     # losing audio: SIP. The Talk relay's client buffers what we send and can only
@@ -927,6 +951,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     if barge_pauser is not None:
         pause_link["pauser"] = barge_pauser
         vad_analyzer.onset_listeners.append(barge_pauser.on_onset)
+        # A sliced barge-in turn waiting on its final holds the pause, and is closed on the
+        # words in hand at its cap, before it resumes (stt.py TURN TEXT).
+        stt.barge_hold = lambda on: barge_pauser.hold_resume(on, who="the turn's final")
+        barge_pauser.before_cap = stt.close_held
         logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
                     "speech and resumes if no words follow")
     # Words over a paused reply go to a one-word judge before they start the turn
@@ -945,6 +973,7 @@ def build_agent_session(transport, *, voice: str | None = None,
 
         barge_judge = barge_pause.BargeInJudgeGate(
             start_strategy, _judge_barge, hold_resume=barge_pauser.hold_resume)
+        barge_judge.taken_words = taken_words
         logger.info("barge-in judge ON (TEAPORT_BARGE_JUDGE): words over a paused reply "
                     "are judged before they interrupt it")
     if reply_gate is not None:
@@ -1012,6 +1041,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # spoken run control took it (run_control.py, #230); what it took leaves a notice.
     claims = (RunControlClaims(lambda: followup_gate.consults_running, notes=client_notes)
               if run_control else None)
+    if claims is not None:
+        claims.taken_words = taken_words
     # Type through a long openclaw_agent_consult consult, heard while the line is quiet; the
     # room's face types along (its bridge announces "typing"). Not on a phone call,
     # but in agent-first: there it is all that covers the wait (tools._fallback_line).
@@ -1049,6 +1080,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # DIRECTLY below the aggregator: it is called inside the aggregator's own push of
         # an interruption, so the frame is on record before the commit can look for it.
         cut_fence.head,
+        # Below the aggregator, whose words and context it corrects, and above the sink
+        # that drops the STT's bookkeeping, the corrections among it; None on segments.
+        turn_text,
         # The STT's wordless segment closes are for the stop strategy, which the
         # aggregator has just handed them to; the stock aggregator forwards every
         # other data frame, so they are dropped here rather than ride to the transport.

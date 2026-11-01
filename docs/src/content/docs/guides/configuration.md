@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:1941-1950#38d9c1ca; install.sh:1913#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:1963-1972#38d9c1ca; install.sh:1913#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:8-12,19-25#a24a491a; brain/teaport_brain/config_schema.toml:1916-1926#39346419; brain/teaport_brain/static/config.html:263-273#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:8-12,19-25#a24a491a; brain/teaport_brain/config_schema.toml:1938-1948#39346419; brain/teaport_brain/static/config.html:263-273#2b63b6f7 -->
 
 To change a setting there:
 

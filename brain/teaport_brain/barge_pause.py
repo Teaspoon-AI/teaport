@@ -32,7 +32,9 @@
 #     after the line went quiet -- which, with the VAD's own stop delay, is a stall of
 #     about ENDPOINT_STOP_SECS + TEAPORT_BARGE_PAUSE_RESUME_S (~1.0 s at 0.2 + 0.8) for
 #     a cough. A blip under 250 ms resumes after 0.3 s. TEAPORT_BARGE_PAUSE_MAX_S caps a
-#     pause from its start.
+#     pause from its start; a barge-in the STT still holds there (stt.py TURN TEXT)
+#     closes on the words in hand first, and the reply resumes _FINAL_GRACE_S after
+#     that close, so its words are decided paused.
 #
 # THE JUDGE (#224, TEAPORT_BARGE_JUDGE). Words that would start the turn over a paused
 # reply -- "Okay.", "Mm-hmm.", as well as "Wait, what?" -- do not start it at once:
@@ -138,13 +140,12 @@ from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 
 from teaport_brain.endpointing import (
     NO_STOP,
-    NoSpeechReportFrame,
+    STT_FRAMES,
     SegmentDoneFrame,
     SegmentResetFrame,
-    SpeechDecodedFrame,
-    SttProgressFrame,
 )
 from teaport_brain.settings import setting
+from teaport_brain.word_tokens import word_tokens
 
 # On for a transport that can pause (SIP); there is none to pause on Talk.
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
@@ -153,9 +154,8 @@ ENABLED = setting("TEAPORT_BARGE_PAUSE")
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
 # at the latest (the STT commits at once while the bot is speaking), ~0.1-0.5 s after it.
 RESUME_SECS = min(8.0, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
-# The longest a pause lasts, from its start. Kept well under pipecat's
-# audio_out_write_timeout_secs (10 s), past which a stalled write writes the transport
-# off for the rest of the call; the transport resumes on its own at 8 s regardless.
+# The longest a pause lasts, from its start: at most MAX_CAP_S, below the transport's
+# own end to a pause (PAUSE_GUARD_S).
 MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
 # What ends a paused reply on its own, whatever TEAPORT_INTERRUPT_MIN_WORDS says: with
 # the bot silent there is no echo to garble into one, and a lone "Stop." is the most
@@ -174,6 +174,17 @@ _BLIP_S = 0.25
 _BLIP_RESUME_S = 0.3
 # After the STT's close of the speech came back with no turn, resume this much later.
 _FINAL_GRACE_S = 0.15
+# The transport's own end to a pause (sip_transport._wait_if_paused, which takes it from
+# here): a write blocked this long resumes whatever the pauser asks, since pipecat's
+# MediaSender bounds a write at audio_out_write_timeout_secs (10 s) and treats running
+# past it as the transport dead for the rest of the call.
+PAUSE_GUARD_S = 8.0
+# The longest cap, TEAPORT_BARGE_PAUSE_MAX_S's maximum (a test holds the schema to it):
+# the cap's own resume, up to _FINAL_GRACE_S after its close of a held barge-in (_cap),
+# comes before the transport's guard -- with _CAP_SLACK_S for that close itself and a
+# stalled event loop -- so the close is decided paused whatever the cap.
+_CAP_SLACK_S = 0.1
+MAX_CAP_S = PAUSE_GUARD_S - _FINAL_GRACE_S - _CAP_SLACK_S
 # Echo-like pauses (resumed on a blip) per bot-speaking window before the onset test
 # alone stops pausing.
 _MAX_NOWORD_PAUSES = 2
@@ -263,7 +274,7 @@ class BargeInPauser(FrameProcessor):
         super().__init__()
         self._output = output
         self._resume_secs = min(8.0, max(0.0, resume_secs))
-        self._max_secs = max(self._resume_secs, min(max_secs, 8.0))
+        self._max_secs = min(MAX_CAP_S, max(self._resume_secs, max_secs))
         self._near_end_secs = near_end_secs
         self._max_noword = max_noword_pauses
         self._bot_speaking = False
@@ -275,9 +286,13 @@ class BargeInPauser(FrameProcessor):
         self._pause_t0 = 0.0
         self._resume_task = None
         self._cap_task = None
-        # The judge is deciding the caller's words (BargeInJudgeGate): no resume on the
-        # quiet window meanwhile. The cap still ends the pause.
-        self._held = False
+        # Who is still deciding the caller's words over the pause -- the judge
+        # (BargeInJudgeGate), the STT waiting on a barge-in's final (stt.py TURN TEXT): no
+        # resume on the quiet window meanwhile. The cap still ends the pause.
+        self._holds: set = set()
+        # Called (async) at the cap, before it resumes, while anyone holds: the STT's
+        # close of a held barge-in on the words in hand (set by build_agent_session).
+        self.before_cap = None
         # Echo-like pauses (resumed on a blip, no words) in this bot-speaking window.
         self._noword = 0
         # Tallies, for the log and the tests.
@@ -307,16 +322,25 @@ class BargeInPauser(FrameProcessor):
             self._schedule_resume(_FINAL_GRACE_S, "the STT's close of it had no turn in it",
                                   echo=False)
 
-    def hold_resume(self, on: bool):
-        """BargeInJudgeGate: words over the pause are being judged (`on`), or no longer
-        are. While they are, nothing but the cap resumes; after, a quiet line resumes on
-        the usual window if nothing sooner does (the close the gate lets on)."""
-        self._held = on
+    @property
+    def _held(self) -> bool:
+        return bool(self._holds)
+
+    def hold_resume(self, on: bool, who: str = "the judge"):
+        """Words over the pause are being decided (`on`), or no longer are, by `who`: the
+        judge (BargeInJudgeGate), or the STT, whose barge-in turn waits on its final
+        (stt.py TURN TEXT). Each holds and lets go its own. While any holds, nothing but
+        the cap resumes; after, a quiet line resumes on the usual window if nothing sooner
+        does (the close that follows)."""
         if on:
+            self._holds.add(who)
             self._cancel(self._resume_task)
             self._resume_task = None
-        elif self._paused and not self._speaking and self._resume_task is None:
-            self._schedule_resume(self._resume_secs, "the judge let the reply carry on",
+            return
+        self._holds.discard(who)
+        if (not self._holds and self._paused and not self._speaking
+                and self._resume_task is None):
+            self._schedule_resume(self._resume_secs, f"{who} let the reply carry on",
                                   echo=False)
 
     async def _speech(self, source: str, started: bool):
@@ -410,7 +434,7 @@ class BargeInPauser(FrameProcessor):
 
     def _end(self):
         self._paused = False
-        self._held = False
+        self._holds.clear()
         for task in (self._resume_task, self._cap_task):
             self._cancel(task)
         self._resume_task = self._cap_task = None
@@ -430,7 +454,30 @@ class BargeInPauser(FrameProcessor):
     async def _cap(self):
         await asyncio.sleep(self._max_secs)
         self._cap_task = None
-        await self._resume(f"pause cap {self._max_secs:.1f}s")
+        why = f"pause cap {self._max_secs:.1f}s"
+        if self._holds and self.before_cap is not None:
+            # Whoever still holds it decides first, while the reply is paused: the STT
+            # closes a barge-in still waiting on its final on the words in hand
+            # (stt.close_held, wired by build_agent_session).
+            closed = False
+            try:
+                closed = await self.before_cap()
+            except Exception as e:  # noqa: BLE001 -- the cap must still resume
+                logger.warning("BARGE-PAUSE: the cap's close of the held words failed "
+                               f"({e!r})")
+            if closed and self._paused:
+                # The close goes down the pipeline as data, through each processor's
+                # queue; the resume would go up from the transport as a system frame,
+                # past every queue, and could reach the start strategy first -- the
+                # words then judged as over a reply already playing. So the grace a
+                # close with no turn in it gets: the barge-in's interruption, or that
+                # close itself (on_final_without_turn), ends the pause sooner -- and this
+                # wait with it (_end).
+                self._cap_task = asyncio.current_task()
+                await asyncio.sleep(_FINAL_GRACE_S)
+                self._cap_task = None
+                why += f", {_FINAL_GRACE_S:.2f}s after the held words' close"
+        await self._resume(why)
 
     @staticmethod
     def _cancel(task):
@@ -447,17 +494,13 @@ class BargeInPauser(FrameProcessor):
         await super().cleanup()
 
 
-_WORD = re.compile(r"[^\w']+")
 _SHH = re.compile(r"s*h{2,}")
 
 
 def _tokens(text: str) -> list:
-    out = []
-    for w in _WORD.split((text or "").lower()):
-        w = w.strip("'")
-        if w:
-            out.append("shh" if _SHH.fullmatch(w) else w)
-    return out
+    """The words of `text` (word_tokens, the rule sliced turn texts share), every "shhh"
+    as "shh"."""
+    return ["shh" if _SHH.fullmatch(w) else w for w in word_tokens(text)]
 
 
 def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
@@ -496,6 +539,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         super().__init__(**kwargs)
         self._stop_words = tuple(stop_words)
         self._on_final_without_turn = on_final_without_turn
+        # taken_turn.TakenWords, where the session keeps one (agent_session).
+        self.taken_words = None
         self._playout_paused = False
         self._pause_t0 = None
         self._would_end_at = None
@@ -541,6 +586,15 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             await self._on_final_without_turn()
 
     async def _handle_transcription(self, frame):
+        result = await self._count(frame)
+        if (result != ProcessFrameResult.STOP and isinstance(frame, TranscriptionFrame)
+                and (frame.text or "").strip() and self.taken_words is not None):
+            # A final that starts no turn: the aggregator drops its words (the guard's
+            # reset), and they go on record as dropped (taken_turn.TakenWords).
+            await self.taken_words.took(frame.text, "dropped by the barge-in guard")
+        return result
+
+    async def _count(self, frame):
         if not (self._bot_speaking and self._playout_paused):
             return await super()._handle_transcription(frame)
         if is_stop_utterance(frame.text, self._stop_words):
@@ -560,12 +614,6 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         if result != ProcessFrameResult.STOP and isinstance(frame, TranscriptionFrame):
             await self._notify()
         return result
-
-
-# What the STT pushes for the turn strategies, in its order: held together, so a close or
-# a decode report never overtakes the words it follows.
-_STT_FRAMES = (TranscriptionFrame, InterimTranscriptionFrame, SegmentDoneFrame,
-               SegmentResetFrame, SpeechDecodedFrame, NoSpeechReportFrame, SttProgressFrame)
 
 
 def _key(text: str) -> tuple:
@@ -628,10 +676,14 @@ class BargeInJudgeGate(FrameProcessor):
         self._continued = None
         # Tallies, for the log and the tests.
         self.verdicts = {CONTINUE: 0, STOP: 0, ANSWER: 0, None: 0}
+        # taken_turn.TakenWords, where the session keeps one (agent_session).
+        self.taken_words = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, _STT_FRAMES):
+        # The STT's frames (endpointing.STT_FRAMES), held together: no close, report or
+        # turn-text correction overtakes the words it follows.
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, STT_FRAMES):
             async with self._lock:
                 if not await self._gate(frame):
                     await self.push_frame(frame, direction)
@@ -680,7 +732,7 @@ class BargeInJudgeGate(FrameProcessor):
             # dropped; their final is the close of a segment with no turn in it.
             if isinstance(frame, TranscriptionFrame):
                 self._continued = None
-                await self.push_frame(_close_of(frame))
+                await self.push_frame(await self._carried_over(frame))
             return True
         self._continued = None
         if self._turn_open or not self._strategy.judges(text):
@@ -731,12 +783,19 @@ class BargeInJudgeGate(FrameProcessor):
             if isinstance(f, TranscriptionFrame):
                 if not f.text.strip():
                     continue
-                f = _close_of(f)
+                f = await self._carried_over(f)
             elif isinstance(f, InterimTranscriptionFrame):
                 continue
             await self.push_frame(f)
         if self._hold_resume is not None:
             self._hold_resume(False)
+
+    async def _carried_over(self, final) -> SegmentDoneFrame:
+        """A final the reply carries on over: its segment's close, with no words for the
+        turn strategies, and its words on record as judged (taken_turn.TakenWords)."""
+        if self.taken_words is not None:
+            await self.taken_words.took(final.text, "judged a backchannel")
+        return _close_of(final)
 
     async def _release(self, why: str):
         """The held frames go on as they came: the turn starts on them as it would have."""

@@ -22,7 +22,7 @@ Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no 
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1663-1670#5be20f46 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1685-1692#5be20f46 -->
 
 ## Join the setup network
 
@@ -38,7 +38,7 @@ The setup network uses WPA2. Its password is the one printed on the paper insert
 
 The page confirms the connection and the setup ends. The device says that it is connected to your network and online again.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:21#f6b9d41f; brain/teaport_brain/wifi_voice.py:505-507#8b5358ef -->
+<!-- source: brain/teaport_brain/wifi_setup.py:21#f6b9d41f; brain/teaport_brain/wifi_voice.py:507-509#8b5358ef -->
 
 ## If the join fails
 
