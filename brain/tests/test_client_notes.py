@@ -903,7 +903,8 @@ async def _run_talk(should_end=False, query=None):
     class _Session:
         task = _Task()
         client_notes = SimpleNamespace(limits=lambda: {"max_chars": 7})
-        followup_gate = SimpleNamespace(wait_until_delivered=lambda: asyncio.sleep(0))
+        followup_gate = SimpleNamespace(wait_until_delivered=lambda: asyncio.sleep(0),
+                                        wait_until_idle=lambda max_wait=None: asyncio.sleep(0, True))
 
         def __init__(self):
             self.should_end = False
@@ -957,6 +958,7 @@ async def _run_talk(should_end=False, query=None):
     gs.PipelineRunner = _Runner
     try:
         await gs.run_relay_bot(SimpleNamespace(query_params=query or {}, send_text=send_text))
+        await asyncio.gather(*gs._GREETINGS)      # the greeting's done, sent once it is over
     finally:
         for k, v in saved.items():
             setattr(gs, k, v)
@@ -964,12 +966,25 @@ async def _run_talk(should_end=False, query=None):
     return order, built
 
 
+_START, _DONE = {"type": "response", "state": "start"}, {"type": "response", "state": "done"}
+
+
+def _framed_greeting(order):
+    """The greeting comes framed as one response (gateway_server._greet_as_response): start
+    right before it, done after it. Returns the order without the two markers."""
+    assert order.count(_START) == 1 and order.count(_DONE) == 1, order
+    at = order.index("greeting")
+    assert order[at - 1] == _START and order.index(_DONE) > at, order
+    return [m for m in order if m not in (_START, _DONE)]
+
+
 async def test_talk_says_hello_at_once_and_ready_after_the_greeting():
     """The hello (what the brain accepts) goes out before the slot wait, so a slow
     start is never taken for a brain without notes. "ready" (notes may be sent) comes
     only once greet() found a working STT. Nothing else would notice either going
     missing: the plugin just reports the brain as connecting, then unsupported."""
-    order, built = await _run_talk()
+    full, built = await _run_talk()
+    order = _framed_greeting(full)
     assert built.get("context_notes") is True, "/talk built its session without notes"
     assert order[0] == {"type": "hello", "features": {"context": {"max_chars": 7}}}, order
     assert order[1:3] == ["slot", "greeting"], order
@@ -990,7 +1005,7 @@ async def test_the_hello_says_where_a_face_client_takes_its_mood_from():
 async def test_talk_never_says_ready_when_the_session_ends():
     """No working STT: greet() plays the can't-hear line and the session ends. Notes
     must not be acked as applied to a session being torn down, so no "ready"."""
-    order, _ = await _run_talk(should_end=True)
+    order = _framed_greeting((await _run_talk(should_end=True))[0])
     assert order[:3] == [{"type": "hello", "features": {"context": {"max_chars": 7}}}, "slot", "greeting"], order
     assert order[3:] == ["cancelled"], order
 
