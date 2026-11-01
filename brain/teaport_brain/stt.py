@@ -1034,6 +1034,9 @@ class TeaportSTTService(WebsocketSTTService):
         # The latest main piece: (audio_ms, end_ms, the turn it went to or None for the
         # open turn) -- where the rest of its word's pieces go (THE CUT'S MARGIN).
         self._last_piece: Optional[tuple] = None
+        # The latest word filed to a turn whose preview did not have it: (the turn, its
+        # pieces so far) -- spent from a later preview's front once whole (_spend_later).
+        self._spending: Optional[tuple] = None
         self._end_through = -1
         self._audio_through = -1
         self._final_through = 0
@@ -2208,7 +2211,7 @@ class TeaportSTTService(WebsocketSTTService):
         if late:
             keep, follow = [], None
             for w in self._open_words:
-                took = self._file(w, follow, [turn] if id(w) in late else [])
+                took, _ = self._file(w, follow, [turn] if id(w) in late else [])
                 follow = (w[2], w[1], took)
                 (turn.words if took is not None else keep).append(w)
             if len(keep) < len(self._open_words):
@@ -2278,11 +2281,13 @@ class TeaportSTTService(WebsocketSTTService):
         return next((k for k in turn.expect if key and k.startswith(key)), None)
 
     @classmethod
-    def _claim_expected(cls, turn: _Turn, piece: str):
-        """A word of the turn came in: the preview's vouching for it is spent."""
+    def _claim_expected(cls, turn: _Turn, piece: str) -> bool:
+        """A word of the turn came in: the preview's vouching for it is spent. Whether
+        the preview had it."""
         k = cls._expected(turn, piece)
         if k is not None:
             turn.expect.remove(k)
+        return k is not None
 
     @classmethod
     def _vouch(cls, turn: _Turn, piece: str, end, start) -> bool:
@@ -2317,7 +2322,10 @@ class TeaportSTTService(WebsocketSTTService):
         if not isinstance(start, (int, float)):
             start = end
         w = (piece, end, start)
-        if end < self._final_through and not self._goes_on(w, self._last_piece):
+        goes_on = self._goes_on(w, self._last_piece)
+        if not goes_on:
+            self._spend_later()                       # the word before is whole now
+        if end < self._final_through and not goes_on:
             # A word of a turn already settled: the engine's end_through_ms did not hold,
             # or that turn's final timed out. Kept, not lost: the open turn has it --
             # never a later turn, whose stretch it is not in (its correction would add it
@@ -2328,45 +2336,56 @@ class TeaportSTTService(WebsocketSTTService):
                             "the open turn takes it")
             target = None
         else:
-            target = self._file(w, self._last_piece, self._turns)
-            if target is not None and not self._goes_on(w, self._last_piece):
-                self._spend_later(target, piece)
+            target, had = self._file(w, self._last_piece, self._turns)
+            if target is not None and not goes_on and not had:
+                self._spending = (target, [piece])
+            elif (goes_on and self._spending is not None
+                  and self._spending[0] is target):
+                self._spending[1].append(piece)
         self._last_piece = (start, end, target)
         (target.words if target is not None else self._open_words).append(w)
         return target is not None
 
-    def _spend_later(self, turn: _Turn, piece: str):
-        """A word (its first piece) went to `turn`: a turn after it whose preview has the
-        word at its front -- one waiting behind it, whose preview the trim could not
-        clean (the earlier turn owed words nothing vouched for) -- does not wait for it
-        too, nor does a peek's preview not yet adopted (THE CUT'S MARGIN)."""
-        key = _word_key(piece)
+    def _spend_later(self):
+        """The word last filed to a turn whose preview did not have it, whole now (its
+        pieces come together, before any other message): a turn after it whose preview
+        has the word at its front does not wait for it too, nor does a peek's preview
+        not yet adopted (THE CUT'S MARGIN). Only such a word: one the earlier preview had
+        is what the trim already took off the later one's front (_past_earlier), and the
+        same word there again is the later turn's own ("yes. Yes."). The whole word, not
+        a prefix: a late "the" is no later "there"."""
+        spending, self._spending = self._spending, None
+        if spending is None:
+            return
+        turn, pieces = spending
+        key = _word_key("".join(pieces))
         if not key:
             return
         for later in [t for t in self._turns if t.at_ms > turn.at_ms]:
-            if later.expect and later.expect[0].startswith(key):
+            if later.expect and later.expect[0] == key:
                 later.expect.pop(0)
         peek = self._peek
         if (peek is not None and peek.previewed and peek.turn is None
                 and peek.at_ms > turn.at_ms):
-            pieces = re.findall(r"\s*\S+", peek.msg.get("delta") or "")
-            if pieces and _word_key(pieces[0]).startswith(key):
-                peek.msg = {**peek.msg, "delta": "".join(pieces[1:])}
+            front = re.findall(r"\s*\S+", peek.msg.get("delta") or "")
+            n = next((n for n, p in enumerate(front) if _word_key(p)), None)
+            if n is not None and _word_key(front[n]) == key:
+                peek.msg = {**peek.msg, "delta": "".join(front[n + 1:])}
 
-    def _file(self, w: tuple, last: Optional[tuple], turns) -> Optional[_Turn]:
+    def _file(self, w: tuple, last: Optional[tuple], turns) -> tuple:
         """Where main piece `w` (piece, end_ms, audio_ms) goes among `turns`, oldest first
         (THE CUT'S MARGIN): where the rest of its word went (`last`: audio_ms, end_ms, its
         turn or None), else the turn it ends before or whose preview vouched for it;
-        None: the open turn. _slice_delta's rule, and an adopted peek's reclaim."""
+        None: the open turn. And whether that turn's preview had the word (a first piece
+        only). _slice_delta's rule, and an adopted peek's reclaim."""
         if self._goes_on(w, last) and (last[2] is None or any(t is last[2] for t in turns)):
-            return last[2]
+            return last[2], False
         for turn in turns:
             if w[1] < turn.at_ms:
-                self._claim_expected(turn, w[0])
-                return turn
+                return turn, self._claim_expected(turn, w[0])
             if self._vouch(turn, *w):
-                return turn
-        return None
+                return turn, True
+        return None, False
 
     def _forget_turn(self, turn: _Turn):
         with contextlib.suppress(ValueError):
@@ -2756,6 +2775,7 @@ class TeaportSTTService(WebsocketSTTService):
                 self._decoded_ms = -1
                 self._final_through = 0
                 self._last_piece = None
+                self._spending = None
                 # Handshake: the engine is single-model and just acknowledges this --
                 # and an engine with the report starts sending it (one without ignores
                 # the field). Not to the streaming backend: vLLM validates its session.
@@ -2862,6 +2882,7 @@ class TeaportSTTService(WebsocketSTTService):
                             "provisional text stands, a deferred one's words in hand")
             self._open_words = []
             self._last_piece = None
+            self._spending = None
             self._turns.clear()
             self._final_for = None
             await self._cancel_timer("_final_task")
@@ -3024,6 +3045,9 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _handle_message(self, msg: dict):
         mtype = msg.get("type")
+        if mtype != "transcription.delta":
+            # A word's pieces come together: any other message means the last is whole.
+            self._spend_later()
 
         if mtype == "transcription.delta":
             # Append-only token piece → grow the running utterance buffer and

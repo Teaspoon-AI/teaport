@@ -995,6 +995,75 @@ async def test_a_peek_previewed_while_a_turn_owed_words_waits_even_once_that_set
     assert s.finals() == [("Yes.", NO_STOP), ("Please.", 1)], s.finals()
 
 
+async def test_a_word_said_again_past_the_next_cut_stays_the_next_turn_s():
+    # The earlier preview has the word; the later one has it too, trimmed as the earlier
+    # turn's, then the later turn's own, the same word again past its cut. The earlier
+    # turn's arriving is not spent from the later one: that was its own.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await delta(s, " so", 300, start=100)
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, " true.")
+    await preview(s, 2000, " true. True.")
+    assert s.finals() == [("so true.", 1), ("True.", 2)], s.finals()
+    await delta(s, " true.", 1100, start=900)     # the first turn's, past its cut
+    await delta(s, " True.", 2100, start=1900)    # the second's own, past its cut
+    await progress(s, 2300, audio=2100)
+    assert not s._turns and s.corrections() == [], s.corrections()
+    assert not s._open_words and s._interim_buffer == ""
+
+
+async def test_a_late_word_is_spent_from_a_later_preview_only_as_a_whole_word():
+    # The earlier turn's word its preview lacked arrives: "the" is not the later turn's
+    # "there", which it still vouches for past its cut.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await delta(s, " so", 300, start=100)
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " there.")
+    await delta(s, " the", 900, start=700)        # the first turn's, its preview lacked it
+    await delta(s, " there.", 2100, start=1900)   # the second's own, past its cut
+    await progress(s, 2300, audio=2100)
+    assert [(c.stop_n, c.kind) for c in s.corrections()] == [(1, "adds")], s.corrections()
+    assert not s._turns and not s._open_words and s._interim_buffer == ""
+
+
+async def test_a_word_in_pieces_is_spent_from_a_later_preview_once_whole():
+    # The turn before's preview was empty: the later one has its word at the front. It
+    # comes in two pieces; once whole it is spent there, and the later turn is final at
+    # its position.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " 1300. Thanks.")
+    assert s.finals() == [], s.finals()
+    for piece in (" 13", "00."):
+        await delta(s, piece, 950, start=600)
+    await delta(s, " Thanks.", 1800, start=1500)
+    await progress(s, 2000)
+    assert s.finals() == [("1300.", NO_STOP), ("Thanks.", 2)], s.finals()
+
+
+async def test_a_late_word_is_spent_before_the_bound_that_follows_it():
+    # The same, the turn before's word the last to come: the progress after it ends it,
+    # and the later turn, whose preview had only that word, is final at its position.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " 1300.")
+    for piece in (" 13", "00."):
+        await delta(s, piece, 950, start=600)
+    await progress(s, 2000)
+    assert s.finals() == [("1300.", NO_STOP)] and not s._turns, (s.finals(), s._turns)
+
+
 async def test_no_speculation_on_a_peek_while_an_earlier_turn_owes_words():
     s = Service(peeks=True)
     await created(s)
