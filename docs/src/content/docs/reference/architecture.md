@@ -137,7 +137,7 @@ The table lists each port a teaport service listens on, and the service behind i
 | 7861 | `teaport-brain` | the `/talk` WebSocket and `/health`; the plugin, the Discord bridge, and the room microphone connect here as clients |
 | 80 | `teaport-wifi-setup`, through a redirect | captive-portal probes on the setup network, sent to the setup page while the service runs |
 
-<!-- source: brain/teaport_brain/gateway_server.py:27-28#c17952f7; install.sh:1528#b5bc5408; brain/README.md:8#8e48c7c2; brain/README.md:20#9528fc28; systemd/teaport-brain.service.in:1-2#4ed91011; plugin/README.md:31#0ebd73fa; systemd/teaport-wifi-setup.service.in:36-38#1d45013f -->
+<!-- source: brain/teaport_brain/gateway_server.py:27-28#c17952f7; install.sh:1535#b5bc5408; brain/README.md:8#8e48c7c2; brain/README.md:20#9528fc28; systemd/teaport-brain.service.in:1-2#4ed91011; plugin/README.md:31#0ebd73fa; systemd/teaport-wifi-setup.service.in:36-38#1d45013f -->
 
 The `teaport-sip` gateway binds the SIP port that its trunk configuration names, and it binds nothing before `teaport sip configure` writes the credentials file. The gateway talks to the brain over a UNIX domain socket under `/run/teaport`, not TCP. The Discord bridge and the room microphone open no ports; both connect out to the brain's `/talk` WebSocket.
 

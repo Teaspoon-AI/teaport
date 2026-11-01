@@ -128,6 +128,10 @@ from teaport_brain.wifi import PAGE_CSS, logo_html
 # Unset: no front door is known (a voice-only install, or one from before #243), and
 # pairing is not offered at all (available()).
 FRONTDOOR_HOST = (setting("TEAPORT_FRONTDOOR_HOST") or "").strip()
+# "trusted": the front door serves a certificate devices already trust (#249), so the pages
+# leave out the step of trusting the box. Otherwise they name the box's own CA (#251).
+TRUSTED_CERT = setting("TEAPORT_FRONTDOOR_CERT") == "trusted"
+CA_NAME = setting("TEAPORT_FRONTDOOR_CA_NAME")
 
 # The avatar's QR limit (display.Screen.fits_qr reads the live one; this is what every
 # avatar that draws QR codes says, and the link is sized for it up front).
@@ -704,15 +708,13 @@ def _ca_link() -> str:
 
 
 # How to trust the box's certificate, per kind of device: one <details> each, closed until
-# tapped (no script needed). The certificate's name is Caddy's ("Caddy Local Authority"),
-# so that is what the steps tell people to look for. Steps follow each system's own menu
-# names as of 2026; Android's differ between makers, so its steps name the search term.
-_CA_NAME = "Caddy Local Authority"
-
-
+# tapped (no script needed). The steps name the box's CA as the installer wrote it
+# (CA_NAME, "Teaport ab12 Local Authority"), so a device that trusts several boxes shows
+# which entry is this one. Steps follow each system's own menu names as of 2026;
+# Android's differ between makers, so its steps name the search term.
 def _ca_help() -> str:
     link = _ca_link()
-    name = f"<strong>{_CA_NAME}</strong>"
+    name = f"<strong>{html.escape(CA_NAME)}</strong>"
 
     def block(title: str, steps: list[str], note: str = "") -> str:
         items = "".join(f"<li>{x}</li>" for x in steps)
@@ -762,6 +764,12 @@ def _p(*parts: str) -> str:
     return "<p>" + "".join(x if x.startswith("<") else html.escape(x) for x in parts) + "</p>"
 
 
+def _trust(*parts: str) -> str:
+    """The paragraph about trusting the box, then how: nothing when devices already trust
+    the front door's certificate (TRUSTED_CERT)."""
+    return "" if TRUSTED_CERT else _p(*parts) + _ca_help()
+
+
 def _page(heading: str, body: str, status: int = 200, script: str = "") -> HTMLResponse:
     """`body` is HTML, built from _p() and fixed markup."""
     return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS + _EXTRA_CSS,
@@ -784,8 +792,8 @@ def _choose(code: str) -> HTMLResponse:
         button(DASHBOARD, "Open the dashboard here"),
         button(APP, "Use the OpenClaw app", ' class="alt"'),
         '<p id="wait" class="small" hidden>Starting, this can take a few seconds…</p>',
-        _p("If your phone warns that the connection is not private, install ", _ca_link(),
-           " first, then scan a new code."), _ca_help())), script=_ONE_TAP)
+        _trust("If your phone warns that the connection is not private, install ", _ca_link(),
+               " first, then scan a new code."))), script=_ONE_TAP)
 
 
 def _app_code(setup_code: str) -> HTMLResponse:
@@ -800,9 +808,9 @@ def _app_code(setup_code: str) -> HTMLResponse:
         "<li>Open <strong>Add Gateway</strong> from the app's menu (or "
         "<strong>Settings</strong>, then <strong>Gateway</strong>, if it already has one).</li>"
         "<li>Paste the code and connect.</li></ol>",
-        _p("The app connects only if this phone trusts the box: install ", _ca_link(),
-           " and turn on full trust for it in the phone's settings first. Then ask Teaport "
-           "for a new code if this one has run out."), _ca_help())), script=_COPY)
+        _trust("The app connects only if this phone trusts the box: install ", _ca_link(),
+               " and turn on full trust for it in the phone's settings first. Then ask "
+               "Teaport for a new code if this one has run out."))), script=_COPY)
 
 
 def _failed() -> HTMLResponse:
@@ -816,16 +824,21 @@ def _used() -> HTMLResponse:
     # The page a phone sees when it scans again -- most often because the dashboard did
     # not open the first time, and the usual reason is a phone that does not trust the
     # box yet.
-    return _page("This code was already used", _p(
+    if TRUSTED_CERT:
+        return _page("This code was already used", _p(
+            "Each code connects one device. If the dashboard did not open on this phone, "
+            "ask Teaport for a new code."), 410)
+    return _page("This code was already used", _trust(
         "Each code connects one device. If the dashboard did not open on this phone, it "
         "needs to trust the box first: install ", _ca_link(),
-        ", then ask Teaport for a new code.") + _ca_help(), 410)
+        ", then ask Teaport for a new code."), 410)
 
 
 def _expired() -> HTMLResponse:
     return _page("This code has expired", _p(
-        "Ask Teaport for a new one, and scan it within a few minutes. If your phone warns "
-        "that the connection is not private, install ", _ca_link(), " first.") + _ca_help(), 410)
+        "Ask Teaport for a new one, and scan it within a few minutes.") + _trust(
+        "If your phone warns that the connection is not private, install ", _ca_link(),
+        " first."), 410)
 
 
 def _via_front_door(request: Request) -> bool:
