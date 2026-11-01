@@ -139,7 +139,7 @@ the call at the gateway, which hands it to the restarted brain, and the caller
 hears a short "sorry, I lost you for a moment". The brain picks up a restarted
 gateway within a couple of seconds.
 
-<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1813-1822#52b15746 -->
+<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1835-1844#52b15746 -->
 
 To restart the gateway, for example after editing its configuration by hand:
 
@@ -201,7 +201,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1775-1785#a986d676; cli/teaport:1208-1210#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1797-1807#a986d676; cli/teaport:1208-1210#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — +1 346 234 8500. Should I
@@ -220,13 +220,13 @@ The question has three outcomes:
   call is taken by default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep
   ringing.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,599-613#f6a0b0f1; brain/teaport_brain/config_schema.toml:1788-1810#e70d77f4 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,599-613#f6a0b0f1; brain/teaport_brain/config_schema.toml:1810-1832#e70d77f4 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1640-1647#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,550-553#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1662-1669#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,550-553#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
@@ -264,7 +264,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,247#de2d5741; brain/teaport_brain/config_schema.toml:1813-1822#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,247#de2d5741; brain/teaport_brain/config_schema.toml:1835-1844#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -362,7 +362,7 @@ fake refuses to bind a path that something already listens on, compares real
 paths, so a symlink such as `/var/run` does not pass, and without
 `--allow-live-path` it refuses the default path as well.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1813-1822#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
+<!-- source: brain/teaport_brain/config_schema.toml:1835-1844#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
 
 Any 16-bit WAV works as the caller's audio; other sample rates and stereo are
 converted to the 16 kHz mono the gateway speaks. For a call that exercises a

@@ -22,7 +22,7 @@ Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no 
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1663-1670#5be20f46 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1685-1692#5be20f46 -->
 
 ## Join the setup network
 
