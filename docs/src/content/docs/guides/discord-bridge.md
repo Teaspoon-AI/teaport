@@ -69,7 +69,7 @@ Leave the variables out and the installer prompts for the server and the user, a
 
 The token itself never lands in the unit or in `bridge.env`: the env file records the token path, `DISCORD_BOT_TOKEN_FILE`, `~/.config/teaport/discord_bot_token` by default. The bridge reads the token from that file at startup, and a `DISCORD_BOT_TOKEN` environment variable wins when set. A new token needs a bridge restart to take effect.
 
-<!-- source: install.sh:1951-1952#8e83a59d; brain/teaport_brain/config_schema.toml:2262-2282#282a1296 -->
+<!-- source: install.sh:1951-1952#8e83a59d; brain/teaport_brain/config_schema.toml:2284-2304#282a1296 -->
 
 ## Check the bridge
 
