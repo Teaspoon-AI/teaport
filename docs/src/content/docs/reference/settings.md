@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2500#6ce17e5a -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2521#05cc9f4d -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -160,6 +160,8 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_AGENT_ID` | — | The OpenClaw agent this box's consults reach (model openclaw/<id> on /v1/chat/completions, --agent on the CLI fallback) and whose voice context (agent paragraph and profile) the room mic, the phone and the Discord bridge get from the teaport plugin. Must be a configured agent. Unset: the gateway's default agent, with the CLI fallback and the memory reindex run as --agent main. Memory and the web tools (remember, search_memory, web_search, web_fetch) stay with the gateway's default agent either way: remember writes OPENCLAW_MEMORY_DIR, and /tools/invoke names no agent. |
 | `OPENCLAW_BIN` | — | The openclaw CLI used as the consult fallback. Auto-detected; the host might have none when OpenClaw runs only inside the sandbox. *Set by the installer.* |
 | `TEAPORT_FRONTDOOR_HOST` | — | The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing a laptop or phone shows a QR code of https://<this>/p/<code> and points the new browser's dashboard at wss://<this>; the installer writes the name it gave the front door (teaport.local unless TEAPORT_HOST says otherwise). Unset: no front door is known, and the pair_device tool is not offered. The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen. *Set by the installer.* |
+| `TEAPORT_FRONTDOOR_CERT` | `local` | Which certificate the front door serves. local: the box's own (Caddy's tls internal), which each device must install and trust first, so the pairing pages link to it and say how. trusted: one the operator provides (TEAPORT_TLS_CERT and TEAPORT_TLS_KEY at install), which devices already trust, so the pages leave that step out. One of `local`, `trusted`. *Set by the installer.* |
+| `TEAPORT_FRONTDOOR_CA_NAME` | `Caddy Local Authority` | The name of the box's own certificate authority, the one the pairing pages tell people to look for when they trust the box (a device lists it as `<name> - <year> ECC Root`). The installer names a new one `Teaport <id> Local Authority`, where <id> is the end of the box's Wi-Fi MAC address, and reads an existing one's name back from it. *Set by the installer.* |
 | `TEAPORT_AGENT_FIRST` | **off** | Agent-first routing: install the strict router directive and drop the "I'll work on that" ack. |
 | `TEAPORT_RECALL_TIMEOUT` | **1.5** s (≥ 0.1) | Memory-recall budget. Never awaited on the frame path, so a generous value adds no turn latency; 1.5 s clears a cold embedder (~1.14 s on the device). |
 | `TEAPORT_CONSULT_TIMEOUT` | **45** s (≥ 5) | Gateway/CLI consult ceiling on the synchronous path (TEAPORT_AGENT_FIRST, or a client with no follow-up injector). Otherwise the async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts. |

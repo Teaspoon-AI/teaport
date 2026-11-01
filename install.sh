@@ -52,6 +52,13 @@
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
 #   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
+#   TEAPORT_HOST           the front door's name (default teaport.local, or teaport-<id>.local
+#                          when another box already answers to teaport.local)
+#   TEAPORT_TLS_CERT / TEAPORT_TLS_KEY  a certificate (full chain, PEM) and key for that name,
+#                          served instead of the box's own; renewing them is up to you: replace
+#                          both files, then `sudo systemctl reload caddy.service`
+#   TEAPORT_REGENERATE_CA=1  replace the box's own certificate authority (every phone and
+#                          laptop that trusts the box must install and trust the new one)
 #
 set -euo pipefail
 
@@ -1531,10 +1538,23 @@ OPENCLAW_HEAP_MIB="${TEAPORT_OPENCLAW_HEAP_MIB:-1536}"   # its JS heap limit (ca
 # Checked here, before anything is installed: a value node refuses ("2G") would crash-loop
 # the gateway, and found at the agent phase it would stop the install halfway.
 [[ $OPENCLAW_HEAP_MIB =~ ^[1-9][0-9]*$ ]] || die "TEAPORT_OPENCLAW_HEAP_MIB must be a whole number of MiB, not '$OPENCLAW_HEAP_MIB'"
-FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
+FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS (resolve_frontdoor)
 # Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
-# HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.
+# HOME=/var/lib/caddy, so its data dir is the XDG default underneath that. Its leaf
+# certificates are cached beside it, under certificates/local.
 CADDY_PKI="${TEAPORT_CADDY_PKI:-/var/lib/caddy/.local/share/caddy/pki/authorities/local}"
+CADDY_LEAVES="${CADDY_PKI%/pki/authorities/local}/certificates/local"
+CADDYFILE=/etc/caddy/Caddyfile   # ours (write_caddyfile); resolve_frontdoor reads it back
+# The operator's own certificate for the front door (#249), in place of 'tls internal'.
+# Unset on a re-run, the one the Caddyfile already serves stays (resolve_frontdoor); set
+# but empty, the front door goes back to the box's own.
+TLS_CERT="${TEAPORT_TLS_CERT:-}" TLS_KEY="${TEAPORT_TLS_KEY:-}"
+if [ -n "$TLS_CERT$TLS_KEY" ] && { [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; }; then
+  die "TEAPORT_TLS_CERT and TEAPORT_TLS_KEY go together: set both, or neither"
+fi
+REGENERATE_CA="${TEAPORT_REGENERATE_CA:-0}"
+# The name of the box's own certificate authority, as devices list it (resolve_frontdoor).
+FRONTDOOR_CA_NAME=""
 render_unit() {  # render_unit <template.in> <dest-name>
   local tpl="$HERE/systemd/$1" out="$2"
   [ -f "$tpl" ] || die "missing unit template: $tpl"
@@ -1647,10 +1667,144 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
 }
 
+# box_id — four hex digits that tell boxes apart: the end of the Wi-Fi MAC, the same digits
+# Wi-Fi setup names its network by (teaport-ab12, wifi_setup.setup_ssid), so a box goes by
+# one name on its screen, on the network and in a phone's certificate list. A box with no
+# Wi-Fi takes its first wired interface's.
+box_id() {
+  local net="${SYSFS_NET:-/sys/class/net}" d mac="" kind
+  for kind in wireless device; do
+    for d in "$net"/*; do
+      if [ -z "$mac" ] && [ -e "$d/$kind" ] && [ -r "$d/address" ]; then
+        mac="$(tr -cd '0-9a-fA-F' < "$d/address" | tr 'A-F' 'a-f')"
+        case "$mac" in ''|000000000000) mac="" ;; esac
+      fi
+    done
+  done
+  if [ ${#mac} -ge 4 ]; then printf '%s\n' "${mac: -4}"; else printf '0000\n'; fi
+}
+
+# frontdoor_name_taken <host> — another machine already answers to <host> over mDNS: it
+# resolves to an address that is not one of this box's own.
+frontdoor_name_taken() {
+  local addrs mine a
+  addrs="$(timeout 5 getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u || true)"
+  mine=" $(hostname -I 2>/dev/null || true) 127.0.0.1 127.0.1.1 "
+  for a in $addrs; do
+    case "$mine" in *" $a "*) ;; *) return 0 ;; esac
+  done
+  return 1
+}
+
+# resolve_frontdoor — settle the front door's name, its local CA's name, and the operator's
+# certificate if one is given, before phase_agent hands the name to OpenClaw (publicUrl)
+# and phase_services writes them into brain.env (#251, #249).
+#
+# The host: TEAPORT_HOST when set; otherwise the name an earlier run settled on (brain.env),
+# since the phones that already trust or bookmark the box use it; otherwise teaport.local,
+# unless another box already answers to that, when this one becomes teaport-<id>.local. A
+# second box keeping teaport.local would have avahi rename it on the wire (teaport-2.local)
+# while its QR links still said teaport.local, so a phone opened the other box's page.
+#
+# The CA name: the existing root's, read back from it (Caddy never renames a root), or
+# "Teaport <id> Local Authority" for a root Caddy has yet to make. Devices list the root as
+# "<name> - <year> ECC Root"; the pages tell people to look for <name>.
+resolve_frontdoor() {
+  local id; id="$(box_id)"
+  # Host names are case-insensitive; avahi and the QR link get one spelling.
+  FRONTDOOR_HOST="$(printf '%s' "$FRONTDOOR_HOST" | tr 'A-Z' 'a-z')"
+  have openssl || die "openssl is needed to read the front door's certificates: sudo apt-get install openssl"
+  # The operator's certificate is kept across re-runs the way the name is: a repair run
+  # without TEAPORT_TLS_CERT must not quietly put every device back on an untrusted one.
+  # The Caddyfile is ours, so its tls line is the record of what an earlier run was given.
+  if [ -z "${TEAPORT_TLS_CERT+set}${TEAPORT_TLS_KEY+set}" ]; then
+    local tl
+    tl="$(sudo cat "$CADDYFILE" 2>/dev/null | sed -n 's/^    tls "\([^"]*\)" "\([^"]*\)"$/\1 \2/p' | head -1 || true)"
+    if [ -n "$tl" ]; then
+      TLS_CERT="${tl%% *}" TLS_KEY="${tl#* }"
+      log "keeping the front door's certificate $TLS_CERT (TEAPORT_TLS_CERT= with no value goes back to the box's own)"
+    fi
+  fi
+  if [ -z "${TEAPORT_HOST:-}" ]; then
+    local had; had="$(read_env_file "$ETC/brain.env" --lenient | grep -E '^TEAPORT_FRONTDOOR_HOST=' | tail -1 || true)"
+    had="$(printf '%s' "${had#*=}" | tr 'A-Z' 'a-z')"   # lowercased like TEAPORT_HOST above
+    if [ -n "$had" ]; then FRONTDOOR_HOST="$had"; fi
+    # A .local name another machine answers to does not reach this box at all (avahi
+    # renamed it on the wire), so keeping it only keeps phones on the other box: a saved
+    # name too, such as two boxes installed before #251 that both wrote teaport.local.
+    # Any other name is DNS, which may well resolve to an address not on this box (a
+    # proxy, NAT): not ours to second-guess.
+    if [ -z "$TLS_CERT" ] && [ "$FRONTDOOR_HOST" != "teaport-$id.local" ] \
+       && [ "${FRONTDOOR_HOST%.local}" != "$FRONTDOOR_HOST" ] \
+       && frontdoor_name_taken "$FRONTDOOR_HOST"; then
+      log "another box already answers to $FRONTDOOR_HOST — this one is teaport-$id.local"
+      FRONTDOOR_HOST="teaport-$id.local"
+    fi
+  fi
+  # pairing.py's limit: https://<host>/p/<6 chars> in the screen's 53-byte QR code.
+  if [ ${#FRONTDOOR_HOST} -gt 36 ]; then
+    warn "front door name $FRONTDOOR_HOST is longer than 36 characters: its pairing link does not fit the QR code on the box's screen, so pairing a device by voice is not offered"
+  fi
+  if [ -n "$TLS_CERT" ]; then check_own_cert; fi
+  FRONTDOOR_CA_NAME="Teaport $id Local Authority"
+  if [ "$REGENERATE_CA" != 1 ]; then
+    # A read, so a dry run does it too (plain sudo, as read_env_file).
+    local cn
+    cn="$(sudo cat "$CADDY_PKI/root.crt" 2>/dev/null | openssl x509 -noout -subject -nameopt multiline,utf8,-esc_msb 2>/dev/null \
+          | sed -n 's/^ *commonName *= //p' | head -1 | tr -d '"\\' || true)"
+    if [ -n "$cn" ]; then FRONTDOOR_CA_NAME="${cn% - [0-9][0-9][0-9][0-9] ECC Root}"; fi
+  fi
+}
+
+# check_own_cert — refuse a certificate Caddy could not serve for $FRONTDOOR_HOST before
+# anything is installed: a wrong file here takes the whole front door down at the reload.
+check_own_cert() {
+  local f
+  for f in "$TLS_CERT" "$TLS_KEY"; do
+    case "$f" in
+      /*) ;; *) die "TEAPORT_TLS_CERT and TEAPORT_TLS_KEY must be absolute paths, not '$f'" ;;
+    esac
+    case "$f" in *[[:space:]\"{}]*) die "'$f': a certificate path with spaces, quotes or braces cannot go in the Caddyfile" ;; esac
+    sudo test -f "$f" || die "$f does not exist (to go back to the box's own certificate: TEAPORT_TLS_CERT= TEAPORT_TLS_KEY= ./install.sh)"
+  done
+  local pem pub key out
+  pem="$(sudo cat "$TLS_CERT")"
+  pub="$(printf '%s\n' "$pem" | openssl x509 -noout -pubkey 2>/dev/null || true)"
+  [ -n "$pub" ] || die "$TLS_CERT is not a PEM certificate"
+  # -passin pass: : a passphrase-protected key fails here instead of prompting mid-install.
+  key="$(sudo cat "$TLS_KEY" | openssl pkey -pubout -passin pass: 2>/dev/null || true)"
+  if [ -z "$key" ] || [ "$pub" != "$key" ]; then
+    die "$TLS_KEY is not the private key of $TLS_CERT, or it has a passphrase (Caddy needs it without one)"
+  fi
+  out="$(printf '%s\n' "$pem" | openssl x509 -noout -checkhost "$FRONTDOOR_HOST" 2>/dev/null || true)"
+  contains "does match" "$out" || die "$TLS_CERT is not issued for $FRONTDOOR_HOST — set TEAPORT_HOST to the name it covers"
+  if ! printf '%s\n' "$pem" | openssl x509 -noout -checkend 0 >/dev/null 2>&1; then
+    warn "$TLS_CERT has expired: browsers will refuse the front door until it is replaced"
+  elif ! printf '%s\n' "$pem" | openssl x509 -noout -checkend 604800 >/dev/null 2>&1; then
+    warn "$TLS_CERT expires within 7 days"
+  fi
+}
+
+# regenerate_ca — TEAPORT_REGENERATE_CA=1: set the box's CA aside so Caddy makes a new one
+# under the current name. The cached leaf certificates go too: they are signed by the old
+# CA, and Caddy would keep serving them to devices that trust only the new one. Kept, not
+# deleted, so the old CA can be put back.
+regenerate_ca() {
+  local stamp d; stamp="$(date +%Y%m%d-%H%M%S)"
+  warn "replacing the box's certificate authority (TEAPORT_REGENERATE_CA=1): every phone and laptop that trusts the box must install and trust the new one, \"$FRONTDOOR_CA_NAME\""
+  SUDO systemctl stop caddy.service
+  for d in "$CADDY_PKI" "$CADDY_LEAVES"; do
+    if sudo test -e "$d"; then
+      SUDO mv "$d" "$d.bak-$stamp"
+      log "  the old one is kept at $d.bak-$stamp"
+    fi
+  done
+}
+
 # write_caddyfile <path> — the front-door reverse proxy. 'tls internal' is a self-signed
-# cert (offline, one-time browser trust); swap it for an ACME/DNS-01 block to get a real
-# no-warning cert for a name that resolves to the LAN IP. WebSocket upgrades (the /talk
-# stream) pass through reverse_proxy automatically.
+# cert (offline, one-time trust on each device); TEAPORT_TLS_CERT/KEY serve a real one
+# instead, for a name that resolves to the LAN IP. WebSocket upgrades (the /talk stream)
+# pass through reverse_proxy automatically.
 #
 # The plain-HTTP block exists for phones. A browser can click through an untrusted cert; the
 # OpenClaw mobile app cannot, so pairing over wss:// needs Caddy's local root installed on the
@@ -1674,14 +1828,33 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # port is open to the LAN (the config page), so the brain itself answers /p/ only to a
 # loopback peer that says X-Forwarded-Proto https -- this proxy, which sets that header
 # itself -- and gives anything else a 404 (pairing.py _via_front_door).
+#
+# The global block names the local CA for this box (#251): every Caddy root is otherwise
+# "Caddy Local Authority", and a phone that trusts two boxes lists two identical entries.
+# Caddy uses the name only when it creates a root; an existing root keeps its own
+# (resolve_frontdoor reads it back so the pages name what the device shows), and
+# TEAPORT_REGENERATE_CA=1 makes a new one. With the operator's own certificate (#249) the
+# site serves that instead of 'tls internal'; the local CA and its download stay for a
+# device that reaches the box some other way.
 write_caddyfile() {
-  local path="$1"
+  local path="$1" tls="tls internal"
+  if [ -n "$TLS_CERT" ]; then tls="tls \"$TLS_CERT\" \"$TLS_KEY\""; fi
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, tls internal, + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$tls" "$FRONTDOOR_CA_NAME"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
+    "" \
+    "{" \
+    "    # The box's own certificate authority, named for this box. Caddy names a root only" \
+    "    # when it creates one: an existing root keeps its name." \
+    "    pki {" \
+    "        ca local {" \
+    "            name \"$FRONTDOOR_CA_NAME\"" \
+    "        }" \
+    "    }" \
+    "}" \
     "" \
     "# The local CA, so a phone can trust us before it connects: served by both blocks." \
     "(teaport_ca) {" \
@@ -1703,7 +1876,7 @@ write_caddyfile() {
     "}" \
     "" \
     "$FRONTDOOR_HOST {" \
-    "    tls internal" \
+    "    $tls" \
     "    import teaport_ca" \
     "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
     "    handle /p/* {" \
@@ -1769,9 +1942,12 @@ phase_services() {
   local agent=("?TEAPORT_AGENT=none")
   if [ -n "$AGENT_MODE" ]; then
     # TEAPORT_FRONTDOOR_HOST: the name the pairing links (#243) are built on; phase_frontdoor
-    # fronts exactly these installs (any agent), so it is written exactly here.
+    # fronts exactly these installs (any agent), so it is written exactly here, with what
+    # the pairing pages say about trusting the box (resolve_frontdoor).
+    local cert=local; if [ -n "$TLS_CERT" ]; then cert=trusted; fi
     agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT"
-           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST")
+           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST" "TEAPORT_FRONTDOOR_CERT=$cert"
+           "TEAPORT_FRONTDOOR_CA_NAME=$FRONTDOOR_CA_NAME")
   fi
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
@@ -1887,10 +2063,25 @@ phase_frontdoor() {
   # fixes flow through the package manager. The deb ships its own caddy.service (runs as user
   # caddy, reads /etc/caddy/Caddyfile) — we just drop our config there and reload.
   install_caddy_apt
+  # The caddy user exists only from here, so whether it can read the operator's files is
+  # checked here and not in check_own_cert. Unreadable, Caddy would not start at all.
+  if [ -n "$TLS_CERT" ] && [ "$DRY_RUN" != 1 ]; then
+    local f
+    for f in "$TLS_CERT" "$TLS_KEY"; do
+      SUDO runuser -u caddy -- test -r "$f" || die "Caddy (user caddy) cannot read $f: give the caddy user or group read access, then re-run"
+    done
+  fi
+  if [ "$REGENERATE_CA" = 1 ]; then regenerate_ca; fi
   # mDNS: publish $FRONTDOOR_HOST so LAN browsers resolve it with no DNS setup.
   SUDO apt-get install -y avahi-daemon
-  write_caddyfile /etc/caddy/Caddyfile
-  set_avahi_hostname "${FRONTDOOR_HOST%.local}"
+  write_caddyfile "$CADDYFILE"
+  # mDNS publishes single-label .local names only (avahi refuses a dotted host-name and
+  # does not start): any other name is the operator's DNS to resolve.
+  case "$FRONTDOOR_HOST" in
+    .local|*.*.local|*..*) warn "$FRONTDOOR_HOST is not a name mDNS can publish — make your DNS resolve it to this box" ;;
+    *.local) set_avahi_hostname "${FRONTDOOR_HOST%.local}" ;;
+    *) log "front door name $FRONTDOOR_HOST is not .local: your DNS must resolve it to this box" ;;
+  esac
   SUDO systemctl enable --now avahi-daemon caddy.service
   # `enable --now` starts a stopped unit but does NOT restart a running one, and avahi reads
   # host-name only at startup. The apt-get above tends to leave avahi already running, so
@@ -2486,11 +2677,13 @@ usage_footer() {
         octok="$(cat "$SECRETS/openclaw_token" 2>/dev/null || true)"
       fi
     fi
+    # With the operator's certificate (#249) nothing needs accepting or installing.
+    local accept=" (accept the one-time cert)"; if [ -n "$TLS_CERT" ]; then accept=""; fi
     if [ -n "$octok" ]; then
-      printf '  browser: open %s/#token=%s from a LAN device (accept the one-time cert).\n' "$url" "$octok"
+      printf '  browser: open %s/#token=%s from a LAN device%s.\n' "$url" "$octok" "$accept"
       printf '           the #token fragment authenticates you; it is never sent to the proxy.\n'
     else
-      printf '  browser: open %s from a LAN device (accept the one-time cert).\n' "$url"
+      printf '  browser: open %s from a LAN device%s.\n' "$url" "$accept"
       if [ "$AGENT_MODE" = nemoclaw ]; then
         # The sandbox owns the OpenClaw CLI; there is no `openclaw` on the host to run.
         printf '           you will need the gateway auth token — see: %s %s exec -- openclaw dashboard --no-open\n' "$NEMOCLAW" "$SANDBOX"
@@ -2501,12 +2694,17 @@ usage_footer() {
     # Phones need saying out loud. The mobile app cannot click through 'tls internal' the way
     # a browser can, so scanning the QR before installing the root just fails the TLS
     # handshake with nothing on screen to explain why. Order matters: cert, then scan.
-    printf '  phone:   install http://%s/teaport-ca.crt, then Settings > General > About >\n' "$FRONTDOOR_HOST"
-    printf '           Certificate Trust Settings and switch it on (a separate step from installing it).\n'
-    if [ "$AGENT_MODE" = nemoclaw ]; then
-      printf '           then pair: %s %s exec -- openclaw qr\n' "$NEMOCLAW" "$SANDBOX"
+    if [ -n "$TLS_CERT" ]; then
+      printf '  phone:   '
     else
-      printf '           then pair: openclaw qr   (the code expires in 10 minutes)\n'
+      printf '  phone:   install http://%s/teaport-ca.crt, then Settings > General > About >\n' "$FRONTDOOR_HOST"
+      printf '           Certificate Trust Settings and switch on "%s"\n' "$FRONTDOOR_CA_NAME"
+      printf '           (a separate step from installing it). then '
+    fi
+    if [ "$AGENT_MODE" = nemoclaw ]; then
+      printf 'pair: %s %s exec -- openclaw qr\n' "$NEMOCLAW" "$SANDBOX"
+    else
+      printf 'pair: openclaw qr   (the code expires in 10 minutes)\n'
     fi
     printf '  next:    start a Talk session from the dashboard.\n'
   else
@@ -2588,12 +2786,18 @@ main() {
   fetch_manifest
   eula_gate
   phase_preflight
+  # Which agent is here (none of the phases before phase_agent installs one), then the
+  # front door's names, and the operator's certificate checked, before anything is
+  # installed: phase_agent gives the name to OpenClaw, phase_services writes brain.env.
+  # Only an install with an agent has a front door (phase_frontdoor).
+  detect_agent
+  if [ -n "$AGENT_MODE" ]; then resolve_frontdoor
+  elif [ -n "$TLS_CERT" ]; then warn "TEAPORT_TLS_CERT is ignored: a voice-only install has no front door"; fi
   phase_sysdeps
   phase_engine
   phase_brain
   install_busy_lamp
   install_dns_resilience
-  detect_agent
   phase_agent
   phase_credentials
   phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them

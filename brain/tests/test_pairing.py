@@ -95,6 +95,8 @@ class FakeCli:
 def _setup(cli: FakeCli, host="teaport.local"):
     pairing._cli = cli
     pairing.FRONTDOOR_HOST = host
+    pairing.TRUSTED_CERT = False
+    pairing.CA_NAME = "Teaport ab12 Local Authority"
     pairing._session = None
     pairing._ended = None
     pairing._creating = None
@@ -557,6 +559,33 @@ def test_every_page_with_the_certificate_link_says_how_to_trust_it():
         assert body.count("<details>") == 4 and "<details open" not in body, name
         assert "Certificate Trust Settings" in body and "Always Trust" in body, name
     assert "<details>" not in pairing._failed().body.decode()
+
+
+def test_the_trust_steps_name_this_boxs_certificate():
+    # A phone that trusts two boxes lists both roots; the steps name the one this box made
+    # (#251), as the installer wrote it, and never Caddy's default name.
+    _setup(FakeCli())
+    body = pairing._choose("K7Q2XM").body.decode()
+    assert body.count("<strong>Teaport ab12 Local Authority</strong>") == 2  # iPhone, Mac
+    assert "Caddy" not in body
+    pairing.CA_NAME = "Box <1> & co"
+    assert "<strong>Box &lt;1&gt; &amp; co</strong>" in pairing._choose("K7Q2XM").body.decode()
+
+
+def test_a_trusted_certificate_leaves_out_trusting_the_box():
+    # With the operator's own certificate (#249) no page links to the box's CA or says how
+    # to trust it; each still says what it is for.
+    _setup(FakeCli())
+    pairing.TRUSTED_CERT = True
+    pages = {"choose": (pairing._choose("K7Q2XM"), "Use the OpenClaw app"),
+             "app": (pairing._app_code("SETUP"), "Add Gateway"),
+             "used": (pairing._used(), "ask Teaport for a new code"),
+             "expired": (pairing._expired(), "Ask Teaport for a new one")}
+    for name, (r, still) in pages.items():
+        body = r.body.decode()
+        assert still in body, name
+        for gone in ("teaport-ca.crt", "<details>", "trust", "not private"):
+            assert gone not in body, (name, gone)
 
 
 def test_available_needs_a_front_door():
