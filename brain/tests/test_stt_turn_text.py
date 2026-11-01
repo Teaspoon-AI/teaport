@@ -1164,6 +1164,91 @@ async def test_a_late_word_is_spent_before_the_bound_that_follows_it():
     assert s.finals() == [("1300.", NO_STOP)] and not s._turns, (s.finals(), s._turns)
 
 
+async def test_a_late_word_is_spent_from_the_first_later_turn_only():
+    # Three turns: the first's preview empty, the second's with the first's word at its
+    # front, the third's trimmed of it and ending in its own same word past its cut. The
+    # first's word, when it comes, is spent from the second only.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await turn(s)                                  # at 3000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " Yes. Go.")
+    await preview(s, 3000, " Yes. Go. Yes.")
+    await delta(s, " Yes.", 900)                   # the first turn's, late
+    await delta(s, " Go.", 1800)                   # the second's
+    await delta(s, " Yes.", 3100, start=2900)     # the third's own, past its cut
+    await progress(s, 3300, audio=3100)
+    assert s.finals() == [("Yes.", NO_STOP), ("Go.", 2), ("Yes.", 3)], s.finals()
+    assert not s._turns and not s._open_words and s.corrections() == []
+
+
+async def test_a_late_word_a_turn_was_spent_is_not_spent_from_the_peek_too():
+    # Two backstop turns, the first's preview empty, the second's the first's word; the
+    # stop's peek has it trimmed, then its own same word. The first's word, when it
+    # comes, is the second's to spend: the peek keeps its own.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 1000, the VAD stuck
+    await preview(s, 1000, "")
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 2000
+    await preview(s, 2000, " Yes.")
+    await audio(s, 300)
+    await vad_stop(s)                                         # the peek at 2300
+    at = s._peek.at_ms
+    await preview(s, at, " Yes. Yes.")
+    await delta(s, " Yes.", 900)                              # the first turn's, late
+    await progress(s, 2000)
+    await complete(s)                                         # adopts the peek
+    await delta(s, " Yes.", at + 100, start=at - 200)        # its own, past its cut
+    await progress(s, at + 300, audio=at + 100)
+    assert s.finals() == [("Yes.", NO_STOP), ("Yes.", 1)], s.finals()
+    assert not s._turns and not s._open_words, s._open_words
+
+
+async def test_two_late_words_in_a_row_are_each_spent():
+    # The turn before's preview was empty; both its words come late, one after the
+    # other: each is spent from the later preview's front, and that turn is final at its
+    # position.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, "")
+    await preview(s, 2000, " Yes, please. Go.")
+    await delta(s, " Yes,", 700, start=500)
+    await delta(s, " please.", 900, start=700)
+    await delta(s, " Go.", 1800, start=1500)
+    await progress(s, 2000)
+    assert s.finals() == [("Yes, please.", NO_STOP), ("Go.", 2)], s.finals()
+
+
+async def test_a_late_word_is_spent_from_a_peek_s_preview_only_as_a_whole_word():
+    # The backstop's turn has an empty preview; its late "the" is not the peek's own
+    # "there", which the adopted turn still vouches for past its cut.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 1000, the VAD stuck
+    await preview(s, 1000, "")
+    await audio(s, 300)
+    await vad_stop(s)                                         # the peek at 1300
+    at = s._peek.at_ms
+    await preview(s, at, " there.")
+    await delta(s, " the", 900, start=700)                    # the first turn's
+    await progress(s, 1000)                                   # the first turn's final
+    await complete(s)                                         # adopts the peek
+    await delta(s, " there.", at + 100, start=at - 200)      # its own, past its cut
+    await progress(s, at + 300, audio=at + 100)
+    assert s.finals() == [("the", NO_STOP), ("there.", 1)], s.finals()
+    assert not s._turns and not s._open_words, s._open_words
+
+
 async def test_no_speculation_on_a_peek_while_an_earlier_turn_owes_words():
     s = Service(peeks=True)
     await created(s)

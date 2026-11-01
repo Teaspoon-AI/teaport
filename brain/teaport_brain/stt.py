@@ -2348,12 +2348,14 @@ class TeaportSTTService(WebsocketSTTService):
 
     def _spend_later(self):
         """The word last filed to a turn whose preview did not have it, whole now (its
-        pieces come together, before any other message): a turn after it whose preview
-        has the word at its front does not wait for it too, nor does a peek's preview
-        not yet adopted (THE CUT'S MARGIN). Only such a word: one the earlier preview had
-        is what the trim already took off the later one's front (_past_earlier), and the
-        same word there again is the later turn's own ("yes. Yes."). The whole word, not
-        a prefix: a late "the" is no later "there"."""
+        pieces come together, before any other message): the first turn after it whose
+        preview has the word at its front does not wait for it too -- or, no turn's
+        having it, a peek's preview not yet adopted (THE CUT'S MARGIN). Only such a word:
+        one the earlier preview had is what the trim already took off the later one's
+        front (_past_earlier), and the same word there again is the later turn's own
+        ("yes. Yes."). Only from the first: its preview held the word unsent, so the trim
+        took the word off every preview after it, and the same word at their front is
+        their own. The whole word, not a prefix: a late "the" is no later "there"."""
         spending, self._spending = self._spending, None
         if spending is None:
             return
@@ -2361,9 +2363,10 @@ class TeaportSTTService(WebsocketSTTService):
         key = _word_key("".join(pieces))
         if not key:
             return
-        for later in [t for t in self._turns if t.at_ms > turn.at_ms]:
-            if later.expect and later.expect[0] == key:
+        for later in self._turns:
+            if later.at_ms > turn.at_ms and later.expect and later.expect[0] == key:
                 later.expect.pop(0)
+                return
         peek = self._peek
         if (peek is not None and peek.previewed and peek.turn is None
                 and peek.at_ms > turn.at_ms):
