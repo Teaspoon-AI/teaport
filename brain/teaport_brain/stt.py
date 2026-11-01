@@ -874,7 +874,7 @@ class _Turn:
 
 def _words_of(text: str) -> list:
     """The words a turn's texts are compared by: case and punctuation out, in any script
-    (word_tokens, the brain's one rule)."""
+    (word_tokens, the rule the barge-in guard's stop words share)."""
     return word_tokens(text)
 
 

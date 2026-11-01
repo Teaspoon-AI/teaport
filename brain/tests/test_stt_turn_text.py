@@ -588,6 +588,7 @@ async def test_the_cut_s_margin_and_the_correction_hold_in_any_script():
     assert stt_mod.compare_turn_text("नमस्ते दुनिया", "नमस्ते") == ("drops", (), ("दुनिया",))
     assert stt_mod.compare_turn_text("你好世界", "你好")[0] == "changes"
     assert stt_mod.compare_turn_text("Привет друг", "привет, друг!")[0] == "same"
+    assert stt_mod.compare_turn_text("ＳＴＯＰ， ｐｌｅａｓｅ", "stop please")[0] == "same"
 
 
 async def test_a_barge_in_in_another_script_goes_on_at_its_preview():

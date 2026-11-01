@@ -72,8 +72,8 @@ from teaport_brain.heard_context import _set_msg_text, msg_text
 __all__ = ["TurnTextCorrector", "TurnTextFinalFrame"]
 
 # The commits a correction may look in: the latest few, each with when it passed and
-# the user message it carried. The final follows its provisional by ~0.5 s (up to ~2 s on
-# the box).
+# the user message it carried. The final follows its commit by ~0.7 s (up to ~2 s on the
+# box).
 _COMMITS_KEPT = 8
 
 

@@ -472,7 +472,8 @@ _SHH = re.compile(r"s*h{2,}")
 
 
 def _tokens(text: str) -> list:
-    """The words of `text` (word_tokens, the brain's one rule), every "shhh" as "shh"."""
+    """The words of `text` (word_tokens, the rule sliced turn texts share), every "shhh"
+    as "shh"."""
     return ["shh" if _SHH.fullmatch(w) else w for w in word_tokens(text)]
 
 
