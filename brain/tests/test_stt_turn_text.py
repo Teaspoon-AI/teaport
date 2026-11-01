@@ -694,6 +694,38 @@ async def test_the_turn_before_s_words_are_trimmed_past_one_its_preview_missed()
     assert s.finals() == [("so true.", 1), ("very Thanks.", 2)], s.finals()
 
 
+async def test_the_turn_before_s_words_are_trimmed_past_one_the_later_preview_lacks():
+    # The earlier preview vouched for two words; the later preview lacks the first (a
+    # lossy drain) and has the second: it is still the earlier turn's, not asked again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await turn(s)                                  # at 2000
+    await preview(s, 1000, " very true.")
+    await preview(s, 2000, " true. Thanks.")
+    assert s.finals() == [("very true.", 1), ("Thanks.", 2)], s.finals()
+
+
+async def test_a_reclaimed_word_s_later_pieces_follow_it_into_the_turn():
+    # Its first pieces came in between the peek's preview and the verdict, and the
+    # adopted turn took them back from the open turn; the rest come after: they follow.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " to", 700)
+    await vad_stop(s, stop_secs=0.2)
+    at = s._peek.at_ms
+    await preview(s, at, " 1300.")
+    for piece in (" 1", "3"):
+        await delta(s, piece, at + 60, start=at - 300)
+    await complete(s)                              # adopts the peek, takes them back
+    for piece in ("0", "0", "."):
+        await delta(s, piece, at + 60, start=at - 300)
+    await progress(s, at + 300)
+    assert not s._open_words and s.corrections() == [], (s._open_words, s.corrections())
+
+
 async def test_a_word_past_the_cut_the_preview_did_not_have_is_the_next_turns():
     s = Service(peeks=True)
     await created(s)

@@ -374,9 +374,9 @@ RecvDelta ==
     /\ UNCHANGED <<engine, commits, seen, speaking, stops, peekIdx, atStop, split>>
 
 \* _past_earlier: the words a turn before `at`, previewed and not final, still expects --
-\* a later preview's are that turn's ("noTrim": asked again). The code trims them in
-\* their order within the preview's front run; words being unique here, that is this set
-\* subtraction.
+\* a later preview's are that turn's ("noTrim": asked again). The code drops each word
+\* of the preview's front run that is an owed word still ahead of its pointer, skipping
+\* owed words the preview lacks: with words unique and in time order, this subtraction.
 Owed(at) == IF DESIGN = "noTrim" THEN {}
             ELSE UNION {turns[j].expect : j \in {j \in 1..Len(turns) :
                             turns[j].previewed /\ ~turns[j].final /\ turns[j].at < at}}

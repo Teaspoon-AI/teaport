@@ -2410,18 +2410,24 @@ class TeaportSTTService(WebsocketSTTService):
         before `at` -- previewed, not yet final -- still expects, in their order (THE CUT'S
         MARGIN). The front run: the preview's first words, as many as are owed and two
         more, so an earlier preview that missed a word the later one has does not stop
-        the trim, and a later word that only reads the same is never taken."""
+        the trim, nor one the later preview lacks, and a later word that only reads the
+        same is never taken."""
         owed = [k for t in self._turns if t.previewed and t.at_ms < at for k in t.expect]
         if not owed:
             return delta
         pieces = re.findall(r"\s*\S+", delta)
         kept, i = [], 0
         for n, piece in enumerate(pieces):
-            if i < len(owed) and n < len(owed) + 2 and _word_key(piece) == owed[i]:
-                i += 1
-            else:
+            key = _word_key(piece)
+            # The next owed word it is, at or after the pointer: an owed word the later
+            # preview lacks is skipped, not a stop to the trim.
+            j = (next((j for j in range(i, len(owed)) if owed[j] == key), None)
+                 if n < len(owed) + 2 else None)
+            if j is None:
                 kept.append(piece)
-        return "".join(kept) if i else delta
+            else:
+                i = j + 1
+        return "".join(kept) if len(kept) < len(pieces) else delta
 
     def _callers(self, text: str, since: Optional[float]) -> str:
         """`text` less the bot's own words heard back off its front (the echo guard's

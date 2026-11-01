@@ -767,9 +767,12 @@ half a second apart) is answered with the turn before's words the main stream ha
 before, which put nothing with words on, still has its final to come, whose words then go
 on again, after it (the re-review's S2); `noPeekOwed` adopts a peek whose preview was
 taken while a turn owed words, after that turn settled (`ss_peek_freeze` found it; the
-peek now remembers, `_Peek.owed`). The code trims an earlier turn's owed words in
-their order within the preview's front run; with every word unique here that is the
-model's set subtraction (`Owed`).
+peek now remembers, `_Peek.owed`). The code trims an earlier turn's owed words from the
+preview's front run (as many words as are owed, and two more): each word there that is
+an owed word still ahead of the pointer is dropped, and the pointer moves past it, so an
+owed word the later preview lacks is skipped. With words unique and in time order that
+is the model's set subtraction (`Owed`) over the front run; the model's three words never
+pass the run's bound, which is not modelled.
 
 - **`RightTurn`** — a turn holds only words of its stretch: none ending before the turn
   before it closed, and none past its own close unless the word began before it -- never
