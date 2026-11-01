@@ -1832,6 +1832,32 @@ def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():
     assert play.mouth_due(clock.t) == 0.0 and play.hiss == 0.0
 
 
+def test_phonemes_after_a_pause_in_their_clause_come_with_their_audio():
+    """A barge-in pause (or an underrun) stops the audio partway into a clause whose
+    phonemes are already pinned; the card plays padded silence meanwhile. The phonemes of
+    the clause's rest are heard when that audio plays, not on the silence."""
+    play, clock, sunk = _playback()
+    t0 = clock.t
+    play.phonemes(0, [["h", 0, 50], ["a", 300, 350]])         # 0 ms and 300 ms in
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)       # the first 200 ms of it
+    for _ in range(int(0.9 / 0.02)):                          # 0.9 s: 200 ms play, then
+        play.pump()                                           # 700 ms of padded silence
+        clock.t += 0.02
+    play.push(_tone(24000, 0.3).tobytes(), voiced=True)       # the rest, after the pause
+    play.pump()
+    # When the rest started on the card: the first sound after the run of silence.
+    silent = [c == bytes(len(c)) for c in sunk]
+    first_gap = silent.index(True)
+    rest = first_gap + silent[first_gap:].index(False)
+    resumed = t0 + rest * la.CHUNK_MS / 1000
+    assert play.phonemes_due(t0 + 0.01) == ["h"]
+    # 300 ms of audio in: ~100 ms into the rest, plus the resampler's ~16 ms it held back
+    # of the first part and played after the pause.
+    assert play.phonemes_due(resumed + 0.09) == [], "the pause's silence moved no mouth"
+    assert play.phonemes_due(resumed + 0.13) == ["a"]
+    assert resumed - t0 >= 0.85, f"the rest played {resumed - t0:.2f}s in"
+
+
 def test_a_barge_in_drops_the_phonemes_of_the_audio_it_drops():
     play, clock, sunk = _playback()
     play.phonemes(0, [["h", 0, 50], ["a", 2000, 2100]])      # at 0 ms and at 2 s

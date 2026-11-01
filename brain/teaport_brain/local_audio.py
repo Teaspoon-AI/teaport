@@ -928,16 +928,29 @@ class Playback:
         self._rs_in = self._rs_out = 0
         self._start: float | None = None
         self._written = 0      # frames handed to the card
+        # The bot's audio as a stream: frames of it handed to the card (not counting the
+        # silence _take pads with), and the padding so far as breakpoints -- (stream
+        # position, padding frames before it) -- so a stream position maps to the card
+        # (_card_pos). Phonemes and played key presses are pinned on the stream: a pause
+        # or an underrun that pads the card in the middle of a clause then moves them
+        # with the audio they belong to, instead of leaving them on the silence.
+        self._streamed = 0
+        self._pad = 0
+        self._pads: list[tuple[int, int]] = []
         self._sound_end = 0    # frame position just past the last non-silent chunk
         # [frame position, mouth level, voiced, hiss] for every chunk not yet heard.
         self._levels: deque[list] = deque()
-        # (frame position, symbol) of every phoneme not yet heard, in order; and the hiss
-        # of the chunks the last mouth_due delivered.
+        # (stream position, symbol) of every phoneme not yet heard, in order; and the
+        # hiss of the chunks the last mouth_due delivered.
         self._phones: deque[tuple[int, str]] = deque()
         self.hiss = 0.0
-        # (frame position, (letter, of typing played)) of every key press of the thinking
-        # sound not yet heard
-        self._keys: deque[tuple[int, tuple[str, bool]]] = deque()
+        # (stream position, (letter, True, pin order)) of every key press of the thinking
+        # sound played and not yet heard; and (card frame position, (letter, False, pin
+        # order)) of every press of typing not being played (anchor "now": on the card's
+        # clock)
+        self._keys: deque[tuple[int, tuple[str, bool, int]]] = deque()
+        self._keys_now: deque[tuple[int, tuple[str, bool, int]]] = deque()
+        self._key_seq = 0      # pin order: two presses due at once come in it
         # [frame position, level dBFS as synthesized, voiced] of the chunks handed to the
         # card, the last HEARD_KEEP_SECS of them: what the speaker played when, for the
         # echo meter (xvf_echo.EchoMeter).
@@ -1008,7 +1021,7 @@ class Playback:
         elif self._start is None:
             return
         else:
-            base = max(self._landing(queued=False),
+            base = max(self._landing(queued=False) + self._pad,
                        round((self._clock() - self._start) * DEVICE_RATE))
         marks = []
         for k in keys:
@@ -1017,16 +1030,27 @@ class Playback:
             except (TypeError, ValueError, IndexError):
                 continue
             if letter and math.isfinite(ms) and ms >= 0:
-                marks.append((ms, (letter, played)))
-        self._pin(self._keys, base, marks)
+                self._key_seq += 1
+                marks.append((ms, (letter, played, self._key_seq)))
+        self._pin(self._keys if played else self._keys_now, base, marks)
 
     def _landing(self, queued: bool = True) -> int:
-        """Where the next pushed audio lands: after what is written, what is queued (or,
-        not `queued`, where it would with nothing queued ahead of it), and what the
-        resampler still holds of earlier pushes."""
+        """Where the next pushed audio lands on the stream: after what is written, what
+        is queued (or, not `queued`, where it would with nothing queued ahead of it), and
+        what the resampler still holds of earlier pushes."""
         held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
         ahead = self._pending_bytes // (DEVICE_CHANNELS * 2) if queued else 0
-        return self._written + ahead + held
+        return self._streamed + ahead + held
+
+    def _card_pos(self, pos: int) -> int:
+        """The card frame a stream position plays at: plus the padding written before it
+        -- all of it so far, for audio not written yet."""
+        pad = 0
+        for at, total in self._pads:
+            if at > pos:
+                break
+            pad = total
+        return pos + pad
 
     @staticmethod
     def _pin(queue: deque, base: int, marks) -> None:
@@ -1037,11 +1061,12 @@ class Playback:
             queue.append((pos, value))
             last = pos
 
-    def _due(self, queue: deque, by: float) -> list[tuple[str, float]]:
+    def _due(self, queue: deque, by: float, stream: bool = True) -> list[tuple[str, float]]:
         """The marks heard by `by` since the last call, in order, each with when."""
         out = []
         while queue and self._start is not None:
-            heard = self._start + queue[0][0] / DEVICE_RATE
+            pos = self._card_pos(queue[0][0]) if stream else queue[0][0]
+            heard = self._start + pos / DEVICE_RATE
             if heard > by:
                 break
             out.append((queue.popleft()[1], heard))
@@ -1053,7 +1078,9 @@ class Playback:
 
     def keys_due(self, by: float) -> list[tuple[str, float]]:
         """The key presses heard by `by` since the last call: (letter, when heard)."""
-        return [(letter, heard) for (letter, _), heard in self._due(self._keys, by)]
+        due = self._due(self._keys, by) + self._due(self._keys_now, by, stream=False)
+        due.sort(key=lambda d: (d[1], d[0][2]))
+        return [(letter, heard) for (letter, _, _), heard in due]
 
     def clear(self) -> None:
         """Barge-in: drop what has not been handed to the card yet."""
@@ -1061,9 +1088,10 @@ class Playback:
         self._pending_bytes = 0
         # ...and the phonemes and key presses of that audio (what the card already has
         # still plays; the presses of typing not played belong to no audio, and stay)
-        while self._phones and self._phones[-1][0] >= self._written:
+        while self._phones and self._phones[-1][0] >= self._streamed:
             self._phones.pop()
-        self._keys = deque(k for k in self._keys if k[0] < self._written or not k[1][1])
+        while self._keys and self._keys[-1][0] >= self._streamed:
+            self._keys.pop()
         # A fresh resampler: the old one holds the tail of the interrupted speech.
         self._resampler = soxr.ResampleStream(RELAY_RATE, DEVICE_RATE, 1, dtype="int16")
         self._rs_in = self._rs_out = 0
@@ -1090,9 +1118,26 @@ class Playback:
             if not seg[0]:
                 self._pending.popleft()
         self._pending_bytes -= len(out)
+        self._streamed += len(out) // (DEVICE_CHANNELS * 2)
         # Short tail of a reply, or nothing: pad with silence so the card's clock never
-        # stops (the capture side dies without it).
+        # stops (the capture side dies without it). The stream after it plays that much
+        # later on the card.
+        if len(out) < CHUNK_BYTES:
+            self._pad += (CHUNK_BYTES - len(out)) // (DEVICE_CHANNELS * 2)
+            if self._pads and self._pads[-1][0] == self._streamed:
+                self._pads[-1] = (self._streamed, self._pad)
+            else:
+                self._pads.append((self._streamed, self._pad))
+            self._prune_pads()
         return bytes(out.ljust(CHUNK_BYTES, b"\0")), voiced
+
+    def _prune_pads(self) -> None:
+        """Keep the breakpoints a pinned mark can still need: the last one at or before
+        the earliest mark, and every one after it."""
+        marks = [q[0][0] for q in (self._phones, self._keys) if q]
+        first = min(marks) if marks else self._streamed
+        while len(self._pads) > 1 and self._pads[1][0] <= first:
+            self._pads.pop(0)
 
     def pump(self) -> None:
         """Hand the card as many chunks as keep it LEAD_SECS ahead of what it has played."""

@@ -515,7 +515,7 @@ class TranscriptLedger(BaseObserver):
             if f.paused:
                 self._pause(t + getattr(f, "lag_secs", 0.0))
             else:
-                self._resume(t)
+                self._resume(t, f.shift_secs, f.shifted)
 
     def _llm_side(self, f, t: float):
         """The LLM stream and spoken notices, once each, at the TTS's sighting."""
@@ -868,22 +868,22 @@ class TranscriptLedger(BaseObserver):
         self._paused_at = t
         self._close_ready(t)
 
-    def _resume(self, t: float):
-        """Writing again: everything still queued plays from now, and every open turn's
-        words play that much later than they were scheduled."""
+    def _resume(self, t: float, shift: float, shifted: tuple):
+        """Writing again: everything still queued plays from now, and the words of the
+        replies the transport says the pause moved (`shifted`, by context) play `shift`
+        later than they were scheduled. Which replies and how much are the transport's to
+        say (playout_pause.PausablePlayout._shift_words), once: the replies whose audio it
+        had before the resume, by the pause less its lag. One whose first audio came after
+        the resume is anchored by the TTS on its moved clock (engine_tts._freeze_playout
+        moves _prev_audio_end_ns): it is not in `shifted`."""
         if self._paused_at is None:
             return
-        shift = max(0.0, t - self._paused_at)
         self._paused_at = None
         if self._win_t0 is not None:
             self._win_t0 = t
         for turn in self._turns:
-            # Only a turn with audio already pushed was scheduled on the pre-pause clock.
-            # One whose first audio comes after the resume is anchored by the TTS on its
-            # moved clock (engine_tts._freeze_playout moves _prev_audio_end_ns), so
-            # shifting it here would count the pause twice.
-            if turn["pushed"] > 0:
-                turn["pts_shift"] += shift
+            if turn["ctx"] in shifted:
+                turn["pts_shift"] += max(0.0, shift)
 
     def _pts_heard(self, turn: dict, t: float):
         """The words of `turn` played out by `t`, by their scheduled pts, and the cut

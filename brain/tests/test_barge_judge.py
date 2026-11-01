@@ -87,12 +87,12 @@ class _Judge:
 class GateRig:
     """top -> gate -> bottom, the start strategy fed the bot's state by hand."""
 
-    def __init__(self, judge, *, paused=True, min_words=1, wait=WAIT_S):
+    def __init__(self, judge, *, paused=True, min_words=1, wait=WAIT_S, echo_like=None):
         self.strategy = PauseAwareMinWordsStrategy(min_words=min_words)
         self.holds = []
         self.judge = judge
         self.gate = BargeInJudgeGate(self.strategy, judge, hold_resume=self.holds.append,
-                                     wait_secs=wait)
+                                     echo_like=echo_like, wait_secs=wait)
         self.top, self.bottom = Tap(), Tap()
         self.task = PipelineTask(Pipeline([self.top, self.gate, self.bottom]),
                                  cancel_on_idle_timeout=False)
@@ -337,24 +337,62 @@ async def test_a_single_word_is_judged_and_interrupts_on_its_verdict():
             "the judge said it needs an answer: it must start the turn at one word")
 
 
-async def test_a_verdict_on_fewer_words_than_held_does_not_mark_them():
-    # The judge is asked on "What"; the words grow to "What a great idea" while it
-    # decides. Its ANSWER speaks for "What" alone: the grown words go on unmarked, for the
-    # word count to decide (4 >= 3 here: the turn starts as it did before single words
-    # were judged) -- not as an ANSWER that would start it at any length.
-    judge = _Judge({"What": ANSWER}, delay=0.15)
-    async with GateRig(judge, min_words=3) as rig:
-        await rig.task.queue_frame(interim("What"))
+async def test_a_verdict_on_an_open_segment_that_grew_does_not_mark_it():
+    # The judge is asked on "What now"; that segment grows to "What now is it" while it
+    # decides. Its ANSWER speaks for "What now" alone: the grown words go on unmarked,
+    # for the word count to decide -- not as an ANSWER that starts the turn at any length.
+    from teaport_brain.barge_pause import _judged_to_interrupt
+    judge = _Judge({"What now": ANSWER}, delay=0.15)
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(interim("What now"))
         await asyncio.sleep(0.05)
-        await rig.task.queue_frame(interim("What a"))
+        await rig.task.queue_frame(interim("What now is it"))
         await asyncio.sleep(0.25)
-        assert judge.asked == ["What"], judge.asked
+        assert judge.asked == ["What now"], judge.asked
         let_on = [f for _, d, f in rig.bottom.frames
                   if d == FrameDirection.DOWNSTREAM and isinstance(f, InterimTranscriptionFrame)]
-        assert [f.text for f in let_on] == ["What", "What a"], let_on
+        assert [f.text for f in let_on] == ["What now", "What now is it"], let_on
+        assert not any(_judged_to_interrupt(f) for f in let_on), (
+            "a verdict on 'What now' must not mark the segment it grew into")
+
+
+async def test_a_verdict_on_a_closed_segment_marks_it_though_another_began():
+    # "What?" (its final) is judged; the user starts again ("Is") while it decides. The
+    # ANSWER speaks for the closed "What?": it takes the turn, and "Is" joins it.
+    from teaport_brain.barge_pause import _judged_to_interrupt
+    judge = _Judge({"What?": ANSWER}, delay=0.15)
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(final("What?"))
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(interim("Is"))
+        await asyncio.sleep(0.25)
+        assert judge.asked == ["What?"], judge.asked
+        let_on = {f.text: _judged_to_interrupt(f) for _, d, f in rig.bottom.frames
+                  if d == FrameDirection.DOWNSTREAM
+                  and isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame))}
+        assert let_on == {"What?": True, "Is": False}, let_on
         feed = _starts(rig.strategy)
-        assert not await feed(let_on[-1]), (
-            "a verdict on 'What' must not start the turn on 'What a' at two words")
+        assert await feed(_released(rig)[-1]), "the question must take the turn"
+
+
+async def test_a_word_under_the_guard_is_judged_on_its_final_and_not_from_a_blip():
+    # Its interim is most often the first word of more to come; a blip's word (speech
+    # under 250 ms) most often echo residue. Neither is judged: the word count, which
+    # starts no turn on it, decides -- as before single words were judged.
+    judge = _Judge({"What": ANSWER, "Huh": ANSWER})
+    async with GateRig(judge, min_words=2) as rig:
+        await rig.task.queue_frame(interim("What"))
+        await asyncio.sleep(0.1)
+        assert judge.asked == [] and rig.out() == [("interim", "What")]
+    blip = [True]
+    async with GateRig(judge, min_words=2, echo_like=lambda: blip[0]) as rig:
+        await rig.task.queue_frame(final("Huh"))
+        await asyncio.sleep(0.1)
+        assert judge.asked == [] and rig.out() == [("final", "Huh")]
+        blip[0] = False
+        await rig.task.queue_frame(final("What", stop_n=4))
+        await asyncio.sleep(0.1)
+        assert judge.asked == ["What"], "a final word of real speech is judged"
 
 
 async def test_a_marked_verdict_starts_the_turn_even_after_the_pause_ended():
@@ -382,11 +420,11 @@ async def test_a_verdict_slower_than_the_cap_still_takes_the_turn():
     # word count and be dropped; it waits for the verdict, and the ANSWER takes the turn.
     judge = _Judge({"What": ANSWER}, delay=0.3)
     async with GateRig(judge, min_words=2, wait=1.2) as rig:
-        await rig.task.queue_frame(interim("What"))
+        await rig.task.queue_frame(final("What"))
         await asyncio.sleep(0.1)
         await _cap(rig)
         await asyncio.sleep(0.05)
-        await rig.task.queue_frame(final("What"))    # its final, after the cap
+        await rig.task.queue_frame(interim("I"))    # more words, after the cap
         await asyncio.sleep(0.05)
         assert rig.out() == [], "held past the cap until the verdict"
         await asyncio.sleep(0.3)
@@ -413,14 +451,14 @@ async def test_past_the_cap_a_stop_word_takes_the_turn():
     # own verdict: let on marked STOP, it takes the turn though the bot is no longer paused.
     judge = _Judge({"What": ANSWER}, delay=1.0)
     async with GateRig(judge, min_words=2, wait=1.2) as rig:
-        await rig.task.queue_frame(interim("What"))
+        await rig.task.queue_frame(final("What"))
         await asyncio.sleep(0.05)
         await _cap(rig)
         await asyncio.sleep(0.05)
-        await rig.task.queue_frame(final("Stop."))
+        await rig.task.queue_frame(final("Stop.", stop_n=4))
         await asyncio.sleep(0.05)
         released = _released(rig)
-        assert [f.text for f in released] == ["Stop."], rig.out()
+        assert [f.text for f in released] == ["What", "Stop."], rig.out()
         feed = _starts(rig.strategy)
         assert await feed(released[-1]), "a stop word past the cap must take the turn"
 
@@ -429,7 +467,7 @@ async def test_past_the_cap_a_continue_on_fewer_words_asks_no_more():
     # Past the cap the reply plays over the held words: a CONTINUE on fewer words than
     # are held lets them on for the word count instead of asking again, and again.
     judge = _Judge({"What": CONTINUE}, delay=0.2)
-    async with GateRig(judge, min_words=2, wait=1.2) as rig:
+    async with GateRig(judge, min_words=1, wait=1.2) as rig:
         await rig.task.queue_frame(interim("What"))
         await asyncio.sleep(0.05)
         await _cap(rig)
@@ -444,9 +482,10 @@ async def test_a_cap_with_no_verdict_awaited_lets_the_words_on_at_once():
     # A CONTINUE already given: nothing is awaited, so the cap lets on what is held as
     # it always did (here nothing: the CONTINUE dropped it).
     judge = _Judge({"Okay": CONTINUE})
-    async with GateRig(judge, min_words=2) as rig:
+    async with GateRig(judge, min_words=1) as rig:
         await rig.task.queue_frame(interim("Okay"))
         await asyncio.sleep(0.15)
+        assert judge.asked == ["Okay"]
         await _cap(rig)
         await asyncio.sleep(0.05)
         assert not rig.gate._past_pause and rig.gate._held == []

@@ -278,13 +278,15 @@ async def test_a_cut_after_a_resume_charts_what_really_played():
 
 async def test_the_ledger_credits_playout_up_to_where_the_audio_really_stopped():
     # Hermetic, on the ledger alone (the shapes test_ledger_playout feeds it). The pause
-    # frame says how long after it the audio stops (the written frame's slot); the
-    # ledger credits that much, freezes, and re-anchors at the resume.
-    from test_ledger_playout import OUT, TTS, audio as l_audio, feed, ledger, response, started, at
+    # frame says how long after it the audio stops (what was sent still plays); the
+    # ledger credits that much, freezes, and re-anchors at the resume, moving the words
+    # of the replies the resume names by the shift it carries (the transport's: 2.5 -
+    # (1.5 + 0.2)).
+    from test_ledger_playout import OUT, audio as l_audio, feed, ledger, response, started, at
     L = ledger()
     frames, end = response("one two three four five six seven eight nine ten", 0.0)
     pz = PlayoutPauseFrame(paused=True, lag_secs=0.2)
-    rz = PlayoutPauseFrame(paused=False)
+    rz = PlayoutPauseFrame(paused=False, shift_secs=0.8, shifted=("c",))
     await feed(L, frames + [
         (started("c"), 0.3, None), at(l_audio(2.0, "c"), 0.3),
         (TTSStoppedFrame(context_id="c"), 0.35, None),   # all 2.0 s synthesized
@@ -346,12 +348,37 @@ async def test_a_bot_stopped_in_a_pause_lifts_it():
         await p.on_onset(True)
         await asyncio.sleep(0.05)
         assert p.paused
+        await p.on_onset(False)                          # the user went quiet
         await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
         assert not p.paused and [x[1] for x in out.calls] == [True, False], out.calls
     finally:
         await task.cancel()
         await run
+
+
+async def test_a_bot_stopped_keeps_the_pause_over_a_user_still_talking_or_judged():
+    # pipecat also says the bot stopped after its 3 s fallback, while the TTS holds the
+    # next clause for a user still talking. Lifting then would let that clause start over
+    # them, and end a pause the judge is holding: it stays, for the quiet window or the
+    # verdict to end, as any pause.
+    for still_talking in (True, False):
+        out, p, task, run = await _pauser_rig(max_secs=3.0)
+        try:
+            await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+            await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+            await asyncio.sleep(0.05)
+            await p.on_onset(True)
+            await asyncio.sleep(0.05)
+            if not still_talking:
+                await p.on_onset(False)
+                p.hold_resume(True)                      # a verdict is awaited
+            await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+            await asyncio.sleep(0.05)
+            assert p.paused and [x[1] for x in out.calls] == [True], (still_talking, out.calls)
+        finally:
+            await task.cancel()
+            await run
 
 
 async def test_an_echo_like_burst_does_not_pause():
@@ -869,9 +896,10 @@ async def test_the_transport_announces_a_tail_learned_during_the_pause():
         await rig.pauser.on_onset(False)
 
 
-async def test_a_reply_whose_audio_starts_after_the_pause_is_not_shifted_twice():
-    # Reply B's context opened before the pause but its first audio came after: the
-    # TTS anchored it on the moved clock, so the ledger must not shift it again.
+async def test_the_ledger_shifts_the_replies_the_resume_names_and_no_other():
+    # Reply B's context opened before the pause but its first audio came after: the TTS
+    # anchored it on the moved clock, and the transport names only A as moved
+    # (test_talk_barge_pause checks the transport's side). The ledger applies that.
     from test_ledger_playout import OUT, audio as l_audio, feed, ledger, response, started, at
     L = ledger()
     a_frames, _ = response("one two three four", 0.0)
@@ -882,7 +910,7 @@ async def test_a_reply_whose_audio_starts_after_the_pause_is_not_shifted_twice()
     ] + b_frames + [
         (started("b"), 1.2, None),                       # B's context, no audio yet
         (PlayoutPauseFrame(paused=True), 1.5, OUT),
-        (PlayoutPauseFrame(paused=False), 2.5, OUT),
+        (PlayoutPauseFrame(paused=False, shift_secs=1.0, shifted=("a",)), 2.5, OUT),
     ])
     shifts = {t["ctx"]: t["pts_shift"] for t in L._turns}
     assert shifts == {"a": 1.0, "b": 0.0}, shifts

@@ -270,6 +270,12 @@ class PlayoutPauseFrame(SystemFrame):
     # then without the pause. A reply whose synthesis completes DURING the pause gets
     # the pause announced again with its tail (playout_pause.PausablePlayout.process_frame).
     tail_secs: float = -1.0
+    # On a resume: how much later the replies that were under way play than scheduled
+    # (the pause, less what still played out of its lag), and which contexts those are
+    # (None for untagged audio). The transport decides both, once
+    # (playout_pause.PausablePlayout); the ledger and the transport's word clock apply them.
+    shift_secs: float = 0.0
+    shifted: tuple = ()
 
 
 class BargeInPauser(FrameProcessor):
@@ -298,6 +304,9 @@ class BargeInPauser(FrameProcessor):
         # The judge is deciding the caller's words (BargeInJudgeGate): no resume on the
         # quiet window meanwhile. The cap still ends the pause.
         self._held = False
+        # Whether the caller's last speech was a blip (under _BLIP_S): echo-like. Read by
+        # the judge's gate for a word under the guard (speech_was_blip).
+        self._last_blip = False
         # Echo-like pauses (resumed on a blip, no words) in this bot-speaking window.
         self._noword = 0
         # Tallies, for the log and the tests.
@@ -327,6 +336,11 @@ class BargeInPauser(FrameProcessor):
             self._schedule_resume(_FINAL_GRACE_S, "the STT's close of it had no turn in it",
                                   echo=False)
 
+    def speech_was_blip(self) -> bool:
+        """BargeInJudgeGate: the caller's last speech was shorter than a word can be
+        (_BLIP_S) -- echo residue or a click more likely than a question."""
+        return self._last_blip
+
     def hold_resume(self, on: bool):
         """BargeInJudgeGate: words over the pause are being judged (`on`), or no longer
         are. While they are, nothing but the cap resumes; after, a quiet line resumes on
@@ -345,13 +359,17 @@ class BargeInPauser(FrameProcessor):
         if started:
             if not was_speaking:
                 self._speech_t0 = time.monotonic()
+                self._last_blip = False
             self._cancel(self._resume_task)
             self._resume_task = None
             if self._may_pause(source):
                 await self._pause(source)
-        elif self._paused and not self._speaking:
+        elif not self._speaking:
             blip = (self._speech_t0 is not None
                     and time.monotonic() - self._speech_t0 < _BLIP_S)
+            self._last_blip = blip
+            if not self._paused:
+                return
             self._schedule_resume(
                 min(self._resume_secs, _BLIP_RESUME_S) if blip else self._resume_secs,
                 "a blip" if blip else
@@ -387,12 +405,14 @@ class BargeInPauser(FrameProcessor):
             self._bot_speaking = False
             self._noword = 0
             self._reply_audio = False
-            if self._paused:
+            if self._paused and not self._speaking and not self._held:
                 # The pause landed in a gap the TTS had not filled yet (the transport's
-                # queue ran dry, so it says the bot stopped): the turn strategies and the
-                # judge's gate now count the bot silent, and a pause held on would hold
-                # the next sentence to a timer. Lift it; a user still talking as that
-                # sentence starts pauses it again (the already-under-way path).
+                # queue ran dry, so it says the bot stopped -- after 0.35 s, or pipecat's
+                # 3 s fallback). With the caller quiet and no verdict awaited, a pause
+                # held on would only hold the next sentence to a timer: lift it, through
+                # the one end every pause has (_resume). A caller still talking, or words
+                # being judged, keep it: the quiet window or the verdict ends it, as for
+                # any pause, and the next sentence does not start over them.
                 await self._resume("the reply's audio ran out while it was paused")
         elif isinstance(frame, TTSAudioRawFrame) and direction == FrameDirection.DOWNSTREAM:
             self._reply_audio = getattr(frame, "context_id", None) is not None
@@ -551,9 +571,15 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
 
     def judges(self, text: str) -> bool:
         """BargeInJudgeGate: are `text`'s words, said over a paused reply, the judge's
-        to decide? Any words at all, one included -- not a stop word, nor once the reply
-        would have been over anyway: those start the turn here as they always did."""
-        return self.paused_for_judging() and bool(text.split()) and not self.stops(text)
+        to decide? Any words, one included -- not a stop word, nor once the reply would
+        have been over anyway: those start the turn here as they always did. (The gate
+        asks on words under the guard only on their final: under_guard.)"""
+        return self.paused_for_judging() and not self.stops(text)
+
+    def under_guard(self, text: str) -> bool:
+        """Fewer words than TEAPORT_INTERRUPT_MIN_WORDS: on their own they start no
+        turn over the bot."""
+        return len(text.split()) < self._min_words
 
     def paused_for_judging(self) -> bool:
         """The bot is paused mid-reply, and its held-back audio would not be over yet."""
@@ -642,11 +668,15 @@ class BargeInJudgeGate(FrameProcessor):
     `judge` an async (said) -> CONTINUE | STOP | ANSWER | None, and `hold_resume` the
     pauser's (BargeInPauser.hold_resume), called True while a verdict is awaited."""
 
-    def __init__(self, strategy, judge, *, hold_resume=None, wait_secs: float = _JUDGE_WAIT_S):
+    def __init__(self, strategy, judge, *, hold_resume=None, echo_like=None,
+                 wait_secs: float = _JUDGE_WAIT_S):
         super().__init__()
         self._strategy = strategy
         self._judge = judge
         self._hold_resume = hold_resume
+        # The pauser's speech_was_blip: words under the guard from speech that short are
+        # not judged (echo residue, a click), and go to the word count as before.
+        self._echo_like = echo_like or (lambda: False)
         self._wait_secs = wait_secs
         # The STT's frames held since the first judged words, in order; empty when not
         # judging. A lock keeps a release in one piece against frames still arriving.
@@ -664,6 +694,12 @@ class BargeInJudgeGate(FrameProcessor):
         # The pause ended (its cap) while a verdict was awaited: the held words wait for
         # it rather than go on unjudged (process_frame).
         self._past_pause = False
+        # What the judge was last asked on: how many of the held frames, and whether they
+        # ended in a closed segment (a final) -- a verdict on a whole segment speaks for
+        # it though another has begun since; one on an open segment's interim does not
+        # speak for that segment's later words (_decide).
+        self._asked_n = 0
+        self._asked_closed = False
         # Tallies, for the log and the tests.
         self.verdicts = {CONTINUE: 0, STOP: 0, ANSWER: 0, None: 0}
 
@@ -710,12 +746,11 @@ class BargeInJudgeGate(FrameProcessor):
             self._held.append(frame)
             if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) \
                     and frame.text.strip():
-                if self._strategy.stops(frame.text) \
-                        or not (self._strategy.paused_for_judging() or self._past_pause):
+                stop = self._strategy.stops(frame.text)
+                if stop or not (self._strategy.paused_for_judging() or self._past_pause):
                     # "Stop." while it decides, or the reply would be over by now: no
                     # verdict to wait for, the words take the turn as they would have.
                     # Past the cap they wait for the verdict asked before it.
-                    stop = self._strategy.stops(frame.text)
                     # A stop word is its own verdict: marked STOP, it takes the turn past
                     # the cap too, where the strategy no longer counts the bot paused.
                     await self._release(
@@ -741,6 +776,12 @@ class BargeInJudgeGate(FrameProcessor):
         self._continued = None
         if self._turn_open or not self._strategy.judges(text):
             return False
+        if self._strategy.under_guard(text) and (
+                not isinstance(frame, TranscriptionFrame) or self._echo_like()):
+            # A word under the guard is judged on its final, and not from a blip: its
+            # interim is most often the first word of more to come, and a blip's word is
+            # most often echo. Either goes to the word count, which starts no turn on it.
+            return False
         self._held = [frame]
         self._said = text
         if self._hold_resume is not None:
@@ -749,6 +790,10 @@ class BargeInJudgeGate(FrameProcessor):
         return True
 
     def _ask(self, said: str):
+        self._asked_n = len(self._held)
+        texts = [f for f in self._held
+                 if isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame))]
+        self._asked_closed = bool(texts) and isinstance(texts[-1], TranscriptionFrame)
         self._task = self.create_task(self._decide(said), name="barge-judge")
 
     async def _decide(self, said: str):
@@ -780,13 +825,18 @@ class BargeInJudgeGate(FrameProcessor):
             if verdict == CONTINUE:
                 await self._carry_on(said)
             else:
-                # A verdict speaks for the words it was asked on. Words that grew while it
-                # decided ("What" -> "What a great idea") go on unmarked: the word count
-                # decides them, as it did before single words were judged.
+                # A verdict speaks for the words it was asked on. Asked on all that is
+                # held, it marks them all. Asked on a closed segment ("What?") with
+                # another begun since ("Is"), it marks that segment, which takes the turn;
+                # the rest joins it. Asked on an open segment's interim that grew since
+                # ("What" -> "What a great idea"), it marks nothing: the word count
+                # decides the grown words, as it did before single words were judged.
                 fresh = _key(self._said) == _key(said)
+                upto = (len(self._held) if fresh
+                        else self._asked_n if self._asked_closed else 0)
                 await self._release(f"verdict {verdict or 'none'}"
                                     + ("" if fresh else " (on fewer words than held)"),
-                                    verdict=verdict if fresh else None)
+                                    verdict=verdict if upto else None, upto=upto)
 
     async def _carry_on(self, said: str):
         """CONTINUE: the held words are dropped, and the reply resumes as for a cough."""
@@ -806,10 +856,11 @@ class BargeInJudgeGate(FrameProcessor):
         if self._hold_resume is not None:
             self._hold_resume(False)
 
-    async def _release(self, why: str, verdict=None):
+    async def _release(self, why: str, verdict=None, upto=None):
         """The held frames go on as they came: the turn starts on them as it would have
-        -- or, on a STOP or ANSWER verdict, marked with it, so that it starts on them at
-        any length (PauseAwareMinWordsStrategy)."""
+        -- or, on a STOP or ANSWER verdict, the first `upto` of them (all, by default)
+        marked with it, so that it starts on them at any length
+        (PauseAwareMinWordsStrategy)."""
         task, self._task = self._task, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
@@ -818,8 +869,9 @@ class BargeInJudgeGate(FrameProcessor):
             return
         held, self._held = self._held, []
         logger.debug(f"BARGE-JUDGE: letting {len(held)} frame(s) on ({why})")
-        for f in held:
-            if verdict in (STOP, ANSWER) and \
+        upto = len(held) if upto is None else upto
+        for i, f in enumerate(held):
+            if verdict in (STOP, ANSWER) and i < upto and \
                     isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame)):
                 setattr(f, _VERDICT, verdict)
             await self.push_frame(f)

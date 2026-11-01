@@ -48,8 +48,12 @@
 # while paused it holds them, and after the resume it releases each word of a reply
 # whose audio was already under way that much later (_shift_ns, by context). A reply
 # whose audio comes after the resume needs none: the TTS anchors it on its moved clock
-# (engine_tts._freeze_playout) -- the ledger's rule for its pts_shift, read the same way.
-# The ledger reads the words' pts, not when they arrive, and keeps its own shift.
+# (engine_tts._freeze_playout). How much later is the pause less its lag: what was sent
+# before it played on that long. Both -- which replies, and how much -- are decided here
+# only, and ride the resume's PlayoutPauseFrame (shifted, shift_secs): the ledger moves
+# its pts cut by them rather than working them out again. A timed frame with no context
+# (a reply's End) gets no shift of its own: the clock releases in pts order, so it comes
+# after the shifted words before it.
 #
 import asyncio
 import time
@@ -61,6 +65,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    SystemFrame,
     InterruptionFrame,
     MixerControlFrame,
     OutputAudioRawFrame,
@@ -80,12 +85,16 @@ from teaport_brain.barge_pause import PlayoutPauseFrame
 _PAUSE_GUARD_S = 8.0
 # Contexts whose audio this transport was handed, kept for the words' shift.
 _MAX_CTXS = 16
+# A timed frame that has no context_id field (a reply's End).
+_NO_CONTEXT = object()
 # How often a word waiting out its shift checks whether a new pause began.
 _SHIFT_POLL_S = 0.02
-# What MediaSender routes elsewhere than its clock queue, whatever its pts
-# (base_output.BaseOutputTransport._handle_frame): every other frame with a pts is timed.
-_UNTIMED = (InterruptionFrame, OutputAudioRawFrame, OutputImageRawFrame, SpriteFrame,
-            MixerControlFrame, TTSStoppedFrame)
+# What never reaches MediaSender's clock queue, whatever its pts: a SystemFrame
+# (BaseOutputTransport.process_frame pushes it at once), and what _handle_frame routes
+# elsewhere. Every other downstream frame with a pts is timed. Pinned against pipecat by
+# test_pipecat_premises (check_timed_frames_come_back_through_the_transports_push).
+_UNTIMED = (SystemFrame, InterruptionFrame, OutputAudioRawFrame, OutputImageRawFrame,
+            SpriteFrame, MixerControlFrame, TTSStoppedFrame)
 
 
 class PausablePlayout:
@@ -114,13 +123,12 @@ class PausablePlayout:
         self._heard_until = 0.0
         self._synth_done = False
         # THE WORDS' CLOCK (module header): the timed frames handed to MediaSender's
-        # clock, by id; contexts whose audio came here; how much later each one's words
-        # are released (ns); the context the last released word belonged to (a reply's
-        # End has none of its own); the pause's start on the pipeline clock.
+        # clock, by id; contexts whose audio came here (None: untagged audio); how much
+        # later each one's words are released (ns); when the pause stopped the audio, on
+        # the pipeline clock (the pause plus its lag).
         self._timed_ids: set = set()
         self._audio_ctxs: OrderedDict = OrderedDict()
         self._shift_ns: dict = {}
-        self._last_timed_ctx = None
         self._pause_clock_t0 = None
 
     async def set_playout_paused(self, paused: bool):
@@ -129,36 +137,40 @@ class PausablePlayout:
         strategy."""
         if paused == (not self._playing.is_set()):
             return
-        lag = 0.0
+        lag, shift, shifted = 0.0, 0.0, ()
         if paused:
             self._playing.clear()
             self._paused_at = time.monotonic()
-            self._pause_clock_t0 = self.get_clock().get_time()
             # What was sent before the pause still plays out: the listener stops hearing
             # the reply that much later (the frame playing and the one queued behind it).
             lag = max(0.0, self._heard_until - self._paused_at)
+            self._pause_clock_t0 = self.get_clock().get_time() + round(lag * 1e9)
         else:
             self._playing.set()
             self._paused_at = None
             self._next_send_time = 0.0
-            self._shift_words()
+            shift, shifted = self._shift_words()
         tail = self.playout_tail_secs() if paused else None
         await self._announce_pause(lag=lag, tail=-1.0 if tail is None else tail,
-                                   paused=paused)
+                                   paused=paused, shift=shift, shifted=shifted)
 
-    def _shift_words(self):
-        """At a resume: the words of every reply whose audio was already here play the
-        pause's length later than scheduled."""
+    def _shift_words(self) -> tuple:
+        """At a resume: every reply whose audio was already here plays the pause's
+        length less its lag later than scheduled. Returns (seconds, those contexts)."""
         if self._pause_clock_t0 is None:
-            return
+            return 0.0, ()
         held = max(0, self.get_clock().get_time() - self._pause_clock_t0)
         self._pause_clock_t0 = None
         for ctx in self._audio_ctxs:
             self._shift_ns[ctx] = self._shift_ns.get(ctx, 0) + held
+        return held / 1e9, tuple(self._audio_ctxs)
 
-    async def _announce_pause(self, *, lag: float, tail: float, paused: bool = True):
-        down = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail)
-        up = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail)
+    async def _announce_pause(self, *, lag: float, tail: float, paused: bool = True,
+                              shift: float = 0.0, shifted: tuple = ()):
+        down = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail,
+                                 shift_secs=shift, shifted=shifted)
+        up = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail,
+                               shift_secs=shift, shifted=shifted)
         down.broadcast_sibling_id, up.broadcast_sibling_id = up.id, down.id
         await self.push_frame(down)
         await self.push_frame(up, FrameDirection.UPSTREAM)
@@ -179,11 +191,11 @@ class PausablePlayout:
             await self.set_playout_paused(False)
         return epoch == self._pause_epoch
 
-    def _drop_pause(self, *, discard: bool = True):
-        """An interruption (`discard`: the queued audio is the cut reply's, gone) or the
-        end (not: what is queued plays out as the session ends, the held write's frame
-        with it): nothing to resume -- just stop blocking."""
-        if discard and not self._playing.is_set():
+    def _drop_pause(self):
+        """An interruption or a cancel: the queued audio is the cut reply's, gone --
+        nothing to resume, just stop blocking. (The end resumes instead: what is queued
+        plays out.)"""
+        if not self._playing.is_set():
             self._pause_epoch += 1
         self._playing.set()
         self._paused_at = None
@@ -206,17 +218,17 @@ class PausablePlayout:
             return
         if isinstance(frame, OutputAudioRawFrame) and frame.sample_rate:
             self._unplayed_s += frame.num_frames / frame.sample_rate
+            # None too: untagged audio is a reply the ledger tracks without a context.
             ctx = getattr(frame, "context_id", None)
-            if ctx is not None:
-                self._audio_ctxs[ctx] = True
-                self._audio_ctxs.move_to_end(ctx)
-                while len(self._audio_ctxs) > _MAX_CTXS:
-                    self._shift_ns.pop(self._audio_ctxs.popitem(last=False)[0], None)
+            self._audio_ctxs[ctx] = True
+            self._audio_ctxs.move_to_end(ctx)
+            while len(self._audio_ctxs) > _MAX_CTXS:
+                self._shift_ns.pop(self._audio_ctxs.popitem(last=False)[0], None)
         elif isinstance(frame, TTSStartedFrame):
             self._synth_done = False
         elif isinstance(frame, TTSStoppedFrame):
             self._synth_done = True
-        elif frame.pts and not isinstance(frame, _UNTIMED):
+        if frame.pts and not isinstance(frame, _UNTIMED):
             self._timed_ids.add(frame.id)
 
     async def push_frame(self, frame: Frame,
@@ -230,16 +242,14 @@ class PausablePlayout:
 
     async def _on_the_voices_time(self, frame: Frame):
         """Hold a word while playout is paused, then until its shifted time."""
-        ctx = getattr(frame, "context_id", None)
-        if ctx is None:
-            ctx = self._last_timed_ctx
-        else:
-            self._last_timed_ctx = ctx
+        # A frame of no context at all (a reply's End: no context_id field) is not
+        # shifted; a word of untagged audio (context_id None) is, as that audio was.
+        ctx = getattr(frame, "context_id", _NO_CONTEXT)
         while True:
             if not self._playing.is_set():
                 await self._wait_if_paused()
                 continue
-            shift = self._shift_ns.get(ctx, 0) if ctx is not None else 0
+            shift = 0 if ctx is _NO_CONTEXT else self._shift_ns.get(ctx, 0)
             wait = (frame.pts + shift - self.get_clock().get_time()) / 1e9
             if wait <= 0:
                 return
@@ -265,14 +275,12 @@ class PausablePlayout:
             self._timed_ids.clear()
             self._audio_ctxs.clear()
             self._shift_ns.clear()
-            self._last_timed_ctx = None
 
     async def stop(self, frame: EndFrame):
-        # The end plays out what is queued: say the pause is over, so the ledger and the
-        # TTS go on with it, and lift it.
+        # The end plays out what is queued: the pause is over, said as any resume is, so
+        # the ledger and the TTS go on with it and the held write sends its frame.
         if not self._playing.is_set():
             await self.set_playout_paused(False)
-        self._drop_pause(discard=False)
         await super().stop(frame)
 
     async def cancel(self, frame: CancelFrame):

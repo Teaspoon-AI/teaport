@@ -224,35 +224,6 @@ async def test_a_block_held_by_a_pause_an_interruption_dropped_is_not_written():
     assert not sock.datagrams, "the held block was written after its reply was cut"
 
 
-async def test_the_end_of_a_session_plays_out_the_block_a_pause_held():
-    # Only an interruption makes the held block the cut reply's. The end of the session
-    # lifts the pause and the block plays out with the rest of what is queued.
-    sock = _Socket()
-    out = _talk_transport(sock).output()
-    out._playing.clear()
-    writer = asyncio.create_task(out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)))
-    await asyncio.sleep(0.05)
-    out._drop_pause(discard=False)
-    assert await asyncio.wait_for(writer, 1.0) is not False
-    assert sock.payload() == _pcm(0)
-
-
-async def test_the_talk_output_replaces_pipecats_with_the_same_wiring():
-    # TalkWebsocketTransport rebuilds pipecat's output from its private _client, _params
-    # and _output_name. Pinned here so a pipecat bump that renames them, or wires the
-    # first output into something at __init__, fails a test instead of the session.
-    from pipecat.transports.websocket.fastapi import FastAPIWebsocketOutputTransport
-    t = _talk_transport(_Socket())
-    out = t.output()
-    assert type(out) is TalkOutputTransport
-    assert out._client is t._client and out._params is t._params
-    assert out.name == t._output_name or t._output_name is None
-    for holder in (t, t._client, t._input, t._client._callbacks):
-        for v in vars(holder).values():
-            assert not (isinstance(v, FastAPIWebsocketOutputTransport) and v is not out), (
-                f"pipecat's own output is still wired into {type(holder).__name__}")
-
-
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
@@ -314,7 +285,9 @@ async def test_the_words_keep_the_voices_time_through_a_pause():
         await rig.pauser.on_onset(False)
         await _at(rig, 3.4)
         (t_pause, _), (t_resume, _) = _pause_times(rig)
-        held = t_resume - t_pause
+        lag = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
+               and isinstance(f, PlayoutPauseFrame) and f.paused][0].lag_secs
+        held = t_resume - t_pause - lag        # what was sent before the pause played on
         words = _words_out(rig)
         assert [w for _, w in words] == WORDS, words
         assert not [w for t, w in words if t_pause + 0.06 < t < t_resume - 0.01], (
@@ -350,6 +323,14 @@ async def test_a_reply_after_the_resume_is_on_time():
         await _at(rig, 1.0)
         await rig.pauser.on_onset(False)
         await _at(rig, 3.4)
+        resume = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
+                  and isinstance(f, PlayoutPauseFrame) and not f.paused][0]
+        pause = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
+                 and isinstance(f, PlayoutPauseFrame) and f.paused][0]
+        (t_pause, _), (t_resume, _) = _pause_times(rig)
+        assert resume.shifted == ("r1",), resume.shifted
+        assert abs(resume.shift_secs - (t_resume - t_pause - pause.lag_secs)) <= 0.02, (
+            resume.shift_secs, t_resume - t_pause, pause.lag_secs)
         word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
         word.pts = rig.out.get_clock().get_time() + int(0.3e9)
         t_queued = time.monotonic()
@@ -368,9 +349,13 @@ async def test_the_end_of_a_session_in_a_pause_says_the_pause_is_over():
     await rig.speak()
     await _at(rig, 0.4)
     await rig.out.set_playout_paused(True)
+    await asyncio.sleep(0.1)
+    sent_in_pause = len(rig.wire.payload())
     await rig.task.queue_frame(EndFrame())
     await asyncio.wait_for(rig._run, timeout=6.0)
     assert [p for _, p in _pause_times(rig)] == [True, False], _pause_times(rig)
+    assert rig.wire.payload() == SPEECH and len(SPEECH) > sent_in_pause, (
+        "the end plays out what the pause held, the held block included")
 
 
 async def test_an_uninterruptible_block_is_written_though_the_pause_was_dropped():
