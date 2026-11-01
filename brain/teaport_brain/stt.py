@@ -2424,11 +2424,13 @@ class TeaportSTTService(WebsocketSTTService):
         return text
 
     def _owed_before(self, at: int) -> bool:
-        """A turn before `at`, previewed and not yet final, put nothing with words
-        downstream at its preview -- deferred, an empty provisional, the bot's own words
-        -- so its final may still deliver words, which a turn after it must not go ahead
-        of (TURN TEXT). Its words are in a later preview's text too, unsent then."""
-        return any(t.previewed and t.at_ms < at and (t.deferred or not t.pushed)
+        """A turn before `at`, previewed and not yet final, whose final may still deliver
+        words (_settle_turn): deferred, an empty provisional, or only the bot's own words
+        (or a wake phrase alone) went on -- which a turn after it must not go ahead of
+        (TURN TEXT). Its words are in a later preview's text too, unsent then. Not one
+        whose words the asleep wake gate kept: its final is left as it went."""
+        return any(t.previewed and t.at_ms < at
+                   and (t.deferred or not _words_of(t.asked) or t.pushed == "")
                    for t in self._turns)
 
     async def _offer_preview(self, peek: _Peek):

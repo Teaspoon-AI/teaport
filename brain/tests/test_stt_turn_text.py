@@ -873,6 +873,23 @@ async def test_a_turn_after_one_still_owing_its_words_waits_on_its_own_final():
     assert s.corrections() == []
 
 
+async def test_a_wake_turn_after_room_talk_the_gate_kept_does_not_wait():
+    # The gate asleep keeps the room's words (nothing goes on, and the final is left as
+    # it went): a turn after it owes it nothing and goes on at its preview.
+    from teaport_brain import wake_gate
+    from teaport_brain.wake_words import parse_phrases
+    s = Service()
+    await created(s)
+    s.wake_gate = wake_gate.WakeGate(parse_phrases("hey teaport"),
+                                     store=wake_gate.MicConversation())
+    await turn(s)                                  # at 1000: the room talking
+    await delta(s, " nice", 400)
+    await preview(s, 1000, " weather")
+    await turn(s)                                  # at 2000: the wake
+    await preview(s, 2000, " Hey Teaport, what time?")
+    assert not s.wake_gate.asleep and s.finals() == [("what time?", 2)], s.finals()
+
+
 async def test_an_empty_provisionals_words_go_through_the_wake_gate():
     from teaport_brain import wake_gate
     from teaport_brain.wake_words import parse_phrases
