@@ -78,9 +78,9 @@ SPENT_LINES = ["Finish on", "your device"]
 
 
 class DevicePairing:
-    """The session's pairing: start(), cancel(), close(). `notes` is the session's
-    ClientNotes, set once it exists (agent_session.py); None, and the model is told
-    nothing of how a pairing ended."""
+    """The box's pairing (shared()): start(), cancel(), detach(), close(). `notes` is the
+    ClientNotes of the session told how it ends (SessionPairing sets it); None, and the
+    model is told nothing of how a pairing ended."""
 
     def __init__(self, notes=None, screen=lambda: display.Screen(SCREEN_ID),
                  clock=time.monotonic):
@@ -89,7 +89,7 @@ class DevicePairing:
         self._clock = clock
         self._offer: pairing.Offer | None = None  # the code on the screen
         self._last: pairing.Offer | None = None   # the followed pairing's latest code
-        self._screen = None  # this session's, held while a code is up or being asked for
+        self._screen = None  # held while a code is up or being asked for
         self._watcher: asyncio.Task | None = None  # follows the pairing (pairing.wait)
         self._spent: asyncio.Task | None = None    # follows the code on the screen
         self._watched = 0                          # the pairing the watcher follows
@@ -216,8 +216,9 @@ class DevicePairing:
             self.notes = None
 
     def close(self) -> None:
-        """For good (the brain stopping): the pairing ends (a confirmation too: no task
-        outlives it), nothing is told, and nothing is shown after."""
+        """For good: the pairing ends (a confirmation too: no task outlives it), nothing
+        is told, and nothing is shown after. Sessions never call it (they detach); the
+        brain's one pairing simply ends with the process."""
         self._closed = True
         self.notes = None
         self._gen += 1
@@ -316,17 +317,35 @@ class SessionPairing:
     def __init__(self, notes=None, core: DevicePairing | None = None):
         self.notes = notes   # the session's ClientNotes, set once it exists
         self._core = core if core is not None else shared()
+        self._closed = False
 
     @property
     def live(self) -> bool:
         return self._core.live
 
     async def start(self) -> tuple[str, dict]:
-        self._core.notes = self.notes
-        return await self._core.start()
+        """The core's start(), this session listening only once its code is up: an ask
+        that fails or is cut off leaves whoever was told about the code still on the
+        screen. A session already over (a call that only now steps) asks for nothing."""
+        if self._closed:
+            return STOPPED, {}
+        before, self._core.notes = self._core.notes, self.notes
+        try:
+            outcome = await self._core.start()
+        except BaseException:
+            self._restore(before)
+            raise
+        if outcome[0] != SHOWN or self._closed:
+            self._restore(before)
+        return outcome
+
+    def _restore(self, before) -> None:
+        if self._core.notes is self.notes:
+            self._core.notes = before
 
     def cancel(self) -> str:
         return self._core.cancel()
 
     def close(self) -> None:
+        self._closed = True
         self._core.detach(self.notes)

@@ -508,7 +508,7 @@ def test_a_cancel_while_the_code_is_made_shows_nothing(monkeypatch):
     assert fake.cancelled == fake.started, "the code made after the cancel stayed live"
 
 
-def test_a_session_closed_while_the_code_is_made_shows_nothing(monkeypatch):
+def test_a_pairing_closed_for_good_while_the_code_is_made_shows_nothing(monkeypatch):
     async def run():
         dp, fake, screen = _session(monkeypatch)
         fake.gate = asyncio.Event()
@@ -527,7 +527,7 @@ def test_a_session_closed_while_the_code_is_made_shows_nothing(monkeypatch):
     assert fake.cancelled == fake.started and len(fake.started) == 1
 
 
-def test_the_session_ending_leaves_no_code_and_no_task(monkeypatch):
+def test_closed_for_good_it_leaves_no_code_and_no_task(monkeypatch):
     async def run():
         dp, fake, screen = _session(monkeypatch)
         notes = dp.notes
@@ -582,7 +582,7 @@ def test_cancel_after_the_link_was_opened_still_tells_if_it_connects(monkeypatch
     assert respond and text == "Your Firefox on Linux is now connected."
 
 
-def test_the_session_ending_stops_a_confirmation_too(monkeypatch):
+def test_closed_for_good_it_stops_a_confirmation_too(monkeypatch):
     async def run():
         dp, fake, screen = _session(monkeypatch)
         await _call(dp)
@@ -792,6 +792,40 @@ def test_never_mind_from_any_session_still_takes_the_code_down(monkeypatch):
 
     stopped, dp, screen = asyncio.run(run())
     assert stopped == pd.GONE and not dp.live and screen.calls[-1][0] in ("clear", "close")
+
+
+def test_a_session_ending_while_its_code_is_made_still_puts_it_up(monkeypatch):
+    # The phone switched away while the code was being made: it is still shown (the
+    # person is about to scan it), with nobody listening; a call of that session that
+    # only steps afterwards asks for nothing.
+    async def run():
+        talk, _, dp, fake, screen = _two_sessions(monkeypatch)
+        fake.gate = asyncio.Event()
+        call = asyncio.create_task(talk.start())
+        await _turn()
+        talk.close()
+        fake.gate.set()
+        outcome = await call
+        late = await talk.start()
+        return outcome, late, dp, screen
+
+    outcome, late, dp, screen = asyncio.run(run())
+    assert outcome[0] == pd.SHOWN and late[0] == pd.STOPPED
+    assert dp.live and dp.notes is None and _shown(screen)
+
+
+def test_an_ask_that_fails_leaves_the_listener_as_it_was(monkeypatch):
+    # The room asks while the Talk session's code is up, and gets no code: the Talk
+    # session is still the one told how its code ends.
+    async def run():
+        talk, room, dp, fake, screen = _two_sessions(monkeypatch)
+        await _call(talk, "talk")
+        fake.fail_after = "the gateway did not answer"
+        failed = await room.start()
+        return failed, dp, talk
+
+    failed, dp, talk = asyncio.run(run())
+    assert failed[0] == pd.UNAVAILABLE and dp.notes is talk.notes
 
 
 def test_every_session_shares_the_one_pairing():
