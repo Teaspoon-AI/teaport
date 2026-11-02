@@ -86,7 +86,8 @@
 # POLL_SECS after the last ended) while a made handoff's watch runs, and not while
 # anything mints: at most 24 runs for a dashboard tap, 60 for an app tap. What counts is a device new
 # since the snapshot, or approved again since (the browser handoff can also repair a
-# browser paired before). The app pairs as a device of its own (deviceFamily
+# browser paired before), or, after an app choice, an app paired before that connected
+# since its setup code was handed out (_reconnected_app: re-pairing it adds nothing). The app pairs as a device of its own (deviceFamily
 # "iPhone"), its node and operator roles one entry with a token per role; were they
 # ever two entries, the newest approval names it (device_name()). spent() tells the
 # screen's owner when its code can no longer be used while the pairing still waits on
@@ -164,6 +165,7 @@ FAILED = "failed"          # a tap's handoff could not be made, and nothing else
 DASHBOARD, APP = "dashboard", "app"  # what the person chose on the /p/ page
 
 _clock = time.monotonic  # replaced in tests
+_wall_ms = lambda: int(time.time() * 1000)  # noqa: E731 -- OpenClaw's lastSeenAtMs clock
 
 
 class PairingUnavailable(Exception):
@@ -198,6 +200,7 @@ class _Tap:
     minting: bool = True
     mint: asyncio.Future | None = None  # the mint's task, cancelled to stop it
     stopped: bool = False      # stopped by the pairing (cancel, withdraw, its end)
+    made_ms: int | None = None  # _wall_ms() when its handoff was made
 
 
 @dataclass(eq=False)
@@ -205,6 +208,7 @@ class _Session:
     """One pairing, from the first start() to its Result. See the module header."""
     id: int
     known: dict[str, int]      # deviceId -> approvedAtMs at the first start()
+    seen: dict[str, int]       # deviceId -> lastSeenAtMs of its last connect, then
     opened_at: float           # _clock() at the first start(): SESSION_MAX_SECS from it
     code: Offer                # the current code (a re-ask replaces it)
     code_dead: bool = False    # used, locked, or withdrawn (expiry is the clock's)
@@ -224,6 +228,12 @@ class _Session:
 
     def minting(self) -> bool:
         return any(t.minting for t in self.taps)
+
+    def app_made_ms(self) -> int | None:
+        """When the first app setup code of this pairing was handed out, if one was."""
+        return min((t.made_ms for t in self.taps
+                    if t.choice == APP and t.made_ms is not None and not t.stopped),
+                   default=None)
 
     def watch_until(self) -> float | None:
         """The end of the watch for made handoffs (a minting tap's claim is not one:
@@ -343,6 +353,37 @@ def _device_kind(device: dict) -> str:
             if needle in value:
                 return kind
     return ""
+
+
+# What OpenClaw records as a device's last sighting when it connects (the gateway's connect
+# handler, a device-token sign-in); its node presence pings ("background", "silent_push",
+# ...) are not a connection.
+_CONNECT_REASONS = frozenset({"connect", "device-token-auth"})
+
+
+def _connects(devices: list[dict]) -> dict[str, int]:
+    """deviceId -> lastSeenAtMs of the device's last connection (0: none on record)."""
+    return {str(d["deviceId"]): int(d.get("lastSeenAtMs") or 0)
+            if d.get("lastSeenReason") in _CONNECT_REASONS else 0 for d in devices}
+
+
+def _reconnected_app(devices: list[dict], seen: dict[str, int],
+                     since_ms: int | None) -> dict | None:
+    """An OpenClaw app already paired that connected after its setup code was handed out.
+    Pasting the code into an app paired before re-pairs the same device, and OpenClaw
+    neither adds an entry nor approves it again: its connection is the only sign (seen
+    on the box, 11-02, the iPhone app re-paired after a certificate change, the screen
+    waiting on "finish on your device" until it gave up). Only after an app choice
+    (since_ms) and only an app (a node): a browser handoff approves its browser again,
+    which _new_device already sees. The latest connection wins."""
+    if since_ms is None:
+        return None
+    back = [d for d in devices
+            if ("node" in (d.get("roles") or []) or d.get("clientMode") == "node")
+            and d.get("lastSeenReason") in _CONNECT_REASONS
+            and int(d.get("lastSeenAtMs") or 0) >= since_ms
+            and int(d.get("lastSeenAtMs") or 0) > seen.get(str(d["deviceId"]), 0)]
+    return max(back, key=lambda d: int(d.get("lastSeenAtMs") or 0), default=None)
 
 
 def _new_device(devices: list[dict], known: dict[str, int]) -> dict | None:
@@ -507,13 +548,14 @@ async def start() -> Offer:
         return s.code
     _creating = asyncio.get_running_loop().create_future()
     try:
-        known = _approvals(await _paired_devices())
+        devices = await _paired_devices()
+        known, seen = _approvals(devices), _connects(devices)
     except BaseException as e:
         _creating.set_exception(e if isinstance(e, Exception) else PairingUnavailable("stopped"))
         _creating.exception()  # retrieved: nobody else need see it
         raise
     _sessions += 1
-    s = _Session(id=_sessions, known=known, opened_at=_clock(),
+    s = _Session(id=_sessions, known=known, seen=seen, opened_at=_clock(),
                  code=_new_code(_sessions, host))
     _session = s
     _creating.set_result(None)
@@ -617,7 +659,10 @@ async def wait(offer: Offer) -> Result:
                 # takes the CLI lock only once this one has let it go.
                 done, devices = await _or_stopped(s, _one_cli(s, _poll()), until - now,
                                                   wake=changed)
-                found = _new_device(devices, s.known) if done and devices is not None else None
+                found = None
+                if done and devices is not None:
+                    found = (_new_device(devices, s.known)
+                             or _reconnected_app(devices, s.seen, s.app_made_ms()))
                 if found is not None and s.result is None:
                     name = device_name(found)
                     logger.info(f"pairing: paired {name!r}")
@@ -963,6 +1008,7 @@ async def redeem(code: str, request: Request) -> Response:
             return _expired()  # stopped or over while it minted: no handoff after that
         made = True
         tap.minting, tap.until, s.made = False, _clock() + _window(choice), True
+        tap.made_ms = _wall_ms()
         _pulse(s)  # wait() starts (or goes on) looking for the new device
         return answer
     finally:

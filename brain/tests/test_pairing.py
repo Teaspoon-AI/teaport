@@ -103,6 +103,7 @@ def _setup(cli: FakeCli, host="teaport.local"):
     pairing._spent.clear()
     pairing._recent.clear()
     pairing._clock = time.monotonic
+    pairing._wall_ms = lambda: 5_000_000
     pairing.POLL_SECS = 0.01
     pairing.OPENED_WAIT_SECS = 0.3
     pairing.APP_WAIT_SECS = 0.3
@@ -748,6 +749,50 @@ def test_the_apps_node_and_operator_as_two_entries_are_one_pairing():
             assert (await _take(c, offer.code, "app")).status_code == 200
         assert (await pairing.wait(offer)) == pairing.Result("paired", "Ana's iPhone")
     asyncio.run(go())
+
+
+def _app(seen_ms, reason="connect", **more):
+    """The OpenClaw app on a phone, paired long ago (one entry, node and operator)."""
+    return {"deviceId": "dev-ios", "displayName": "iPhone", "clientId": "openclaw-ios",
+            "clientMode": "node", "roles": ["node", "operator"], "approvedAtMs": 1500,
+            "lastSeenAtMs": seen_ms, "lastSeenReason": reason, **more}
+
+
+def test_an_app_paired_before_that_connects_after_its_code_is_paired():
+    # Pasting the setup code into an app paired before re-pairs the same device:
+    # OpenClaw adds no entry and approves nothing again, so its connection after the code
+    # was handed out is what says it worked (the box, 11-02: the screen waited on "finish
+    # on your device" until it gave up).
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A, _app(4_000_000)], [DEV_A, _app(4_000_000)],
+                       [DEV_A, _app(5_000_100)]]
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await _take(c, offer.code, "app")).status_code == 200
+        assert (await pairing.wait(offer)) == pairing.Result("paired", "iPhone")
+    asyncio.run(go())
+
+
+def test_a_connection_is_counted_only_when_it_can_be_the_codes_doing():
+    # Not before the code was handed out, not a presence ping (the app in the background),
+    # and not after a dashboard choice (a browser handoff approves its browser again, which
+    # is what that choice watches for): each of those ends "opened", as before.
+    cases = {"before the code": ("app", _app(4_999_000)),
+             "a presence ping": ("app", _app(5_000_100, reason="background")),
+             "a dashboard choice": ("dashboard", _app(5_000_100))}
+    for name, (choice, later) in cases.items():
+        async def go():
+            cli = FakeCli()
+            cli.devices = [[DEV_A, _app(4_000_000)], [DEV_A, later]]
+            _setup(cli)
+            pairing.OPENED_WAIT_SECS = pairing.APP_WAIT_SECS = 0.1
+            offer = await pairing.start()
+            async with _client() as c:
+                assert (await _take(c, offer.code, choice)).status_code in (200, 303), name
+            return await pairing.wait(offer)
+        assert asyncio.run(go()).outcome == "opened", name
 
 
 def test_a_failed_app_mint_ends_the_offer_and_says_so():

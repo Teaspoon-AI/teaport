@@ -358,7 +358,8 @@ PAIR_DEVICE = FunctionSchema(
         "Connect the user's laptop, phone or tablet to you, when they ask to add, pair or "
         "connect one. It shows a code on the box's screen for the device's camera to scan; "
         "the code is never read out. cancel=true takes the code off the screen again, "
-        "when the user says to stop or never mind."
+        "when the user says to stop or never mind, or that they are done with it (it "
+        "worked, they got it, they are connected) while it is still showing."
     ),
     properties={"cancel": {"type": "boolean",
                            "description": "true: stop showing the code"}},
