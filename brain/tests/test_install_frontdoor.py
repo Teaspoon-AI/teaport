@@ -337,6 +337,10 @@ def test_a_short_lived_intermediate_is_reissued_once_and_the_root_kept():
     (pki / "intermediate.crt").unlink()
     rc, out = _run(t, run)
     assert rc == 0 and "systemctl" not in out, out
+    # A date it cannot read leaves it alone (an empty epoch is not a short lifetime).
+    shutil.copy(pki.parent / "inter.crt", pki / "intermediate.crt")
+    rc, out = _run(t, 'date() { return 1; }\n' + run)
+    assert rc == 0 and "systemctl" not in out and (pki / "intermediate.crt").exists(), out
 
 
 if __name__ == "__main__":

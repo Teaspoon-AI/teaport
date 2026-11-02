@@ -1813,7 +1813,10 @@ reissue_short_intermediate() {
         | openssl x509 -noout -startdate -enddate 2>/dev/null || true)"
   nb="$(printf '%s\n' "$dates" | sed -n 's/^notBefore=//p')"; na="$(printf '%s\n' "$dates" | sed -n 's/^notAfter=//p')"
   if [ -z "$nb" ] || [ -z "$na" ]; then return 0; fi
-  if [ $(( $(date -d "$na" +%s) - $(date -d "$nb" +%s) )) -ge $(( 30 * 86400 )) ]; then return 0; fi
+  # Unparsed dates leave it alone: an empty epoch would read as a short lifetime.
+  local from to; from="$(date -d "$nb" +%s 2>/dev/null || true)"; to="$(date -d "$na" +%s 2>/dev/null || true)"
+  if [ -z "$from" ] || [ -z "$to" ]; then return 0; fi
+  if [ $(( to - from )) -ge $(( 30 * 86400 )) ]; then return 0; fi
   local stamp f; stamp="$(date +%Y%m%d-%H%M%S)"
   log "front door: re-issuing the local CA's short-lived intermediate and site certificate (the root stays)"
   SUDO systemctl stop caddy.service
@@ -2102,7 +2105,9 @@ phase_frontdoor() {
       SUDO runuser -u caddy -- test -r "$f" || die "Caddy (user caddy) cannot read $f: give the caddy user or group read access, then re-run"
     done
   fi
-  if [ "$REGENERATE_CA" = 1 ]; then regenerate_ca; else reissue_short_intermediate; fi
+  # The operator's own certificate (#249) uses no intermediate of ours: nothing to reissue.
+  if [ "$REGENERATE_CA" = 1 ]; then regenerate_ca
+  elif [ -z "$TLS_CERT" ]; then reissue_short_intermediate; fi
   # mDNS: publish $FRONTDOOR_HOST so LAN browsers resolve it with no DNS setup.
   SUDO apt-get install -y avahi-daemon
   write_caddyfile "$CADDYFILE"
