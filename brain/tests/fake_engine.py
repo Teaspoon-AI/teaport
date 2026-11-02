@@ -12,6 +12,17 @@
 #                                   (by energy) transcribes as the next scripted
 #                                   transcript, streamed as deltas while the speech
 #                                   lasts and closed by transcription.done on commit.
+#                                   With `preview` it also offers the preview stream
+#                                   (teaport-engine #108) to a session that opts
+#                                   in: the transcript is one continuous stream whose
+#                                   deltas carry end_ms; a commit changes nothing in it
+#                                   and is answered by a transcription.preview (its text:
+#                                   the utterance's words not sent yet, as the scripted
+#                                   `previews` entry has them, or as the transcript has),
+#                                   and the utterance's last words come as main deltas
+#                                   2.5 s into the silence after it, ending where its
+#                                   speech did, with transcription.progress's
+#                                   end_through_ms held below every word still to come.
 #   ws   /v1/audio/speech/stream    the engine's text-in TTS: per sentence audio.start,
 #                                   one audio.chunk of a tone (0.22 s a word, 24 kHz)
 #                                   with word timestamps, the trailing word list,
@@ -56,6 +67,7 @@ _TTS_RATE = 24000
 _WORD_S = 0.22
 _SPEECH_RMS = 300.0      # int16 RMS of caller audio that counts as speech
 _DELTA_EVERY_S = 0.25    # speech per streamed word while the caller talks
+_UTTERANCE_END_MS = 2500  # preview stream: silence after which an utterance's last words come
 
 
 def _rms(pcm: bytes) -> float:
@@ -79,8 +91,14 @@ def _tone(seconds: float) -> bytes:
 
 class FakeEngine:
     def __init__(self, *, transcripts: list[str] | None = None, reply: str = DEFAULT_REPLY,
-                 tool_call=None, host: str = "127.0.0.1", port: int = 0):
+                 tool_call=None, host: str = "127.0.0.1", port: int = 0,
+                 preview: bool = False, previews: list[str] | None = None):
         self.transcripts = list(transcripts or [DEFAULT_TRANSCRIPT])
+        # The preview stream (see the header): offered when set; what each segment's
+        # preview makes of it (None: the transcript itself).
+        self.preview = preview
+        self.previews = list(previews or [])
+        self.stt_previews: list[str] = []
         self.reply = reply
         # (messages, tool names) -> (name, arguments) to call a tool, or None to answer.
         self.tool_call = tool_call
@@ -135,6 +153,10 @@ class FakeEngine:
         self._next += 1
         return text
 
+    def _preview_of(self, k: int, transcript: str) -> str:
+        """What the k-th segment's preview makes of it: the scripted one, if any."""
+        return self.previews[k] if k < len(self.previews) and self.previews[k] else transcript
+
     async def _stt(self, request):
         if self.stt_active:
             self.stt_refused += 1
@@ -144,6 +166,19 @@ class FakeEngine:
         self.stt_sessions += 1
         self.stt_active += 1
         seg_speech, words, streamed = 0.0, None, 0
+        # The preview stream (opted in by the session): one continuous transcript. The
+        # session clock (ms of audio appended), where the utterance's speech last was,
+        # the last word's end, the silence since, and appends since the last report.
+        sliced, pos, speech_end, last_end, quiet, since_report = False, 0, 0, 0, 0, 0
+        k = -1
+
+        async def report():
+            # No word still to come may end before end_through_ms: held at the last word
+            # sent while an utterance's words are still to come.
+            bound = pos if words is None else last_end
+            await ws.send_json({"type": "transcription.progress", "decoded_through_ms": pos,
+                                "audio_through_ms": bound, "end_through_ms": bound})
+
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -151,20 +186,62 @@ class FakeEngine:
                 data = json.loads(msg.data)
                 mtype = data.get("type")
                 if mtype == "session.update":
-                    await ws.send_json({"type": "session.created",
-                                        "id": f"sess_fake{self.stt_sessions}",
-                                        "created": int(time.time())})
+                    sliced = self.preview and bool(data.get("preview"))
+                    created = {"type": "session.created", "id": f"sess_fake{self.stt_sessions}",
+                               "created": int(time.time())}
+                    if self.preview:
+                        created["capabilities"] = ["transcription.progress",
+                                                   "transcription.preview"]
+                    await ws.send_json(created)
                 elif mtype == "input_audio_buffer.append":
                     pcm = base64.b64decode(data.get("audio", ""))
+                    ms = len(pcm) // 2 * 1000 // _STT_RATE
+                    pos += ms
                     if _rms(pcm) > _SPEECH_RMS:
                         if words is None:
                             words = self._transcript().split()
+                            k += 1
                         seg_speech += len(pcm) / 2 / _STT_RATE
+                        speech_end, quiet = pos, 0
                         while (streamed < len(words) - 1
                                and seg_speech >= (streamed + 1) * _DELTA_EVERY_S):
-                            await ws.send_json({"type": "transcription.delta", "delta":
-                                                (" " if streamed else "") + words[streamed]})
+                            delta = {"type": "transcription.delta",
+                                     "delta": (" " if streamed else "") + words[streamed]}
+                            if sliced:
+                                delta["audio_ms"] = delta["end_ms"] = last_end = pos - 1
+                            await ws.send_json(delta)
                             streamed += 1
+                    elif sliced and words is not None:
+                        quiet += ms
+                        if quiet >= _UTTERANCE_END_MS:
+                            # The decode reaches the utterance's last words, commits or
+                            # not: they end where its speech did.
+                            for w in words[streamed:]:
+                                last_end = max(last_end, speech_end - 1)
+                                await ws.send_json({"type": "transcription.delta",
+                                                    "delta": (" " if streamed else "") + w,
+                                                    "audio_ms": last_end, "end_ms": last_end})
+                                streamed += 1
+                            self.stt_finals.append(" ".join(words))
+                            seg_speech, words, streamed = 0.0, None, 0
+                            await report()
+                    since_report += 1
+                    if sliced and since_report >= 10:
+                        since_report = 0
+                        await report()
+                elif mtype == "input_audio_buffer.commit" and sliced:
+                    # A question: the utterance's words not sent yet, as its preview has
+                    # them. The transcript goes on as it would have.
+                    shown, shown_delta = "", ""
+                    if words is not None:
+                        shown = self._preview_of(k, " ".join(words))
+                        rest = shown.split()[streamed:]
+                        if rest:
+                            shown_delta = (" " if streamed else "") + " ".join(rest)
+                    self.stt_previews.append(shown)
+                    await ws.send_json({"type": "transcription.preview", "through_ms": pos,
+                                        "delta": shown_delta, "main_through_ms": pos,
+                                        "credited_ms": data.get("trailing_silence_ms", 0)})
                 elif mtype == "input_audio_buffer.commit":
                     text = ""
                     if words is not None:

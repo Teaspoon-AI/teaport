@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     InterruptionFrame,
     SystemFrame,
+    TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
@@ -446,9 +447,27 @@ class SttProgressFrame(_UninterruptibleData):
     DOWNSTREAM by the STT service at the start of every engine session, for the stop
     strategy, which then asks the speculative reply on SpeechDecodedFrame instead of a
     settle timer (or, `reported` False, on the timer). Data and uninterruptible like
-    the frames below, and dropped by SegmentDoneSink."""
+    the frames below, and dropped by SegmentDoneSink.
+
+    `peeks`: the session's turn text is sliced and previewed at the VAD stop (stt.py
+    TURN TEXT, THE PEEK): the speculative reply is asked on the stop's preview
+    (SpeechPreviewFrame) and on nothing else, since that is the text the turn will
+    commit."""
 
     reported: bool
+    peeks: bool = False
+
+
+@dataclass
+class SpeechPreviewFrame(_UninterruptibleData):
+    """The provisional text of VAD stop `stop_n`'s turn, from the engine's preview at the
+    stop (stt.py TURN TEXT, THE PEEK), before any verdict has closed the turn on it: the
+    words the turn will commit if Smart Turn calls it done with the caller quiet. Pushed
+    DOWNSTREAM by the STT for the stop strategy, which asks the speculative reply on it;
+    data and uninterruptible like the frames around it, dropped by SegmentDoneSink."""
+
+    stop_n: int
+    text: str
 
 
 @dataclass
@@ -477,9 +496,46 @@ class NoSpeechReportFrame(_UninterruptibleData):
     stop_n: int
 
 
+@dataclass
+class TurnTextFinalFrame(_UninterruptibleData):
+    """A sliced turn's final words differ from those pushed for it (stt.py, TURN TEXT).
+    Pushed DOWNSTREAM by the STT behind the final it corrects; one of STT_FRAMES, so
+    every processor that holds the STT's frames holds it behind that final, and the
+    corrector below the aggregator (turn_text.TurnTextCorrector) gets it after the
+    aggregator has handled the final. Data and uninterruptible like the frames above.
+
+    `asked`: the text pushed as the turn's final (after the echo guard). `final`: the
+    final words, the same way. `kind`: "adds", "drops" or "changes"
+    (stt.compare_turn_text), with the words added and dropped. `pushed_at`: when
+    `asked` was pushed (time.monotonic()): the commit that carries it came after."""
+
+    stop_n: int
+    asked: str
+    final: str
+    kind: str
+    added: tuple = ()
+    dropped: tuple = ()
+    pushed_at: float = 0.0
+
+
+# The STT's bookkeeping frames, for the processors below it: data, uninterruptible, each
+# behind the words it follows. Dropped by SegmentDoneSink once the aggregator (and the
+# turn-text corrector above the sink) has had them.
+STT_BOOKKEEPING_FRAMES = (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
+                          SpeechDecodedFrame, NoSpeechReportFrame, SpeechPreviewFrame,
+                          TurnTextFinalFrame)
+
+# Everything the STT pushes for the turn strategies, in its order. A processor above the
+# aggregator that holds the STT's words -- RunControlClaims while the relay decides, the
+# barge-in judge while it judges -- holds every one of these behind them, so no close, no
+# report and no correction overtakes the words it follows. One tuple, so a frame the STT
+# gains is held by all of them at once.
+STT_FRAMES = (TranscriptionFrame, InterimTranscriptionFrame) + STT_BOOKKEEPING_FRAMES
+
+
 class SegmentDoneSink(FrameProcessor):
-    """Drops the STT's frames for the stop strategy -- SegmentDoneFrame,
-    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits
+    """Drops the STT's bookkeeping frames (STT_BOOKKEEPING_FRAMES) once the stop
+    strategy and the turn-text corrector have had them. Sits
     right after the user aggregator (behind only CutReplyFence's head, which passes
     every frame on inline), whose stock process_frame forwards every data frame it does
     not itself consume: the frames are for the stop strategy (which the aggregator hands
@@ -488,8 +544,7 @@ class SegmentDoneSink(FrameProcessor):
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
-        if isinstance(frame, (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
-                              SpeechDecodedFrame, NoSpeechReportFrame)):
+        if isinstance(frame, STT_BOOKKEEPING_FRAMES):
             return
         await self.push_frame(frame, direction)
 
@@ -676,6 +731,11 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._unreported_n = None
         # When the latest VAD stop reached this strategy, for the [SPEC] start line.
         self._stop_at = 0.0
+        # The STT's turn text is previewed at the VAD stop (SttProgressFrame.peeks), and
+        # the latest stop's preview, (stop_n, text) (SpeechPreviewFrame): then the
+        # speculation is asked on that and on nothing else (see _speculate_on_preview).
+        self._peeks = False
+        self._preview = None
 
     async def trigger_user_turn_inference_triggered(self, *, speculation=None):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
@@ -699,6 +759,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             await self._handle_segment_reset(frame)
         elif isinstance(frame, SttProgressFrame):
             self._decode_reported = frame.reported
+            self._peeks = frame.peeks
+        elif isinstance(frame, SpeechPreviewFrame):
+            self._preview = (frame.stop_n, frame.text)
+            await self._speculate_on_preview()
         elif isinstance(frame, SpeechDecodedFrame):
             self._decoded_n = frame.stop_n
             await self._speculate_when_decoded()
@@ -818,7 +882,9 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             return
         self._interim = text
         self._interim_at = time.monotonic()
-        if self.speculator is None:
+        if self.speculator is None or self._peeks:
+            # Previewed at the stop: the speculation is the preview's, and a turn's words
+            # still arriving after the stop are what its preview already holds.
             return
         if self.speculator.text != self.speculator.candidate(text):
             await self.speculator.cancel("superseded")
@@ -844,19 +910,38 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         """The STT says no report will come for the latest stop: if the model has
         already called it INCOMPLETE with the caller quiet, its window starts now,
         counted from the interim's arrival (as the stop itself would have armed it)."""
-        if (self.speculator is None or not self._interim
+        if (self.speculator is None or self._peeks or not self._interim
                 or not (self._unreported_n == self._stops == self._incomplete_n)
                 or not self._incomplete_and_quiet()):
             return
         settled = time.monotonic() - self._interim_at
         await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
 
+    def _previewed_stop(self) -> bool:
+        """The latest VAD stop's preview is in hand (stt.py THE PEEK)."""
+        return (self._peeks and self._preview is not None
+                and self._preview[0] == self._stops)
+
+    async def _speculate_on_preview(self):
+        """Ask on the latest stop's preview (stt.py THE PEEK): the text the turn commits
+        if the model calls it done with the caller quiet -- with no user turn open yet,
+        too (a short answer whose words all come after the stop). Only for the stop
+        this strategy has counted, the caller quiet, the bot silent (a stop over the bot
+        commits at once, and its final asks)."""
+        if self.speculator is None or not self._previewed_stop():
+            return
+        if self._vad_user_speaking or self._bot_speaking:
+            return
+        await self.speculator.start(self.speculator.candidate(self._preview[1]),
+                                    "the stop's preview", trigger=self._trigger("preview"),
+                                    ahead_of_turn=True)
+
     async def _speculate_when_decoded(self):
         """Ask on the interim if the engine has transcribed past the end of the speech
         whose VAD stop the model called INCOMPLETE, with the caller quiet since -- from
         whichever of the two arrives second: the report (SpeechDecodedFrame) or the
         verdict."""
-        if self.speculator is None or not self._on_decode():
+        if self.speculator is None or self._peeks or not self._on_decode():
             return
         if not (self._decoded_n == self._stops == self._incomplete_n):
             return
@@ -969,12 +1054,16 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # Without it, the window counts from the interim's own arrival: words that
         # stopped changing before the stop are settled already.
         if (self.speculator is not None and self._interim and self._inferences == before
-                and self._incomplete_and_quiet()):
+                and self._incomplete_and_quiet() and not self._peeks):
             if self._on_decode():
                 await self._speculate_when_decoded()
             else:
                 settled = time.monotonic() - self._interim_at
                 await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
+        # Previewed at the stop: a preview that came before this strategy counted the
+        # stop is asked on now.
+        if self._peeks and self._inferences == before:
+            await self._speculate_on_preview()
 
     async def _handle_input_audio(self, frame):
         before = self._inferences
@@ -1000,6 +1089,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _handle_vad_user_started_speaking(self, frame):
         await super()._handle_vad_user_started_speaking(frame)
         await self._cancel_settle()
+        # The stop's preview is no one's now: the STT drops its peek on the same start.
+        self._preview = None
         if self.speculator is not None:
             # The caller resumed: whatever they add, the committed text will not be
             # what was asked. Stop the stream now rather than at the mismatch.
@@ -1016,7 +1107,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     async def handle_user_turn_started(self):
         await self._cancel_settle()
-        if self.speculator is not None:
+        if self.speculator is not None and not self._previewed_stop():
+            # Not the speculation on the latest stop's preview: the turn opening now is
+            # the one it was asked for (a short answer, opened by its own words at the
+            # verdict), and the commit that follows adopts it or misses.
             await self.speculator.cancel("new-turn")
         if self._vad_stopped and not self._vad_user_speaking:
             logger.debug(

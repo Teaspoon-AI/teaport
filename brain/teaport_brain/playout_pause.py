@@ -58,14 +58,14 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 
-from teaport_brain.barge_pause import WRITE_GUARD_S, PlayoutPauseFrame
+from teaport_brain.barge_pause import PAUSE_GUARD_S, PlayoutPauseFrame
 
 # The longest one write may wait on pauses -- all of them, however many come and go
 # while it waits -- before the pause ends on its own. MediaSender bounds the whole write
 # at audio_out_write_timeout_secs (10 s) and treats running past it as the transport
 # being dead for the rest of the session, so this stays under it whatever the pauser
-# asks for (the pauser's own bounds are under this: barge_pause._MAX_PAUSE_S).
-_PAUSE_GUARD_S = WRITE_GUARD_S
+# asks for (the pauser's own bounds are under this: barge_pause.MAX_CAP_S).
+_PAUSE_GUARD_S = PAUSE_GUARD_S
 
 
 class PausablePlayout:

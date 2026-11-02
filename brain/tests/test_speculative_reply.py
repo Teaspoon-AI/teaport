@@ -143,6 +143,10 @@ class FakeAggregator:
         return [TextPartForConcatenation(p, includes_inter_part_spaces=False)
                 for p in self.parts]
 
+    def add_event_handler(self, name, handler):
+        """The aggregator's events, which nothing here fires (turn_text.py listens for
+        the commits)."""
+
 
 def _llm(opened, fail=False, close_gate=None):
     """A real BoundedOpenAILLMService whose request-opening seam records and fakes."""

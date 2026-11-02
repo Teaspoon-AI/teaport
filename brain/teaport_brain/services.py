@@ -649,18 +649,23 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # its buffered chunks replay first, then it continues live. The request-building
         # path below is what the speculation itself went through, so the two are the
         # same request either way; only WHEN it was opened differs. A run of ours is
-        # never one: no speculation lives outside a caller's turn.
-        if self.speculator is not None and (reply is None or reply.kind not in owed_mod.RUNS):
-            if self.owed is not None:
-                await self.owed.settled()
-            if self.owed is not None and self.owed.decline_due():
-                # The words that cut a telling are read before this renders (owed.py,
-                # #231); the speculation's render read none, so it cannot stand for it.
-                await self.speculator.cancel("a decline check is due")
-            elif (adopted := await self.speculator.take(context)) is not None:
+        # never one. And a speculation asked on a stop's preview can be live with no
+        # caller's turn open (stt.py THE PEEK): the run writes the context it was asked
+        # against, so nothing could adopt it, and the run stands it down.
+        if self.speculator is not None:
+            if reply is not None and reply.kind in owed_mod.RUNS:
+                await self.speculator.stand_down_ownerless("a run of ours")
+            else:
                 if self.owed is not None:
-                    self._rendered(reply, adopted.owed_noted, context)
-                return adopted
+                    await self.owed.settled()
+                if self.owed is not None and self.owed.decline_due():
+                    # The words that cut a telling are read before this renders (owed.py,
+                    # #231); the speculation's render read none, so it cannot stand for it.
+                    await self.speculator.cancel("a decline check is due")
+                elif (adopted := await self.speculator.take(context)) is not None:
+                    if self.owed is not None:
+                        self._rendered(reply, adopted.owed_noted, context)
+                    return adopted
         return await self._open_stream(context)
 
     # Paired with _process_context's CANCELLED line: this marks the boundary between
