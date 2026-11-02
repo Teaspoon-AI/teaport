@@ -111,7 +111,10 @@ class Harness:
         await self.tap._start_interruption()
 
     def user_talks(self):
-        self.activity.stamp()  # what UserTranscriptEmitter does per interim/final
+        self.activity.stamp()  # what UserTranscriptEmitter does per interim
+
+    def user_final(self):
+        self.activity.stamp(final=True)  # ... and for their final
 
     def user_quiet(self):
         self.activity.user_ts -= 60.0  # age the stamp past the hold window
@@ -468,6 +471,64 @@ async def test_many_lines_charted_ahead_are_each_charted_once():
     print("  PASS every filler in a long session is charted once")
 
 
+async def test_a_reply_right_after_the_users_final_is_shown_at_once():
+    # Live 2026-11-02: the reply began 0.8 s after the user's final, inside the hold
+    # window; its first words were held, the user's next words then cut it, and a
+    # barged utterance gets no final -- its first words were spoken and never charted.
+    # Their final closed their entry, so a reply starting after it has no bubble the
+    # view could have committed: its words go out as they play.
+    h = Harness()
+    h.user_final()
+    text = "Certainly. Long ago, by a quiet harbor."
+    seg = await h.sentence(text, "ctx-story", stop_after=1)
+    assert h.partials() == ["Certainly."], h.sent
+    h.user_talks()                        # their next words: the bubble is committed
+    for acc in prefixes(text)[1:2]:
+        await h.feed(P("ctx-story", seg, text, acc))
+    await h.barge()
+    assert h.partials() == ["Certainly."] and h.finals() == [], h.sent
+    print("  PASS a reply after the user's final is charted at once, cut or not")
+
+
+async def test_a_bubble_open_before_the_users_final_is_still_held():
+    # A final with no interims before it (a short "Yes.") while the bot talks on: the
+    # final committed the open bubble, as an interim would, so its words are held.
+    h = Harness()
+    text = "It was the best of times, it was the worst of times."
+    seg = await h.sentence(text, "ctx-e", stop_after=4)
+    h.user_final()
+    for acc in prefixes(text)[4:8]:
+        await h.feed(P("ctx-e", seg, text, acc))
+    assert h.partials()[-1] == "It was the best", h.partials()
+    h.user_quiet()
+    for acc in prefixes(text)[8:]:
+        await h.feed(P("ctx-e", seg, text, acc))
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.partials()[-1] == text and h.finals() == [text], h.sent
+    print("  PASS a bubble open before the user's final stays held through it")
+
+
+async def test_the_user_transcript_says_whether_it_was_a_final():
+    from pipecat.frames.frames import InterimTranscriptionFrame, TranscriptionFrame
+    from teaport_brain.captions import UserTranscriptEmitter
+    activity = VoiceActivity()
+    emitter = UserTranscriptEmitter(activity)
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+    emitter.push_frame = push
+    await emitter.process_frame(
+        InterimTranscriptionFrame("Can you", "u", "t"), FrameDirection.DOWNSTREAM)
+    assert activity.user_active() and not activity.user_final
+    await emitter.process_frame(
+        TranscriptionFrame("Can you tell me?", "u", "t"), FrameDirection.DOWNSTREAM)
+    assert activity.user_active() and activity.user_final
+    await emitter.process_frame(
+        InterimTranscriptionFrame(" keeper", "u", "t"), FrameDirection.DOWNSTREAM)
+    assert not activity.user_final
+    print("  PASS the user's transcript stamps interims and finals apart")
+
+
 def test_captions():
     async def main():
         await test_seamless_multi_utterance_segment()
@@ -491,6 +552,9 @@ def test_captions():
         await test_only_the_line_charted_ahead_is_skipped()
         await test_a_barge_drops_a_line_charted_ahead_that_never_played()
         await test_many_lines_charted_ahead_are_each_charted_once()
+        await test_a_reply_right_after_the_users_final_is_shown_at_once()
+        await test_a_bubble_open_before_the_users_final_is_still_held()
+        await test_the_user_transcript_says_whether_it_was_a_final()
     asyncio.run(main())
 
 
