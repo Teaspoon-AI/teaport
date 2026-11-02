@@ -24,8 +24,8 @@
 # heard, the typing bed and any cut reply included, merged into one stereo track. It is
 # flushed to the wav every few seconds (_FLUSH_SECS) rather than held for the whole
 # call, so a long call costs no memory and a crash keeps all but the last seconds. While
-# the half-duplex gate (SIP_HALF_DUPLEX) or a session's last line mutes the caller,
-# their side is silence: the brain did not take that audio.
+# the half-duplex gate (SIP_HALF_DUPLEX), the notice or a session's last line mutes the
+# caller, their side is silence: the brain did not take that audio.
 #
 # The TRANSCRIPT is the transcript ledger's (transcript_ledger.py): the caller's
 # finals, and each reply as far as the caller heard it -- a reply they cut is written
@@ -35,8 +35,9 @@
 #
 # The NOTICE (TEAPORT_CALL_RECORDING_NOTICE, on by default): a recorded call starts with
 # "This call is being recorded." in the call's language (i18n.py), before the greeting,
-# outside the conversation's context. The model is also told the call is recorded, so a
-# caller who asks gets a straight answer.
+# outside the conversation's context, with the caller unheard while it plays so they
+# cannot talk it away (AgentSession.greet). The model is also told the call is recorded,
+# so a caller who asks gets a straight answer.
 #
 # RETENTION: recordings older than TEAPORT_CALL_RECORDING_KEEP_DAYS go, then the oldest
 # until the directory is under TEAPORT_CALL_RECORDING_MAX_MB (recordings.prune), checked

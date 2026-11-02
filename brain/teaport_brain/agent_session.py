@@ -346,9 +346,13 @@ class AgentSession:
         check alone, no greeting (one asleep, or a conversation continued, is not
         greeted).
 
-        `notice`: a line said first, before the greeting and outside the context (a
-        recorded call's recording notice, call_recording.notice_line). Only when the
-        greeting is: a call that cannot be heard is not recorded talking to anyone."""
+        `notice`: a line said first, heard in full, before the greeting and outside the
+        context (a recorded call's recording notice, call_recording.notice_line). The
+        caller is not listened to while it plays, so a "hello?" over it cannot cut it,
+        and the greeting is queued only once it has played (or NOTICE_MAX_SECS on):
+        queued behind it, the two could play as one span and the caller would stay
+        unheard through the greeting too. Only when the greeting is: a call that cannot
+        be heard is not recorded talking to anyone."""
         await self._stt_resolved()
         if self.stt.stt_available is not True:
             # Say WHICH failure it was. slot_busy is True only when the engine actively
@@ -376,9 +380,7 @@ class AgentSession:
         if not hello:
             return
         if notice:
-            # append_to_context=False: the pipeline talking, not the model -- a filler
-            # to the ledger, and queued ahead of the greeting, so it plays first.
-            await self.task.queue_frames([TTSSpeakFrame(notice, append_to_context=False)])
+            await self._say_notice(notice)
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         if prepared:
@@ -388,6 +390,29 @@ class AgentSession:
             await self.task.queue_frames([TTSSpeakFrame(prepared)])
             return
         await self.task.queue_frames([LLMRunFrame()])
+
+    # How long greet() waits for the recording notice to play before greeting anyway.
+    NOTICE_MAX_SECS = 8.0
+
+    async def _say_notice(self, notice: str) -> None:
+        """Play `notice` with the caller unheard, and wait until it has played."""
+        if self.input_mute is not None:
+            self.input_mute.muted = True
+        try:
+            # Armed before the line is queued (FollowupGate.watch_delivery).
+            delivery = self.followup_gate.watch_delivery()
+            # append_to_context=False: the pipeline talking, not the model -- a filler
+            # to the ledger.
+            await self.task.queue_frames([TTSSpeakFrame(notice, append_to_context=False)])
+            try:
+                await asyncio.wait_for(delivery.done.wait(), self.NOTICE_MAX_SECS)
+            except asyncio.TimeoutError:
+                self.followup_gate.drop_delivery(delivery)
+                logger.info(f"the recording notice did not finish within "
+                            f"{self.NOTICE_MAX_SECS:g} s -- greeting anyway")
+        finally:
+            if self.input_mute is not None:
+                self.input_mute.muted = False
 
     async def _stt_resolved(self) -> None:
         """Until the STT has connected or failed to (stt_available is not None), within

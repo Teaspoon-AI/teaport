@@ -173,11 +173,14 @@ async def test_audio_is_one_stereo_wav_caller_left_bot_right():
 # ---------------------------------------------------------------- notice
 
 class _Task:
-    def __init__(self):
+    def __init__(self, on_queue=None):
         self.queued = []
+        self.on_queue = on_queue
 
     async def queue_frames(self, frames):
         self.queued.extend(frames)
+        if self.on_queue is not None:
+            self.on_queue(frames)
 
 
 class _Context:
@@ -193,14 +196,37 @@ class _Stt:
     slot_busy = False
 
 
-def _session():
+def _session(plays=True):
+    """An AgentSession with fakes around greet(). `plays`: the notice plays out (its
+    delivery settles as it is queued, with the input mute's state at that moment
+    recorded); False, it never does, and greet() waits out NOTICE_MAX_SECS."""
+    from teaport_brain.agent_session import InputMute
+    from teaport_brain.followup_gate import Delivery
     s = object.__new__(AgentSession)
-    s.task, s.context, s.stt = _Task(), _Context(), _Stt()
+    s.context, s.stt = _Context(), _Stt()
+    s.input_mute = InputMute()
     s.should_end = False
+    s.muted_while_queued = []
+    deliveries = []
+
+    class _Gate:
+        def watch_delivery(self):
+            deliveries.append(Delivery())
+            return deliveries[-1]
+
+        def drop_delivery(self, d):
+            deliveries.remove(d)
+
+    def on_queue(frames):
+        s.muted_while_queued.append(s.input_mute.muted)
+        if plays and deliveries:
+            deliveries.pop()._settle(interrupted=False)
+    s.followup_gate = _Gate()
+    s.task = _Task(on_queue)
     return s
 
 
-async def test_the_notice_plays_before_the_greeting_outside_the_context():
+async def test_the_notice_plays_whole_before_the_greeting_outside_the_context():
     for prepared in (None, "Hello, how can I help?"):
         s = _session()
         await s.greet(prepared=prepared, notice="This call is being recorded.")
@@ -209,11 +235,24 @@ async def test_the_notice_plays_before_the_greeting_outside_the_context():
         assert first.append_to_context is False, "the notice is not the model's words"
         assert (isinstance(second, LLMRunFrame) if prepared is None
                 else second.text == prepared), s.task.queued
+        # The caller is unheard while the notice is queued and plays (no "hello?" cuts
+        # it), and heard again by the time the greeting is queued.
+        assert s.muted_while_queued == [True, False], s.muted_while_queued
+        assert not s.input_mute.muted
     s = _session()
     s.stt = type("S", (), {"stt_available": False, "slot_busy": False})()
     await s.greet(notice="This call is being recorded.")
     assert not any(getattr(f, "text", "") == "This call is being recorded."
                    for f in s.task.queued), "no notice on a call that cannot be heard"
+
+
+async def test_a_notice_that_never_plays_out_still_lets_the_greeting_and_the_caller_in():
+    s = _session(plays=False)
+    s.NOTICE_MAX_SECS = 0.05
+    await s.greet(prepared="Hello.", notice="This call is being recorded.")
+    assert [getattr(f, "text", None) for f in s.task.queued] == [
+        "This call is being recorded.", "Hello."], s.task.queued
+    assert not s.input_mute.muted, "the caller must not stay unheard"
 
 
 def test_the_notice_is_in_the_calls_language():
