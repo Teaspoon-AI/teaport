@@ -15,7 +15,9 @@
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes), unless it is marked
 #     "private": true (oled_avatar: Teaspoon AI installs it with access; install.sh
-#     skips it on a box without).
+#     skips it on a box without);
+#   - openclaw names the OpenClaw release this one is tested with, a version npm has,
+#     and its Node.js major (the guide installs both, install.sh compares the box's).
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -30,6 +32,7 @@
 #
 import argparse
 import hashlib
+import re
 import http.client
 import json
 import os
@@ -60,6 +63,7 @@ REQUIRED = (
 # The {repo, tag} entries install.sh always clones (the brain); oled_avatar is cloned
 # only on request, so it is checked when present.
 REQUIRED_REPOS = ("brain",)
+NPM_REGISTRY = "https://registry.npmjs.org"
 
 
 def lookup(manifest, dotted):
@@ -208,6 +212,24 @@ def check(manifest_path, placeholders_ok):
         else:
             checked += 1
             print(f"ok {where} (github.com/{repo} @ {tag})")
+
+    openclaw = manifest.get("openclaw")
+    if not isinstance(openclaw, dict):
+        problems.append("openclaw: missing (the OpenClaw release this one is tested with)")
+    else:
+        version, node = str(openclaw.get("version", "")), str(openclaw.get("node", ""))
+        if not re.fullmatch(r"\d{4}\.\d{1,2}\.\d{1,2}", version):
+            problems.append(f"openclaw.version: not an OpenClaw release ({version!r})")
+        elif not re.fullmatch(r"\d{2}", node):
+            problems.append(f"openclaw.node: not a Node.js major ({node!r})")
+        else:
+            try:
+                fetch(f"{NPM_REGISTRY}/openclaw/{version}", None)
+            except Exception as e:  # noqa: BLE001 -- not published, or no registry
+                problems.append(f"openclaw.version: npm has no openclaw@{version} ({e})")
+            else:
+                checked += 1
+                print(f"ok openclaw (npm openclaw@{version}, Node.js {node})")
 
     if checked == 0 and not placeholders_ok:
         problems.append("no artifact checked: the manifest names nothing installable")
