@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2554#0f1e5b13 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2554#afc42f4e -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -168,10 +168,10 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_AGENT_FIRST` | **off** | Agent-first routing: install the strict router directive and drop the "I'll work on that" ack. |
 | `TEAPORT_RECALL_TIMEOUT` | **1.5** s (≥ 0.1) | Memory-recall budget. Never awaited on the frame path, so a generous value adds no turn latency; 1.5 s clears a cold embedder (~1.14 s on the device). |
 | `TEAPORT_CONSULT_TIMEOUT` | **45** s (≥ 5) | Gateway/CLI consult ceiling on the synchronous path (TEAPORT_AGENT_FIRST, or a client with no follow-up injector). Otherwise the async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts. |
-| `TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT` | **1.5** s (≥ 0.2) | No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks. |
+| `TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT` | **1.5** s (≥ 0.2) | Talk only: no ack within this means no native runner, so fall back fast instead of burning the full window. A live relay acks within moments. Sessions without a relay (room, phone, Discord) never wait on it. |
 | `TEAPORT_NATIVE_CONSULT_TIMEOUT` | **45** s (≥ 5) | How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves. |
 | `TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT` | **55** s (≥ 5) | The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only. |
-| `TEAPORT_ASYNC_CONSULT_TIMEOUT` | **130** s (≥ 5) | Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a "that took too long" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive. |
+| `TEAPORT_ASYNC_CONSULT_TIMEOUT` | **130** s (≥ 5) | Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI lane of sessions without a relay (room, phone, Discord). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a "that took too long" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive. |
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |

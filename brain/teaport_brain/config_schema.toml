@@ -1342,7 +1342,7 @@ min = 0.2
 default = 1.5
 read = "startup"
 tier = "tuning"
-help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
+help = "Talk only: no ack within this means no native runner, so fall back fast instead of burning the full window. A live relay acks within moments. Sessions without a relay (room, phone, Discord) never wait on it."
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -1391,7 +1391,7 @@ min = 5
 default = 130
 read = "startup"
 tier = "tuning"
-help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
+help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI lane of sessions without a relay (room, phone, Discord). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
