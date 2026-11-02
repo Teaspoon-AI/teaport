@@ -45,6 +45,10 @@ const SESSION_CONFIG_PROTOCOL = 1;
 // and it offers its model openclaw_agent_control, whose calls this bridge hands the relay
 // like the consult's. A brain that sees no flag never asks.
 const RUN_CONTROL_PROTOCOL = 1;
+// What this bridge can do for the brain, sent as ?features=. "consult": it hands
+// openclaw_agent_consult calls to the relay, which runs and acks them. A brain session
+// without it sends no consult call and waits for no ack (teaport#78).
+const FEATURES = "consult";
 // OpenClaw's consult tool, whose calls the relay runs (and its run control acts on).
 const CONSULT_TOOL_NAME = "openclaw_agent_consult";
 // How long a claim waits for the relay to act on the words (answerRunControl): its reply
@@ -60,8 +64,8 @@ const FINALS_KEPT = 40;
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
  * brain's WS URL as query params, plus the caption, session_config and run_control
- * protocols and the client id. The Pipecat brain reads ?voice=&language=&token=&captions=
- * &session_config=&run_control=&client= per session
+ * protocols, the features and the client id. The Pipecat brain reads ?voice=&language=
+ * &token=&captions=&session_config=&run_control=&features=&client= per session
  * (gateway_server.py). `client` names the Talk client (the device) across its own
  * reconnects: the brain's session arbiter lets a reconnect replace that client's own
  * session, and refuses every other client while a conversation is live. A Kokoro
@@ -80,6 +84,7 @@ export function withVoiceParams(url, cfg) {
   q.push(`captions=${CAPTIONS_PROTOCOL}`);
   q.push(`session_config=${SESSION_CONFIG_PROTOCOL}`);
   q.push(`run_control=${RUN_CONTROL_PROTOCOL}`);
+  q.push(`features=${FEATURES}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
 

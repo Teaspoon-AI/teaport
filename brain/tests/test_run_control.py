@@ -502,7 +502,7 @@ async def test_a_cancel_through_the_control_closes_the_consult_silently_end_to_e
 
     llm = _LLM(answer=relay)
     params, got = _params(llm, {"question": "flights to Paris on Friday"}, call_id="tc-a")
-    await tools._openclaw_agent_consult(params, owed=b)
+    await tools._openclaw_agent_consult(params, owed=b, relay=True)
     assert got[0][0]["status"] == "working_in_background"
     await asyncio.sleep(0)
     params, said = _params(llm, {"text": "scratch that", "mode": "cancel"}, call_id="tc-b")
@@ -567,7 +567,7 @@ async def test_a_cancelled_agent_first_consult_is_not_answered_twice():
 
     llm = _LLM(answer=answer)
     params, got = _params(llm, {"question": "flights to Paris"})
-    await tools._openclaw_agent_consult(params)
+    await tools._openclaw_agent_consult(params, relay=True)
     [(result, kw)] = got
     assert result["status"] == "cancelled"
     assert kw["properties"].run_llm is False
@@ -592,13 +592,14 @@ async def test_an_agent_first_consult_counts_as_running_while_the_turn_waits():
 
     llm = _LLM(answer=answer)
     params, got = _params(llm, {"question": "weather in Rome"})
-    await tools._bind_openclaw_agent_consult(tools.ToolContext(gate=gate))(params)
+    await tools._bind_openclaw_agent_consult(tools.ToolContext(
+        gate=gate, client_features=frozenset({"consult"})))(params)
     assert seen == [1] and gate.consults_running == 0
     assert got[0][0] == {"answer": "It is sunny."}
     # A barge-in cancels the wait: the count goes back, and the relay is not told.
     llm = _LLM()
     params, got = _params(llm, {"question": "weather in Oslo"})
-    task = asyncio.ensure_future(tools._openclaw_agent_consult(params, gate=gate))
+    task = asyncio.ensure_future(tools._openclaw_agent_consult(params, gate=gate, relay=True))
     await asyncio.sleep(0.05)
     assert gate.consults_running == 1
     task.cancel()

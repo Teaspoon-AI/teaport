@@ -378,14 +378,16 @@ test("a barge-in clear closes the bubble and sends the held cards", () => {
 test("the plugin tells the brain it speaks caption protocol 2", () => {
   // Without it the brain keeps skipping a final that repeats a bubble while the user
   // talks, which an older plugin needs.
-  assert.equal(withVoiceParams("ws://brain/talk", {}), "ws://brain/talk?captions=2&session_config=1&run_control=1");
+  assert.equal(withVoiceParams("ws://brain/talk", {}), "ws://brain/talk?captions=2&session_config=1&run_control=1&features=consult");
   assert.equal(
     withVoiceParams("ws://brain/talk?x=1", { voice: "af_heart", token: "t k" }),
-    "ws://brain/talk?x=1&voice=af_heart&token=t%20k&captions=2&session_config=1&run_control=1",
+    "ws://brain/talk?x=1&voice=af_heart&token=t%20k&captions=2&session_config=1&run_control=1&features=consult",
   );
   const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
   const bridge = provider.createBridge({ providerConfig: { voice: "af_heart" } });
   assert.equal(new URL(bridge._url).searchParams.get("captions"), "2");
+  // It runs consults through the relay (teaport#78): the brain's opt-in for the relay path.
+  assert.equal(new URL(bridge._url).searchParams.get("features"), "consult");
 });
 
 test("the plugin names the Talk client, so only its own reconnect replaces its session", () => {

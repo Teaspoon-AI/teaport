@@ -123,7 +123,7 @@ A tool appears in a session only when what it needs is there: the agent gateway 
 
 <!-- source: brain/teaport_brain/tools.py:19-25,1431-1455,1468-1479,1480-1482,1485-1486,1492-1496,1497-1502#6cf4ebb0; brain/teaport_brain/wifi_voice.py:192-194#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
-Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces features; the plugin, the phone, and Discord announce none and never see these tools.
+Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces client-tool features; the phone and Discord announce none and never see these tools. The plugin announces `consult` alone: it hands `openclaw_agent_consult` calls to OpenClaw's relay. Every other session's consult goes straight to the agent, with no call sent and no relay acknowledgment awaited.
 
 <!-- source: brain/teaport_brain/tools.py:33-38#88656142; brain/teaport_brain/local_audio.py:240-243#1adbafcf; plugin/README.md:39-44#638406a1 -->
 

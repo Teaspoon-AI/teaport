@@ -1342,7 +1342,7 @@ min = 0.2
 default = 1.5
 read = "startup"
 tier = "tuning"
-help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
+help = "Talk only: no ack within this means no native runner, so fall back fast instead of burning the full window. A live relay acks within moments. Sessions without a relay (room, phone, Discord) never wait on it."
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"

@@ -19,6 +19,7 @@ import asyncio
 import io
 import os
 import sys
+import time
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -216,18 +217,18 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None):
 
 
 async def test_the_cli_fallback_gets_the_whole_async_budget():
-    """SIP: no relay, so no ack, so the CLI lane. It used to run on CONSULT_TIMEOUT's
-    45 s while Talk waited 180 s for the same requests."""
-    seen = {}
+    """SIP (no relay: fut None), or a relay that never acks: the CLI lane. It used to run
+    on CONSULT_TIMEOUT's 45 s while Talk waited 180 s for the same requests."""
+    for fut in (None, asyncio.get_running_loop().create_future()):
+        seen = {}
 
-    async def cli(request, *, timeout=None, session_key=None):
-        seen["timeout"] = timeout
-        return oc.ConsultOutcome("cli answer")
+        async def cli(request, *, timeout=None, session_key=None):
+            seen["timeout"] = timeout
+            return oc.ConsultOutcome("cli answer")
 
-    fut = asyncio.get_running_loop().create_future()
-    delivered = await _wait(fut, ack=0.05, ceiling=100.0, cli=cli)
-    assert delivered == [("cli answer", None)], delivered
-    assert seen["timeout"] is not None and 99 < seen["timeout"] <= 100, seen
+        delivered = await _wait(fut, ack=0.05, ceiling=100.0, cli=cli)
+        assert delivered == [("cli answer", None)], delivered
+        assert seen["timeout"] is not None and 99 < seen["timeout"] <= 100, seen
 
 
 async def test_an_acked_consult_that_never_returns_is_a_timeout():
@@ -315,6 +316,139 @@ async def test_the_placeholder_says_there_are_no_results_yet():
         assert props is not None and props.run_llm is False, (
             "a placeholder must not trigger inference -- that is the fabrication path "
             "no_inference() exists to close")
+
+
+# --- a session without a relay asks the agent directly (#78) ------------------------
+#
+# Only a client that announced ?features=consult (the plugin on OpenClaw's Talk relay)
+# has anything to run the consult's tool_call and ack it. The phone, the room's bridge
+# and the Discord bridge announce no such thing: their consults used to send the call
+# anyway and wait the whole ack timeout for an ack that could never come.
+
+class _WireLLM(_PlaceholderLLM):
+    """Records what the handler sends the client."""
+
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+
+    async def push_frame(self, frame, *a, **k):
+        msg = getattr(frame, "message", None)
+        if isinstance(msg, dict):
+            self.sent.append(msg)
+
+    def calls(self):
+        return [m for m in self.sent if m.get("type") == "tool_call"]
+
+
+class _CallbackParams:
+    def __init__(self, llm, request):
+        self.llm, self.arguments, self.tool_call_id = llm, {"question": request}, "tc-1"
+        self.results = []
+
+    async def result_callback(self, result, properties=None):
+        self.results.append(result)
+
+
+async def _consult(ctx, *, ack, request="what is on at the cinema tonight?"):
+    """Run one consult through the session's bound handler with a scripted agent lane:
+    (llm, params, agent calls, seconds the handler and its waiter took, log text)."""
+    asked = []
+
+    async def agent(message, *, timeout=None, session_key=None):
+        asked.append(message)
+        return oc.ConsultOutcome("two films and a quiz night")
+
+    log = io.StringIO()
+    sink = logger.add(log, format="{message}", level="INFO")
+    saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, oc.agent_consult)
+    tools._NATIVE_CONSULT_ACK_TIMEOUT, oc.agent_consult = ack, agent
+    llm = _WireLLM()
+    params = _CallbackParams(llm, request)
+    t0 = time.monotonic()
+    try:
+        await tools._bind_openclaw_agent_consult(ctx)(params)
+        await asyncio.wait_for(asyncio.gather(*llm.tasks), 5)
+    finally:
+        tools._NATIVE_CONSULT_ACK_TIMEOUT, oc.agent_consult = saved
+        logger.remove(sink)
+    return llm, params, asked, time.monotonic() - t0, log.getvalue()
+
+
+def _owed_ctx(features):
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from teaport_brain.owed import Owed
+    return tools.ToolContext(owed=Owed(LLMContext([])), client_features=frozenset(features))
+
+
+async def test_only_a_client_that_announces_consult_has_a_relay():
+    assert tools.ToolContext(client_features=tools.parse_client_features("consult")).relay
+    # The room's bridge (as local_audio announces itself), the phone and Discord (none).
+    for raw in ("volume,restart,local,phonemes,mood,typing,sleep", None, ""):
+        assert not tools.ToolContext(client_features=tools.parse_client_features(raw)).relay
+
+
+async def test_a_session_without_a_relay_never_waits_on_an_ack():
+    """Async (the room, the phone): no tool_call goes out, and the agent is asked at
+    once -- with an ack timeout far longer than the test, any wait on it would show."""
+    for features in (frozenset({"local", "volume", "typing"}), frozenset()):
+        llm, params, asked, took, log = await _consult(_owed_ctx(features), ack=30.0)
+        assert llm.calls() == [], llm.calls()
+        assert asked == ["what is on at the cinema tonight?"], asked
+        assert took < 2.0, took
+        assert params.results[0]["status"] == "working_in_background", params.results
+        assert "relay never acked" not in log and "no relay on this session" in log, log
+
+
+async def test_a_sync_consult_without_a_relay_never_waits_on_an_ack():
+    """Agent-first (no owed records): the same, on the turn."""
+    llm, params, asked, took, log = await _consult(tools.ToolContext(), ack=30.0)
+    assert llm.calls() == [] and asked and took < 2.0, (llm.calls(), asked, took)
+    assert params.results == [{"answer": "two films and a quiz night"}], params.results
+    assert "relay never acked" not in log, log
+
+
+async def test_a_talk_session_still_goes_through_the_relay_first():
+    """The plugin's session sends the call and waits for the relay's ack; only a relay
+    that never acks falls back, and the log says how long it waited, to a tenth of a
+    second (1.5 s used to print as "2s")."""
+    for ctx in (_owed_ctx({"consult"}), tools.ToolContext(client_features=frozenset({"consult"}))):
+        llm, params, asked, took, log = await _consult(ctx, ack=0.12)
+        [call] = llm.calls()
+        assert call["name"] == "openclaw_agent_consult", call
+        assert call["args"] == {"question": "what is on at the cinema tonight?"}, call
+        assert took >= 0.12, took
+        assert asked == ["what is on at the cinema tonight?"], asked
+        assert "relay never acked in 0.1s" in log, log
+
+
+async def test_an_acked_talk_consult_is_answered_by_the_relay():
+    """The relay's answer arrives: the agent lane is never asked."""
+    asked = []
+
+    async def agent(message, *, timeout=None, session_key=None):
+        asked.append(message)
+        return oc.ConsultOutcome("not this one")
+
+    class Relay(_WireLLM):
+        async def push_frame(self, frame, *a, **k):
+            await super().push_frame(frame, *a, **k)
+            msg = getattr(frame, "message", None)
+            if isinstance(msg, dict) and msg.get("type") == "tool_call":
+                asyncio.get_running_loop().call_soon(
+                    consult_bridge.resolve, msg["call_id"], {"text": "from the relay"})
+
+    saved = oc.agent_consult
+    oc.agent_consult = agent
+    llm = Relay()
+    params = _CallbackParams(llm, "is it raining?")
+    try:
+        await tools._bind_openclaw_agent_consult(
+            tools.ToolContext(client_features=frozenset({"consult"})))(params)
+    finally:
+        oc.agent_consult = saved
+    assert params.results == [{"answer": "from the relay"}], params.results
+    assert asked == [] and len(llm.calls()) == 1
 
 
 def main():
