@@ -620,7 +620,6 @@ def build_agent_session(transport, *, voice: str | None = None,
                         caption_every_final: bool = False,
                         context_notes: bool = False,
                         reply_hold_enabled: bool = False,
-                        barge_pause_enabled: bool = True,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
@@ -919,10 +918,11 @@ def build_agent_session(transport, *, voice: str | None = None,
                        else f"-- after they stop changing for {settle}"))
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
     # if no words follow (barge_pause.py). Wherever the transport can pause without
-    # losing audio (playout_pause.PausablePlayout): the SIP transport and /talk's both
-    # send at real time, a frame ahead at most, so the unplayed reply is still here.
+    # losing audio (playout_pause.PausablePlayout): the SIP transport, and /talk's when
+    # TEAPORT_BARGE_PAUSE_TALK makes it pausable. Both send at real time, a frame ahead at
+    # most, so the unplayed reply is still here.
     barge_pauser = (barge_pause.BargeInPauser(transport_output)
-                    if barge_pause.ENABLED and barge_pause_enabled
+                    if barge_pause.ENABLED
                     and getattr(transport_output, "supports_playout_pause", False)
                     else None)
     if barge_pauser is not None:

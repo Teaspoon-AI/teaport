@@ -301,9 +301,11 @@ async def test_the_ledger_credits_playout_up_to_where_the_audio_really_stopped()
 class _FakeOut:
     def __init__(self):
         self.calls = []
+        self.playout_paused = False
 
     async def set_playout_paused(self, paused):
         self.calls.append((time.monotonic(), paused))
+        self.playout_paused = paused
 
 
 async def _pauser_rig(**kw):
@@ -368,12 +370,41 @@ async def test_a_resume_the_transport_made_on_its_own_ends_the_pause_here_too():
         await p.on_onset(True)
         await asyncio.sleep(0.05)
         assert p.paused
+        out.playout_paused = False                       # the guard resumed it
         await task.queue_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
         assert not p.paused, "the pauser still counts the bot paused"
     finally:
         await task.cancel()
         await run
+
+
+async def test_a_stale_resume_notice_does_not_end_a_newer_pause():
+    # The pauser resumed, then paused again before its own resume's notice came back up:
+    # that notice must not end the newer pause (the transport is paused again).
+    out = _FakeOut()
+    p = BargeInPauser(out, resume_secs=RESUME_S, max_secs=3.0)
+    task = PipelineTask(Pipeline([p]), cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        await task.queue_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        assert p.paused, "an old resume notice ended a pause the transport still holds"
+    finally:
+        await task.cancel()
+        await run
+
+
+def test_a_pause_is_capped_under_the_transports_write_guard():
+    from teaport_brain import playout_pause
+    p = BargeInPauser(_FakeOut(), max_secs=8.0)
+    assert p._max_secs < playout_pause._PAUSE_GUARD_S, p._max_secs
 
 
 async def test_an_echo_like_burst_does_not_pause():

@@ -94,6 +94,10 @@ class PausablePlayout:
         self._heard_until = 0.0
         self._synth_done = False
 
+    @property
+    def playout_paused(self) -> bool:
+        return not self._playing.is_set()
+
     async def set_playout_paused(self, paused: bool, *, upstream: bool = True):
         """Stop writing the bot's audio, or start again, at the next frame boundary, and
         say so both ways (PlayoutPauseFrame) for the ledger, the TTS and the start
@@ -110,7 +114,13 @@ class PausablePlayout:
             self._pause_lag = lag
         else:
             self._playing.set()
-            self._next_send_time = 0.0
+            # Restart the send clock where it keeps its one frame of lead: at once if
+            # what was sent before the pause has played out, else one slot before it
+            # will have -- not at once regardless, which would put the next two frames
+            # behind audio still playing and grow the client's lead for the rest of the
+            # reply.
+            self._next_send_time = max(
+                0.0, self._heard_until - getattr(self, "_send_interval", 0.0))
         tail = self.playout_tail_secs() if paused else None
         await self._announce_pause(lag=lag, tail=-1.0 if tail is None else tail,
                                    paused=paused, upstream=upstream)

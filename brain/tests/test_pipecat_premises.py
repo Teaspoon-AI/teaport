@@ -1573,8 +1573,9 @@ async def check_the_websocket_transport_builds_its_output_from_its_own_parts():
         FastAPIWebsocketOutputTransport, FastAPIWebsocketParams)
     from teaport_brain.gateway_serializer import TeaportGatewaySerializer
     from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTransport
-    t = TalkWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
-        serializer=TeaportGatewaySerializer()))
+    t = TalkWebsocketTransport(websocket=SimpleNamespace(), pausable=True,
+                               params=FastAPIWebsocketParams(
+                                   serializer=TeaportGatewaySerializer()))
     out = t.output()
     assert type(out) is TalkOutputTransport
     assert out._client is t._client and out._params is t._params

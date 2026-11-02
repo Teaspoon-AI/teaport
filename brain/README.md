@@ -28,7 +28,7 @@ harnesses. Some highlights:
 - `reply_hold` / `speech_onset` — hold a fresh reply while the caller is talking again; a
   faster "speech has begun" read off the VAD's own confidences.
 - `barge_pause` / `playout_pause` — pause playout the moment the user talks over the bot
-  (phone and Talk alike), cancel on their words, resume from the same sample on none.
+  (phone; Talk with TEAPORT_BARGE_PAUSE_TALK), cancel on their words, resume on none.
 - `tools` / `openclaw_client` / `memory_recall` — tool calls, memory read/write, consults.
 
 A WebRTC dev-harness entry is deliberately **not** part of this package: it would drag

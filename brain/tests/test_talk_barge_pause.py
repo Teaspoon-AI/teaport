@@ -104,8 +104,8 @@ class _Socket:
                 if self.times[i] - self.times[i - 1] >= at_least]
 
 
-def _talk_transport(sock):
-    return TalkWebsocketTransport(websocket=sock, params=FastAPIWebsocketParams(
+def _talk_transport(sock, pausable=True):
+    return TalkWebsocketTransport(websocket=sock, pausable=pausable, params=FastAPIWebsocketParams(
         audio_in_enabled=False, audio_out_enabled=True, audio_out_sample_rate=SR,
         audio_out_end_silence_secs=0, add_wav_header=False,
         serializer=TeaportGatewaySerializer()))
@@ -269,6 +269,26 @@ async def test_one_writes_waits_share_one_guard():
         playout_pause._PAUSE_GUARD_S = guard
 
 
+async def test_a_quick_resume_keeps_the_send_clocks_one_block_of_lead():
+    # A resume while what was sent before the pause still plays (a blip) must not start
+    # the clock at once: two blocks would go out behind it and the client's lead would
+    # grow by one for the rest of the reply, and every later pause stop that much later.
+    async with TalkRig(with_pauser=False) as rig:
+        await rig.speak()
+        await _at(rig, 0.61)
+        await rig.out.set_playout_paused(True)
+        await asyncio.sleep(0.005)
+        await rig.out.set_playout_paused(False)          # well inside the lag
+        await _at(rig, 1.0)
+        # The lead is a sawtooth (one to two blocks); its peak is what grows.
+        lead = 0.0
+        for _ in range(60):
+            lead = max(lead, rig.out._heard_until - time.monotonic())
+            await asyncio.sleep(0.005)
+        assert lead <= 2 * BLOCK_S + 0.005, (
+            f"{lead * 1000:.0f} ms queued at the client: the lead grew past one block")
+
+
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
@@ -291,12 +311,13 @@ async def test_a_talk_session_builds_the_pauser():
     from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
 
     for front_end in ("talk", "room"):
-        # Off on Talk by default (TEAPORT_BARGE_PAUSE_TALK, until #255): /talk passes it.
-        off = build_agent_session(_talk_transport(_Socket()), front_end=front_end,
-                                  barge_pause_enabled=False)
+        # Off on Talk by default (TEAPORT_BARGE_PAUSE_TALK, until #255): /talk's transport
+        # is pipecat's own then, and nothing pauses.
+        off_t = _talk_transport(_Socket(), pausable=False)
+        assert not hasattr(off_t.output(), "supports_playout_pause")
+        off = build_agent_session(off_t, front_end=front_end)
         assert not isinstance(off.ledger._output.previous, BargeInPauser)
-        session = build_agent_session(_talk_transport(_Socket()), front_end=front_end,
-                                      barge_pause_enabled=True)
+        session = build_agent_session(_talk_transport(_Socket()), front_end=front_end)
         pauser = session.ledger._output.previous
         assert isinstance(pauser, BargeInPauser), f"{front_end}: above the transport: {pauser!r}"
         p = session.tts

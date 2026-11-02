@@ -181,6 +181,9 @@ STOP_WORDS = tuple(
     w.strip().lower() for w in setting("TEAPORT_STOP_WORDS").split(",")
     if w.strip())
 
+# The longest a pause may be capped at (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's
+# write guard.
+_MAX_PAUSE_S = 7.5
 # No pause when the reply is fully synthesized and at most this much of it is left.
 _NEAR_END_S = 0.5
 # Speech shorter than this is a blip: its pause resumes after _BLIP_RESUME_S.
@@ -279,7 +282,9 @@ class BargeInPauser(FrameProcessor):
         super().__init__()
         self._output = output
         self._resume_secs = min(8.0, max(0.0, resume_secs))
-        self._max_secs = max(self._resume_secs, min(max_secs, 8.0))
+        # Under the transport's 8 s write guard (playout_pause._PAUSE_GUARD_S), which a
+        # held write starts as the pause does: the cap, not the guard, ends a long pause.
+        self._max_secs = max(self._resume_secs, min(max_secs, _MAX_PAUSE_S))
         self._near_end_secs = near_end_secs
         self._max_noword = max_noword_pauses
         self._bot_speaking = False
@@ -389,9 +394,12 @@ class BargeInPauser(FrameProcessor):
             await self._speech("vad", True)
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             await self._speech("vad", False)
-        elif isinstance(frame, PlayoutPauseFrame) and not frame.paused and self._paused:
+        elif (isinstance(frame, PlayoutPauseFrame) and not frame.paused and self._paused
+              and not getattr(self._output, "playout_paused", True)):
             # The transport resumed on its own (its write guard): the pause is over here
             # too, or this pauser would refuse the next one and count the bot paused.
+            # Only if the transport is playing now: a notice of this pauser's own resume
+            # that a newer pause overtook must not end that newer pause.
             logger.info("BARGE-PAUSE: the transport resumed playout on its own "
                         "(its write guard)")
             self._end()

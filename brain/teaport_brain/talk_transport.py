@@ -21,7 +21,6 @@ from teaport_brain.playout_pause import PausablePlayout
 class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     """pipecat's websocket output, held at a block boundary while playout is paused."""
 
-    _sending_secs = 0.0  # the block write_audio_frame is sending, until it is counted
 
     async def write_audio_frame(self, frame) -> bool:
         # One audio block per call (MediaSender's audio_chunk_size, 40 ms at pipecat's
@@ -31,28 +30,25 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
         # pipecat marked it uninterruptible, which it keeps through an interruption.
         if not await self._wait_if_paused() and frame.interruptible:
             return False
-        # Counted as heard once it is on the wire: the base sends it, then sleeps out its
-        # slot (_write_audio_sleep, which it reaches only after a send that went out).
-        self._sending_secs = (len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
-                              / self.sample_rate) if self.sample_rate else 0.0
-        try:
-            return await super().write_audio_frame(frame)
-        finally:
-            self._sending_secs = 0.0
+        return await super().write_audio_frame(frame)
 
     async def _write_audio_sleep(self):
-        if self._sending_secs:
-            self._wrote(self._sending_secs)
-            self._sending_secs = 0.0
+        # Counted as heard once it is on the wire: the base sends a block, then sleeps out
+        # its slot here -- reached only after a send that went out. One block per slot,
+        # as SIP counts its datagrams.
+        self._wrote(self._send_interval)
         await super()._write_audio_sleep()
 
 
 class TalkWebsocketTransport(FastAPIWebsocketTransport):
-    """FastAPIWebsocketTransport whose output can pause (TalkOutputTransport)."""
+    """FastAPIWebsocketTransport whose output can pause (TalkOutputTransport) when
+    `pausable` (barge_pause.TALK_ENABLED); otherwise pipecat's own, untouched."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, pausable: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
-        # The base builds its output in __init__ with no way to pass a class: replaced
-        # before anything has used it (pipecat builds the processors' tasks at setup).
-        self._output = TalkOutputTransport(self, self._client, self._params,
-                                           name=self._output_name)
+        if pausable:
+            # The base builds its output in __init__ with no way to pass a class:
+            # replaced before anything has used it (pipecat builds the processors' tasks
+            # at setup). Pinned by test_pipecat_premises.
+            self._output = TalkOutputTransport(self, self._client, self._params,
+                                               name=self._output_name)

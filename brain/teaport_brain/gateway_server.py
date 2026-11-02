@@ -366,6 +366,8 @@ async def run_relay_bot(websocket: WebSocket):
     # barge-in stops the voice at the caller's first syllable here as on the phone.
     transport = TalkWebsocketTransport(
         websocket=websocket,
+        # Off on Talk until #255 (barge_pause.TALK_ENABLED): pipecat's own output then.
+        pausable=barge_pause.ENABLED and barge_pause.TALK_ENABLED,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
@@ -398,8 +400,6 @@ async def run_relay_bot(websocket: WebSocket):
         input_processors=input_procs,
         # Off by default on Talk until measured there (reply_hold.TALK_ENABLED).
         reply_hold_enabled=reply_hold.TALK_ENABLED,
-        # The barge-in pause too: off on Talk until #255 (barge_pause.TALK_ENABLED).
-        barge_pause_enabled=barge_pause.TALK_ENABLED,
         wake_gate=gate,
         # A wake session asleep for hours is not idle: the bridge ends it (keep-alive).
         cancel_on_idle_timeout=False if gate is not None else None,
