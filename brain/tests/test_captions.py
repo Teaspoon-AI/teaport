@@ -508,6 +508,32 @@ async def test_a_bubble_open_before_the_users_final_is_still_held():
     print("  PASS a bubble open before the user's final stays held through it")
 
 
+async def test_an_earlier_bubble_does_not_hold_the_next_reply():
+    # The open time is the utterance's own: an earlier reply's, finished or barged, must
+    # not make the next reply look as if it was open before the user's final.
+    for barged in (False, True):
+        h = Harness()
+        await h.sentence("Hello there.", "ctx-a")
+        if barged:
+            await h.barge()
+        else:
+            await h.feed(BotStoppedSpeakingFrame())
+        h.user_final()
+        await h.sentence("Certainly. Long ago.", "ctx-b", stop_after=1)
+        assert h.partials()[-1] == "Certainly.", (barged, h.sent)
+    print("  PASS an earlier bubble's open time is not the next reply's")
+
+
+async def test_an_older_client_gets_the_final_of_a_reply_after_the_users_final():
+    # No ?captions=2: a final that repeats what was shown is skipped only when the user's
+    # words committed the bubble. A reply that opened after their final was not.
+    h = Harness(every_final=False)
+    h.user_final()
+    await h.sentence("Sure.", "ctx-s")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.sent == [("Sure.", False), ("Sure.", True)], h.sent
+    print("  PASS an older client gets the final of a reply that opened after the user's final")
+
 async def test_the_user_transcript_says_whether_it_was_a_final():
     from pipecat.frames.frames import InterimTranscriptionFrame, TranscriptionFrame
     from teaport_brain.captions import UserTranscriptEmitter
@@ -555,6 +581,8 @@ def test_captions():
         await test_a_reply_right_after_the_users_final_is_shown_at_once()
         await test_a_bubble_open_before_the_users_final_is_still_held()
         await test_the_user_transcript_says_whether_it_was_a_final()
+        await test_an_earlier_bubble_does_not_hold_the_next_reply()
+        await test_an_older_client_gets_the_final_of_a_reply_after_the_users_final()
     asyncio.run(main())
 
 
