@@ -108,10 +108,15 @@
 #     longer after the pause, and the ledger's heard cut (lag_secs) and the
 #     captions are short of what was heard by the same amount -- the same assumption
 #     the ledger already made on Talk for every cut, pause or not.
-#   * The words keep the voice's time through a pause because the transport holds and
-#     re-times pipecat's word clock (playout_pause.py, THE WORDS' CLOCK): the echo
-#     guard, the captions and the assistant aggregator see a word when it plays. A
-#     reply's words already queued when a pause ENDS early (a cut) go with the cut.
+#   * While paused, the transport keeps releasing the reply's words on the wall clock
+#     (pipecat's clock knows nothing of the pause): the assistant aggregator's running
+#     text and the Talk view's captions run ahead of the voice -- the heard correction
+#     at a cut trims the context back to what was heard, as on any cut -- and so do the
+#     room echo guard's "played" stamps, so after a pause longer than about half a
+#     second the resumed reply's echo can pass it as the user's words. The room bridge
+#     also counts a pause as the reply's end (its mouth timing, a goodbye "heard out").
+#     One design of the playout timing across a pause is the follow-up (branch
+#     feat/pause-word-clock).
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
 #
@@ -258,12 +263,6 @@ class PlayoutPauseFrame(SystemFrame):
     # then without the pause. A reply whose synthesis completes DURING the pause gets
     # the pause announced again with its tail (playout_pause.PausablePlayout.process_frame).
     tail_secs: float = -1.0
-    # On a resume: how much later the replies that were under way play than scheduled
-    # (the pause, less what still played out of its lag), and which contexts those are
-    # (None for untagged audio). The transport decides both, once
-    # (playout_pause.PausablePlayout); the ledger and the transport's word clock apply them.
-    shift_secs: float = 0.0
-    shifted: tuple = ()
 
 
 class BargeInPauser(FrameProcessor):

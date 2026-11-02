@@ -278,15 +278,13 @@ async def test_a_cut_after_a_resume_charts_what_really_played():
 
 async def test_the_ledger_credits_playout_up_to_where_the_audio_really_stopped():
     # Hermetic, on the ledger alone (the shapes test_ledger_playout feeds it). The pause
-    # frame says how long after it the audio stops (what was sent still plays); the
-    # ledger credits that much, freezes, and re-anchors at the resume, moving the words
-    # of the replies the resume names by the shift it carries (the transport's: 2.5 -
-    # (1.5 + 0.2)).
-    from test_ledger_playout import OUT, audio as l_audio, feed, ledger, response, started, at
+    # frame says how long after it the audio stops (the written frame's slot); the
+    # ledger credits that much, freezes, and re-anchors at the resume.
+    from test_ledger_playout import OUT, TTS, audio as l_audio, feed, ledger, response, started, at
     L = ledger()
     frames, end = response("one two three four five six seven eight nine ten", 0.0)
     pz = PlayoutPauseFrame(paused=True, lag_secs=0.2)
-    rz = PlayoutPauseFrame(paused=False, shift_secs=0.8, shifted=("c",))
+    rz = PlayoutPauseFrame(paused=False)
     await feed(L, frames + [
         (started("c"), 0.3, None), at(l_audio(2.0, "c"), 0.3),
         (TTSStoppedFrame(context_id="c"), 0.35, None),   # all 2.0 s synthesized
@@ -530,44 +528,6 @@ def test_the_tts_freezes_its_playout_model_and_passes_the_pause_on():
     asyncio.run(run())
 
 
-def test_the_tts_moves_a_reply_queued_behind_by_the_pause_less_its_lag():
-    # One owner for a pause's shift: the transport moves the paused reply's words by the
-    # pause less its lag (what was sent played on that long). A reply anchored behind it
-    # at the TTS (_prev_audio_end_ns) must move by the same, not the whole pause.
-    from teaport_brain.engine_tts import EngineTTSService
-
-    async def run():
-        tts = EngineTTSService(voice="af_heart")
-
-        async def push(frame, direction=FrameDirection.DOWNSTREAM):
-            pass
-
-        tts.push_frame = push
-        clock_ns = [10_000_000_000]
-        tts._clock_ns = lambda: clock_ns[0]
-        tts._prev_audio_end_ns = clock_ns[0] + 2_000_000_000   # 2 s still to play
-        before = tts._prev_audio_end_ns
-        await tts.process_frame(PlayoutPauseFrame(paused=True, lag_secs=0.08),
-                                FrameDirection.UPSTREAM)
-        clock_ns[0] += 1_000_000_000                             # paused 1 s
-        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
-        moved = (tts._prev_audio_end_ns - before) / 1e9
-        assert abs(moved - 0.92) < 0.005, f"moved {moved:.3f}s: the pause less its lag"
-        # A pause shorter than its lag stopped nothing: nothing moves, and the model's
-        # clock never runs ahead of the wall's.
-        before = tts._prev_audio_end_ns
-        tts._play_end = time.monotonic() + 1.0
-        play_end = tts._play_end
-        await tts.process_frame(PlayoutPauseFrame(paused=True, lag_secs=0.08),
-                                FrameDirection.UPSTREAM)
-        assert tts._now() <= time.monotonic()
-        clock_ns[0] += 50_000_000
-        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
-        assert tts._prev_audio_end_ns == before and tts._play_end == play_end
-
-    asyncio.run(run())
-
-
 def test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well():
     # formal/README, PlayoutPause pp_late_ahead_heard: the first clause has played out
     # and the next is not synthesized yet; the caller makes a sound, the transport pauses
@@ -703,6 +663,32 @@ async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
             gaps = rig.wire.gaps()
             assert len(gaps) == 1 and 0.25 <= gaps[0][1] - gaps[0][0] <= 0.4, gaps
             assert rig.pause_frames(FrameDirection.DOWNSTREAM) == [True, False]
+    finally:
+        playout_pause._PAUSE_GUARD_S = guard
+
+
+async def test_one_sip_writes_waits_share_one_guard():
+    # A SIP write of several datagrams (a direct write: the end's silence, a DTMF
+    # tone) waits on the pause once per datagram. Its waits share the one guard:
+    # MediaSender bounds the whole write at 10 s. (Reply audio comes one datagram per
+    # write, audio_out_10ms_chunks=2, each with a budget of its own.)
+    from pipecat.frames.frames import OutputAudioRawFrame
+    from teaport_brain import playout_pause
+    guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.4
+    try:
+        async with Rig(with_pauser=False) as rig:
+            await rig.out.set_playout_paused(True)
+            t0 = time.monotonic()
+            writer = asyncio.create_task(rig.out.write_audio_frame(
+                OutputAudioRawFrame(b"\x01\x00" * BYTES_PER_FRAME * 2, SR, 1)))
+            await asyncio.sleep(0.3)
+            await rig.out.set_playout_paused(False)     # the first datagram goes
+            await asyncio.sleep(0.005)
+            await rig.out.set_playout_paused(True)      # the second waits: same write
+            await asyncio.wait_for(writer, 2.0)
+            held = time.monotonic() - t0
+            assert held <= 0.4 + 0.1, f"the write was held {held:.2f}s: past its one guard"
+            assert len(rig.wire.datagrams) == 4, "all of the write went out"
     finally:
         playout_pause._PAUSE_GUARD_S = guard
 
@@ -912,10 +898,9 @@ async def test_the_transport_announces_a_tail_learned_during_the_pause():
         await rig.pauser.on_onset(False)
 
 
-async def test_the_ledger_shifts_the_replies_the_resume_names_and_no_other():
-    # Reply B's context opened before the pause but its first audio came after: the TTS
-    # anchored it on the moved clock, and the transport names only A as moved
-    # (test_talk_barge_pause checks the transport's side). The ledger applies that.
+async def test_a_reply_whose_audio_starts_after_the_pause_is_not_shifted_twice():
+    # Reply B's context opened before the pause but its first audio came after: the
+    # TTS anchored it on the moved clock, so the ledger must not shift it again.
     from test_ledger_playout import OUT, audio as l_audio, feed, ledger, response, started, at
     L = ledger()
     a_frames, _ = response("one two three four", 0.0)
@@ -926,9 +911,7 @@ async def test_the_ledger_shifts_the_replies_the_resume_names_and_no_other():
     ] + b_frames + [
         (started("b"), 1.2, None),                       # B's context, no audio yet
         (PlayoutPauseFrame(paused=True), 1.5, OUT),
-        # The transport names B too (its audio was handed before the resume); the ledger
-        # still moves only a turn whose audio it has seen pushed.
-        (PlayoutPauseFrame(paused=False, shift_secs=1.0, shifted=("a", "b")), 2.5, OUT),
+        (PlayoutPauseFrame(paused=False), 2.5, OUT),
     ])
     shifts = {t["ctx"]: t["pts_shift"] for t in L._turns}
     assert shifts == {"a": 1.0, "b": 0.0}, shifts

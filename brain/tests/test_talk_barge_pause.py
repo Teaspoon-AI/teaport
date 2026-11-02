@@ -49,7 +49,6 @@ from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTrans
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 from test_barge_pause import (  # noqa: E402
-    CHUNK_S,
     RESUME_S,
     SPEECH,
     SR,
@@ -246,66 +245,26 @@ async def test_a_write_woken_by_a_resume_the_next_pause_undoes_stays_held():
     assert await asyncio.wait_for(writer, 1.0) is True and sock.payload() == _pcm(0)
 
 
-async def test_a_later_sentence_of_a_paused_reply_keeps_its_shift():
-    # The reply was paused and resumed; its next sentence reaches the transport only after
-    # its earlier words were all released. The TTS leaves the stopped context's own words
-    # on their schedule, so the transport's shift must still be there for them.
-    from pipecat.frames.frames import TTSTextFrame
-    async with TalkRig() as rig:
-        await rig.speak()
-        await _at(rig, 0.6)
-        await rig.out.set_playout_paused(True)
-        await _at(rig, 1.6)
-        await rig.out.set_playout_paused(False)
-        await _at(rig, 4.0)                             # r1's sentence and words are out
-        # Another reply's word goes by meanwhile (where a shift was once pruned).
-        other = TTSTextFrame("other", aggregated_by="word", context_id="r0")
-        other.pts = rig.out.get_clock().get_time()
-        await rig.task.queue_frames([other])
-        await asyncio.sleep(0.1)
-        shift = rig.out._shift_ns.get("r1", 0)
-        assert shift >= 0.8e9, f"r1's shift is gone: {rig.out._shift_ns}"
-        word = TTSTextFrame("later", aggregated_by="word", context_id="r1")
-        word.pts = rig.out.get_clock().get_time() + int(0.1e9)   # on the old schedule
-        t_queued = time.monotonic()
-        await rig.task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r1"), word])
-        await asyncio.sleep(0.1 + shift / 1e9 + 0.3)
-        t_later = [t for t, w in _words_out(rig) if w == "later"]
-        assert t_later and abs(t_later[0] - t_queued - 0.1 - shift / 1e9) <= 0.06, (
-            t_later, t_queued, shift)
-
-
-def test_the_timed_frames_awaited_are_bounded():
-    from pipecat.frames.frames import TextFrame
-    from teaport_brain.playout_pause import _MAX_TIMED
-    out = _talk_transport(_Socket()).output()
-    for i in range(_MAX_TIMED + 50):
-        f = TextFrame("w")
-        f.pts = i + 1
-        out._track_tail(f, FrameDirection.DOWNSTREAM)
-    assert len(out._timed_ids) == _MAX_TIMED
-
-
-async def test_each_pause_has_a_guard_of_its_own():
-    # A write waiting out a pause near its guard, woken by a resume that a new pause
-    # follows in the same turn of the loop: the new pause gets the whole guard.
+async def test_one_writes_waits_share_one_guard():
+    # MediaSender gives a whole write 10 s before it writes the transport off for the
+    # session. A write that waits out one pause and then a new one (a resume and a pause
+    # in the same turn of the loop) must still be released inside the one guard.
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.4
     try:
-        sock = _Socket()
-        out = _talk_transport(sock).output()
-        out._sample_rate = SR
-        out._playing.clear()
-        out._pause_seq += 1
-        writer = asyncio.create_task(out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)))
-        await asyncio.sleep(0.3)                          # most of the first guard
-        out._playing.set()
-        out._playing.clear()                              # a new pause at once
-        out._pause_seq += 1
-        await asyncio.sleep(0.25)
-        assert not writer.done(), "the new pause was ended on the first one's guard"
-        out._playing.set()
-        await asyncio.wait_for(writer, 1.0)
+        async with TalkRig(with_pauser=False) as rig:
+            await rig.speak()
+            await _at(rig, 0.4)
+            t_paused = time.monotonic()
+            await rig.out.set_playout_paused(True)
+            await _at(rig, 0.7)                        # most of the guard
+            rig.out._playing.set()
+            rig.out._playing.clear()                   # a new pause at once
+            await _at(rig, 1.6)
+            gaps = rig.wire.gaps()
+            assert len(gaps) == 1, gaps
+            assert gaps[0][1] - t_paused <= 0.4 + 0.1, (
+                f"the write was held {gaps[0][1] - t_paused:.2f}s: past its one guard")
     finally:
         playout_pause._PAUSE_GUARD_S = guard
 
@@ -343,92 +302,9 @@ async def test_a_talk_session_builds_the_pauser():
             [PauseAwareMinWordsStrategy]
 
 
-# --- The words' clock through a pause (playout_pause.py, THE WORDS' CLOCK) ----------
-
-def _words_out(rig):
-    """(arrival, word) of each TTSTextFrame the transport released downstream."""
-    from pipecat.frames.frames import TTSTextFrame
-    return [(t, f.text) for t, d, f in rig.bottom.frames
-            if d == FrameDirection.DOWNSTREAM and isinstance(f, TTSTextFrame)]
-
-
 def _pause_times(rig):
     return [(t, f.paused) for t, d, f in rig.bottom.frames
             if d == FrameDirection.DOWNSTREAM and isinstance(f, PlayoutPauseFrame)]
-
-
-async def test_the_words_keep_the_voices_time_through_a_pause():
-    # pipecat's clock releases each word at its pts on the wall clock. Paused, nothing
-    # plays: no word is released; resumed, each word of the reply comes the pause's length
-    # later than scheduled -- when its audio plays -- not all at once, nor early.
-    from test_barge_pause import WORDS
-    from teaport_brain.tts_text import CAPTION_LEAD_SECS
-    async with TalkRig() as rig:
-        await rig.speak()
-        await _at(rig, 0.6)
-        await rig.pauser.on_onset(True)
-        await _at(rig, 1.0)
-        await rig.pauser.on_onset(False)
-        await _at(rig, 3.4)
-        (t_pause, _), (t_resume, _) = _pause_times(rig)
-        lag = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
-               and isinstance(f, PlayoutPauseFrame) and f.paused][0].lag_secs
-        held = t_resume - t_pause - lag        # what was sent before the pause played on
-        words = _words_out(rig)
-        assert [w for _, w in words] == WORDS, words
-        assert not [w for t, w in words if t_pause + 0.06 < t < t_resume - 0.01], (
-            f"words released while paused: {words}")
-        for i, (t, w) in enumerate(words):
-            due = rig.t0 + i * CHUNK_S - CAPTION_LEAD_SECS
-            if due > t_pause + 0.06:
-                assert abs(t - (due + held)) <= 0.06, (
-                    f"{w!r} came {t - due:.2f}s after its pts; the pause held {held:.2f}s")
-
-
-async def test_a_cut_drops_the_words_a_pause_held():
-    async with TalkRig() as rig:
-        await rig.speak()
-        await _at(rig, 0.6)
-        await rig.pauser.on_onset(True)
-        await _at(rig, 1.1)
-        await rig.task.queue_frame(InterruptionFrame())
-        await _at(rig, 2.6)
-        (t_pause, _), = _pause_times(rig)
-        late = [w for t, w in _words_out(rig) if t > t_pause + 0.06]
-        assert not late, f"words of the cut reply released after the pause: {late}"
-
-
-async def test_a_reply_after_the_resume_is_on_time():
-    # A reply whose audio comes after the resume is anchored by the TTS on its moved
-    # clock: the transport must not shift its words again.
-    from pipecat.frames.frames import TTSTextFrame
-    async with TalkRig() as rig:
-        # The thinking sound's plain audio first: no words, so no reply to shift.
-        await rig.task.queue_frames([OutputAudioRawFrame(_pcm(0)[:640], SR, 1)])
-        await asyncio.sleep(0.1)
-        await rig.speak()
-        await _at(rig, 0.6)
-        await rig.pauser.on_onset(True)
-        await _at(rig, 1.0)
-        await rig.pauser.on_onset(False)
-        await _at(rig, 3.4)
-        resume = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
-                  and isinstance(f, PlayoutPauseFrame) and not f.paused][0]
-        pause = [f for _, d, f in rig.bottom.frames if d == FrameDirection.DOWNSTREAM
-                 and isinstance(f, PlayoutPauseFrame) and f.paused][0]
-        (t_pause, _), (t_resume, _) = _pause_times(rig)
-        assert resume.shifted == ("r1",), resume.shifted
-        assert abs(resume.shift_secs - (t_resume - t_pause - pause.lag_secs)) <= 0.02, (
-            resume.shift_secs, t_resume - t_pause, pause.lag_secs)
-        word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
-        word.pts = rig.out.get_clock().get_time() + int(0.3e9)
-        t_queued = time.monotonic()
-        await rig.task.queue_frames([TTSStartedFrame(context_id="r2"),
-                                     TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r2"),
-                                     word, TTSStoppedFrame(context_id="r2")])
-        await asyncio.sleep(0.6)
-        t_next = [t for t, w in _words_out(rig) if w == "next"]
-        assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
 
 
 async def test_the_end_of_a_session_in_a_pause_says_the_pause_is_over():

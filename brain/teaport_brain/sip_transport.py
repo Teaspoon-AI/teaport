@@ -522,8 +522,11 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
         if self._connection.is_closing or not self._connection.is_connected:
             return False
         self._audio_send_buffer.extend(bytes(frame.audio))
+        # One bound for every pause this write waits on, datagram after datagram: the
+        # whole call is what MediaSender's write timeout measures.
+        deadline = self.write_deadline()
         while len(self._audio_send_buffer) >= BYTES_PER_FRAME:
-            if not await self._wait_if_paused() \
+            if not await self._wait_if_paused(deadline) \
                     or len(self._audio_send_buffer) < BYTES_PER_FRAME:
                 # An interruption dropped the pause and cleared the buffer: what this
                 # frame had left was not written. (Unlike /talk, the buffer goes whole,
