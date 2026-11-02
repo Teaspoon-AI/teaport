@@ -500,7 +500,9 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
         token: cfg.token || defaults.token || process.env.TEAPORT_GATEWAY_TOKEN,
         client,
         // Only a session whose tool calls reach the relay (the tool_call branch in
-        // _onMessage needs onToolCall) says it has one.
+        // _onMessage needs onToolCall) says it has one. The brain also infers a relay from
+        // run_control=1 until that compatibility shim (for plugins from before
+        // features=relay) goes, so for now run_control still implies one.
         relay: typeof req.onToolCall === "function",
       });
       const { deltas, reason } = pickAssistantTranscripts(

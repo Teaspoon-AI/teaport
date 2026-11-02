@@ -381,7 +381,7 @@ def _owed_ctx(features):
     return tools.ToolContext(owed=Owed(LLMContext([])), client_features=frozenset(features))
 
 
-async def test_only_a_client_that_announces_consult_has_a_relay():
+async def test_only_a_client_that_announces_relay_has_a_relay():
     assert tools.ToolContext(client_features=tools.parse_client_features("relay")).relay
     # The room's bridge (as local_audio announces itself), the phone and Discord (none).
     for raw in ("volume,restart,local,phonemes,mood,typing,sleep", None, ""):

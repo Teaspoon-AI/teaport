@@ -1304,7 +1304,9 @@ class ToolContext:
         #236 does, and it hands the relay the consult's calls as it hands it the control's.
         A box deploy can update the brain without the plugin (install.sh --only brain); an
         older plugin keeps its relay that way, and openclaw_agent_control (offered on
-        run_control) is never offered against a consult the relay does not run."""
+        run_control) is never offered against a consult the relay does not run.
+        `or self.run_control` is that compatibility shim: drop it once no supported
+        plugin predates features=relay."""
         return "relay" in self.client_features or self.run_control
 
 
