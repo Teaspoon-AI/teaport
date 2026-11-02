@@ -297,3 +297,6 @@ msgstr "Lo siento, ahora mismo no puedo responder: la cuenta que uso para mis re
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Sigo sin poder responder hasta que se resuelva lo de mi cuenta."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Lo siento, no pude obtener una respuesta en ese momento."

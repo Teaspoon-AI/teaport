@@ -308,3 +308,6 @@ msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب ا�
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية مشكلة حسابي."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن."

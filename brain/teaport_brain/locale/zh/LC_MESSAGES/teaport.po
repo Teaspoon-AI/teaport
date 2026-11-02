@@ -297,3 +297,6 @@ msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "在我的账户问题解决之前，我仍然无法回答。"
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "抱歉，刚才没能得到回答。"

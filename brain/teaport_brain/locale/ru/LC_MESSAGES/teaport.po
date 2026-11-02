@@ -305,3 +305,6 @@ msgstr "Извините, я сейчас не могу ответить: акк
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Я всё ещё не могу отвечать, пока с моим аккаунтом не разберутся."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Извините, сейчас не получилось получить ответ."

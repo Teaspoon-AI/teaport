@@ -38,7 +38,7 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
     "llm_error_speaker.py": {
-        "t._(text)",                         # its three notices: N_() there
+        "t._(text)",                         # its four notices: N_() there
     },
     "wifi_setup.py": {
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here

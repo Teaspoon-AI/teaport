@@ -297,3 +297,6 @@ msgstr "माफ़ कीजिए, मैं अभी जवाब नही
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "जब तक मेरा खाता ठीक नहीं होता, मैं अब भी जवाब नहीं दे सकता।"
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "माफ़ कीजिए, अभी मुझे जवाब नहीं मिल पाया।"

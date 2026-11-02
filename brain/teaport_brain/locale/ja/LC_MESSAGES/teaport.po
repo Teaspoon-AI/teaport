@@ -297,3 +297,6 @@ msgstr "すみません、今はお答えできません。回答に使ってい
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "アカウントの問題が解決するまで、まだお答えできません。"
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "すみません、今は答えを得られませんでした。"

@@ -48,8 +48,10 @@
 # The account class gets a full line (what is wrong, that retrying won't help, where it
 # is fixed) once per ACCOUNT_DEBOUNCE_FACTOR x the window, and a short one on every
 # other failed turn inside that window -- a turn that fails in silence is the dead air
-# this processor exists to prevent. Inside the window the vague line is not said at
-# all: "trying again won't help" followed by "could you try again?" contradicts itself.
+# this processor exists to prevent. Inside the window a passing failure gets the vague
+# line without its "could you try again?" (GLITCH_NO_RETRY_TEXT), on the vague line's
+# own clock: after "trying again won't help" that advice contradicts itself, but
+# silence would be dead air (the owner may have topped up the account meanwhile).
 #
 # Every line is said in the session's voice language (i18n.py catalogs).
 #
@@ -86,6 +88,9 @@ ENABLED = setting("TEAPORT_LLM_ERROR_SPEECH")
 # and guessing wrong is worse than saying nothing specific. The journal has the detail.
 # Plain words, as everything the caller hears: no "language model".
 ERROR_TEXT = N_("Sorry, I couldn't get an answer just then. Could you try again?")
+# The same without the advice, for a passing failure inside the account window (see
+# LLMErrorSpeaker._notice).
+GLITCH_NO_RETRY_TEXT = N_("Sorry, I couldn't get an answer just then.")
 
 # The account class. Says it will not pass by itself and where it is fixed: the config
 # page, which describes itself as "Settings for this Teaport box" and holds the key
@@ -252,10 +257,13 @@ class LLMErrorSpeaker(FrameProcessor):
                 return ACCOUNT_STILL_TEXT
             self._said_account = now
             return ACCOUNT_TEXT
-        if in_account_window or now - self._said < _DEBOUNCE_SECS:
+        if now - self._said < _DEBOUNCE_SECS:
             return None
         self._said = now
-        return ERROR_TEXT
+        # Inside the account window the passing failure still gets a line (the account
+        # may have been topped up meanwhile, with the clock still running), but not
+        # "try again", which would contradict the account line.
+        return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

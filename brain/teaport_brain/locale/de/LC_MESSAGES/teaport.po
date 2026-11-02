@@ -297,3 +297,6 @@ msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für m
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Ich kann erst wieder antworten, wenn mein Konto in Ordnung gebracht ist."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."

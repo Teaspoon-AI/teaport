@@ -45,7 +45,8 @@ from pipecat.utils.errors import ErrorCategory  # noqa: E402
 from teaport_brain import llm_error_speaker as les  # noqa: E402
 from teaport_brain import services  # noqa: E402
 from teaport_brain.llm_error_speaker import (  # noqa: E402
-    ACCOUNT_STILL_TEXT, ACCOUNT_TEXT, ERROR_TEXT, AnswerHealth, LLMErrorSpeaker,
+    ACCOUNT_STILL_TEXT, ACCOUNT_TEXT, ERROR_TEXT, GLITCH_NO_RETRY_TEXT, AnswerHealth,
+    LLMErrorSpeaker,
     failure_reason, redact)
 
 # Made-up secrets that must never surface in anything the new code says or serves.
@@ -156,8 +157,9 @@ async def test_an_unclassified_frame_falls_back_to_its_exception():
 
 async def test_the_account_window_full_line_then_short_never_try_again():
     """The full account line once per account window; every other failed account turn
-    inside it gets the short line, never silence; the vague "try again" is not said
-    inside it (it would contradict "trying again won't help"), even past its own window.
+    inside it gets the short line, never silence; a passing failure inside it gets the
+    vague line without "try again" (it would contradict "trying again won't help"), on
+    the vague line's own clock -- not silence: the account may have been topped up.
     A passing glitch said a moment earlier does not swallow the account line."""
     llm, _ = _llm()
     speaker = LLMErrorSpeaker()
@@ -171,7 +173,8 @@ async def test_the_account_window_full_line_then_short_never_try_again():
     # Past the ordinary window, short of the account one.
     speaker._said -= window + 1
     speaker._said_account -= window + 1
-    assert await _spoken(speaker, glitch) == []
+    assert await _spoken(speaker, glitch) == [GLITCH_NO_RETRY_TEXT]
+    assert await _spoken(speaker, glitch) == []     # still the vague line's 30 s clock
     assert await _spoken(speaker, account) == [ACCOUNT_STILL_TEXT]
     # Past the account window: the full line again, and the vague line is back.
     speaker._said_account -= window * les.ACCOUNT_DEBOUNCE_FACTOR
@@ -204,7 +207,8 @@ async def test_other_processors_errors_are_not_spoken():
 
 
 def test_spoken_lines_are_plain_words():
-    for text in (ACCOUNT_TEXT, ACCOUNT_STILL_TEXT, ERROR_TEXT):
+    assert "try again" not in GLITCH_NO_RETRY_TEXT
+    for text in (ACCOUNT_TEXT, ACCOUNT_STILL_TEXT, ERROR_TEXT, GLITCH_NO_RETRY_TEXT):
         assert not re.search(r"\b(LLM|API|language model|speech engine|\d{3})\b", text,
                              re.IGNORECASE), text
 
