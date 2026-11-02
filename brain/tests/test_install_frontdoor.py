@@ -51,11 +51,15 @@ def _fn(name: str) -> str:
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
-FNS = ("box_id", "frontdoor_name_taken", "resolve_frontdoor", "check_own_cert", "write_caddyfile")
+FNS = ("box_id", "frontdoor_name_taken", "resolve_frontdoor", "check_own_cert", "write_caddyfile",
+       "reissue_short_intermediate")
+# The lifetimes, as install.sh sets them.
+LIFETIMES = next(ln for ln in INSTALL.read_text().splitlines() if ln.startswith("LEAF_LIFETIME="))
+LOCAL_TLS = ("    tls {\n        issuer internal {\n            lifetime 365d\n        }\n    }")
 
 
 def _run(tmp, script, env=None):
-    body = STUBS + "".join(_fn(f) for f in FNS) + script
+    body = STUBS + LIFETIMES + "\n" + "".join(_fn(f) for f in FNS) + script
     e = {**os.environ, "T": str(tmp), "SYSFS_NET": str(pathlib.Path(tmp, "net")), **(env or {})}
     for k in ("TEAPORT_HOST", "TEAPORT_TLS_CERT", "TEAPORT_TLS_KEY", "TEAPORT_REGENERATE_CA"):
         if k not in (env or {}):
@@ -285,20 +289,58 @@ def test_the_caddyfile_names_the_ca_and_serves_one_certificate_or_the_other():
     lines = [ln for ln in local.splitlines() if ln.strip() and not ln.startswith("#")]
     assert lines[0] == "{"  # Caddy's global options come first or not at all
     assert '            name "Teaport 9e35 Local Authority"' in local
-    assert "    tls internal" in local
+    # Long-lived: the OpenClaw apps pin the site certificate itself, and Caddy's 12-hour
+    # leaves stopped the iPhone app with "Gateway certificate changed" every 8 hours.
+    assert LOCAL_TLS in local and "tls internal" not in local
+    assert "            intermediate_lifetime 1095d" in local
     adapted = _adapt(pathlib.Path(t, "Caddyfile"))
     if adapted is not None:
         assert '"name":"Teaport 9e35 Local Authority"' in adapted
+        assert '"intermediate_lifetime":' in adapted and '"lifetime":' in adapted
     own = _caddyfile(t, {"TEAPORT_TLS_CERT": "/etc/teaport/tls/fullchain.pem",
                          "TEAPORT_TLS_KEY": "/etc/teaport/tls/key.pem"})
     assert '    tls "/etc/teaport/tls/fullchain.pem" "/etc/teaport/tls/key.pem"' in own
-    assert "tls internal" not in own
+    assert "issuer internal" not in own
     # Everything else is the same: /p/*, the CA download on both blocks.
-    assert own.replace('tls "/etc/teaport/tls/fullchain.pem" "/etc/teaport/tls/key.pem"',
-                       "tls internal") == local
+    assert own.replace('    tls "/etc/teaport/tls/fullchain.pem" "/etc/teaport/tls/key.pem"',
+                       LOCAL_TLS) == local
     adapted = _adapt(pathlib.Path(t, "Caddyfile"))
     if adapted is not None:
         assert "/etc/teaport/tls/fullchain.pem" in adapted
+
+
+def test_a_short_lived_intermediate_is_reissued_once_and_the_root_kept():
+    # A box installed with Caddy's 7-day intermediate keeps it and its 12-hour leaves until
+    # it runs out: set aside once (Caddy makes the long-lived ones at its start), and the
+    # root stays, so devices that trust the box go on trusting it.
+    t = tempdir()
+    pki, leaves = pathlib.Path(t, "pki"), pathlib.Path(t, "certificates", "local")
+    pki.mkdir()
+    leaves.mkdir(parents=True)
+    (pki / "root.crt").write_text("root")
+    crt, key = _cert(t, "inter", "x Intermediate", sans=(), days=7)
+    shutil.copy(crt, pki / "intermediate.crt")
+    shutil.copy(key, pki / "intermediate.key")
+    run = ('CADDY_LEAVES="$T/certificates/local"; systemctl() { echo "systemctl $*"; }\n'
+           "reissue_short_intermediate\n")
+    rc, out = _run(t, run)
+    assert rc == 0 and "systemctl stop caddy.service" in out, out
+    assert sorted(p.name.split(".bak-")[0] for p in pki.iterdir()) == [
+        "intermediate.crt", "intermediate.key", "root.crt"]
+    assert (pki / "root.crt").read_text() == "root" and not (pki / "intermediate.crt").exists()
+    assert not leaves.exists() and any(p.name.startswith("local.bak-") for p in leaves.parent.iterdir())
+    # A long-lived one (or none at all) is left alone, without stopping Caddy.
+    crt, _ = _cert(t, "long", "x Intermediate", sans=(), days=1095)
+    shutil.copy(crt, pki / "intermediate.crt")
+    rc, out = _run(t, run)
+    assert rc == 0 and "systemctl" not in out and (pki / "intermediate.crt").exists(), out
+    (pki / "intermediate.crt").unlink()
+    rc, out = _run(t, run)
+    assert rc == 0 and "systemctl" not in out, out
+    # A date it cannot read leaves it alone (an empty epoch is not a short lifetime).
+    shutil.copy(pki.parent / "inter.crt", pki / "intermediate.crt")
+    rc, out = _run(t, 'date() { return 1; }\n' + run)
+    assert rc == 0 and "systemctl" not in out and (pki / "intermediate.crt").exists(), out
 
 
 if __name__ == "__main__":

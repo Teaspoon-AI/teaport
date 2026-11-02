@@ -107,6 +107,7 @@
 # Usage:  python -m teaport_brain.local_audio            (env below)
 #
 import asyncio
+import fcntl
 import glob
 import json
 import math
@@ -114,7 +115,9 @@ import os
 import re
 import signal
 import socket
+import struct
 import sys
+import termios
 import threading
 import time
 import urllib.parse
@@ -220,6 +223,11 @@ ECHO_TAIL_SECS = 0.3
 MIC_QUEUE_CHUNKS = 250
 # How often the card's playback position is read back from ALSA.
 STATUS_EVERY_SECS = 0.3
+# The playback watchdog (Card._feed): a card that has not moved, or a feed that has not
+# written, for STALL_SECS -- past STALL_GRACE_SECS after the card opened -- is a failed
+# card, and the bridge reopens it. Pump pads with silence, so a healthy card always moves.
+STALL_SECS = 2.0
+STALL_GRACE_SECS = 3.0
 # Lines of aplay/arecord stderr kept for the error message when one of them dies.
 STDERR_TAIL_LINES = 20
 # The avatar's socket; its path lives in display.py (the screens use it too).
@@ -880,15 +888,33 @@ def parse_pcm_status(text: str) -> dict | None:
         return None
 
 
-def played_frames(status: dict) -> int | None:
-    """Frames the card has actually played, from a RUNNING status: hw_ptr, less what the
-    driver has taken but not yet sent out (delay beyond the ring buffer's own fill)."""
-    if status["state"] != "RUNNING":
+def played_frames(status: dict, written: int, queued: int) -> int | None:
+    """Frames the card has played of the `written` we handed it, from a RUNNING status:
+    what we wrote, less what still waits -- `queued` frames on the way to aplay (the pipe
+    and the transport's buffer) and the status's delay (in the ring, and in flight in
+    the driver). Never hw_ptr itself: aplay recovers from an underrun with
+    snd_pcm_prepare, which sets hw_ptr back to 0, and the timeline re-anchored on that
+    ran as far ahead of the card as the bridge's uptime -- the feed stopped writing, the
+    card sat in XRUN, and the room heard nothing for hours (the box, 11-01..02)."""
+    if status["state"] != "RUNNING" or not 0 <= status["delay"] < DEVICE_RATE:
         return None
-    in_flight = status["delay"] - (status["appl_ptr"] - status["hw_ptr"])
-    if not 0 <= in_flight < DEVICE_RATE:
-        in_flight = 0
-    return max(0, status["hw_ptr"] - in_flight)
+    return min(written, max(0, written - queued - status["delay"]))
+
+
+def playback_stalled(now: float, opened: float, moved_at: float | None,
+                     wrote_at: float) -> str | None:
+    """Why playback has stalled, or None. Pump pads with silence, so a healthy card always
+    moves (moved_at: its hw_ptr last changed, None when no status is read) and the feed
+    always writes (wrote_at). Either standing still for STALL_SECS, once STALL_GRACE_SECS
+    have passed since the card opened, is a stall whatever caused it (one held the room
+    silent for hours: played_frames), and the card is reopened."""
+    if now - opened < STALL_GRACE_SECS:
+        return None
+    if moved_at is not None and now - moved_at >= STALL_SECS:
+        return f"the card has not moved for {now - moved_at:.1f} s"
+    if now - wrote_at >= STALL_SECS:
+        return f"nothing written for {now - wrote_at:.1f} s"
+    return None
 
 
 def read_pcm_status(pcm_dir: str, pid: int) -> dict | None:
@@ -928,6 +954,7 @@ class Playback:
         self._rs_in = self._rs_out = 0
         self._start: float | None = None
         self._written = 0      # frames handed to the card
+        self.wrote_at = clock()  # when pump() last handed the card a chunk (the watchdog)
         self._sound_end = 0    # frame position just past the last non-silent chunk
         # [frame position, mouth level, voiced, hiss] for every chunk not yet heard.
         self._levels: deque[list] = deque()
@@ -1094,6 +1121,11 @@ class Playback:
         # stops (the capture side dies without it).
         return bytes(out.ljust(CHUNK_BYTES, b"\0")), voiced
 
+    @property
+    def written(self) -> int:
+        """Frames handed to the card so far (played_frames counts back from it)."""
+        return self._written
+
     def pump(self) -> None:
         """Hand the card as many chunks as keep it LEAD_SECS ahead of what it has played."""
         now = self._clock()
@@ -1116,14 +1148,15 @@ class Playback:
             else:
                 self._write(chunk)
             self._written += CHUNK_FRAMES
+            self.wrote_at = now
             if chunk.strip(b"\0"):
                 self._sound_end = self._written
 
     def resync(self, played: int, now: float | None = None) -> None:
         """The card has played `played` frames by `now`: re-anchor the timeline on it.
 
-        After an underrun hw_ptr can count up to a period the card played past our data;
-        the timeline then runs that much early, never late, which the next pumps absorb."""
+        `played` is in our own frame count (played_frames), so an underrun and aplay's
+        recovery from it cannot move the anchor more than the audio really queued."""
         now = self._clock() if now is None else now
         self._start = now - played / DEVICE_RATE
         self.synced = True
@@ -1325,7 +1358,9 @@ class Card:
             stdin=asyncio.subprocess.PIPE)
         self.play = Playback(self._aplay.stdin.write, gain=lambda: self.volume.gain)
         self._run(self._watch(self._aplay, "playback"))
+        self._moved_at = None  # when the card's hw_ptr last moved (_feed), None: no status
         self._run(self._feed())
+        self._run(self._stall_watch(time.monotonic()))
         if self._pcm_dir is None:
             logger.info(f"playback timeline: wall clock ({self.device} is not a hw: device)")
         arecord, first = await self._open_capture()
@@ -1394,16 +1429,53 @@ class Card:
         rc = await p.wait()
         raise CardError(f"{what} exited ({rc}): {await self._stderr_of(p)}")
 
+    def _queued_frames(self) -> int:
+        """Device frames written to aplay's stdin that aplay has not read yet: the pipe's
+        content (FIONREAD) and what the transport still buffers."""
+        transport = self._aplay.stdin.transport
+        queued = transport.get_write_buffer_size()
+        pipe = transport.get_extra_info("pipe")
+        try:
+            queued += struct.unpack("i", fcntl.ioctl(pipe.fileno(), termios.FIONREAD,
+                                                     b"\0\0\0\0"))[0]
+        except (AttributeError, OSError, ValueError):
+            pass
+        return queued // (DEVICE_CHANNELS * 2)
+
+    async def _stall_watch(self, opened: float) -> None:
+        """The playback watchdog (playback_stalled), a task of its own: the feed can block
+        in drain() on an aplay that stopped reading, and a check inside it would stop with
+        it. A tick that comes late (the whole event loop froze: nothing here could run,
+        nothing could write) restarts the clocks instead of judging: the card may well
+        underrun meanwhile, and aplay recovers as soon as the feed writes again."""
+        tick = STALL_SECS / 4
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(tick)
+            now = time.monotonic()
+            if now - last >= STALL_SECS / 2:
+                if self._moved_at is not None:
+                    self._moved_at = now
+                self.play.wrote_at = max(self.play.wrote_at, now)
+            last = now
+            stalled = playback_stalled(now, opened, self._moved_at, self.play.wrote_at)
+            if stalled:
+                raise CardError(f"playback stalled: {stalled}")
+
     async def _feed(self) -> None:
         play, face = self.play, self.face
         quiet_since, next_status, logged = None, 0.0, False
         opened = time.monotonic()
+        hw_ptr = None   # the last hw_ptr a RUNNING status showed (the watchdog's)
         while True:
             now = time.monotonic()
             if self._pcm_dir and now >= next_status:
                 next_status = now + STATUS_EVERY_SECS
                 status = read_pcm_status(self._pcm_dir, self._aplay.pid)
-                played = played_frames(status) if status else None
+                if status and status["state"] == "RUNNING" and status["hw_ptr"] != hw_ptr:
+                    hw_ptr, self._moved_at = status["hw_ptr"], now
+                played = (played_frames(status, play.written, self._queued_frames())
+                          if status else None)
                 if played is not None:
                     play.resync(played, now)
                     if not logged:
