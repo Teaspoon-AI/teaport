@@ -354,8 +354,8 @@ async def test_a_talk_session_builds_the_pauser():
     from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
 
     for front_end in ("talk", "room"):
-        # Off on Talk by default (TEAPORT_BARGE_PAUSE_TALK, until #255): /talk's transport
-        # is pipecat's own then, and nothing pauses.
+        # Off by default on Talk and in the room (TEAPORT_BARGE_PAUSE_TALK and _ROOM, until
+        # #255): /talk's transport is pipecat's own then, and nothing pauses.
         off_t = _talk_transport(_Socket(), pausable=False)
         assert not hasattr(off_t.output(), "supports_playout_pause")
         off = build_agent_session(off_t, front_end=front_end)
