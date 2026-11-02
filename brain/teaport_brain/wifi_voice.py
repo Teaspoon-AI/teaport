@@ -256,10 +256,17 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
                        "the password shown there. Then, in your phone's browser, go to "
                        "the address on my screen and pick your Wi-Fi. Say repeat if you'd "
                        "like me to read the details.")
-    # The address the screen shows (wifi_setup.py), digit by digit: "one zero dot four
-    # two dot ...".
-    url = f" {t.p('spell', 'dot')} ".join(
-        " ".join(t.p("digit", d) for d in part) for part in AP_ADDRESS.split("."))
+    # Exactly the address the screen shows and the status carries (wifi_setup.page_url):
+    # the .local name, or the bare address digit by digit ("one zero dot four two ...").
+    host = (status.get("url") or "").removeprefix("http://")
+    name = ssid.split("-", 1)[1] if ssid.startswith(SSID_WORD + "-") else ""
+    if name and host == f"{ssid}.local":
+        parts = spell(name, t).split(t.p("spell", ", "))
+        url = " ".join([SSID_WORD, t.p("spell", "dash"), *parts, t.p("spell", "dot"), "local"])
+    else:
+        address = host if re.fullmatch(r"[0-9.]+", host) else AP_ADDRESS
+        url = f" {t.p('spell', 'dot')} ".join(
+            " ".join(t.p("digit", d) for d in part) for part in address.split("."))
     return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "Then open your browser, go to {url}, and pick your Wi-Fi.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)

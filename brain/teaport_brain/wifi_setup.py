@@ -359,6 +359,7 @@ class Setup:
         self.wake = threading.Event()
         self.server: ThreadingHTTPServer | None = None
         self.avahi: subprocess.Popen | None = None
+        self.avahi_name = ""  # the name avahi-publish was started for
 
     # -- the web side (server threads)
     def handler(self):
@@ -437,8 +438,9 @@ class Setup:
 
     # -- the network side (main thread)
     def publish(self, name: str) -> None:
-        """Announce name.local for the page, best effort: typing it works on some phones,
-        but the screen and the voice give only the bare address, which always works."""
+        """Announce name.local for the page, best effort. Whether it is being announced
+        is asked live each time the address is shown (page_url)."""
+        self.avahi_name = name
         exe = shutil.which("avahi-publish")
         if not exe:
             log("avahi-publish not installed — only the captive page and 10.42.0.1 work")
@@ -448,6 +450,19 @@ class Setup:
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
+
+    def page_url(self, ssid: str) -> str:
+        """The page's address, the one the screen shows, the status carries and the voice
+        reads -- decided here only, each time it is shown, so the three never disagree.
+        http://teaport-ab12.local while avahi-publish is running for exactly that name
+        and the screen's font draws it as it is (an ASCII teaport-... name); otherwise
+        the bare address, which always works (avahi missing or gone, a folded or custom
+        name)."""
+        published = (self.avahi is not None and self.avahi.poll() is None
+                     and self.avahi_name == ssid)
+        if published and ssid.startswith(SSID_PREFIX) and display.fold_ascii(ssid) == ssid:
+            return f"http://{ssid}.local"
+        return f"http://{self.address}"
 
     def unpublish(self) -> None:
         if self.avahi and self.avahi.poll() is None:
@@ -554,10 +569,7 @@ class Setup:
                     self._put_back()
                     return 1
             self.publish(ssid)
-            # The address the screen shows, the status carries and the voice reads: the
-            # bare one, which needs no name service, no ASCII name and no captive-portal
-            # check (a .local name needs avahi on the box and mDNS on the phone).
-            url = f"http://{self.address}"
+            url = self.page_url(ssid)  # asked again at every (re-)show: avahi can die
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
             # name, whatever the font can draw -- and is sent only to an avatar that

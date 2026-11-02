@@ -378,19 +378,38 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _no_avahi(setup):
-    """No real avahi-publish from a test: it would announce a .local name on this machine."""
-    setup.publish = lambda name: None
+def _no_avahi(setup, avahi=None):
+    """No real avahi-publish from a test: it would announce a .local name on this machine.
+    `avahi`: a FakeAvahi standing in for it (None: not installed)."""
+    setup.publish = (lambda name: None) if avahi is None else (lambda name: avahi.start(setup, name))
     setup.unpublish = lambda: None
 
 
-def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
+class FakeAvahi:
+    """avahi-publish as page_url sees it: running (poll() is None) while `up`."""
+
+    def __init__(self):
+        self.up = True
+
+    def start(self, setup, name):
+        fake = self
+
+        class Proc:
+            def poll(self):
+                return None if fake.up else 1
+
+            def terminate(self):
+                pass
+        setup.avahi, setup.avahi_name = Proc(), name
+
+
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one."""
     status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
-    _no_avahi(setup)
+    _no_avahi(setup, avahi)
     result = {}
 
     def run():
@@ -609,15 +628,55 @@ def test_a_folded_name_without_a_code_is_shown_folded():
     assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
 
 
-def test_the_screen_status_and_voice_always_give_the_bare_address():
-    """The .local name needs avahi on the box and mDNS on the phone; 10.42.0.1 needs
-    neither, nor an ASCII name: the screen, the status and the voice give only that."""
+LOCAL_SAID = "go to teaport dash nine E three five dot local, and pick your Wi-Fi."
+BARE_SAID = "go to one zero dot four two dot zero dot one, and pick your Wi-Fi."
+
+
+def test_with_avahi_up_the_local_name_is_everywhere():
     screen, sent = _screen()
-    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, avahi=FakeAvahi())
+    assert sent[0]["lines"][2] == seen[1]["url"] == "http://teaport-9e35.local"
+    assert wv.instructions(seen[1], EN, spelled=True).endswith(LOCAL_SAID)
+
+
+def test_without_avahi_the_bare_address_is_everywhere():
+    screen, sent = _screen()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)        # not installed
     assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
     said = wv.instructions(seen[1], EN, spelled=True)
-    assert "go to one zero dot four two dot zero dot one, and pick" in said
-    assert "local" not in said
+    assert said.endswith(BARE_SAID) and "local" not in said
+
+
+def test_avahi_dying_mid_setup_switches_the_next_show_to_the_bare_address():
+    """The address is asked at every show: avahi gone between the first one and the
+    re-up after a failed join, the screen, the status and the voice all move to the IP."""
+    screen, sent = _screen()
+    avahi = FakeAvahi()
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    join = nm.join
+
+    def join_and_lose_avahi(*a):
+        avahi.up = False
+        return join(*a)
+    nm.join = join_and_lose_avahi
+    rc, seen = _run_setup(nm, screen=screen, avahi=avahi,
+                          post=[{"ssid": "home", "password": "wrongpass"},
+                                {"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    ups = [s for s in seen if s["phase"] == "ap_up"]
+    shown = [s["lines"][2] for s in sent if s.get("lines", [""])[0].startswith("Network")]
+    assert ups[0]["url"] == shown[0] == "http://teaport-9e35.local"
+    assert ups[1]["url"] == shown[-1] == f"http://{wifi.AP_ADDRESS}"
+    assert wv.instructions(ups[0], EN, spelled=True).endswith(LOCAL_SAID)
+    assert wv.instructions(ups[1], EN, spelled=True).endswith(BARE_SAID)
+
+
+@pytest.mark.parametrize("ssid", ["東京-box", "mybox"])
+def test_a_folded_or_custom_name_gets_the_bare_address_even_with_avahi(ssid):
+    screen, sent = _screen()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid, avahi=FakeAvahi())
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+    assert wv.instructions(seen[1], EN, spelled=True).endswith(BARE_SAID)
 
 
 @pytest.mark.parametrize("qr_max", [0, 37])
