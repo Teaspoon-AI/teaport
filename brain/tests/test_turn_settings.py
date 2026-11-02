@@ -25,14 +25,12 @@ for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
              ("LLM_BASE_URL", "http://127.0.0.1:9/v1"), ("LLM_API_KEY", "not-a-real-key")):
     os.environ.setdefault(k, v)
 
-from pipecat.transports.websocket.fastapi import (  # noqa: E402
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
-)
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams  # noqa: E402
 
 from teaport_brain import endpointing, settings  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
 from teaport_brain.endpointing import NarrowbandSileroMixin  # noqa: E402
+from teaport_brain.talk_transport import TalkWebsocketTransport  # noqa: E402
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 
 OVERRIDES = {"TALK_ENDPOINT_STOP_SECS": "0.2", "TALK_SMARTTURN_STOP_SECS": "0.6",
@@ -190,7 +188,7 @@ def test_a_shared_rate_the_phone_no_longer_takes_is_said_once_per_process():
 
 def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_values():
     def build(front_end):
-        t = FastAPIWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
+        t = TalkWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
             serializer=TeaportGatewaySerializer()))
         return build_agent_session(t, front_end=front_end)
 
@@ -219,7 +217,7 @@ def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_value
 
 
 def test_a_session_is_built_at_its_front_ends_own_rate():
-    t = FastAPIWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
+    t = TalkWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
         serializer=TeaportGatewaySerializer()))
 
     async def run():

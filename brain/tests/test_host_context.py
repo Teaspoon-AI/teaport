@@ -430,10 +430,10 @@ def _run_talk(query, frames, *, wait=None):
     saved_fetch = gs.host_context.fetch
     gs.host_context.fetch = fetch
     saved = {k: getattr(gs, k) for k in
-             ("FastAPIWebsocketTransport", "build_agent_session", "PipelineRunner",
+             ("TalkWebsocketTransport", "build_agent_session", "PipelineRunner",
               "SESSION_CONFIG_WAIT_SECS")}
     saved_arbiter = gs.arb.ARBITER
-    gs.FastAPIWebsocketTransport = _FakeTransport
+    gs.TalkWebsocketTransport = _FakeTransport
     gs.build_agent_session = build
     gs.PipelineRunner = _Runner
     gs.arb.ARBITER = gs.arb.SessionArbiter()
