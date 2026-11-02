@@ -346,6 +346,8 @@ class AgentSession:
         check alone, no greeting (one asleep, or a conversation continued, is not
         greeted).
 
+        A recorded call (self.recording, call_recording.py) starts recording here.
+
         `notice`: a line said first, heard in full, before the greeting and outside the
         context (a recorded call's recording notice, call_recording.notice_line). The
         caller is not listened to while it plays, so a "hello?" over it cannot cut it,
@@ -379,8 +381,13 @@ class AgentSession:
             return
         if not hello:
             return
+        # A recorded call starts recording here, with the caller about to be told (the
+        # notice), never before and never on a call that cannot be heard (above).
+        start = self.recording.start_frame() if self.recording is not None else None
         if notice:
-            await self._say_notice(notice)
+            await self._say_notice(notice, before=(start,) if start is not None else ())
+        elif start is not None:
+            await self.task.queue_frames([start])
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         if prepared:
@@ -393,23 +400,15 @@ class AgentSession:
 
     # How long greet() waits for the recording notice to play before greeting anyway.
     NOTICE_MAX_SECS = 8.0
+    # The owner's recording of this call (call_recording.CallRecording); None off a call.
+    recording = None
 
-    async def _say_notice(self, notice: str) -> None:
-        """Play `notice` with the caller unheard, and wait until it has played."""
-        if self.input_mute is not None:
-            self.input_mute.muted = True
+    async def _say_notice(self, notice: str, before: tuple = ()) -> None:
+        """Play `notice` heard in full (_say_whole: the pipeline talking, not the model),
+        then listen to the caller again."""
         try:
-            # Armed before the line is queued (FollowupGate.watch_delivery).
-            delivery = self.followup_gate.watch_delivery()
-            # append_to_context=False: the pipeline talking, not the model -- a filler
-            # to the ledger.
-            await self.task.queue_frames([TTSSpeakFrame(notice, append_to_context=False)])
-            try:
-                await asyncio.wait_for(delivery.done.wait(), self.NOTICE_MAX_SECS)
-            except asyncio.TimeoutError:
-                self.followup_gate.drop_delivery(delivery)
-                logger.info(f"the recording notice did not finish within "
-                            f"{self.NOTICE_MAX_SECS:g} s -- greeting anyway")
+            await self._say_whole(notice, self.NOTICE_MAX_SECS, before=before,
+                                  name="the recording notice")
         finally:
             if self.input_mute is not None:
                 self.input_mute.muted = False
@@ -447,13 +446,15 @@ class AgentSession:
     _OWN_LINE_SETTLE_S = 0.2
 
     @contextlib.asynccontextmanager
-    async def own_line(self, line: str, *, append_to_context: bool):
+    async def own_line(self, line: str, *, append_to_context: bool, before: tuple = ()):
         """Stop whatever is being said and put `line` in its place, yielding the watch on
         its delivery (FollowupGate.watch_delivery): the session's last line
         (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
         The cut is the brain's, not the caller's: the owed book counts no cut telling and
         reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
-        not a timer the ledger's charting of the cut could lose to."""
+        not a timer the ledger's charting of the cut could lose to. `before`: frames
+        queued with the line, just ahead of it and after the interruption, which clears
+        frames still queued (a recording's start frame: call_recording.py)."""
         owed = getattr(self.llm, "owed", None)
         if owed is not None:
             owed.own_cut = True
@@ -463,8 +464,8 @@ class AgentSession:
             # Armed after the interruption has gone through (it settles every watched
             # reply as cut) and before the line is queued.
             delivery = self.followup_gate.watch_delivery()
-            await self.task.queue_frames([TTSSpeakFrame(line,
-                                                        append_to_context=append_to_context)])
+            await self.task.queue_frames([*before, TTSSpeakFrame(
+                line, append_to_context=append_to_context)])
             yield delivery
         finally:
             if owed is not None:
@@ -479,15 +480,24 @@ class AgentSession:
         (a conversation going on hold: the model should know it said it). True when it
         played to the end. The caller ends the session after (the session arbiter, for a
         phone call), or puts it on hold (hold())."""
+        return await self._say_whole(line, max_secs, append_to_context=append_to_context,
+                                     name="the session's last line")
+
+    async def _say_whole(self, line: str, max_secs: float, *, name: str,
+                         append_to_context: bool = False, before: tuple = ()) -> bool:
+        """Say `line` heard in full: stop listening (so talking over it cannot cut it),
+        put it in place of whatever is being said (own_line), and wait -- up to max_secs
+        -- until it has played. True when it played to the end. The caller is left
+        unheard: the caller of this decides when to listen again."""
         if self.input_mute is not None:
             self.input_mute.muted = True
-        async with self.own_line(line, append_to_context=append_to_context) as delivery:
+        async with self.own_line(line, append_to_context=append_to_context,
+                                 before=before) as delivery:
             try:
                 await asyncio.wait_for(delivery.done.wait(), max_secs)
             except asyncio.TimeoutError:
                 self.followup_gate.drop_delivery(delivery)
-                logger.info(f"the session's last line did not finish within {max_secs:g} s — "
-                            "ending it anyway")
+                logger.info(f"{name} did not finish within {max_secs:g} s — going on")
                 return False
             return not delivery.interrupted
 
@@ -1312,4 +1322,5 @@ def build_agent_session(transport, *, voice: str | None = None,
         prompt.session = session
         session.call_prompt = prompt
     session.vad_analyzer = vad_analyzer
+    session.recording = recording   # the owner's recording of this call, or None
     return session

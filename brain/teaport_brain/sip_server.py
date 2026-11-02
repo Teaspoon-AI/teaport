@@ -923,18 +923,16 @@ async def run_connection(sock, on_ready=None):
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
         # A recorded call starts with the notice, in the call's language, before the
-        # greeting. Not on a resumed call: that caller heard it when the call began.
+        # greeting -- a resumed one too: the brain that was cut off may not have
+        # finished saying it.
         notice = None
-        if (recording is not None and recording.active and call_recording.NOTICE
-                and not resumed):
+        if recording is not None and recording.active and call_recording.NOTICE:
             notice = call_recording.notice_line(
                 getattr(getattr(session, "tts", None), "espeak_language", None))
         if prepared:
             await session.greet(resumed=resumed, prepared=prepared, notice=notice)
         else:
             await session.greet(resumed=resumed, notice=notice)
-        if notice and not session.should_end:
-            recording.note(notice)
         if session.should_end:
             # STT is unavailable — the engine's single slot is held by another process
             # (a standalone rig) or the engine is unreachable. greet() spoke the

@@ -271,10 +271,12 @@ responsible for it; this page is not legal advice.
 
 Each call's files are named by the time the call started and its call id, for
 example `20261102-141503-abc123.wav`, in `TEAPORT_CALL_RECORDING_DIR`
-(`~/teaport-recordings` by default). If the brain restarts during a call, the
-rest of the call goes to a file of its own.
+(`~/teaport-recordings` by default). Recording starts when the caller is told,
+before the greeting; a call the brain can't hear isn't recorded. If the brain
+restarts during a call, the rest of the call goes to files beside the first ones
+(`.r1.wav`, `.r1.txt`), and the caller hears the notice again.
 
-<!-- source: brain/teaport_brain/call_recording.py:11-20,22-34#7c6f1777 -->
+<!-- source: brain/teaport_brain/call_recording.py:11-26,28-43#4a25c8f8 -->
 
 With recording on, a call starts with *"This call is being recorded."* in the
 call's language, before the greeting. The agent doesn't listen while the notice
@@ -287,7 +289,7 @@ deleted, and then the oldest until the directory fits in
 `TEAPORT_CALL_RECORDING_MAX_MB` (2048 by default). The check runs as each call
 starts. See [the settings reference](/reference/settings/#call-recording).
 
-<!-- source: brain/teaport_brain/call_recording.py:36-44#b037b858 -->
+<!-- source: brain/teaport_brain/call_recording.py:45-54#3af724fe -->
 
 ## Test the phone path without a line
 

@@ -23,7 +23,9 @@
 # TEAPORT_LOG_CONVERSATIONS on too. TEAPORT_AUDIO_DUMP is the one that records on its
 # own: it writes caller audio files, and is off unless it names a directory.
 #
+import os
 import re
+import sys
 
 from loguru import logger
 
@@ -56,6 +58,13 @@ _PIPECAT_TEXT = (
     re.compile(r"force-complete: raw_remaining (?P<w1>.*) does not contain "
                r"remaining_text (?P<w2>.*), discarding\Z", re.S),
     re.compile(r"force-completing slot with remaining text (?P<w1>.*)\Z", re.S),
+    # The whole context, every turn (the OpenAI-compatible service's request line).
+    re.compile(r"Generating chat from context (?P<w1>.*)\Z", re.S),
+    # The TTS's word sequencer: one word, or a frame whose repr holds its text.
+    re.compile(r"Dropping stale word '(?P<w1>.*)' from unknown", re.S),
+    re.compile(r"Dropping (?:buffered )?word '(?P<w1>.*)' not recognised", re.S),
+    re.compile(r"Emitting overflow word '(?P<w1>.*)'\Z", re.S),
+    re.compile(r"Flushing Aggregated Frame (?P<w1>.*)\Z", re.S),
 )
 
 
@@ -73,9 +82,17 @@ def redact(record: dict) -> None:
             return
 
 
-def install() -> None:
-    """Redact pipecat's text-carrying lines in this process (a no-op on what they log
-    with TEAPORT_LOG_CONVERSATIONS on). Called first thing by each entry point, the way a
-    pipecat app owns its logging setup. configure() sets loguru's one logger-wide patcher;
-    neither pipecat nor the brain sets another."""
+def install(level: str | None = None) -> None:
+    """This process's logging: loguru's stderr sink (the journal), at `level` (else
+    LOGURU_LEVEL, else loguru's DEBUG), with pipecat's text-carrying lines redacted.
+    Called first thing by each entry point, the way a pipecat app owns its logging
+    setup. configure() sets loguru's one logger-wide patcher; neither pipecat nor the
+    brain sets another.
+
+    diagnose is off unless TEAPORT_LOG_CONVERSATIONS is on: loguru's default sink prints
+    every frame's local variables in a traceback (its docs warn it leaks data in
+    production), and a frame holding a caller's words would put them in the journal."""
+    logger.remove()
+    logger.add(sys.stderr, level=level or os.environ.get("LOGURU_LEVEL", "DEBUG"),
+               diagnose=bool(LOG_WORDS))
     logger.configure(patcher=redact)

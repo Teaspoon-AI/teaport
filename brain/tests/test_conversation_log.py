@@ -14,6 +14,7 @@
 # Run: python test_conversation_log.py   (or via pytest)
 #
 import ast
+import io
 import os
 import pathlib
 import sys
@@ -91,33 +92,91 @@ def check_ledger_line_keeps_no_words():
     assert "private" not in out, out
 
 
-# Interpolated names that hold what someone said or will hear (and any *_text).
+# Interpolated names that may hold what someone said or will hear: the text itself, a
+# word, a frame (a TextFrame's repr holds its text), a context or its messages. Broad on
+# purpose: a line flagged here is either redacted or listed below as reviewed.
 _TEXTUAL = ("text", "arguments", "transcript", "messages", "content", "accumulated",
-            "remaining")
+            "remaining", "word", "words", "context", "frame", "get_messages_for_logging")
+_TEXTUAL_SUFFIXES = ("_text", "_remaining", "_word", "_frame", "_context")
+
+# Flagged lines that carry no words, reviewed (pipecat 1.12), by module and shape (the
+# line's literal text, {} for each interpolation): a reworded line is reviewed again.
+_REVIEWED = {
+    # The pipeline worker names its own control frames (Start, End, Cancel, Stop, the
+    # interruption worker frames) and errors.
+    ("pipecat.pipeline.worker", s) for s in (
+        "{}: Starting. Waiting for {} to reach the end of the pipeline...",
+        "{}: {} reached the end of the pipeline, pipeline is now ready.",
+        "{}: Closing. Waiting for {} to reach the end of the pipeline...",
+        "{}: {} reached the end of the pipeline, pipeline is closing.",
+        "{}: {} reached the end of the pipeline.",
+        "{}: timeout waiting for {} to reach the end of the pipeline (being blocked somewhere?), stopping the pipeline.",
+        "{}: timeout waiting for {} to reach the end of the pipeline (being blocked somewhere?).",
+        "{}: received end worker frame upstream {}",
+        "{}: received cancel worker frame upstream {}",
+        "{}: received stop worker frame upstream {}",
+        "{}: received interruption worker frame upstream {}",
+        "{}: received end worker frame downstream {}",
+        "{}: received stop worker frame downstream {}",
+        "{}: received cancel worker frame downstream {}",
+        "{}: received interruption worker frame downstream {}",
+        "A fatal error occurred: {}",
+        "{}: Something went wrong: {}",
+    )
+} | {
+    # Request and tool-call ids, image sizes, counts, a service's name, settings.
+    ("pipecat.processors.aggregators.llm_context_summarizer", "{}: Received summary result (request_id={})"),
+    ("pipecat.processors.aggregators.llm_context_summarizer", "{}: Ignoring stale summary result (request_id={})"),
+    ("pipecat.processors.aggregators.llm_context_summarizer", "{}: Context summarization failed: {}"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{} FunctionCallInProgressFrame: [{}:{}]"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{} FunctionCallResultFrame: [{}:{}]"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{} FunctionCallCancelFrame: [{}:{}]"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{} Appending AssistantImageRawFrame to LLM context (size: {})"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{} Appending UserImageRawFrame to LLM context (size: {})"),
+    ("pipecat.processors.aggregators.llm_response_universal", "FunctionCallResultFrame tool_call_id [{}] is not running"),
+    ("pipecat.processors.aggregators.llm_response_universal", "FunctionCallResultFrame tool_call_id [{}] is not in progress"),
+    ("pipecat.processors.aggregators.llm_response_universal", "{}: detected realtime service `{}`; auto-enabled realtime_service_mode."),
+    ("pipecat.processors.frameworks.rtvi.observer", "{}: function_call_report_level set to {}"),
+    ("pipecat.processors.frameworks.rtvi.observer", "{}: vad_user_speaking_enabled set to {}"),
+    ("pipecat.processors.frameworks.rtvi.observer", "{}: bot_llm_marker_enabled set to {}"),
+    ("pipecat.services.llm_service", "{}: Processing summarization request {}"),
+    ("pipecat.services.llm_service", "{}: Generating summary for {} messages (index 0 to {}), target_context_tokens={}"),
+    ("pipecat.services.stt_service", "Empty audio frame received for STT service: {} {}"),
+    ("pipecat.services.stt_service", "STT service {}"),
+    ("pipecat.services.tts_service", "{} cleaning up TTS context {}"),
+    # Start, End and Cancel frames; audio frames; an error's processor and message.
+    ("pipecat.services.ai_service", "{}: exception processing {}: {}"),
+    ("pipecat.transports.base_output", "{} destination [{}] not registered for frame {}"),
+    ("pipecat.transports.base_output", "{} Error writing {} to transport: {}"),
+    ("pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy",
+     "{}: releasing the user mute without the bot having completed its first speech, after an error from {}: {}"),
+}
 
 
-def _sample(call: ast.Call) -> str | None:
-    """The message a pipecat logger call would log, SECRET where it interpolates text;
-    None when it interpolates none."""
+def _sample(call: ast.Call) -> tuple[str, str] | None:
+    """(the message a pipecat logger call would log, SECRET where it may interpolate
+    words; its shape), or None when it interpolates nothing that may hold words."""
     if not call.args or not isinstance(call.args[0], ast.JoinedStr):
         return None
-    parts, textual = [], False
+    parts, shape, textual = [], [], False
     for v in call.args[0].values:
         if isinstance(v, ast.Constant):
             parts.append(str(v.value))
+            shape.append(str(v.value))
+            continue
+        shape.append("{}")
+        if (isinstance(v.value, ast.Call) and isinstance(v.value.func, ast.Name)
+                and v.value.func.id == "len"):
+            parts.append("3")  # a count, not the words
+            continue
+        names = {n.id if isinstance(n, ast.Name) else n.attr
+                 for n in ast.walk(v.value) if isinstance(n, (ast.Name, ast.Attribute))}
+        if any(n.lstrip("_") in _TEXTUAL or n.endswith(_TEXTUAL_SUFFIXES) for n in names):
+            textual = True
+            parts.append(SECRET)
         else:
-            if (isinstance(v.value, ast.Call) and isinstance(v.value.func, ast.Name)
-                    and v.value.func.id == "len"):
-                parts.append("3")  # a count, not the words
-                continue
-            names = {n.id if isinstance(n, ast.Name) else n.attr
-                     for n in ast.walk(v.value) if isinstance(n, (ast.Name, ast.Attribute))}
-            if any(n.lstrip("_") in _TEXTUAL or n.endswith(("_text", "_remaining")) for n in names):
-                textual = True
-                parts.append(SECRET)
-            else:
-                parts.append("ctx-1")
-    return "".join(parts) if textual else None
+            parts.append("ctx-1")
+    return ("".join(parts), "".join(shape)) if textual else None
 
 
 def check_pipecat_text_lines_are_redacted():
@@ -126,7 +185,7 @@ def check_pipecat_text_lines_are_redacted():
     import teaport_brain.local_audio  # noqa: F401
     mods = sorted(m for m in sys.modules if m.startswith("pipecat"))
     assert len(mods) > 50, f"only {len(mods)} pipecat modules loaded: the import broke"
-    found = 0
+    redacted, reviewed = 0, set()
     for name in mods:
         path = getattr(sys.modules[name], "__file__", None) or ""
         if not path.endswith(".py"):
@@ -136,16 +195,25 @@ def check_pipecat_text_lines_are_redacted():
                     and isinstance(node.func.value, ast.Name)
                     and node.func.value.id == "logger"):
                 continue
-            msg = _sample(node)
-            if msg is None:
+            if node.func.attr == "trace":
+                continue  # below every sink's level (install())
+            sample = _sample(node)
+            if sample is None:
                 continue
-            found += 1
+            msg, shape = sample
+            if (name, shape) in _REVIEWED:
+                reviewed.add((name, shape))
+                continue
             record = {"name": name, "message": msg}
             conversation_log.redact(record)
             assert SECRET not in record["message"], (
-                f"{name}:{node.lineno} logs conversation text redact() does not "
-                f"blank: {msg!r} -- add its shape to conversation_log._PIPECAT_TEXT")
-    assert found, "no text-carrying pipecat log line found: the scan itself is broken"
+                f"{name}:{node.lineno} may log conversation text that redact() does not "
+                f"blank: {shape!r} -- add its shape to conversation_log._PIPECAT_TEXT, "
+                "or, once read and found to carry no words, to _REVIEWED")
+            redacted += 1
+    assert redacted >= 10, f"only {redacted} redacted lines found: the scan itself is broken"
+    stale = _REVIEWED - reviewed
+    assert not stale, f"reviewed lines pipecat no longer has (prune them): {sorted(stale)}"
 
 
 def check_install_redacts_pipecat_records():
@@ -155,10 +223,42 @@ def check_install_redacts_pipecat_records():
         out = _captured(lambda: exec(
             "logger.debug(f'TTS: Generating TTS [{text}]')", scope, {"text": SECRET}))
         assert "Generating TTS [<26 chars>]" in out, out
+        out = _captured(lambda: exec(
+            "logger.debug(f'LLM: Generating chat from context {m}')", scope,
+            {"m": [{"role": "user", "content": SECRET}]}))
+        assert "Generating chat from context <" in out and "private" not in out, out
         out = _captured(lambda: logger.info(f"teaport line {SECRET}"))
         assert SECRET in out, "the patcher must touch pipecat's lines only"
+
     finally:
-        logger.configure(patcher=None)
+        logger.configure(patcher=lambda record: None)
+        logger.remove()
+        logger.add(sys.stderr)
+
+
+def _fails(said):
+    raise ValueError("boom")
+
+
+def check_a_traceback_shows_no_locals():
+    """loguru's default sink prints every frame's local variables in a traceback
+    (diagnose): a frame holding a caller's words would put them in the journal."""
+    buf, real = io.StringIO(), sys.stderr
+    sys.stderr = buf          # install()'s sink writes to sys.stderr as it finds it
+    try:
+        conversation_log.install()
+        try:
+            _fails(SECRET)
+        except ValueError:
+            logger.exception("relay session error")
+    finally:
+        sys.stderr = real
+        logger.configure(patcher=lambda record: None)
+        logger.remove()
+        logger.add(sys.stderr)
+    out = buf.getvalue()
+    assert "relay session error" in out and "boom" in out, out
+    assert "private" not in out, out
 
 
 if __name__ == "__main__":
@@ -168,4 +268,5 @@ if __name__ == "__main__":
         check_ledger_line_keeps_no_words,
         check_pipecat_text_lines_are_redacted,
         check_install_redacts_pipecat_records,
+        check_a_traceback_shows_no_locals,
     ])

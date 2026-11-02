@@ -2278,7 +2278,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    logger.remove()
-    logger.add(sys.stderr, level="INFO")
-    conversation_log.install()
+    conversation_log.install(level="INFO")
     asyncio.run(main())

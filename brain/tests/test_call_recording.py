@@ -5,12 +5,15 @@
 #   - with recording off (the default) a call leaves no audio or transcript file, and the
 #     session is built without a recording;
 #   - with audio / transcript / both, a call leaves the expected files, named by time and
-#     call id: one stereo wav (caller left, bot right) through pipecat's
-#     AudioBufferProcessor, and a transcript of the ledger's lines;
-#   - old recordings are pruned by age and by size, a call's files as one, ours only;
-#     the diagnostic dump is pruned the same way;
-#   - with the notice on, a recorded call starts with the notice, in the call's
-#     language, before the greeting -- and a resumed call, whose caller heard it, does not.
+#     call id: one stereo wav at the call's rate (caller left, bot right) through
+#     pipecat's AudioBufferProcessor, and a transcript of what was said and heard;
+#   - nothing is recorded, and no file exists, before the caller is told: the recording
+#     starts with the start frame greet() queues just ahead of the notice, never on a call
+#     that cannot be heard;
+#   - old recordings are pruned by age and by size, a call's files as one (a resumed
+#     call's parts included), ours only; the diagnostic dump is pruned the same way;
+#   - with the notice on, a recorded call starts with the notice, in the call's language,
+#     before the greeting, with the caller unheard while it plays.
 #
 # Run: python test_call_recording.py   (or via test_suite.py)
 #
@@ -28,21 +31,27 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
+    AudioBufferStartRecordingFrame,
     InputAudioRawFrame,
+    InterruptionWorkerFrame,
     LLMRunFrame,
     OutputAudioRawFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+    TTSTextFrame,
 )
-from pipecat.pipeline.task import PipelineParams  # noqa: E402
-from pipecat.tests.utils import run_test  # noqa: E402
+from pipecat.tests.utils import SleepFrame, run_test  # noqa: E402
 
 from teaport_brain import audio_dump, call_recording, recordings  # noqa: E402
-from teaport_brain.agent_session import AgentSession, _build_initial_messages  # noqa: E402
+from teaport_brain.agent_session import AgentSession, InputMute, _build_initial_messages  # noqa: E402
+from teaport_brain.followup_gate import Delivery  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger, Utterance  # noqa: E402
 
 import test_sip_call_lifecycle as lifecycle  # noqa: E402
 
 SR = 16000
+NOTICE = "This call is being recorded."
 
 
 # ---------------------------------------------------------------- retention
@@ -98,17 +107,41 @@ def test_free_stem_never_overwrites():
         assert recordings.free_stem(stem) == stem + ".r1"
 
 
+def test_a_resumed_call_continues_its_recording_as_one_group():
+    with tempfile.TemporaryDirectory() as d:
+        first = call_recording.CallRecording("abc", mode="transcript", directory=d)
+        first.begin()
+        first.close()
+        time.sleep(1.1)   # a later start time: the stem it must NOT take
+        rest = call_recording.CallRecording("abc", mode="transcript", directory=d,
+                                            resumed=True)
+        assert rest.stem == first.stem + ".r1", (first.stem, rest.stem)
+        other = call_recording.CallRecording("xyz", mode="transcript", directory=d,
+                                             resumed=True)
+        assert re.fullmatch(r"\d{8}-\d{6}-xyz", os.path.basename(other.stem)), other.stem
+
+
 # ---------------------------------------------------------------- transcript
+
+def test_nothing_is_written_before_the_start():
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("abc@host", "+15550100", mode="both",
+                                           directory=d + "/recordings")
+        ledger = TranscriptLedger()
+        rec.attach(ledger)
+        ledger._add(Utterance("user", "hello?", 0.5, 1.0))
+        rec.close()
+        assert not os.path.exists(d + "/recordings"), "a file before the caller was told"
+
 
 def test_the_transcript_is_the_ledgers_lines():
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("abc@host", "+15550100", mode="transcript",
                                            directory=d)
-        assert rec.processors == [], "a transcript-only recording takes no audio"
         assert re.fullmatch(r"\d{8}-\d{6}-abchost", os.path.basename(rec.stem)), rec.stem
         ledger = TranscriptLedger()
         rec.attach(ledger)
-        rec.note("This call is being recorded.")
+        rec.begin()
         ledger._add(Utterance("user", "what time do you open", 3.2, 4.9))
         ledger._add(Utterance("assistant", "We open at nine.", 5.4, 7.0))
         ledger._add(Utterance("assistant", "On Sundays we open at noon, and", 8.0, 9.0,
@@ -119,12 +152,39 @@ def test_the_transcript_is_the_ledgers_lines():
         assert text.startswith("Call abc@host from +15550100, started "), text
         lines = text.splitlines()[2:]
         assert lines == [
-            "[notice] Assistant: This call is being recorded.",
             "[00:03.2] Caller: what time do you open",
             "[00:05.4] Assistant: We open at nine.",
             "[00:08.0] Assistant (cut off): On Sundays we",
         ], lines
         assert not os.path.exists(rec.wav_path)
+
+
+def _words(ctx, *words):
+    return [TTSTextFrame(text=w, aggregated_by="word", context_id=ctx) for w in words]
+
+
+async def test_the_pipelines_own_lines_and_a_reply_cut_by_the_hangup_are_written():
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c9", mode="transcript", directory=d)
+        [tap] = rec.processors
+        started = TTSStartedFrame(context_id="n")
+        started.append_to_context = False
+        frames = [
+            # Before the start: not the caller's to be recorded yet.
+            *_words("x", "unrecorded"),
+            AudioBufferStartRecordingFrame(),
+            started, *_words("n", "This", "call", "is", "being", "recorded."),
+            TTSStoppedFrame(context_id="n"),
+            # A reply still playing when the call ends: the ledger never charts it.
+            TTSStartedFrame(context_id="r"), *_words("r", "We", "open"),
+        ]
+        await run_test(tap, frames_to_send=frames)
+        rec.close()
+        lines = open(rec.txt_path, encoding="utf-8").read().splitlines()[2:]
+        assert [re.sub(r"^\[[^\]]*\] ", "", ln) for ln in lines] == [
+            "Assistant: This call is being recorded.",
+            "Assistant (call ended): We open",
+        ], lines
 
 
 def test_the_model_is_told_only_when_something_is_kept():
@@ -133,30 +193,33 @@ def test_the_model_is_told_only_when_something_is_kept():
         assert "being recorded" in rec.prompt_line and "audio and a transcript" in rec.prompt_line
         msgs = _build_initial_messages("persona", None, recorded=rec.prompt_line)
         assert msgs[-1] == {"role": "system", "content": rec.prompt_line}, msgs
-        rec.close()
     blocked = tempfile.NamedTemporaryFile()   # a FILE where the directory should be
     rec = call_recording.CallRecording("c2", mode="both", directory=blocked.name + "/x")
-    assert not rec.active and rec.prompt_line is None and rec.processors == []
+    rec.begin()
+    assert not rec.active and rec.prompt_line is None, "nothing could be written"
     blocked.close()
 
 
 # ---------------------------------------------------------------- audio
 
-async def test_audio_is_one_stereo_wav_caller_left_bot_right():
+async def test_audio_is_one_stereo_wav_at_the_calls_rate_from_the_start_frame_on():
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("c3", mode="audio", directory=d)
-        assert not os.path.exists(rec.txt_path), "an audio-only recording keeps no transcript"
-        [buf] = rec.processors
+        tap, buf = rec.processors
         caller = (1000).to_bytes(2, "little", signed=True) * 320      # 20 ms of caller
         bot = (-2000).to_bytes(2, "little", signed=True) * 320        # 20 ms of bot
-        frames = []
+        early = (7).to_bytes(2, "little", signed=True) * 320          # before the start
+        # The caller's audio is a SystemFrame, so it overtakes the (control) start frame
+        # unless the test waits for it to land, as pipecat's own tests do (SleepFrame).
+        frames = [InputAudioRawFrame(audio=early, sample_rate=SR, num_channels=1),
+                  AudioBufferStartRecordingFrame(), SleepFrame(sleep=0.1)]
         for _ in range(10):
             frames.append(InputAudioRawFrame(audio=caller, sample_rate=SR, num_channels=1))
             frames.append(OutputAudioRawFrame(audio=bot, sample_rate=SR, num_channels=1))
-        # The recorder writes at the pipeline's output rate: a call's, here.
-        params = PipelineParams(audio_in_sample_rate=SR, audio_out_sample_rate=SR)
-        down, _ = await run_test(buf, frames_to_send=frames, pipeline_params=params)
-        assert sum(isinstance(f, InputAudioRawFrame) for f in down) == 10, "caller audio passes on"
+        # The pipeline's default rates, as the session's task runs (24 kHz out): the
+        # recording is at the call's 16 kHz all the same.
+        down, _ = await run_test(buf, frames_to_send=frames)
+        assert sum(isinstance(f, InputAudioRawFrame) for f in down) == 11, "caller audio passes on"
         assert sum(isinstance(f, OutputAudioRawFrame) for f in down) == 10, "bot audio passes on"
         await buf.cleanup()   # pipecat waits out the handler tasks here
         rec.close()
@@ -168,6 +231,7 @@ async def test_audio_is_one_stereo_wav_caller_left_bot_right():
         left, right = samples[0::2], samples[1::2]
         assert 1000 in left and -2000 not in left, "the caller is the left channel"
         assert -2000 in right and 1000 not in right, "the bot is the right channel"
+        assert 7 not in left, "audio from before the start frame was recorded"
 
 
 # ---------------------------------------------------------------- notice
@@ -196,17 +260,17 @@ class _Stt:
     slot_busy = False
 
 
-def _session(plays=True):
+def _session(plays=True, recording=None):
     """An AgentSession with fakes around greet(). `plays`: the notice plays out (its
-    delivery settles as it is queued, with the input mute's state at that moment
+    delivery settles once it is queued, with the input mute's state at each queue
     recorded); False, it never does, and greet() waits out NOTICE_MAX_SECS."""
-    from teaport_brain.agent_session import InputMute
-    from teaport_brain.followup_gate import Delivery
     s = object.__new__(AgentSession)
-    s.context, s.stt = _Context(), _Stt()
+    s.context, s.stt, s.llm = _Context(), _Stt(), None
     s.input_mute = InputMute()
     s.should_end = False
+    s.recording = recording
     s.muted_while_queued = []
+    s._OWN_LINE_SETTLE_S = 0.0
     deliveries = []
 
     class _Gate:
@@ -219,44 +283,61 @@ def _session(plays=True):
 
     def on_queue(frames):
         s.muted_while_queued.append(s.input_mute.muted)
-        if plays and deliveries:
+        if plays and deliveries and any(isinstance(f, TTSSpeakFrame) for f in frames):
             deliveries.pop()._settle(interrupted=False)
     s.followup_gate = _Gate()
     s.task = _Task(on_queue)
     return s
 
 
+def _spoken(s):
+    return [f for f in s.task.queued if not isinstance(f, InterruptionWorkerFrame)]
+
+
 async def test_the_notice_plays_whole_before_the_greeting_outside_the_context():
-    for prepared in (None, "Hello, how can I help?"):
-        s = _session()
-        await s.greet(prepared=prepared, notice="This call is being recorded.")
-        first, second = s.task.queued
-        assert isinstance(first, TTSSpeakFrame) and first.text == "This call is being recorded."
-        assert first.append_to_context is False, "the notice is not the model's words"
-        assert (isinstance(second, LLMRunFrame) if prepared is None
-                else second.text == prepared), s.task.queued
-        # The caller is unheard while the notice is queued and plays (no "hello?" cuts
-        # it), and heard again by the time the greeting is queued.
-        assert s.muted_while_queued == [True, False], s.muted_while_queued
-        assert not s.input_mute.muted
-    s = _session()
+    with tempfile.TemporaryDirectory() as d:
+        for prepared in (None, "Hello, how can I help?"):
+            rec = call_recording.CallRecording("c4", mode="both", directory=d)
+            s = _session(recording=rec)
+            await s.greet(prepared=prepared, notice=NOTICE)
+            start, notice, greeting = _spoken(s)
+            assert isinstance(start, AudioBufferStartRecordingFrame), _spoken(s)
+            assert isinstance(notice, TTSSpeakFrame) and notice.text == NOTICE
+            assert notice.append_to_context is False, "the notice is not the model's words"
+            assert (isinstance(greeting, LLMRunFrame) if prepared is None
+                    else greeting.text == prepared), _spoken(s)
+            # The caller is unheard while the notice is queued and plays (no "hello?" cuts
+            # it), and heard again by the time the greeting is queued.
+            assert s.muted_while_queued[-1] is False and all(s.muted_while_queued[:-1])
+            assert not s.input_mute.muted
+    s = _session(recording=object.__new__(call_recording.CallRecording))
+    s.recording.audio = s.recording.transcript = True
     s.stt = type("S", (), {"stt_available": False, "slot_busy": False})()
-    await s.greet(notice="This call is being recorded.")
-    assert not any(getattr(f, "text", "") == "This call is being recorded."
-                   for f in s.task.queued), "no notice on a call that cannot be heard"
+    await s.greet(notice=NOTICE)
+    assert not any(isinstance(f, AudioBufferStartRecordingFrame) or
+                   getattr(f, "text", "") == NOTICE for f in s.task.queued), (
+        "a call that cannot be heard is neither told nor recorded")
+
+
+async def test_with_the_notice_off_the_recording_starts_at_the_greeting():
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c5", mode="audio", directory=d)
+        s = _session(recording=rec)
+        await s.greet(prepared="Hello.")
+        assert [type(f).__name__ for f in _spoken(s)] == [
+            "AudioBufferStartRecordingFrame", "TTSSpeakFrame"], _spoken(s)
 
 
 async def test_a_notice_that_never_plays_out_still_lets_the_greeting_and_the_caller_in():
     s = _session(plays=False)
     s.NOTICE_MAX_SECS = 0.05
-    await s.greet(prepared="Hello.", notice="This call is being recorded.")
-    assert [getattr(f, "text", None) for f in s.task.queued] == [
-        "This call is being recorded.", "Hello."], s.task.queued
+    await s.greet(prepared="Hello.", notice=NOTICE)
+    assert [getattr(f, "text", None) for f in _spoken(s)] == [NOTICE, "Hello."], s.task.queued
     assert not s.input_mute.muted, "the caller must not stay unheard"
 
 
 def test_the_notice_is_in_the_calls_language():
-    assert call_recording.notice_line("en-us") == "This call is being recorded."
+    assert call_recording.notice_line("en-us") == NOTICE
     assert call_recording.notice_line("es") == "Esta llamada está siendo grabada."
     assert call_recording.notice_line("cmn") == "本次通话正在录音。"
 
@@ -292,7 +373,7 @@ async def test_off_by_default_a_call_records_nothing():
         await h.stop()
 
 
-async def test_a_recorded_call_gets_its_files_and_the_notice_a_resumed_one_no_notice():
+async def test_a_recorded_call_is_built_with_its_recording_and_told_resumed_too():
     with tempfile.TemporaryDirectory() as d, \
             _Settings(MODE="both", ENABLED=True, NOTICE=True, DIR=d):
         h = lifecycle._Harness()
@@ -302,20 +383,20 @@ async def test_a_recorded_call_gets_its_files_and_the_notice_a_resumed_one_no_no
             assert await lifecycle.wait_until(lambda: "A" in lifecycle._FakeSession.greeted)
             rec = lifecycle._FakeSession.build_kw["A"]["recording"]
             assert rec.active and rec.audio and rec.transcript
-            assert rec.processors, "the audio recorder joins the pipeline"
-            assert lifecycle._FakeSession.notices["A"] == "This call is being recorded."
-            assert os.path.basename(rec.txt_path).endswith("-A.txt"), rec.txt_path
-            assert "[notice] Assistant: This call is being recorded." in open(rec.txt_path).read()
+            assert len(rec.processors) == 2, "the tap and the audio recorder join the pipeline"
+            assert lifecycle._FakeSession.notices["A"] == NOTICE
+            assert os.path.basename(rec.stem).endswith("-A"), rec.stem
+            assert os.listdir(d) == [], "files only once greet() starts the recording"
 
-            # The brain restarted under a call: its rest is recorded, its caller is not
-            # told twice.
+            # The brain restarted under a call: the caller is told again (the brain that
+            # was cut off may not have finished telling them).
             await h.send_raw({"type": "call.incoming", "call_id": "B",
                               "from": "sip:caller@example.invalid",
                               "to": "sip:svc@example.invalid", "replay": True})
             await h.call_state("B", "confirmed", replay=True)
             assert await lifecycle.wait_until(lambda: "B" in lifecycle._FakeSession.greeted)
             assert lifecycle._FakeSession.build_kw["B"]["recording"].active
-            assert lifecycle._FakeSession.notices["B"] is None
+            assert lifecycle._FakeSession.notices["B"] == NOTICE
         finally:
             await h.stop()
     with tempfile.TemporaryDirectory() as d, \
@@ -326,7 +407,7 @@ async def test_a_recorded_call_gets_its_files_and_the_notice_a_resumed_one_no_no
             await h.call_state("C", "confirmed")
             assert await lifecycle.wait_until(lambda: "C" in lifecycle._FakeSession.greeted)
             assert lifecycle._FakeSession.notices["C"] is None, "the notice was turned off"
-            assert [f for f in os.listdir(d) if f.endswith(".wav")] == []
+            assert len(lifecycle._FakeSession.build_kw["C"]["recording"].processors) == 1
         finally:
             await h.stop()
 
