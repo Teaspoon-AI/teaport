@@ -642,6 +642,50 @@ async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
         sip_transport._PAUSE_GUARD_S = guard
 
 
+def test_the_longest_cap_and_its_grace_end_before_the_transport_s_guard():
+    # One guard, the transport's and the pauser's; the longest cap the setting allows,
+    # with the grace after its close of held words, ends before it -- and a cap asked
+    # for past it, or a resume window that would stretch the cap past it, is held to it.
+    from teaport_brain import barge_pause as bp, sip_transport
+    from teaport_brain.settings import ROWS
+    assert sip_transport._PAUSE_GUARD_S is bp.PAUSE_GUARD_S
+    assert ROWS["TEAPORT_BARGE_PAUSE_MAX_S"]["max"] == bp.MAX_CAP_S
+    assert bp.MAX_CAP_S + bp._FINAL_GRACE_S < bp.PAUSE_GUARD_S
+    for kw in ({"max_secs": 8.0}, {"max_secs": 1.0, "resume_secs": 8.0}):
+        assert BargeInPauser(_FakeOut(), **{"resume_secs": RESUME_S, **kw})._max_secs \
+            == bp.MAX_CAP_S, kw
+
+
+async def test_an_interruption_in_the_cap_s_grace_ends_the_grace_too():
+    # The cap closed the held words and waits its grace; their interruption ends the
+    # pause, and the caller pauses a new one at once: the old cap does not resume it.
+    out, p, task, run = await _pauser_rig(max_secs=0.5)
+    closed = []
+
+    async def close():
+        closed.append(True)
+        return True
+    p.before_cap = close
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        p.hold_resume(True, who="the turn's final")
+        await asyncio.sleep(0.55)                       # the cap: closed, its grace on
+        assert closed and p.paused
+        await task.queue_frame(InterruptionFrame())     # the words take the turn
+        await asyncio.sleep(0.03)
+        assert not p.paused and p.cancels == 1
+        await p.on_onset(True)                          # a new pause, inside the grace
+        await asyncio.sleep(0.2)                        # the old grace long out
+        assert p.paused, "the old cap's grace resumed the new pause"
+        assert [c[1] for c in out.calls] == [True, True], out.calls
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_an_interruption_clears_the_pause_everywhere():
     async with Rig() as rig:
         await rig.speak()
@@ -888,6 +932,35 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
 
     talk = build_agent_session(_Transport())          # no supports_playout_pause
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
+
+
+async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_pauser():
+    # The S1 fix's production wiring (stt.py TURN TEXT): on SIP, where the pauser is, a
+    # sliced barge-in waiting on its final holds the pause through stt.barge_hold, and
+    # the pause's cap closes it first through before_cap.
+    from teaport_brain import stt as stt_mod
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.sip_transport import SipGatewayTransport, make_sip_params
+
+    wire = _Wire()
+    saved = stt_mod.TURN_TEXT
+    stt_mod.TURN_TEXT = "slice"
+    try:
+        session = build_agent_session(SipGatewayTransport(wire.connection, make_sip_params()))
+    finally:
+        stt_mod.TURN_TEXT = saved
+    try:
+        pauser = session.ledger._output.previous
+        assert isinstance(pauser, BargeInPauser)
+        assert session.stt.slices_asked
+        session.stt.barge_hold(True)
+        assert pauser._holds == {"the turn's final"}, pauser._holds
+        session.stt.barge_hold(False)
+        assert pauser._holds == set()
+        assert pauser.before_cap == session.stt.close_held
+    finally:
+        wire.connection.close()
+        wire.gw_sock.close()
 
 
 def main():

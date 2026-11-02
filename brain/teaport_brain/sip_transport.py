@@ -82,6 +82,9 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.utils.base_object import BaseObject
 
+# A playout pause ends on its own after _PAUSE_GUARD_S, under pipecat's write deadline;
+# the pauser's cap stays below it (barge_pause.py PAUSE_GUARD_S, MAX_CAP_S).
+from teaport_brain.barge_pause import PAUSE_GUARD_S as _PAUSE_GUARD_S
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.sip_serializer import (
     BYTES_PER_FRAME,
@@ -101,12 +104,6 @@ class SipGatewayParams(TransportParams):
 # Largest datagram we will read (1 tag + 640 audio, or small JSON). Matches
 # teaport-sip/src/ipc/protocol.h MAX_FRAME_BYTES; recv() truncates beyond this.
 MAX_FRAME_BYTES = 2048
-
-# A playout pause (barge_pause.py) ends on its own after this long. It blocks a write
-# that MediaSender bounds at audio_out_write_timeout_secs (10 s) and treats running
-# past it as the transport being dead for the rest of the call, so this stays under it
-# whatever the pauser asks for.
-_PAUSE_GUARD_S = 8.0
 
 # Default gateway socket path (the LIVE appliance gateway). It lives in the systemd
 # units' RuntimeDirectory (/run/teaport, mode 0750) — NOT world-writable /tmp — so no

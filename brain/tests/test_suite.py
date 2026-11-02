@@ -46,6 +46,8 @@ TIMEOUTS: dict[str, int] = {
     "test_call_experience.py": 600,
     # Fifteen sessions through the real brain, the SIP ones at real time (~60 s).
     "test_post_tool_under_speech.py": 240,
+    # Three calls through the real SIP brain with sliced turn text, at real time (~50 s).
+    "test_turn_text_call.py": 240,
 }
 
 # Scripts whose core assertions need real hardware/network (they call

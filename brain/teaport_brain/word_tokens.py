@@ -1,0 +1,33 @@
+#
+# word_tokens.py — the caller's words as two modules compare them, in one rule: the
+# barge-in guard's stop words (barge_pause) and a sliced turn's texts (stt.py TURN TEXT:
+# its cut's margin, its correction, whether a barge-in has words), in any script.
+#
+# A word is a run of letters, combining marks (Devanagari's vowel signs, Arabic's
+# harakat), digits and apostrophes, of the text in NFKC (full-width forms are the
+# ordinary ones), casefolded; anything else separates words, and an apostrophe at either
+# end is not part of one. A script written without spaces gives its run as one word.
+# "don’t" is "don't"; "A.D., 1000" is "a", "d", "1000".
+#
+# Not the wake gate's and echo guard's rule (wake_words.normalize), which matches
+# phrases rather than counting words: it keeps the same letters, marks and digits in
+# NFKC, casefolded, but makes an apostrophe a space ("don t"), and maps each character
+# back to the source for the guard to cut at. A contraction is one word here, as the
+# turn texts were measured (teaport-engine #108's spike).
+#
+import unicodedata
+
+
+def word_tokens(text: str) -> list:
+    """The words of `text` (see the module header)."""
+    out, word = [], []
+    text = unicodedata.normalize("NFKC", text or "")
+    for ch in text.casefold().replace("’", "'"):
+        if ch.isalnum() or ch == "'" or unicodedata.category(ch)[0] == "M":
+            word.append(ch)
+        elif word:
+            out.append("".join(word))
+            word = []
+    if word:
+        out.append("".join(word))
+    return [w for w in (w.strip("'") for w in out) if w]
