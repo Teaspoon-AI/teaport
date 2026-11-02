@@ -138,7 +138,7 @@
 (*                                                                          *)
 (* The barge-in pause (barge_pause.py, #86). With the bot audible, caller   *)
 (* speech PAUSES playout at the transport; their words then cancel the      *)
-(* reply as before (min words, or while paused a stop word), and no words   *)
+(* reply as before (min words, or a stop word, paused or not), and no words *)
 (* resume it. A pause holds back the reply's own end, so the bot counts as  *)
 (* speaking until the resume.                                               *)
 (*                                                                          *)
@@ -153,7 +153,11 @@
 (* PAUSE = "shipped"         -- plus a tail learned DURING the pause (the   *)
 (*                              transport re-announces the pause when the   *)
 (*                              reply's synthesis completes).               *)
-(* PAUSE = "noStopWord"      -- the shipped pause without the stop word.    *)
+(* PAUSE = "noStopWord"      -- the shipped pause without the stop word     *)
+(*                              over a PAUSED reply.                        *)
+(* PAUSE = "pausedStopOnly"  -- the stop word only over a paused reply: the *)
+(*                              shipped pause before #216 (a lone "Stop."   *)
+(*                              the pause missed was under the word guard). *)
 (* PAUSE = "keepOnInterrupt" -- a transport that keeps its pause when the   *)
 (*                              interruption cancels the reply.             *)
 (*                                                                          *)
@@ -269,7 +273,9 @@ VARIABLES
     \* --- monitors ---
     missedBargeIn,   \* the user spoke over the bot and got no interruption, at a
                      \* moment when they had already had a quiet one since the
-                     \* inference: the wedge, not the ordinary in-turn delay
+                     \* inference: the wedge, not the ordinary in-turn delay; or
+                     \* said "Stop." to it and it talked on (StopWord) or resumed
+                     \* after it (ResumeP)
     staleReply,      \* a reply asked against a context the commit no longer has
                      \* was handed to the pipeline
     \* --- the reply hold (reply_hold.py) ---
@@ -379,7 +385,7 @@ judgeVars == <<judging, grown, stopHeld, resumedUnder, resumeOverWords>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
-LateTail     == PAUSE \in {"shipped", "noStopWord", "keepOnInterrupt"}
+LateTail     == PAUSE \in {"shipped", "noStopWord", "pausedStopOnly", "keepOnInterrupt"}
 \* May a commit run with a cut on its way? The fence holds it, unless its bound runs out.
 CommitMayOvertake == FENCE \in {"none", "timed"}
 \* May a speculation's snapshot? Only where the fence does not cover it; past the bound
@@ -785,12 +791,15 @@ OneWord ==
     /\ UNCHANGED toolVars
 
 \* A transcript made only of stop words ("Stop.") over the speaking bot. Under the
-\* 2-word guard; as shipped, a stop utterance to a PAUSED bot starts the turn. If it
-\* does not, the caller said stop to a bot that went quiet for them, and ResumeP
-\* records what happens next.
+\* 2-word guard; as shipped (#216), a stop utterance starts the turn whether or not
+\* the bot is paused. If it does not, either the bot talks on over "Stop." (a missed
+\* barge-in at once) or the caller said stop to a bot that went quiet for them, and
+\* ResumeP records what happens next.
+StopStarts ==
+    IF pausedP THEN PAUSE /= "noStopWord" ELSE PAUSE /= "pausedStopOnly"
 StopWord ==
     /\ ~endQueued
-    /\ PAUSE /= "off"
+    \* No PAUSE guard: the strategy is every session's, pauser or none.
     /\ turns < MaxTurns /\ ~userTurn /\ botSpeaking /\ ~stopInFlight
     /\ IF judging /\ JUDGE = "noReask"
          THEN \* Held with the rest: "Okay -- stop." waits on the verdict on "Okay".
@@ -802,12 +811,13 @@ StopWord ==
               /\ StartTurn
               /\ JudgeRelease
               /\ UNCHANGED missedBargeIn
-         ELSE IF pausedP /\ PAUSE /= "noStopWord"
+         ELSE IF StopStarts
          THEN /\ StartTurn
               /\ UNCHANGED missedBargeIn
               /\ UNCHANGED judgeVars
          ELSE /\ stopHeard' = (stopHeard \/ pausedP)
-              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
+              /\ missedBargeIn' = (missedBargeIn \/ ~pausedP)
+              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
               /\ UNCHANGED fenceVars
@@ -1781,7 +1791,7 @@ TypeOK ==
     /\ endQueued \in BOOLEAN /\ replyOverResume \in BOOLEAN /\ splitTurn \in BOOLEAN
     /\ (~Gated => ~armed /\ ~held /\ ~paused)
     /\ PAUSE \in {"off", "asWritten", "aOnly", "tailAtPause", "shipped", "noStopWord",
-                  "keepOnInterrupt"}
+                  "pausedStopOnly", "keepOnInterrupt"}
     /\ pausedP \in BOOLEAN /\ left \in {"long", "mid", "short"} /\ synthDone \in BOOLEAN
     /\ tailKnown \in BOOLEAN /\ wouldEnd \in BOOLEAN /\ stopHeard \in BOOLEAN
     /\ answerLost \in BOOLEAN

@@ -218,6 +218,7 @@ run UserTurn.tla ut_pause_tailAtPause_nolostanswer    "(expected: FAILS NoLostAn
 run UserTurn.tla ut_pause_shipped_reach_band          "(expected: FAILS NoPauseInTailBand — witness: a pause in the 0.5-1 s band is reachable as shipped)"
 run UserTurn.tla ut_pause_shipped_reach_elapsed       "(expected: FAILS NoTailElapsed — witness: a held-back tail that would have ended is reachable as shipped)"
 run UserTurn.tla ut_pause_noStopWord_nomissedbargein  "(expected: FAILS NoMissedBargeIn — no stop word: told stop, the paused bot resumes)"
+run UserTurn.tla ut_pause_pausedStopOnly_nomissedbargein "(expected: FAILS NoMissedBargeIn — before #216: a stop word the pause missed, the bot talks on)"
 run UserTurn.tla ut_pause_keepOnInterrupt_nostuckpause "(expected: FAILS NoStuckPause — a transport that keeps its pause through the interruption)"
 run UserTurn.tla ut_pause_shipped_all                 "(expected: holds — barge_pause.py as shipped, with the reply hold and every other property)"
 run UserTurn.tla ut_pause_shipped_timed               "(expected: holds — the shipped pause with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
