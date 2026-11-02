@@ -36,6 +36,7 @@ from teaport_brain import barge_pause, llm_http2
 from teaport_brain import owed as owed_mod
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
+from teaport_brain.llm_error_speaker import ANSWERS
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 from teaport_brain.tts_text import has_speech
@@ -702,10 +703,24 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 into[:] = noted
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
+        # The provider accepted the request (a refusal raises before the stream opens):
+        # whatever run of failures /health was reporting is over (#205).
+        ANSWERS.succeeded()
         # _RenumberedStream, not the bare generator — see the class docstring: a
         # generator has no close(), so wrapping in one silently disabled base_llm's
         # socket release.
         return _RenumberedStream(stream)
+
+    async def push_error_frame(self, error, force_treat_as_permanent: bool = False):
+        """Every error this service reports also goes on the record /health serves
+        (llm_error_speaker.ANSWERS, #205) -- here rather than in LLMErrorSpeaker, which
+        is not in the pipeline when TEAPORT_LLM_ERROR_SPEECH is off. After super(): that
+        is where pipecat settles the frame's category."""
+        if force_treat_as_permanent:
+            await super().push_error_frame(error, force_treat_as_permanent=True)
+        else:
+            await super().push_error_frame(error)
+        ANSWERS.failed(error)
 
     async def judge_cut(self, question: str, heard: str, rest: str):
         """The cut judge owed.Owed asks (Owed._judge): whether a reply cut while it played

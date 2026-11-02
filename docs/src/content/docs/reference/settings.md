@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2554#60f50447 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2554#21592d97 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -44,7 +44,7 @@ In `/etc/teaport/brain.env`.
 | `TEAPORT_FACE_MOOD` | `tag` | Where the OLED face's mood comes from. tag: the model begins a reply with a mood tag ([mood: sad], never spoken) when it has a clear feeling, and the reply's words are scored (VADER) when it gave none. text: the words only, no tag. off: the face is given no mood. One of `tag`, `text`, `off`. |
 | `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
-| `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. |
+| `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help. |
 | `TEAPORT_RAW_LLM_CAPTURE` | **on** | Log a completion verbatim when it degenerates. Healthy turns log nothing. |
 
 ## Speech engine connection

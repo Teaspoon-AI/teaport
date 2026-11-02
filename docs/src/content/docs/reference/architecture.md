@@ -129,7 +129,7 @@ Client tools run on the client, not in the brain: the client announces its featu
 
 Only the plugin's Talk session has a relay for `openclaw_agent_consult`. The plugin announces `relay` in its features when OpenClaw gives the session a tool-call handler. The brain also counts the run-control protocol, which only the plugin speaks, so a brain updated without its plugin keeps the relay. A consult on any other session goes straight to the agent: the brain sends no call to the client and does not wait for the relay to acknowledge one.
 
-<!-- source: brain/teaport_brain/tools.py:1296-1310#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:337-338#62541491 -->
+<!-- source: brain/teaport_brain/tools.py:1296-1310#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:338-339#62541491 -->
 
 ## Network ports
 

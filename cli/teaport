@@ -49,6 +49,39 @@ sip_line() {  # the SIP front-end, as a status line
   local st col="$RED"; st="$(brain_sip)"; [ "$st" = connected ] && col="$GREEN"
   printf '  %-28s %s\n' "SIP front-end (brain)" "$(c "$col" "$st")"
 }
+# What the brain's last requests for a reply met (/health "answers", issue #205), as
+# "<state>\t<text>": ok | untried | failing | account, or "unknown" when the brain does
+# not answer or predates it. Plain words: this is the owner's view of a refused key.
+brain_answers() {
+  brain_health | python3 -c 'import json, sys, time
+a = json.load(sys.stdin).get("answers")
+if not isinstance(a, dict) or a.get("state") not in ("ok", "untried", "failing", "account"):
+    raise SystemExit(1)
+st = a["state"]
+def at(t):
+    lt = time.localtime(t)
+    same_day = time.strftime("%Y-%m-%d", lt) == time.strftime("%Y-%m-%d")
+    return time.strftime("%H:%M" if same_day else "%Y-%m-%d %H:%M", lt)
+why = (" (%s)" % a["reason"]) if a.get("reason") else ""
+if st == "ok":
+    text = "working"
+elif st == "untried":
+    text = "none asked for since the brain started"
+elif st == "account":
+    text = ("refused since %s%s: the account behind the answers needs attention, and"
+            " it will not pass by itself — check the key and its account on the settings"
+            " page" % (at(a["since"]), why))
+else:
+    text = ("failing since %s%s, %d time(s): the provider had trouble; this usually"
+            " passes — if it keeps up, see teaport logs brain" % (at(a["since"]), why, a.get("count", 0)))
+print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
+}
+answers_line() {  # the answers, as a status line
+  local line st col; line="$(brain_answers)"; st="${line%%$'\t'*}"
+  case "$st" in ok) col="$GREEN" ;; account) col="$RED" ;; failing) col="$YEL" ;; *) col="0" ;; esac
+  [ "$st" = unknown ] && line=$'unknown\tunknown (the brain does not say)'
+  printf '  %-28s %s\n' "answers (brain)" "$(c "$col" "${line#*$'\t'}")"
+}
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
 # Not `grep -q`: under pipefail, grep leaving at its first match can SIGPIPE ss and
 # fail the pipeline for a port that IS listening (install.sh's contains() says more).
@@ -90,6 +123,9 @@ cmd_status() {
   # how "the box is fine" and "nobody can call in" were both true at once (#41). Keyed
   # on the unit being ENABLED, not on the conf: `sip disable` keeps the conf on purpose.
   if sip_enabled; then svc_line teaport-sip; sip_line; fi
+  # A capped or revoked key passes every other line here: the units run, the ports
+  # listen, and only real turns find out (#205).
+  answers_line
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
@@ -160,6 +196,19 @@ else:
   esac
 }
 
+# answers_check — what real turns met at the provider (brain_answers, #205). The key
+# checks above only see that a key is present; a capped, revoked or wrong one passes
+# them, and a live probe would cost money per run. Nothing when the brain does not say.
+# Uses doctor's ok/warnc/failc.
+answers_check() {
+  local line; line="$(brain_answers)"
+  case "$line" in
+    ok$'\t'*|untried$'\t'*) ok "answers: ${line#*$'\t'}" ;;
+    failing$'\t'*)          warnc "answers: ${line#*$'\t'}" ;;
+    account$'\t'*)          failc "answers: ${line#*$'\t'}" ;;
+  esac
+}
+
 # env_file_check <file> — whether doctor can judge an env file's settings, saying why not:
 # missing is an install that never ran (or never finished); unreadable is a first install
 # under plain sudo, which leaves the file root's (install.sh read_env_file). Either way
@@ -212,6 +261,7 @@ cmd_doctor() {
   listening "$ENGINE_PORT" && ok "engine :$ENGINE_PORT listening" || failc "engine :$ENGINE_PORT not listening (allow ~1min after start)"
   listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
   brain_pacing_check
+  answers_check
   # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no
   # line to check, and `sip disable` without --purge keeps the conf while the operator
   # means the line to be off, so "conf present" alone must NOT make --fix bring it back.

@@ -335,7 +335,7 @@ min = 0
 default = 30
 read = "startup"
 tier = "tuning"
-help = "Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn."
+help = "Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help."
 
 [[settings]]
 name = "TEAPORT_RAW_LLM_CAPTURE"
