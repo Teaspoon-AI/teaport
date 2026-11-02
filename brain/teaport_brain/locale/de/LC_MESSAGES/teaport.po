@@ -49,11 +49,14 @@ msgstr "Alles klar. Ich verbinde mich jetzt mit {network}. Verbinde dein Handy b
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Ich bin mit {network} verbunden und wieder online."
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "Der Einrichtungsmodus hat zu lange gedauert, deshalb habe ich alles wieder so eingestellt wie vorher."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "Es hat sich nichts rechtzeitig verbunden, deshalb habe ich den Einrichtungsmodus beendet und alles wieder so eingestellt wie vorher."
 
 msgid "I've left setup mode: {reason}."
 msgstr "Ich habe den Einrichtungsmodus verlassen: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Tut mir leid, ich konnte nicht in den Einrichtungsmodus wechseln: {reason}."
 
 msgid "your network"
 msgstr "deinem Netzwerk"
@@ -67,17 +70,17 @@ msgstr "Okay, schon gut."
 msgid "Say yes to go into setup mode, or no."
 msgstr "Sag ja, um in den Einrichtungsmodus zu wechseln, oder nein."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "Ich bin gerade im Einrichtungsmodus. Sag wiederholen, um die Angaben noch einmal zu hören, oder abbrechen, um aufzuhören."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "Ich bin gerade im Einrichtungsmodus. Sag wiederholen, um die Angaben noch einmal zu hören, oder abbrechen, um den Einrichtungsmodus zu verlassen."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Folge dann den Schritten, um mich mit dem WLAN zu verbinden. Falls sie sich nicht von selbst öffnen, öffne {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Öffne dann deinen Browser, geh zu {url} und wähle dein WLAN aus."
 
-msgid "You can also read these details on my screen."
-msgstr "Du findest diese Angaben auch auf meinem Display."
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Verbinde dein Handy mit dem WLAN und gib das Passwort ein, die auf meinem Display stehen. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "Du kannst auch den Code auf meinem Display scannen, um dich zu verbinden, oder die Angaben dort ablesen."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Scanne den Code auf meinem Display mit der Kamera deines Handys, um dich mit meinem Einrichtungsnetzwerk zu verbinden. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
 
 msgid "the saved settings for it did not work"
 msgstr "Die gespeicherten Einstellungen für dieses Netzwerk haben nicht funktioniert"

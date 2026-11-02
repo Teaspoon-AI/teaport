@@ -49,11 +49,14 @@ msgstr "わかりました。{network}に接続します。スマートフォン
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "{network}に接続しました。オンラインに戻りました。"
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "セットアップモードが時間切れになったため、元の状態に戻しました。"
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "時間内に接続されなかったため、セットアップモードを終了して、元の状態に戻しました。"
 
 msgid "I've left setup mode: {reason}."
 msgstr "セットアップモードを終了しました。{reason}。"
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "すみません、セットアップモードに切り替えられませんでした。{reason}。"
 
 msgid "your network"
 msgstr "選んだネットワーク"
@@ -67,17 +70,17 @@ msgstr "わかりました。設定はやめておきますね。"
 msgid "Say yes to go into setup mode, or no."
 msgstr "セットアップモードにするなら「はい」、しないなら「いいえ」と言ってください。"
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "今、セットアップモードです。案内をもう一度聞くには「もう一度」、やめるには「キャンセル」と言ってください。"
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "今、セットアップモードです。案内をもう一度聞くには「もう一度」、セットアップモードを終了するには「キャンセル」と言ってください。"
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "スマートフォンで、次のワイファイのネットワークに接続してください。ネットワーク名は、{ssid}です。パスワードは、{password}です。続けて、表示される手順に沿って、わたしをワイファイに接続してください。自動で開かない場合は、ブラウザで{url}を開いてください。"
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "スマートフォンで、次のワイファイのネットワークに接続してください。ネットワーク名は、{ssid}です。パスワードは、{password}です。次に、ブラウザを開いて{url}にアクセスし、お使いのワイファイを選んでください。"
 
-msgid "You can also read these details on my screen."
-msgstr "同じ情報は、本体の画面にも表示されています。"
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "スマートフォンで、画面に表示されているワイファイのネットワークに、表示されているパスワードで接続してください。次に、スマートフォンのブラウザで画面に表示されているアドレスを開き、お使いのワイファイを選んでください。詳しい情報を読み上げてほしい場合は「もう一度」と言ってください。"
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "本体の画面のコードを読み取って接続することも、画面で同じ情報を確認することもできます。"
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "スマートフォンのカメラで画面のコードを読み取って、設定用のネットワークに接続してください。次に、スマートフォンのブラウザで画面に表示されているアドレスを開き、お使いのワイファイを選んでください。詳しい情報を読み上げてほしい場合は「もう一度」と言ってください。"
 
 msgid "the saved settings for it did not work"
 msgstr "保存されていた設定では接続できませんでした"

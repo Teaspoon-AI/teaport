@@ -55,7 +55,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from teaport_brain import i18n
+from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
 
@@ -232,8 +232,28 @@ def spell(text: str, t: i18n.T) -> str:
     return t.p("spell", ", ").join(words_)
 
 
-def instructions(status: dict, t: i18n.T) -> str:
+def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
+    """What the user does next, in the order they do it. With the box's display up
+    (wifi_setup.py shows "Network ...", "Password ..." and an address, and a code that
+    joins when the avatar draws one), the voice points at the screen and offers the
+    spelled details as a fallback; without it, or `spelled` (a "repeat"), it spells the
+    network, the password and the address. Nothing here counts on the phone opening the
+    page by itself (a captive-portal check that not every phone makes)."""
     ssid, password = status.get("ssid", ""), status.get("password", "")
+    if not spelled and status.get("screen"):
+        if status.get("qr"):
+            # The code joins by the real name, whatever the font can draw.
+            return t._("Scan the code on my screen with your phone's camera to join my "
+                       "setup network. Then, in your phone's browser, go to the address "
+                       "on my screen and pick your Wi-Fi. Say repeat if you'd like me to "
+                       "read the details.")
+        # Without a code the screen's network line is the name only where the font
+        # draws it as it is; a folded one would read wrong, so it is spelled instead.
+        if display.fold_ascii(ssid) == ssid:
+            return t._("On your phone, join the Wi-Fi network and enter the password "
+                       "shown on my screen. Then, in your phone's browser, go to the "
+                       "address on my screen and pick your Wi-Fi. Say repeat if you'd "
+                       "like me to read the details.")
     name = ssid.split("-", 1)[1] if ssid.startswith(SSID_WORD + "-") else ""
     if name:
         parts = spell(name, t).split(t.p("spell", ", "))
@@ -242,18 +262,9 @@ def instructions(status: dict, t: i18n.T) -> str:
         # The setup network's address, digit by digit: "one zero dot four two dot ...".
         url = f" {t.p('spell', 'dot')} ".join(
             " ".join(t.p("digit", d) for d in part) for part in "10.42.0.1".split("."))
-    said = t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
-               "Then follow the steps to connect me to Wi-Fi. If they don't open by "
-               "themselves, go to {url}.").format(
+    return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
+               "Then open your browser, go to {url}, and pick your Wi-Fi.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
-    # The box's display has them too, and a code that joins if the avatar could draw it
-    # (wifi_setup.py, display.py) -- and with a code, a name it can only point at.
-    if status.get("qr"):
-        said += " " + t._("You can also scan the code on my screen to join, "
-                          "or read these details there.")
-    elif status.get("screen"):
-        said += " " + t._("You can also read these details on my screen.")
-    return said
 
 
 class WifiSetupVoice(FrameProcessor):
@@ -282,6 +293,9 @@ class WifiSetupVoice(FrameProcessor):
         self._last: dict = {}
         self._before: tuple | None = None  # (run_id, time) of the file before this run
         self._why = ""  # the last failed attempt's reason (an English msgid)
+        # The user has heard "I'm in setup mode" this run: an error before that is a
+        # failure to go into it, not a leaving.
+        self._in_mode = False
         self._poller: asyncio.Task | None = None
         self._bot_speaking = False
         self._quiet_since = -math.inf
@@ -342,6 +356,7 @@ class WifiSetupVoice(FrameProcessor):
 
     async def _start(self) -> None:
         self.state, self._last, self._why = "running", {}, ""
+        self._in_mode = False  # set by the first ap_up announcement
         # What the status file says before this run: any other content is this run's.
         # By content, not by clock: the clock jumps when the box comes online (NTP).
         old = self._read_file()
@@ -372,7 +387,7 @@ class WifiSetupVoice(FrameProcessor):
             # what is true -- setup is on, and cancel is the way out.
             logger.warning(f"wifi setup: could not stop {UNIT}: {err}")
             await self.say(self.t._("I'm in setup mode. Say repeat to hear the details "
-                                    "again, or cancel to stop."))
+                                    "again, or cancel to leave setup mode."))
             return
         await self._stop_following()
         self.state = "idle"
@@ -471,8 +486,7 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"
         t = self.t
         self._ended("it stopped without saying how (something went wrong).")
-        await self.say(t._("I've left setup mode: {reason}.").format(
-            reason=t._("something went wrong")))
+        await self.say(self._stopped_line(t._("something went wrong")))
 
     def _ended(self, outcome: str, online: bool = False) -> None:
         """Tell the model how this setup ended: "Wi-Fi setup ended: <outcome>" into its
@@ -499,6 +513,7 @@ class WifiSetupVoice(FrameProcessor):
                     if status.get("error") and self._why else "")
             # The first time: say what state the box is in (a retry has the reason).
             await self.say((lead or t._("I'm in setup mode.") + " ") + instructions(status, t))
+            self._in_mode = True
         elif phase == "joining":
             await self.say(t._("Got it. I'm joining {network}. Switch your phone back to it.")
                            .format(network=network))
@@ -516,7 +531,8 @@ class WifiSetupVoice(FrameProcessor):
             # The reasons are English msgids (wifi.py / wifi_setup.py): no password.
             self._ended(f"it timed out; {_PUT_BACK}" + (
                 f" The last attempt to join failed: {self._why}." if self._why else ""))
-            await self.say(t._("Setup mode timed out, so I've put things back as they were."))
+            await self.say(t._("Nothing connected in time, so I've left setup mode and put things back "
+                               "as they were."))
         elif phase == "stopped":
             # The unit was stopped from outside (systemctl, the config page, a restart)
             # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
@@ -527,8 +543,17 @@ class WifiSetupVoice(FrameProcessor):
         elif phase == "error":
             self.state = "idle"
             self._ended(f"it failed: {status.get('reason') or 'something went wrong'}.")
-            await self.say(t._("I've left setup mode: {reason}.").format(
-                reason=t._(status.get("reason") or N_("something went wrong"))))
+            await self.say(self._stopped_line(
+                t._(status.get("reason") or N_("something went wrong"))))
+
+    def _stopped_line(self, reason: str) -> str:
+        """An error's line: a leaving once the user has heard the box is in setup mode,
+        before that a failure to go into it (no Wi-Fi device, the network or the page
+        would not start). `reason` is already in the user's language."""
+        t = self.t
+        if self._in_mode:
+            return t._("I've left setup mode: {reason}.").format(reason=reason)
+        return t._("Sorry, I couldn't go into setup mode: {reason}.").format(reason=reason)
 
     # -- the frames
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -598,10 +623,10 @@ class WifiSetupVoice(FrameProcessor):
         if heard("cancel", text, t):
             await self._shielded(self._cancel())
         elif heard("repeat", text, t) and self._last.get("phase") == "ap_up":
-            await self.say(instructions(self._last, t))
+            await self.say(instructions(self._last, t, spelled=True))  # the details, read out
         else:
             await self.say(t._("I'm in setup mode. Say repeat to hear the details again, "
-                               "or cancel to stop."))
+                               "or cancel to leave setup mode."))
         return True
 
 

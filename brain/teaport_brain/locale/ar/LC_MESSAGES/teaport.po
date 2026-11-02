@@ -22,28 +22,28 @@ msgstr ""
 "Language: ar\n"
 
 msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "هل نبدأ إعداد الواي فاي؟ سأدخل وضع الإعداد، وسينقطع اتصالي بالإنترنت لبضع دقائق أثناء الإعداد من هاتفك. يُرجى الإجابة بنعم أو لا."
+msgstr "هل نبدأ إعداد الواي فاي؟ سأدخل وضع التوصيل، وسينقطع اتصالي بالإنترنت لبضع دقائق أثناء التوصيل من هاتفك. يُرجى الإجابة بنعم أو لا."
 
 msgid "I'm already in setup mode."
-msgstr "أنا في وضع الإعداد بالفعل."
+msgstr "أنا في وضع التوصيل بالفعل."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "حسنًا. لحظة واحدة، سأبحث عن الشبكات المتاحة."
 
 msgid "I'm in setup mode."
-msgstr "أنا الآن في وضع الإعداد."
+msgstr "أنا الآن في وضع التوصيل."
 
 msgid "Sorry, I couldn't go into setup mode."
-msgstr "عذرًا، تعذّر الدخول إلى وضع الإعداد."
+msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل."
 
 msgid "Okay, I've left setup mode and put things back as they were."
-msgstr "حسنًا، خرجتُ من وضع الإعداد وأعدتُ كل شيء كما كان."
+msgstr "حسنًا، خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
-msgstr "تعذّر الدخول إلى وضع الإعداد. يُرجى المحاولة مرة أخرى بعد قليل."
+msgstr "تعذّر الدخول إلى وضع التوصيل. يُرجى المحاولة مرة أخرى بعد قليل."
 
 msgid "I'm still in setup mode, waiting for you."
-msgstr "ما زلتُ في وضع الإعداد بانتظارك."
+msgstr "ما زلتُ في وضع التوصيل بانتظارك."
 
 msgid "That didn't work: {reason}."
 msgstr "لم ينجح ذلك: {reason}."
@@ -54,11 +54,14 @@ msgstr "فهمت. أنضمّ الآن إلى {network}. يُرجى إعادة ت
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "انضممتُ إلى {network}، وعاد اتصالي بالإنترنت."
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "انتهت مهلة وضع الإعداد، لذا أعدتُ كل شيء كما كان."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "لم يتم الاتصال في الوقت المحدد، لذا خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
 msgid "I've left setup mode: {reason}."
-msgstr "خرجتُ من وضع الإعداد: {reason}."
+msgstr "خرجتُ من وضع التوصيل: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل: {reason}."
 
 msgid "your network"
 msgstr "شبكتك"
@@ -70,19 +73,19 @@ msgid "Okay, never mind."
 msgstr "حسنًا، لا بأس."
 
 msgid "Say yes to go into setup mode, or no."
-msgstr "يُرجى قول «نعم» للدخول إلى وضع الإعداد، أو «لا» للإلغاء."
+msgstr "يُرجى قول «نعم» للدخول إلى وضع التوصيل، أو «لا» للإلغاء."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "أنا الآن في وضع الإعداد. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» للخروج منه."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "أنا الآن في وضع التوصيل. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» للخروج من وضع التوصيل."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ثم يُرجى اتباع الخطوات لتوصيلي بالواي فاي. وإن لم تُفتح تلقائيًا، فعنوانها {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ثم يُرجى فتح المتصفح والانتقال إلى {url} واختيار شبكة الواي فاي الخاصة بك."
 
-msgid "You can also read these details on my screen."
-msgstr "يمكنك أيضًا قراءة هذه التفاصيل على شاشتي."
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي وإدخال كلمة المرور الظاهرتين على شاشتي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "يمكنك أيضًا مسح الرمز على شاشتي للانضمام، أو قراءة هذه التفاصيل عليها."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "يُرجى مسح الرمز الظاهر على شاشتي بكاميرا هاتفك للانضمام إلى شبكتي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
 msgid "the saved settings for it did not work"
 msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"

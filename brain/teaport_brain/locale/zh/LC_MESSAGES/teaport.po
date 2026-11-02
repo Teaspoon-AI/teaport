@@ -17,28 +17,28 @@ msgstr ""
 "Language: zh\n"
 
 msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "要设置无线网络吗？我会进入设置模式，你在手机上操作的这几分钟里，我会暂时断网。要的话请说好的，不要就说不用。"
+msgstr "要设置无线网络吗？我会进入配网模式，你在手机上操作的这几分钟里，我会暂时断网。要的话请说好的，不要就说不用。"
 
 msgid "I'm already in setup mode."
-msgstr "我已经在设置模式了。"
+msgstr "我已经在配网模式了。"
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "好的，稍等一下，我来找找附近的网络。"
 
 msgid "I'm in setup mode."
-msgstr "我已进入设置模式。"
+msgstr "我已进入配网模式。"
 
 msgid "Sorry, I couldn't go into setup mode."
-msgstr "抱歉，我没能进入设置模式。"
+msgstr "抱歉，我没能进入配网模式。"
 
 msgid "Okay, I've left setup mode and put things back as they were."
-msgstr "好的，我已经退出设置模式，一切都恢复原样了。"
+msgstr "好的，我已经退出配网模式，一切都恢复原样了。"
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
-msgstr "没能进入设置模式，请稍后再试一次。"
+msgstr "没能进入配网模式，请稍后再试一次。"
 
 msgid "I'm still in setup mode, waiting for you."
-msgstr "我还在设置模式，正在等你。"
+msgstr "我还在配网模式，正在等你。"
 
 msgid "That didn't work: {reason}."
 msgstr "没能成功，{reason}。"
@@ -49,11 +49,14 @@ msgstr "收到，我这就连接{network}。请把手机也切回这个网络。
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "我已经连上{network}，又能上网了。"
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "设置模式超时了，我已经把一切恢复原样。"
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "没有及时连上网络，所以我已经退出配网模式，一切都恢复原样了。"
 
 msgid "I've left setup mode: {reason}."
-msgstr "设置模式已退出，因为{reason}。"
+msgstr "我已经退出配网模式，因为{reason}。"
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "抱歉，我没能进入配网模式，因为{reason}。"
 
 msgid "your network"
 msgstr "你的网络"
@@ -65,19 +68,19 @@ msgid "Okay, never mind."
 msgstr "好的，那就先不设置了。"
 
 msgid "Say yes to go into setup mode, or no."
-msgstr "要进入设置模式就说好的，不要就说不用。"
+msgstr "要进入配网模式就说好的，不要就说不用。"
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "我正处于设置模式。想再听一遍就说重复，想停下来就说取消。"
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "我正处于配网模式。想再听一遍就说重复，想退出配网模式就说取消。"
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "请用手机连接无线网络{ssid}。密码是{password}。然后按照步骤把我连上无线网络。如果没有自动弹出，请在浏览器里打开{url}。"
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "请用手机连接无线网络{ssid}。密码是{password}。然后打开浏览器，访问{url}，选择你的无线网络。"
 
-msgid "You can also read these details on my screen."
-msgstr "这些信息也显示在我的屏幕上。"
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "请用手机连接我屏幕上显示的无线网络，并输入屏幕上显示的密码。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "你也可以扫描我屏幕上的二维码来连接，或者在屏幕上查看这些信息。"
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "请用手机相机扫描我屏幕上的二维码，连接我的热点。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
 
 msgid "the saved settings for it did not work"
 msgstr "这个网络之前保存的设置不起作用"

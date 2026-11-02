@@ -514,6 +514,7 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
     assert shown[1]["lines"] == ["Joining", "home"]
     # The last word: up for its seconds after the unit has exited, not taken down.
     assert sent[-1]["lines"] == ["Connected to", "home"]
+    assert sent[-1]["title"] == ws.CONNECTED_TITLE == "Wi-Fi"   # setup mode is over
     assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
     assert "homepass1" not in json.dumps(sent)       # the user's own password: never
 
@@ -727,13 +728,41 @@ def test_the_details_are_spelled_for_the_voice():
     assert "screen" not in text                      # no display: not mentioned
 
 
-def test_the_voice_points_at_the_screen_only_when_it_got_there():
+SPELLED = ("On your phone, join the Wi-Fi network teaport, dash, nine, E, three, five. "
+           "The password is four, seven, one, nine, zero, three, five, two. Then open your "
+           "browser, go to teaport dash nine E three five dot local, and pick your Wi-Fi.")
+
+
+def test_the_voice_follows_what_the_user_does_screen_first():
+    """In the order the user acts: the code (or the screen's network and password), then
+    the screen's address in the browser, then their network. The screen always shows an
+    address (the .local one, or http://10.42.0.1 when the name was folded), so "the
+    address on my screen" holds in both screen branches. Nothing counts on the page
+    opening by itself."""
     st = {"ssid": "teaport-9e35", "password": "47190352"}
-    assert wv.instructions(dict(st, screen=True), EN).endswith(
-        " You can also read these details on my screen.")
-    assert "screen" not in wv.instructions(dict(st, screen=False), EN)
-    assert wv.instructions(dict(st, screen=True, qr=True), EN).endswith(
-        " You can also scan the code on my screen to join, or read these details there.")
+    qr = wv.instructions(dict(st, screen=True, qr=True), EN)
+    assert qr == ("Scan the code on my screen with your phone's camera to join my setup "
+                  "network. Then, in your phone's browser, go to the address on my screen "
+                  "and pick your Wi-Fi. Say repeat if you'd like me to read the details.")
+    text = wv.instructions(dict(st, screen=True), EN)
+    assert text == ("On your phone, join the Wi-Fi network and enter the password shown on "
+                    "my screen. Then, in your phone's browser, go to the address on my "
+                    "screen and pick your Wi-Fi. Say repeat if you'd like me to read the "
+                    "details.")
+    # No screen, or a repeat: spelled, network, password, address.
+    assert wv.instructions(dict(st, screen=False), EN) == SPELLED
+    for extra in ({"screen": True}, {"screen": True, "qr": True}):
+        assert wv.instructions(dict(st, **extra), EN, spelled=True) == SPELLED
+    assert all("by itself" not in s and "should open" not in s for s in (qr, text, SPELLED))
+
+
+def test_a_name_the_screen_folds_is_spelled_without_a_code():
+    """Without a code the screen shows the name as the font folds it (Cafe for Café),
+    which would join nothing: the voice spells the real one."""
+    st = {"ssid": "Café-box", "password": "47190352", "screen": True}
+    assert wv.instructions(st, EN).startswith("On your phone, join the Wi-Fi network capital C, A, F, é")
+    assert "on my screen" not in wv.instructions(st, EN)
+    assert "Scan the code" in wv.instructions(dict(st, qr=True), EN)   # the code has it
 
 
 @pytest.mark.parametrize("text,hit", [

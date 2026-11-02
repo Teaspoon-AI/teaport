@@ -49,11 +49,14 @@ msgstr "ठीक है। अब {network} से कनेक्ट किय
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "{network} से कनेक्शन हो गया है, और इंटरनेट फिर से चालू है।"
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "सेट अप मोड का समय ख़त्म हो गया, इसलिए मैंने सब कुछ पहले जैसा कर दिया है।"
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "समय पर कुछ भी कनेक्ट नहीं हुआ, इसलिए मैंने सेट अप मोड बंद कर दिया है और सब कुछ पहले जैसा कर दिया है।"
 
 msgid "I've left setup mode: {reason}."
 msgstr "सेट अप मोड बंद हो गया, क्योंकि {reason}।"
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "माफ़ कीजिए, सेट अप मोड चालू नहीं हो पाया, क्योंकि {reason}।"
 
 msgid "your network"
 msgstr "आपके नेटवर्क"
@@ -67,17 +70,17 @@ msgstr "ठीक है, रहने देते हैं।"
 msgid "Say yes to go into setup mode, or no."
 msgstr "सेट अप मोड चालू करना हो तो हाँ बोलिए, वरना नहीं।"
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "अभी सेट अप मोड चालू है। जानकारी फिर से सुननी हो तो दोबारा बोलिए, और रोकना हो तो कैंसल बोलिए।"
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "अभी सेट अप मोड चालू है। जानकारी फिर से सुननी हो तो दोबारा बोलिए, और सेट अप मोड से बाहर निकलना हो तो कैंसल बोलिए।"
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "अपने फ़ोन को उस वाई-फ़ाई नेटवर्क से जोड़िए, जिसका नाम है {ssid}। पासवर्ड है {password}। फिर मुझे वाई-फ़ाई से जोड़ने के लिए दिए गए चरणों का पालन कीजिए। अगर वे अपने आप न खुलें, तो ब्राउज़र में यह पता खोलिए, {url}।"
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "अपने फ़ोन को उस वाई-फ़ाई नेटवर्क से जोड़िए, जिसका नाम है {ssid}। पासवर्ड है {password}। फिर अपना ब्राउज़र खोलिए, यह पता खोलिए, {url}, और अपना वाई-फ़ाई चुनिए।"
 
-msgid "You can also read these details on my screen."
-msgstr "यह जानकारी आप मेरी स्क्रीन पर भी देख सकते हैं।"
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "अपने फ़ोन को मेरी स्क्रीन पर दिख रहे वाई-फ़ाई नेटवर्क से जोड़िए और वहीं दिख रहा पासवर्ड डालिए। फिर अपने फ़ोन के ब्राउज़र में मेरी स्क्रीन पर दिख रहा पता खोलिए और अपना वाई-फ़ाई चुनिए। जानकारी पढ़कर सुनानी हो तो दोबारा बोलिए।"
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "जुड़ने के लिए आप मेरी स्क्रीन पर दिख रहा कोड भी स्कैन कर सकते हैं, या यह जानकारी वहीं देख सकते हैं।"
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "अपने फ़ोन के कैमरे से मेरी स्क्रीन पर दिख रहा कोड स्कैन कीजिए, ताकि फ़ोन मेरे सेट अप वाले नेटवर्क से जुड़ जाए। फिर अपने फ़ोन के ब्राउज़र में मेरी स्क्रीन पर दिख रहा पता खोलिए और अपना वाई-फ़ाई चुनिए। जानकारी पढ़कर सुनानी हो तो दोबारा बोलिए।"
 
 msgid "the saved settings for it did not work"
 msgstr "उस नेटवर्क की सेव की हुई सेटिंग काम नहीं आई"

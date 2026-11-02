@@ -49,11 +49,14 @@ msgstr "Entendido. Me estoy conectando a {network}. Vuelve a conectar tu teléfo
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Listo, ya me conecté a {network} y vuelvo a tener internet."
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "Se acabó el tiempo del modo de configuración, así que dejé todo como estaba."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "No se conectó nada a tiempo, así que salí del modo de configuración y dejé todo como estaba."
 
 msgid "I've left setup mode: {reason}."
 msgstr "Salí del modo de configuración: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Lo siento, no pude entrar en modo de configuración: {reason}."
 
 msgid "your network"
 msgstr "tu red"
@@ -67,17 +70,17 @@ msgstr "Está bien, lo dejamos."
 msgid "Say yes to go into setup mode, or no."
 msgstr "Di sí para entrar en modo de configuración, o no."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "Estoy en modo de configuración. Di repite para volver a escuchar los datos, o cancela para salir."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "Estoy en modo de configuración. Di repite para volver a escuchar los datos, o cancela para salir del modo de configuración."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "En tu teléfono, conéctate a la red wifi {ssid}. La contraseña es {password}. Luego sigue los pasos para conectarme al wifi. Si no se abren solos, ve a {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "En tu teléfono, conéctate a la red wifi {ssid}. La contraseña es {password}. Luego abre tu navegador, ve a {url} y elige tu red wifi."
 
-msgid "You can also read these details on my screen."
-msgstr "También puedes leer estos datos en mi pantalla."
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "En tu teléfono, conéctate a la red wifi e introduce la contraseña que aparecen en mi pantalla. Luego, en el navegador de tu teléfono, ve a la dirección de mi pantalla y elige tu red wifi. Di repite si quieres que te lea los datos."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "También puedes escanear el código de mi pantalla para conectarte, o leer ahí estos datos."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Escanea el código de mi pantalla con la cámara de tu teléfono para conectarte a mi red de configuración. Luego, en el navegador de tu teléfono, ve a la dirección de mi pantalla y elige tu red wifi. Di repite si quieres que te lea los datos."
 
 msgid "the saved settings for it did not work"
 msgstr "los datos guardados de esa red ya no sirven"

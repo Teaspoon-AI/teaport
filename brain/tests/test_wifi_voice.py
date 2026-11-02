@@ -148,6 +148,51 @@ def test_a_unit_that_dies_mid_setup_is_said_and_let_go(fast):
     asyncio.run(run())
 
 
+def test_with_a_code_on_screen_it_points_there_and_repeat_reads_the_details(fast):
+    """The first announcement points at the screen (scan, then the address); "repeat"
+    reads the details out in full: network, password, address."""
+    path = _path()
+
+    async def run():
+        v = Voice(path)
+        assert await v._heard("set up wifi") and await v._heard("yes")
+        _write(path, phase="ap_up", screen=True, qr=True, **DETAILS)
+        await asyncio.sleep(0.05)
+        first = v.said[-1]
+        assert first.startswith("I'm in setup mode. Scan the code on my screen")
+        assert "four, seven" not in first
+        assert await v._heard("repeat")
+        again = v.said[-1]
+        assert again.startswith("On your phone, join the Wi-Fi network ")
+        assert "four, seven" in again and "dot local, and pick your Wi-Fi." in again
+    asyncio.run(run())
+
+
+def test_an_error_before_setup_mode_is_a_failure_to_go_into_it(fast):
+    """An error before any ap_up (no Wi-Fi device, the network or the page would not
+    start): the user never heard "I'm in setup mode", so the box did not leave it. An
+    error after ap_up is a leaving."""
+    async def early():
+        path = _path()
+        v = Voice(path)
+        assert await v._heard("set up wifi") and await v._heard("yes")
+        _write(path, phase="error", reason="the Wi-Fi page could not start")
+        await asyncio.sleep(0.1)
+        assert v.state == "idle"
+        assert v.said[-1] == "Sorry, I couldn't go into setup mode: the Wi-Fi page could not start."
+        assert not any("in setup mode." in s for s in v.said)
+
+    async def late():
+        path = _path()
+        v = Voice(path)
+        await _running(v, path)
+        _write(path, phase="error", reason="the Wi-Fi page could not start")
+        await asyncio.sleep(0.1)
+        assert v.said[-1] == "I've left setup mode: the Wi-Fi page could not start."
+    asyncio.run(early())
+    asyncio.run(late())
+
+
 def test_a_unit_stopped_from_outside_says_it_put_things_back(fast):
     """systemctl stop / the config page / a restart: the unit runs its restore path on
     SIGTERM and writes "stopped" (wifi_setup.py). The voice takes that as the end."""

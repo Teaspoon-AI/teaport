@@ -23,28 +23,28 @@ msgstr ""
 "Language: ru\n"
 
 msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Хотите настроить вай-фай? Я перейду в режим настройки и на несколько минут останусь без интернета, пока вы будете всё настраивать на телефоне. Скажите «да» или «нет»."
+msgstr "Хотите настроить вай-фай? Я перейду в режим подключения и на несколько минут останусь без интернета, пока вы будете всё делать на телефоне. Скажите «да» или «нет»."
 
 msgid "I'm already in setup mode."
-msgstr "Я уже в режиме настройки."
+msgstr "Я уже в режиме подключения."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "Хорошо. Минутку, поищу доступные сети."
 
 msgid "I'm in setup mode."
-msgstr "Я в режиме настройки."
+msgstr "Я в режиме подключения."
 
 msgid "Sorry, I couldn't go into setup mode."
-msgstr "Извините, не получилось перейти в режим настройки."
+msgstr "Извините, не получилось перейти в режим подключения."
 
 msgid "Okay, I've left setup mode and put things back as they were."
-msgstr "Хорошо, режим настройки выключен, прежние настройки восстановлены."
+msgstr "Хорошо, режим подключения выключен, всё возвращено как было."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
-msgstr "Не получилось перейти в режим настройки. Попробуйте ещё раз чуть позже."
+msgstr "Не получилось перейти в режим подключения. Попробуйте ещё раз чуть позже."
 
 msgid "I'm still in setup mode, waiting for you."
-msgstr "Я всё ещё в режиме настройки и жду вас."
+msgstr "Я всё ещё в режиме подключения и жду вас."
 
 msgid "That didn't work: {reason}."
 msgstr "Не получилось: {reason}."
@@ -55,11 +55,14 @@ msgstr "Принято. Подключаюсь к {network}. Переключи�
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Готово, подключение к {network} установлено, и интернет снова есть."
 
-msgid "Setup mode timed out, so I've put things back as they were."
-msgstr "Время режима настройки истекло, поэтому прежние настройки восстановлены."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "Ничего не подключилось вовремя, поэтому режим подключения выключен и всё возвращено как было."
 
 msgid "I've left setup mode: {reason}."
-msgstr "Режим настройки прервался: {reason}."
+msgstr "Режим подключения прервался: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Извините, не получилось перейти в режим подключения: {reason}."
 
 # Used only as {network} in the spoken "Подключаюсь к {network}" / "подключение к
 # {network}" (every {network} slot follows «к»), hence the dative case.
@@ -73,19 +76,19 @@ msgid "Okay, never mind."
 msgstr "Хорошо, тогда не будем."
 
 msgid "Say yes to go into setup mode, or no."
-msgstr "Скажите «да», чтобы перейти в режим настройки, или «нет»."
+msgstr "Скажите «да», чтобы перейти в режим подключения, или «нет»."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
-msgstr "Сейчас я в режиме настройки. Скажите «повтори», чтобы услышать данные ещё раз, или «отмена», чтобы из него выйти."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
+msgstr "Сейчас я в режиме подключения. Скажите «повтори», чтобы услышать данные ещё раз, или «отмена», чтобы выйти из режима подключения."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
-msgstr "На телефоне подключитесь к сети вай-фай {ssid}. Пароль такой: {password}. Затем следуйте шагам, чтобы подключить меня к вай-фаю. Если они не откроются сами, перейдите по адресу {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "На телефоне подключитесь к сети вай-фай {ssid}. Пароль такой: {password}. Затем откройте браузер, перейдите по адресу {url} и выберите свой вай-фай."
 
-msgid "You can also read these details on my screen."
-msgstr "Эти данные можно также прочитать на моём экране."
+msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "На телефоне подключитесь к сети вай-фай и введите пароль, которые показаны на моём экране. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "Можно также отсканировать код на моём экране, чтобы подключиться, или прочитать там эти данные."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Отсканируйте код на моём экране камерой телефона, чтобы подключиться к моей сети. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
 
 msgid "the saved settings for it did not work"
 msgstr "сохранённые настройки для этой сети не подошли"

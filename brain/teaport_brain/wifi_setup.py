@@ -83,6 +83,8 @@ STATUS_FILE = "status.json"
 STATUS_DIR = "/run/teaport-wifi-setup"
 # The display's lines: what wifi_voice says aloud, for reading off the box.
 SCREEN_TITLE = "Setup mode"
+# After it: the box has left setup mode and is on the user's network.
+CONNECTED_TITLE = "Wi-Fi"
 CONNECTED_SCREEN_SECS = 10
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
@@ -487,8 +489,9 @@ class Setup:
             self.server.shutdown()
         self.nm.ap_delete()
 
-    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
-        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
+    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None,
+              title: str = SCREEN_TITLE) -> bool:
+        return bool(self.screen and self.screen.show(title, lines, secs, qr=qr))
 
     def _address_arrives(self, dev: str) -> bool:
         deadline = time.monotonic() + ADDRESS_WAIT_SECS
@@ -579,7 +582,8 @@ class Setup:
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
                 self.status.set("connected", target=target)
-                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS)
+                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS,
+                           title=CONNECTED_TITLE)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")

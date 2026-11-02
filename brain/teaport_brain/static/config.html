@@ -468,7 +468,7 @@
     const other = h('input', { type: 'text', placeholder: 'Hidden network name', autocomplete: 'off', 'aria-label': 'Hidden network name', hidden: true });
     const out = h('p', { class: 'wifi-msg', 'aria-live': 'polite' }, msg || '');
     const scanBtn = h('button', { class: 'btn-ghost', type: 'button' }, h('span', { class: 'btn-label' }, 'Scan for networks'));
-    const setupBtn = h('button', { class: 'btn-ghost', type: 'button', hidden: !w.setup_installed }, h('span', { class: 'btn-label' }, 'Start setup network'));
+    const setupBtn = h('button', { class: 'btn-ghost', type: 'button', hidden: !w.setup_installed }, h('span', { class: 'btn-label' }, 'Enter setup mode'));
     form.append(other, pw, h('div', {}, h('button', { class: 'btn-primary', type: 'submit' }, 'Connect')));
     scanBtn.onclick = async () => {
       scanBtn.disabled = true; out.textContent = 'Scanning…';
@@ -502,11 +502,11 @@
       }
     };
     setupBtn.onclick = async () => {
-      const sure = await confirmDialog('Start the setup network?', [
+      const sure = await confirmDialog('Put this box in setup mode?', [
         'The box leaves its current network and opens its own, which a phone joins to pick a network. This page loses the box until it is back.',
-        'The box says the setup network name and password out loud. It gives up after ten minutes and goes back to its old network.'], 'Start setup');
+        'The box says the setup network name and password out loud. It gives up after ten minutes and goes back to its old network.'], 'Enter setup mode');
       if (!sure) return;
-      try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Starting the setup network — listen to the box for its name and password.'; }
+      try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Entering setup mode. Listen to the box for the network name and password.'; }
       catch (e) { out.textContent = 'Could not start it: ' + e.message; }
     };
     sec.replaceChildren(head,
