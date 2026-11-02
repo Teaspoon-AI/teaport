@@ -105,10 +105,12 @@ class DevicePairing:
         """A pairing is being followed (a code up, or a handoff's device awaited)."""
         return self._watcher is not None
 
-    async def start(self) -> tuple[str, dict]:
+    async def start(self, listener=None) -> tuple[str, dict]:
         """Put a code up: (SHOWN, {"minutes": ...}), (NO_SCREEN, {}), (STOPPED, {}:
         cancel(), close() or a newer start() came first) or (UNAVAILABLE, {"reason": ...}).
-        One already up is replaced, in the same pairing."""
+        One already up is replaced, in the same pairing. `listener`: who is told how the
+        pairing ends, read once its code is up (a ClientNotes, or None) -- an ask that
+        puts nothing up changes nobody's."""
         if self._closed:
             return STOPPED, {}
         self._gen += 1
@@ -157,6 +159,8 @@ class DevicePairing:
                 self._withdraw()
                 return NO_SCREEN, {}
             self._show(offer)
+            if listener is not None:
+                self.notes = listener()
             logger.info(f"pair_device: code shown for {minutes} min")
             return SHOWN, {"minutes": minutes}
         finally:
@@ -324,24 +328,13 @@ class SessionPairing:
         return self._core.live
 
     async def start(self) -> tuple[str, dict]:
-        """The core's start(), this session listening only once its code is up: an ask
-        that fails or is cut off leaves whoever was told about the code still on the
-        screen. A session already over (a call that only now steps) asks for nothing."""
+        """The core's start(), this session listening once its code is up (and only if it
+        is still live then): an ask that fails or is cut off leaves whoever was told about
+        the code on the screen as they were. A session already over (a call that only now
+        steps) asks for nothing."""
         if self._closed:
             return STOPPED, {}
-        before, self._core.notes = self._core.notes, self.notes
-        try:
-            outcome = await self._core.start()
-        except BaseException:
-            self._restore(before)
-            raise
-        if outcome[0] != SHOWN or self._closed:
-            self._restore(before)
-        return outcome
-
-    def _restore(self, before) -> None:
-        if self._core.notes is self.notes:
-            self._core.notes = before
+        return await self._core.start(listener=lambda: None if self._closed else self.notes)
 
     def cancel(self) -> str:
         return self._core.cancel()

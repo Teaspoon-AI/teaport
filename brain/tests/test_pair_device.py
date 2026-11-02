@@ -828,6 +828,25 @@ def test_an_ask_that_fails_leaves_the_listener_as_it_was(monkeypatch):
     assert failed[0] == pd.UNAVAILABLE and dp.notes is talk.notes
 
 
+def test_a_session_gone_while_another_asks_is_never_the_listener_again(monkeypatch):
+    # Talk session A has its code up; B asks, and A ends while B's code is made; B's ask
+    # is then cut off. A is not told (it is gone), and B never was (no code of B's came up).
+    async def run():
+        a, b, dp, fake, screen = _two_sessions(monkeypatch)
+        await _call(a, "talk")
+        fake.gate = asyncio.Event()
+        ask = asyncio.create_task(b.start())
+        await _turn()
+        held = dp.notes is a.notes          # B is still asking: A listens yet
+        a.close()
+        ask.cancel()                        # B's ask cut off (a barge-in)
+        await asyncio.gather(ask, return_exceptions=True)
+        return held, dp
+
+    held, dp = asyncio.run(run())
+    assert held and dp.notes is None
+
+
 def test_every_session_shares_the_one_pairing():
     assert pd.SessionPairing()._core is pd.shared() is pd.SessionPairing()._core
 
