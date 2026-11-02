@@ -43,7 +43,7 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
 
 class TalkWebsocketTransport(FastAPIWebsocketTransport):
     """FastAPIWebsocketTransport whose output can pause (TalkOutputTransport) when
-    `pausable` (barge_pause.TALK_ENABLED); otherwise pipecat's own, untouched."""
+    `pausable` (barge_pause.talk_pauses); otherwise pipecat's own, untouched."""
 
     def __init__(self, *args, pausable: bool = False, **kwargs):
         super().__init__(*args, **kwargs)

@@ -943,7 +943,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
     # if no words follow (barge_pause.py). Wherever the transport can pause without
     # losing audio (playout_pause.PausablePlayout): the SIP transport, and /talk's when
-    # TEAPORT_BARGE_PAUSE_TALK makes it pausable. Both send at real time, a frame ahead at
+    # TEAPORT_BARGE_PAUSE_TALK (the room mic: TEAPORT_BARGE_PAUSE_ROOM) makes it pausable. Both send at real time, a frame ahead at
     # most, so the unplayed reply is still here.
     barge_pauser = (barge_pause.BargeInPauser(transport_output)
                     if barge_pause.ENABLED

@@ -371,6 +371,49 @@ async def test_a_talk_session_builds_the_pauser():
             [PauseAwareMinWordsStrategy]
 
 
+async def test_the_room_and_talk_pause_by_their_own_switches():
+    """/talk's transport pauses by TEAPORT_BARGE_PAUSE_ROOM for the box's own mic
+    (?features=local) and by TEAPORT_BARGE_PAUSE_TALK for every other client: the room's
+    echo guard is what the playout timing across a pause breaks (#255), so the room can
+    stay off while the app and browsers pause."""
+    from types import SimpleNamespace
+
+    from teaport_brain import barge_pause as bp, gateway_server as gs
+
+    class _Built(Exception):
+        pass
+
+    seen = []
+
+    def make_transport(**kw):
+        seen.append(kw["pausable"])
+        raise _Built  # all this test needs is how the transport was asked for
+
+    async def fetch(*a, **k):
+        return None
+
+    saved = (bp.ENABLED, bp.TALK_ENABLED, bp.ROOM_ENABLED)
+    saved_gs = (gs.TalkWebsocketTransport, gs.host_context.fetch, gs.arb.ARBITER)
+    gs.TalkWebsocketTransport, gs.host_context.fetch = make_transport, fetch
+    try:
+        for on, talk, room in [(True, True, False), (True, False, True), (True, True, True),
+                               (True, False, False), (False, True, True)]:
+            bp.ENABLED, bp.TALK_ENABLED, bp.ROOM_ENABLED = on, talk, room
+            for query, want in (({"features": "local"}, on and room), ({}, on and talk),
+                                ({"client": "discord"}, on and talk)):
+                seen.clear()
+                gs.arb.ARBITER = gs.arb.SessionArbiter()
+                try:
+                    await gs.run_relay_bot(SimpleNamespace(query_params=query,
+                                                           send_text=lambda t: None))
+                except _Built:
+                    pass
+                assert seen == [want], (on, talk, room, query, seen)
+    finally:
+        bp.ENABLED, bp.TALK_ENABLED, bp.ROOM_ENABLED = saved
+        gs.TalkWebsocketTransport, gs.host_context.fetch, gs.arb.ARBITER = saved_gs
+
+
 def _pause_times(rig):
     return [(t, f.paused) for t, d, f in rig.bottom.frames
             if d == FrameDirection.DOWNSTREAM and isinstance(f, PlayoutPauseFrame)]
