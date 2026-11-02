@@ -320,7 +320,7 @@ async def test_the_placeholder_says_there_are_no_results_yet():
 
 # --- a session without a relay asks the agent directly (#78) ------------------------
 #
-# Only a client that announced ?features=consult (the plugin on OpenClaw's Talk relay)
+# Only a client that announced ?features=relay (the plugin on OpenClaw's Talk relay)
 # has anything to run the consult's tool_call and ack it. The phone, the room's bridge
 # and the Discord bridge announce no such thing: their consults used to send the call
 # anyway and wait the whole ack timeout for an ack that could never come.
@@ -382,10 +382,65 @@ def _owed_ctx(features):
 
 
 async def test_only_a_client_that_announces_consult_has_a_relay():
-    assert tools.ToolContext(client_features=tools.parse_client_features("consult")).relay
+    assert tools.ToolContext(client_features=tools.parse_client_features("relay")).relay
     # The room's bridge (as local_audio announces itself), the phone and Discord (none).
     for raw in ("volume,restart,local,phonemes,mood,typing,sleep", None, ""):
         assert not tools.ToolContext(client_features=tools.parse_client_features(raw)).relay
+
+
+# The plugin's query as withVoiceParams builds it for a session with onToolCall -- a
+# literal copy of what plugin/test/transcripts.test.mjs asserts it is ("the plugin says it
+# has a relay only when the host gave it onToolCall"); and as a plugin from before #78
+# builds it (no features, run_control since #236).
+_PLUGIN_QUERY = "captions=2&session_config=1&run_control=1&features=relay"
+_OLD_PLUGIN_QUERY = "captions=2&session_config=1&run_control=1"
+
+
+async def _session_relay(**kw) -> bool:
+    """Build a real session (agent_session.build_agent_session) and read `relay` off the
+    ToolContext its register_tools built: the one the consult handler is bound with."""
+    from test_client_notes import _Transport
+    from teaport_brain.agent_session import build_agent_session
+
+    built = []
+
+    class Recorded(tools.ToolContext):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            built.append(self)
+
+    saved = tools.ToolContext
+    tools.ToolContext = Recorded
+    try:
+        build_agent_session(_Transport(), **kw)
+    finally:
+        tools.ToolContext = saved
+    assert len(built) == 1, built
+    return built[0].relay
+
+
+async def _talk_relay(query: str) -> bool:
+    """A /talk session for `query`, its features and run control read as gateway_server's
+    run_relay_bot reads them."""
+    from urllib.parse import parse_qs
+    from teaport_brain import run_control
+    qp = {k: v[-1] for k, v in parse_qs(query).items()}
+    return await _session_relay(
+        client_features=tools.parse_client_features(qp.get("features")),
+        run_control=qp.get("run_control") == run_control.PROTOCOL,
+        context_notes=True, front_end="talk")
+
+
+async def test_the_plugins_query_gives_its_session_a_relay_and_the_phone_none():
+    assert await _talk_relay(_PLUGIN_QUERY)
+    # Skew: install.sh --only brain updates the brain and leaves an older plugin, which
+    # still runs consults through its relay and says run_control=1.
+    assert await _talk_relay(_OLD_PLUGIN_QUERY)
+    # The phone (sip_server's build) and the room's bridge.
+    assert not await _session_relay(front_end="sip")
+    assert not await _talk_relay("features=volume,restart,local,phonemes,mood,typing")
+    # Discord: a plain /talk client.
+    assert not await _talk_relay("client=discord")
 
 
 async def test_a_session_without_a_relay_never_waits_on_an_ack():
@@ -412,7 +467,7 @@ async def test_a_talk_session_still_goes_through_the_relay_first():
     """The plugin's session sends the call and waits for the relay's ack; only a relay
     that never acks falls back, and the log says how long it waited, to a tenth of a
     second (1.5 s used to print as "2s")."""
-    for ctx in (_owed_ctx({"consult"}), tools.ToolContext(client_features=frozenset({"consult"}))):
+    for ctx in (_owed_ctx({"relay"}), tools.ToolContext(client_features=frozenset({"relay"}))):
         llm, params, asked, took, log = await _consult(ctx, ack=0.12)
         [call] = llm.calls()
         assert call["name"] == "openclaw_agent_consult", call
@@ -444,7 +499,7 @@ async def test_an_acked_talk_consult_is_answered_by_the_relay():
     params = _CallbackParams(llm, "is it raining?")
     try:
         await tools._bind_openclaw_agent_consult(
-            tools.ToolContext(client_features=frozenset({"consult"})))(params)
+            tools.ToolContext(client_features=frozenset({"relay"})))(params)
     finally:
         oc.agent_consult = saved
     assert params.results == [{"answer": "from the relay"}], params.results

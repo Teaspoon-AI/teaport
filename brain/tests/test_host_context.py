@@ -189,7 +189,7 @@ def test_one_consult_call_reaches_the_relay_with_openclaws_name_and_arguments():
                              arguments={"question": "what's on today?", "context": "at home"})
     handler = tools._wrap("openclaw_agent_consult",
                           tools._bind_openclaw_agent_consult(tools.ToolContext(
-                              owed=Owed(LLMContext([])), client_features=frozenset({"consult"}))),
+                              owed=Owed(LLMContext([])), client_features=frozenset({"relay"}))),
                           lambda: "en")
     llm._teaport_spoke = True   # the model spoke first: no fallback line
     asyncio.run(handler(params))

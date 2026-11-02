@@ -42,10 +42,10 @@
 # openclaw_agent_control (the Talk client runs it). The handler sends the call as a
 # {"type": "tool_call"} the plugin hands to the relay (onToolCall), and the result comes
 # back the way a client tool's does: a tool_result for the call's id (_ask_client).
-# Only a client that announced "consult" (?features=consult: the plugin, and nothing
-# else today) has a relay to run the consult (ToolContext.relay); every other session's
-# consult goes straight to the gateway/CLI lane, with no call sent and no ack waited for
-# (#78).
+# Only the plugin's session has a relay to run the consult (ToolContext.relay: it
+# announced ?features=relay, or the run-control protocol only the plugin speaks); every
+# other session's consult goes straight to the gateway/CLI lane, with no call sent and no
+# ack waited for (#78).
 #
 
 import asyncio
@@ -1295,11 +1295,17 @@ class ToolContext:
     @property
     def relay(self) -> bool:
         """The client hands openclaw_agent_consult's calls to a relay that runs them and
-        acks them ("consult" in its ?features=: the teaport plugin on OpenClaw's Talk
-        relay). Opt-in, so a client that cannot -- the room's bridge, the phone, the
-        Discord bridge, any future one -- never gets a call it would leave unanswered,
-        and its consults skip the ack wait (#78). The one place this is decided."""
-        return "consult" in self.client_features
+        acks them: the teaport plugin on OpenClaw's Talk relay, which says so with
+        ?features=relay. Opt-in, so a client that cannot -- the room's bridge, the phone,
+        the Discord bridge, any future one -- never gets a call it would leave unanswered,
+        and its consults skip the ack wait (#78). The one place this is decided.
+
+        Or run_control: only the plugin announces it (gateway_server), every plugin since
+        #236 does, and it hands the relay the consult's calls as it hands it the control's.
+        A box deploy can update the brain without the plugin (install.sh --only brain); an
+        older plugin keeps its relay that way, and openclaw_agent_control (offered on
+        run_control) is never offered against a consult the relay does not run."""
+        return "relay" in self.client_features or self.run_control
 
 
 @dataclass(frozen=True)
@@ -1557,11 +1563,11 @@ if AGENT_FIRST and not TOOLS_BY_NAME["openclaw_agent_consult"].enabled:
 # OLED face), so the session's TTS sends each word's timed phonemes with the audio;
 # "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py);
 # and "typing": the client types along to the thinking sound, so it is sent the typing's
-# start, end and key presses (thinking_sound.py); "consult": the client hands
+# start, end and key presses (thinking_sound.py); "relay": the client hands
 # openclaw_agent_consult's calls to a relay that runs them (ToolContext.relay, #78).
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
                             if n.startswith("client:")) | {"phonemes", "mood", "typing",
-                                                           "consult"}
+                                                           "relay"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:

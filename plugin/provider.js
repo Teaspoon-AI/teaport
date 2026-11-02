@@ -45,10 +45,11 @@ const SESSION_CONFIG_PROTOCOL = 1;
 // and it offers its model openclaw_agent_control, whose calls this bridge hands the relay
 // like the consult's. A brain that sees no flag never asks.
 const RUN_CONTROL_PROTOCOL = 1;
-// What this bridge can do for the brain, sent as ?features=. "consult": it hands
-// openclaw_agent_consult calls to the relay, which runs and acks them. A brain session
-// without it sends no consult call and waits for no ack (teaport#78).
-const FEATURES = "consult";
+// The relay feature, sent to the brain as ?features=relay when the host gave this session
+// an onToolCall: this bridge hands openclaw_agent_consult calls to the relay, which runs
+// and acks them. A brain session without it sends no consult call and waits for no ack
+// (teaport#78).
+const RELAY_FEATURE = "relay";
 // OpenClaw's consult tool, whose calls the relay runs (and its run control acts on).
 const CONSULT_TOOL_NAME = "openclaw_agent_consult";
 // How long a claim waits for the relay to act on the words (answerRunControl): its reply
@@ -64,7 +65,8 @@ const FINALS_KEPT = 40;
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
  * brain's WS URL as query params, plus the caption, session_config and run_control
- * protocols, the features and the client id. The Pipecat brain reads ?voice=&language=
+ * protocols, the relay feature (`relay`: the session can hand the relay tool calls) and
+ * the client id. The Pipecat brain reads ?voice=&language=
  * &token=&captions=&session_config=&run_control=&features=&client= per session
  * (gateway_server.py). `client` names the Talk client (the device) across its own
  * reconnects: the brain's session arbiter lets a reconnect replace that client's own
@@ -84,7 +86,7 @@ export function withVoiceParams(url, cfg) {
   q.push(`captions=${CAPTIONS_PROTOCOL}`);
   q.push(`session_config=${SESSION_CONFIG_PROTOCOL}`);
   q.push(`run_control=${RUN_CONTROL_PROTOCOL}`);
-  q.push(`features=${FEATURES}`);
+  if (cfg && cfg.relay) q.push(`features=${RELAY_FEATURE}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
 
@@ -497,6 +499,9 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
         language: cfg.language || defaults.language,
         token: cfg.token || defaults.token || process.env.TEAPORT_GATEWAY_TOKEN,
         client,
+        // Only a session whose tool calls reach the relay (the tool_call branch in
+        // _onMessage needs onToolCall) says it has one.
+        relay: typeof req.onToolCall === "function",
       });
       const { deltas, reason } = pickAssistantTranscripts(
         cfg.assistantTranscripts ?? defaults.assistantTranscripts,

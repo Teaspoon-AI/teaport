@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:8,316-320#0ac45871; brain/teaport_brain/sip_server.py:483#f51c16f8 -->
+<!-- source: cli/teaport:8,316-320#0ac45871; brain/teaport_brain/sip_server.py:484#f51c16f8 -->
 
 ## Keep the line running
 
@@ -264,7 +264,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,247#de2d5741; brain/teaport_brain/config_schema.toml:1846-1855#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,248#de2d5741; brain/teaport_brain/config_schema.toml:1846-1855#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -328,7 +328,7 @@ To test the phone path, follow these steps:
    The front-end logs `SIP front-end: connected to the gateway at ...` when it
    connects.
 
-   <!-- source: brain/teaport_brain/sip_server.py:483#f51c16f8 -->
+   <!-- source: brain/teaport_brain/sip_server.py:484#f51c16f8 -->
 
 6. End the fake; it removes the socket when it exits. Then clean up:
 

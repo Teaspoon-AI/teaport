@@ -593,7 +593,7 @@ async def test_an_agent_first_consult_counts_as_running_while_the_turn_waits():
     llm = _LLM(answer=answer)
     params, got = _params(llm, {"question": "weather in Rome"})
     await tools._bind_openclaw_agent_consult(tools.ToolContext(
-        gate=gate, client_features=frozenset({"consult"})))(params)
+        gate=gate, client_features=frozenset({"relay"})))(params)
     assert seen == [1] and gate.consults_running == 0
     assert got[0][0] == {"answer": "It is sunny."}
     # A barge-in cancels the wait: the count goes back, and the relay is not told.

@@ -41,10 +41,10 @@ as query parameters for each session. The `token` value can also come from the
 `TEAPORT_GATEWAY_TOKEN` environment variable. It also appends `captions=2`, the
 caption protocol it speaks (see below), `session_config=1` (see
 [What OpenClaw tells the voice](#what-openclaw-tells-the-voice)), `run_control=1`
-(see [Spoken run control](#spoken-run-control)), and `features=consult`: it hands
-`openclaw_agent_consult` calls to the relay. A brain session without that feature (the
-room microphone, the phone, Discord) sends no consult call and waits for no ack; it asks
-the agent directly.
+(see [Spoken run control](#spoken-run-control)), and, when OpenClaw gave the session an
+`onToolCall`, `features=relay`: it hands `openclaw_agent_consult` calls to the relay. A
+brain session without a relay (the room microphone, the phone, Discord) sends no consult
+call and waits for no ack; it asks the agent directly.
 
 ## What OpenClaw tells the voice
 

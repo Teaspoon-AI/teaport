@@ -74,7 +74,7 @@
 # lands in owed.py and is told through the FollowupGate (no typing over the wait: a
 # phone call gets no ThinkingSound, outside agent-first), so a caller gets REAL tool results instead of
 # hallucinated ones. On SIP there is no OpenClaw plugin to service the native
-# openclaw_agent_consult round-trip: the session announces no "consult" feature
+# openclaw_agent_consult round-trip: the session has no relay
 # (tools.ToolContext.relay), so openclaw_agent_consult goes straight to the
 # agent_consult path, with no call sent and no ack waited for (#78); the fast tools (host status,
 # time, web search/fetch, memory) run unchanged.
