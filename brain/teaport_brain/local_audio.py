@@ -1358,7 +1358,9 @@ class Card:
             stdin=asyncio.subprocess.PIPE)
         self.play = Playback(self._aplay.stdin.write, gain=lambda: self.volume.gain)
         self._run(self._watch(self._aplay, "playback"))
+        self._moved_at = None  # when the card's hw_ptr last moved (_feed), None: no status
         self._run(self._feed())
+        self._run(self._stall_watch(time.monotonic()))
         if self._pcm_dir is None:
             logger.info(f"playback timeline: wall clock ({self.device} is not a hw: device)")
         arecord, first = await self._open_capture()
@@ -1440,21 +1442,38 @@ class Card:
             pass
         return queued // (DEVICE_CHANNELS * 2)
 
+    async def _stall_watch(self, opened: float) -> None:
+        """The playback watchdog (playback_stalled), a task of its own: the feed can block
+        in drain() on an aplay that stopped reading, and a check inside it would stop with
+        it. A tick that comes late (the whole event loop froze: nothing here could run,
+        nothing could write) restarts the clocks instead of judging: the card may well
+        underrun meanwhile, and aplay recovers as soon as the feed writes again."""
+        tick = STALL_SECS / 4
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(tick)
+            now = time.monotonic()
+            if now - last >= STALL_SECS / 2:
+                if self._moved_at is not None:
+                    self._moved_at = now
+                self.play.wrote_at = max(self.play.wrote_at, now)
+            last = now
+            stalled = playback_stalled(now, opened, self._moved_at, self.play.wrote_at)
+            if stalled:
+                raise CardError(f"playback stalled: {stalled}")
+
     async def _feed(self) -> None:
         play, face = self.play, self.face
         quiet_since, next_status, logged = None, 0.0, False
         opened = time.monotonic()
-        # The watchdog's view of the card: the last hw_ptr a status showed, and when it
-        # last moved (or the card was opened). No status at all (not a hw: device, or no
-        # file yet) leaves only the feed's own writes to judge by.
-        hw_ptr, moved_at = None, opened
+        hw_ptr = None   # the last hw_ptr a RUNNING status showed (the watchdog's)
         while True:
             now = time.monotonic()
             if self._pcm_dir and now >= next_status:
                 next_status = now + STATUS_EVERY_SECS
                 status = read_pcm_status(self._pcm_dir, self._aplay.pid)
                 if status and status["state"] == "RUNNING" and status["hw_ptr"] != hw_ptr:
-                    hw_ptr, moved_at = status["hw_ptr"], now
+                    hw_ptr, self._moved_at = status["hw_ptr"], now
                 played = (played_frames(status, play.written, self._queued_frames())
                           if status else None)
                 if played is not None:
@@ -1466,10 +1485,6 @@ class Card:
                     logger.info(f"playback timeline: wall clock (no running status under {self._pcm_dir})")
                     logged = True
             play.pump()
-            stalled = playback_stalled(now, opened, moved_at if hw_ptr is not None else None,
-                                       play.wrote_at)
-            if stalled:
-                raise CardError(f"playback stalled: {stalled}")
             try:
                 await self._aplay.stdin.drain()
             except ConnectionError:
