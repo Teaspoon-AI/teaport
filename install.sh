@@ -1544,6 +1544,8 @@ FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens 
 # certificates are cached beside it, under certificates/local.
 CADDY_PKI="${TEAPORT_CADDY_PKI:-/var/lib/caddy/.local/share/caddy/pki/authorities/local}"
 CADDY_LEAVES="${CADDY_PKI%/pki/authorities/local}/certificates/local"
+# The local CA's certificate lifetimes (write_caddyfile says why they are long).
+LEAF_LIFETIME=365d INTERMEDIATE_LIFETIME=1095d
 CADDYFILE=/etc/caddy/Caddyfile   # ours (write_caddyfile); resolve_frontdoor reads it back
 # The operator's own certificate for the front door (#249), in place of 'tls internal'.
 # Unset on a re-run, the one the Caddyfile already serves stays (resolve_frontdoor); set
@@ -1801,6 +1803,25 @@ regenerate_ca() {
   done
 }
 
+# reissue_short_intermediate — a box whose local CA still has Caddy's 7-day intermediate
+# (installed before the lifetimes above) keeps it, and every leaf under it, until it runs
+# out: Caddy reads a lifetime only when it makes one. Set both aside once, keeping the
+# root, so Caddy makes the long-lived ones at its start: devices that trust the root go on
+# trusting the box, and the app asks to trust the new leaf one last time.
+reissue_short_intermediate() {
+  local dates nb na; dates="$(sudo cat "$CADDY_PKI/intermediate.crt" 2>/dev/null \
+        | openssl x509 -noout -startdate -enddate 2>/dev/null || true)"
+  nb="$(printf '%s\n' "$dates" | sed -n 's/^notBefore=//p')"; na="$(printf '%s\n' "$dates" | sed -n 's/^notAfter=//p')"
+  if [ -z "$nb" ] || [ -z "$na" ]; then return 0; fi
+  if [ $(( $(date -d "$na" +%s) - $(date -d "$nb" +%s) )) -ge $(( 30 * 86400 )) ]; then return 0; fi
+  local stamp f; stamp="$(date +%Y%m%d-%H%M%S)"
+  log "front door: re-issuing the local CA's short-lived intermediate and site certificate (the root stays)"
+  SUDO systemctl stop caddy.service
+  for f in "$CADDY_PKI/intermediate.crt" "$CADDY_PKI/intermediate.key" "$CADDY_LEAVES"; do
+    if sudo test -e "$f"; then SUDO mv "$f" "$f.bak-$stamp"; fi
+  done
+}
+
 # write_caddyfile <path> — the front-door reverse proxy. 'tls internal' is a self-signed
 # cert (offline, one-time trust on each device); TEAPORT_TLS_CERT/KEY serve a real one
 # instead, for a name that resolves to the LAN IP. WebSocket upgrades (the /talk stream)
@@ -1815,9 +1836,8 @@ regenerate_ca() {
 # https://<host>/teaport-ca.crt, which the catch-all below handed to the dashboard -- an
 # HTML page where the certificate should be (seen on the box, 2026-11-01).
 #
-# It is served straight out of Caddy's PKI directory rather than copied: 'tls internal' issues
-# ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
-# twice a day, and would go stale silently if the CA were ever regenerated. The path matcher is
+# It is served straight out of Caddy's PKI directory rather than copied: a copy would go stale
+# silently if the CA were ever regenerated. The path matcher is
 # exact and rewrites to a fixed file, so root.key next to it stays unreachable.
 #
 # /p/* is the one brain path the front door serves: the short pairing links the OLED shows
@@ -1834,13 +1854,23 @@ regenerate_ca() {
 # Caddy uses the name only when it creates a root; an existing root keeps its own
 # (resolve_frontdoor reads it back so the pages name what the device shows), and
 # TEAPORT_REGENERATE_CA=1 makes a new one. With the operator's own certificate (#249) the
-# site serves that instead of 'tls internal'; the local CA and its download stay for a
+# site serves that instead of the local CA's; the local CA and its download stay for a
 # device that reaches the box some other way.
+#
+# Lifetimes: the site certificate lasts LEAF_LIFETIME under an intermediate of
+# INTERMEDIATE_LIFETIME, not Caddy's 12 hours under 7 days. The OpenClaw apps pin the
+# site certificate itself (a SHA-256 of the leaf, trust on first use), so every renewal
+# stopped the iPhone app with "Gateway certificate changed" until someone trusted the new
+# one -- with Caddy's defaults, every 8 hours. Caddy renews at a third of the lifetime left,
+# so a year-long leaf changes about every 8 months. A year also stays inside what Apple
+# accepts from a root a user installed (825 days).
 write_caddyfile() {
-  local path="$1" tls="tls internal"
-  if [ -n "$TLS_CERT" ]; then tls="tls \"$TLS_CERT\" \"$TLS_KEY\""; fi
+  local path="$1" tls=("    tls {" "        issuer internal {" "            lifetime $LEAF_LIFETIME"
+                       "        }" "    }")
+  if [ -n "$TLS_CERT" ]; then tls=("    tls \"$TLS_CERT\" \"$TLS_KEY\""); fi
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$tls" "$FRONTDOOR_CA_NAME"; return
+    local how="local CA, leaf $LEAF_LIFETIME"; if [ -n "$TLS_CERT" ]; then how="own certificate $TLS_CERT"; fi
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
@@ -1852,6 +1882,7 @@ write_caddyfile() {
     "    pki {" \
     "        ca local {" \
     "            name \"$FRONTDOOR_CA_NAME\"" \
+    "            intermediate_lifetime $INTERMEDIATE_LIFETIME" \
     "        }" \
     "    }" \
     "}" \
@@ -1876,7 +1907,7 @@ write_caddyfile() {
     "}" \
     "" \
     "$FRONTDOOR_HOST {" \
-    "    $tls" \
+    "${tls[@]}" \
     "    import teaport_ca" \
     "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
     "    handle /p/* {" \
@@ -2071,7 +2102,7 @@ phase_frontdoor() {
       SUDO runuser -u caddy -- test -r "$f" || die "Caddy (user caddy) cannot read $f: give the caddy user or group read access, then re-run"
     done
   fi
-  if [ "$REGENERATE_CA" = 1 ]; then regenerate_ca; fi
+  if [ "$REGENERATE_CA" = 1 ]; then regenerate_ca; else reissue_short_intermediate; fi
   # mDNS: publish $FRONTDOOR_HOST so LAN browsers resolve it with no DNS setup.
   SUDO apt-get install -y avahi-daemon
   write_caddyfile "$CADDYFILE"
