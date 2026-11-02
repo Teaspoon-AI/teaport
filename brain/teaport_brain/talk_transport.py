@@ -21,23 +21,24 @@ from teaport_brain.playout_pause import PausablePlayout
 class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     """pipecat's websocket output, held at a block boundary while playout is paused."""
 
-
     async def write_audio_frame(self, frame) -> bool:
         # One audio block per call (MediaSender's audio_chunk_size, 40 ms at pipecat's
         # default audio_out_10ms_chunks) -- or a whole buffer on the base class's direct
         # paths (the end's silence), which plays whole once it starts. A block the pause
         # held for a reply an interruption then cancelled is not written -- unless
         # pipecat marked it uninterruptible, which it keeps through an interruption.
+        # A client gone is not waited on: the base write fails at once for it.
+        if self._client.is_closing or not self._client.is_connected:
+            return False
         if not await self._wait_if_paused() and frame.interruptible:
             return False
+        # Counted as heard as it goes on the wire -- the base sends it first thing, then
+        # sleeps out its slot -- by its own length: a block, or a whole buffer the base
+        # writes directly (the end's silence).
+        if self.sample_rate:
+            self._wrote(len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
+                        / self.sample_rate)
         return await super().write_audio_frame(frame)
-
-    async def _write_audio_sleep(self):
-        # Counted as heard once it is on the wire: the base sends a block, then sleeps out
-        # its slot here -- reached only after a send that went out. One block per slot,
-        # as SIP counts its datagrams.
-        self._wrote(self._send_interval)
-        await super()._write_audio_sleep()
 
 
 class TalkWebsocketTransport(FastAPIWebsocketTransport):

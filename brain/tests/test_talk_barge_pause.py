@@ -289,6 +289,49 @@ async def test_a_quick_resume_keeps_the_send_clocks_one_block_of_lead():
             f"{lead * 1000:.0f} ms queued at the client: the lead grew past one block")
 
 
+async def test_a_resume_after_the_write_was_held_keeps_the_lead_too():
+    # The pause holds the next write at its slot; the resume comes 20 ms later, while
+    # what was sent before still plays. The woken write must wait for the slot the
+    # resume set, not send at once with the next block straight behind it.
+    async with TalkRig(with_pauser=False) as rig:
+        await rig.speak()
+        await _at(rig, 0.61)
+        await rig.out.set_playout_paused(True)
+        await asyncio.sleep(BLOCK_S + 0.02)            # the next write is held by now
+        await rig.out.set_playout_paused(False)
+        await asyncio.sleep(0.05)
+        lead = 0.0
+        for _ in range(60):
+            lead = max(lead, rig.out._heard_until - time.monotonic())
+            await asyncio.sleep(0.005)
+        assert lead <= 2 * BLOCK_S + 0.005, (
+            f"{lead * 1000:.0f} ms queued at the client: the lead grew past one block")
+
+
+async def test_a_whole_buffer_write_counts_its_own_length():
+    # The base's direct writes (the end's silence) send a whole buffer at once: heard
+    # until its end, not one block's worth.
+    sock = _Socket()
+    out = _talk_transport(sock)
+    out = out.output()
+    out._sample_rate = SR
+    t0 = time.monotonic()
+    assert await out.write_audio_frame(OutputAudioRawFrame(b"\0\0" * int(0.5 * SR), SR, 1))
+    assert abs(out._heard_until - t0 - 0.5) <= 0.05, out._heard_until - t0
+
+
+async def test_a_gone_client_is_not_waited_on_through_a_pause():
+    sock = _Socket()
+    out = _talk_transport(sock).output()
+    out._sample_rate = SR
+    out._playing.clear()
+    sock.client_state = WebSocketState.DISCONNECTED
+    t0 = time.monotonic()
+    assert await asyncio.wait_for(
+        out.write_audio_frame(OutputAudioRawFrame(_pcm(0), SR, 1)), 1.0) is False
+    assert time.monotonic() - t0 < 0.05, "a write to a gone client waited on the pause"
+
+
 async def test_a_talk_pause_nobody_resumes_ends_before_the_write_deadline():
     from teaport_brain import playout_pause
     guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3

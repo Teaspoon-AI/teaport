@@ -2588,7 +2588,7 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 
 What is not modelled:
 - The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
-- The 8 s pause cap: a caller still talking keeps the pause; the cap ends it as a pause end.
+- The pause cap (at most 7.5 s, under the transport's 8 s write guard): a caller still talking keeps the pause; the cap ends it as a pause end.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
   dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the

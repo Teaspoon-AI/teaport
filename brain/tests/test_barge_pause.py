@@ -402,9 +402,12 @@ async def test_a_stale_resume_notice_does_not_end_a_newer_pause():
 
 
 def test_a_pause_is_capped_under_the_transports_write_guard():
+    # Neither the cap nor the resume window may reach the transport's guard: the pauser
+    # ends a long pause, the guard is only a backstop.
     from teaport_brain import playout_pause
-    p = BargeInPauser(_FakeOut(), max_secs=8.0)
+    p = BargeInPauser(_FakeOut(), resume_secs=8.0, max_secs=8.0)
     assert p._max_secs < playout_pause._PAUSE_GUARD_S, p._max_secs
+    assert p._resume_secs < playout_pause._PAUSE_GUARD_S, p._resume_secs
 
 
 async def test_an_echo_like_burst_does_not_pause():

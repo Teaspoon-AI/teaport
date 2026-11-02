@@ -58,14 +58,14 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 
-from teaport_brain.barge_pause import PlayoutPauseFrame
+from teaport_brain.barge_pause import WRITE_GUARD_S, PlayoutPauseFrame
 
 # The longest one write may wait on pauses -- all of them, however many come and go
 # while it waits -- before the pause ends on its own. MediaSender bounds the whole write
 # at audio_out_write_timeout_secs (10 s) and treats running past it as the transport
 # being dead for the rest of the session, so this stays under it whatever the pauser
-# asks for.
-_PAUSE_GUARD_S = 8.0
+# asks for (the pauser's own bounds are under this: barge_pause._MAX_PAUSE_S).
+_PAUSE_GUARD_S = WRITE_GUARD_S
 
 
 class PausablePlayout:
@@ -114,13 +114,14 @@ class PausablePlayout:
             self._pause_lag = lag
         else:
             self._playing.set()
-            # Restart the send clock where it keeps its one frame of lead: at once if
-            # what was sent before the pause has played out, else one slot before it
-            # will have -- not at once regardless, which would put the next two frames
-            # behind audio still playing and grow the client's lead for the rest of the
-            # reply.
-            self._next_send_time = max(
-                0.0, self._heard_until - getattr(self, "_send_interval", 0.0))
+            # Restart the send clock where it keeps its one frame of lead. The writers
+            # send first and then sleep to _next_send_time, so the held write goes out
+            # one slot before what was sent before the pause has played
+            # (_wait_if_paused), and the slot after it ends there: not two frames back
+            # to back behind audio still playing, which would grow the client's lead for
+            # the rest of the reply. Played out already: the clock starts afresh.
+            self._next_send_time = (self._heard_until
+                                    if self._heard_until > time.monotonic() else 0.0)
         tail = self.playout_tail_secs() if paused else None
         await self._announce_pause(lag=lag, tail=-1.0 if tail is None else tail,
                                    paused=paused, upstream=upstream)
@@ -154,11 +155,19 @@ class PausablePlayout:
                 await asyncio.wait_for(self._playing.wait(),
                                        timeout=max(0.0, deadline - time.monotonic()))
             except asyncio.TimeoutError:
-                logger.warning(f"{self}: a write held by playout pauses for "
-                               f"{_PAUSE_GUARD_S:.0f}s -- resuming before the write "
-                               "deadline costs the session its voice")
+                logger.warning(f"{self}: a write held by playout pauses up to its guard "
+                               "-- resuming before the write deadline costs the session "
+                               "its voice")
                 await self.set_playout_paused(False)
-        return epoch == self._pause_epoch
+        if epoch != self._pause_epoch:
+            return False
+        # Woken by the resume, the held write would send at once: wait until one frame
+        # before what was sent before the pause has played (set_playout_paused), or a
+        # quick resume puts it straight behind audio still playing and the lead grows.
+        wait = self._heard_until - getattr(self, "_send_interval", 0.0) - time.monotonic()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        return True
 
     def _drop_pause(self):
         """An interruption or a cancel: the queued audio is the cut reply's, gone --

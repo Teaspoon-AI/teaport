@@ -166,7 +166,14 @@ TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
 # at the latest (the STT commits at once while the bot is speaking), ~0.1-0.5 s after it.
-RESUME_SECS = min(8.0, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
+# The output transport's guard on one write held by pauses (playout_pause): under
+# MediaSender's 10 s write deadline, past which a transport is written off for the rest
+# of the session. Every bound on a pause below derives from it.
+WRITE_GUARD_S = 8.0
+# The longest a pause may last on the pauser's own account (its cap, its resume window):
+# under the guard, so the guard is a backstop, not the way a long pause ends.
+_MAX_PAUSE_S = WRITE_GUARD_S - 0.5
+RESUME_SECS = min(_MAX_PAUSE_S, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
 # The longest a pause lasts, from its start. Kept well under pipecat's
 # audio_out_write_timeout_secs (10 s), past which a stalled write writes the transport
 # off for the rest of the call; the transport resumes on its own at 8 s regardless.
@@ -181,9 +188,6 @@ STOP_WORDS = tuple(
     w.strip().lower() for w in setting("TEAPORT_STOP_WORDS").split(",")
     if w.strip())
 
-# The longest a pause may be capped at (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's
-# write guard.
-_MAX_PAUSE_S = 7.5
 # No pause when the reply is fully synthesized and at most this much of it is left.
 _NEAR_END_S = 0.5
 # Speech shorter than this is a blip: its pause resumes after _BLIP_RESUME_S.
@@ -281,7 +285,7 @@ class BargeInPauser(FrameProcessor):
                  max_noword_pauses: int = _MAX_NOWORD_PAUSES):
         super().__init__()
         self._output = output
-        self._resume_secs = min(8.0, max(0.0, resume_secs))
+        self._resume_secs = min(_MAX_PAUSE_S, max(0.0, resume_secs))
         # Under the transport's 8 s write guard (playout_pause._PAUSE_GUARD_S), which a
         # held write starts as the pause does: the cap, not the guard, ends a long pause.
         self._max_secs = max(self._resume_secs, min(max_secs, _MAX_PAUSE_S))

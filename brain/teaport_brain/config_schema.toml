@@ -1064,11 +1064,11 @@ group = "turn_taking"
 type = "float"
 unit = "s"
 min = 0
-max = 8
+max = 7.5
 default = 0.8
 read = "startup"
 tier = "tuning"
-help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). With the VAD's own stop delay a cough stalls the bot about ENDPOINT_STOP_SECS + this. At most 8."
+help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). With the VAD's own stop delay a cough stalls the bot about ENDPOINT_STOP_SECS + this. At most 7.5 (under the transport's 8 s guard on a held write)."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_MAX_S"
