@@ -274,7 +274,7 @@ installer was given your own certificate (see
 nothing to trust, and the page leaves the step out.
 
 <!-- source: install.sh:1881-1887#4326c857 -->
-<!-- source: install.sh:1712-1757#cd323bfa; brain/teaport_brain/pairing.py:131-134,767-770#03054554 -->
+<!-- source: install.sh:1712-1757#cd323bfa; brain/teaport_brain/pairing.py:132-135,812-815#03054554 -->
 
 ## What's next
 
