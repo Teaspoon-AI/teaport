@@ -27,8 +27,16 @@
 # up or nothing new: a code a start() got and did not show is taken out of use once no
 # start() of ours is left in flight, unless a newer code replaced it. cancel() takes
 # the code down and stops whatever is still being minted (a pairing with a handoff made
-# still watches, and its end is told); close(), at the session's end, ends the pairing,
-# silently and for good -- no task outlives the session, and no code stays up.
+# still watches, and its end is told); close() ends it silently and for good.
+#
+# The pairing is the box's, not the conversation's: one DevicePairing for the brain
+# (shared()), and each session holds a SessionPairing on it. The session that last asked
+# for a code is the one told how it ended; its end only stops it listening (detach). A
+# conversation that just goes away has not said "never mind": the iPhone app's Talk
+# session ends the moment the phone opens its camera to scan the code it asked for, and
+# a Talk page in a phone's browser is suspended the same way. So the code, the screen
+# and the watch run to their usual end (the screen says "Paired" either way); with no
+# session listening, how it ended is not said.
 #
 import asyncio
 import math
@@ -201,9 +209,15 @@ class DevicePairing:
                         + (", still confirming the device" if confirming else ""))
         return CONFIRMING if confirming else GONE if had else NOTHING
 
+    def detach(self, notes) -> None:
+        """A session that was listening (`notes`) ended: nobody is told how the pairing
+        ends, and nothing else changes. Another session's notes are left alone."""
+        if notes is not None and self.notes is notes:
+            self.notes = None
+
     def close(self) -> None:
-        """The session is over: the pairing ends (a confirmation too: no task outlives
-        the session), nothing is told, and nothing is shown after."""
+        """For good (the brain stopping): the pairing ends (a confirmation too: no task
+        outlives it), nothing is told, and nothing is shown after."""
         self._closed = True
         self.notes = None
         self._gen += 1
@@ -281,3 +295,38 @@ class DevicePairing:
         if screen is not None:
             screen.clear()
             screen.close()
+
+
+_shared: DevicePairing | None = None
+
+
+def shared() -> DevicePairing:
+    """The brain's one DevicePairing (pairing.py has one pairing, the box one screen)."""
+    global _shared
+    if _shared is None:
+        _shared = DevicePairing()
+    return _shared
+
+
+class SessionPairing:
+    """One session's hold on the box's pairing: what the pair_device tool calls. start()
+    makes this session the one told how the pairing ends; cancel() is the user's stop,
+    whichever session asked; close(), at the session's end, only stops it listening."""
+
+    def __init__(self, notes=None, core: DevicePairing | None = None):
+        self.notes = notes   # the session's ClientNotes, set once it exists
+        self._core = core if core is not None else shared()
+
+    @property
+    def live(self) -> bool:
+        return self._core.live
+
+    async def start(self) -> tuple[str, dict]:
+        self._core.notes = self.notes
+        return await self._core.start()
+
+    def cancel(self) -> str:
+        return self._core.cancel()
+
+    def close(self) -> None:
+        self._core.detach(self.notes)

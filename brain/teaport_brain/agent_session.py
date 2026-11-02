@@ -99,7 +99,7 @@ from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords
 from teaport_brain.wifi_voice import WifiSetupVoice
-from teaport_brain.pair_device import DevicePairing
+from teaport_brain.pair_device import SessionPairing
 from teaport_brain.tools import (
     AGENT_FIRST,
     ANSWER_TOOLS,
@@ -741,7 +741,7 @@ def build_agent_session(transport, *, voice: str | None = None,
             if any(t.name == "wifi_setup" for t in session_tools) else None)
     # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
     # that tool is active (switched on, a gateway, the room or a Talk session).
-    pairing = (DevicePairing() if any(t.name == "pair_device" for t in session_tools)
+    pairing = (SessionPairing() if any(t.name == "pair_device" for t in session_tools)
                else None)
     # Words something else answers -- Wi-Fi setup's, OpenClaw's run control's (built below
     # once the gate exists) -- go on emptied, and this ends the turn they opened
@@ -1240,7 +1240,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     if pairing is not None:
         @task.event_handler("on_pipeline_finished")
         async def _close_pairing(_task, _frame):
-            # Ended or disconnected: no code left on the screen, no task left waiting.
+            # Ended or disconnected: this session stops listening. The code stays up to its
+            # usual end (pair_device.py: the phone that asked over Talk scans it next).
             pairing.close()
 
     session = AgentSession(

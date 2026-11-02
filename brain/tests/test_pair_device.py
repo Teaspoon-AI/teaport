@@ -224,15 +224,15 @@ def test_the_session_builds_it_only_where_the_tool_is(monkeypatch):
     for front_end, via, want in (("room", None, True), ("talk", None, True),
                                  ("talk", "discord", False), ("sip", None, False)):
         built = []
-        real = pd.DevicePairing
-        monkeypatch.setattr(agent_session, "DevicePairing",
+        real = pd.SessionPairing
+        monkeypatch.setattr(agent_session, "SessionPairing",
                             lambda: built.append(real()) or built[-1])
         session = agent_session.build_agent_session(
             _Transport(), context_notes=front_end != "sip", front_end=front_end, via=via)
         assert bool(built) is want, front_end
         if want:
             assert built[0].notes is session.client_notes is not None
-            # Ended or disconnected, the code comes down (pair_device.close).
+            # Ended or disconnected, it stops listening (pair_device.SessionPairing.close).
             handlers = session.task._event_handlers["on_pipeline_finished"].handlers
             assert any(getattr(h, "__name__", "") == "_close_pairing" for h in handlers)
 
@@ -731,6 +731,71 @@ def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):
     for cancel in (True, "true"):
         assert tools._fallback_line("pair_device", {"cancel": cancel}, "en") is None
     assert tools._fallback_line("pair_device", {"cancel": False}, "en")
+
+
+
+# ---- the pairing is the box's: a session ending is not "never mind" ----------------
+
+def _two_sessions(monkeypatch):
+    dp, fake, screen = _session(monkeypatch)
+    dp.notes = None
+    return pd.SessionPairing(_Notes(), core=dp), pd.SessionPairing(_Notes(), core=dp), dp, fake, screen
+
+
+def test_the_session_that_asked_ending_leaves_the_code_up_to_its_end(monkeypatch):
+    # The iPhone app's Talk session ends when the phone opens its camera to scan the code
+    # it asked for: the code, its screen and its watch go on, and the screen still says
+    # "Paired" when the device comes in -- with nobody listening, nothing is told.
+    async def run():
+        talk, _, dp, fake, screen = _two_sessions(monkeypatch)
+        assert (await _call(talk, "talk"))["ok"]
+        talk.close()
+        await _turn()
+        state = (dp.live, list(fake.cancelled), [c[0] for c in screen.calls])
+        fake.end(fake.started[0], pairing.PAIRED, "iPhone")
+        await _turn()
+        return state, talk, screen
+
+    (live, cancelled, calls), talk, screen = asyncio.run(run())
+    assert live and cancelled == [] and "clear" not in calls
+    assert _shown(screen)[-1][2] == ["Paired", "iPhone"]
+    assert talk.notes.added == []
+
+
+def test_the_last_session_to_ask_is_the_one_told(monkeypatch):
+    # The phone comes back and asks again in a new session: the same pairing gets a new
+    # code, and the new session hears how it ended; the old session's end (or another
+    # session's) does not stop it listening.
+    async def run():
+        first, second, dp, fake, screen = _two_sessions(monkeypatch)
+        await _call(first, "talk")
+        first.close()
+        await _call(second, "talk")
+        first.close()
+        fake.end(fake.started[-1], pairing.PAIRED, "iPhone")
+        await _turn()
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first.notes.added == []
+    assert second.notes.added == [("Your iPhone is now connected.", True)]
+
+
+def test_never_mind_from_any_session_still_takes_the_code_down(monkeypatch):
+    async def run():
+        talk, room, dp, fake, screen = _two_sessions(monkeypatch)
+        await _call(talk, "talk")
+        talk.close()
+        stopped = room.cancel()
+        await _turn()
+        return stopped, dp, screen
+
+    stopped, dp, screen = asyncio.run(run())
+    assert stopped == pd.GONE and not dp.live and screen.calls[-1][0] in ("clear", "close")
+
+
+def test_every_session_shares_the_one_pairing():
+    assert pd.SessionPairing()._core is pd.shared() is pd.SessionPairing()._core
 
 
 if __name__ == "__main__":
