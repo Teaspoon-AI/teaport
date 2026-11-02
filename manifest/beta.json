@@ -37,5 +37,6 @@
   },
   "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main" },
   "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
+  "openclaw": { "version": "2026.9.7", "node": "24" },
   "nemoclaw": { "tested_tag": "TODO" }
 }
