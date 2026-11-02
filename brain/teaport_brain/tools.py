@@ -1264,7 +1264,7 @@ class ToolContext:
     # never someone a bridge relays from far away).
     front_end: str | None = None
     via: str | None = None
-    # The session's DevicePairing (pair_device.py), which the pair_device tool hands to.
+    # The session's SessionPairing (pair_device.py), which the pair_device tool hands to.
     pairing: object = None
 
 

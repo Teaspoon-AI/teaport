@@ -260,6 +260,10 @@ token or a terminal.
    connected, the screen shows **Paired**, and the device says so.
    The app gets limited access: everything except the administrator's settings.
 
+The code stays on the screen when the conversation that asked for it ends: you can ask
+from the OpenClaw app or a Talk page on the same phone, then switch to the camera to
+scan it. Say "never mind" to take it down.
+
 The code works one time, and for 5 minutes at most. If you need a new code, ask again:
 the screen shows a new code, the old one stops working, and a device that is still
 connecting with the old code is still recognized.
