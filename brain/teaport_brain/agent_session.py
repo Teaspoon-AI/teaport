@@ -26,7 +26,6 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
-    AudioBufferStartRecordingFrame,
     BotSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
@@ -66,7 +65,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
-from teaport_brain import echo_guard
+from teaport_brain import call_recording, echo_guard
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard, mood_tag
@@ -394,7 +393,7 @@ class AgentSession:
                 if heard:
                     # Played to its end, but no word of it reached the recorder (a voice
                     # without word timings): the caller has been told, so start now.
-                    await self.task.queue_frames([AudioBufferStartRecordingFrame()])
+                    await self.task.queue_frames([call_recording.start_frame()])
                 else:
                     rec.arm(None)
                     logger.warning("the recording notice was not heard -- this call is "

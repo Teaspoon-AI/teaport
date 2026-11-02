@@ -193,12 +193,27 @@ async def test_the_notice_starts_the_recording_as_it_plays_and_lines_are_written
                                  if isinstance(f, TTSTextFrame) and f.text == "This")
         assert kinds[first_notice_word - 1] == "AudioBufferStartRecordingFrame", kinds
         assert kinds.count("AudioBufferStartRecordingFrame") == 1, kinds
+        assert down[first_notice_word - 1].interruptible is False, (
+            "an interruption in the recorder's queue would lose the start")
         lines = open(rec.txt_path, encoding="utf-8").read().splitlines()[2:]
         assert [re.sub(r"^\[[^\]]*\] ", "", ln) for ln in lines] == [
             "Assistant: This call is being recorded.",
             "Assistant (call ended): One moment.",
             "Assistant (call ended): On Sundays",
         ], lines
+
+
+async def test_a_line_already_playing_when_armed_does_not_start_it():
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c11", mode="transcript", directory=d)
+        [tap] = rec.processors
+        # A pipeline line that started before greet() armed the recording (its
+        # TTSStartedFrame passed unarmed): its later words must not start it ahead of the
+        # notice.
+        tap._own.add("e")
+        rec.arm("notice")
+        await run_test(tap, frames_to_send=_words("e", "still", "talking"))
+        assert not rec.started
 
 
 async def test_a_notice_that_never_plays_starts_nothing():
@@ -332,6 +347,7 @@ async def test_the_notice_plays_whole_before_the_greeting_outside_the_context():
             assert isinstance(notice, TTSSpeakFrame) and notice.text == NOTICE
             assert notice.append_to_context is False, "the notice is not the model's words"
             assert isinstance(start, AudioBufferStartRecordingFrame), _spoken(s)
+            assert start.interruptible is False
             assert (isinstance(greeting, LLMRunFrame) if prepared is None
                     else greeting.text == prepared), _spoken(s)
             # The caller is unheard while the notice is queued and plays (no "hello?" cuts

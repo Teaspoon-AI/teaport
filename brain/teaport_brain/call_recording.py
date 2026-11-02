@@ -26,7 +26,10 @@
 # Started there and not queued from the top, no interruption can delete the start on its
 # way, and a notice that never plays starts nothing (greet says so in the log). A call
 # that cannot be heard is never armed (greet speaks the "I can't hear you" line instead).
-# Before the start no file exists: a call that never connects leaves none.
+# Before the start no file exists: a call that never connects leaves none. Once the
+# notice has started playing, the recording runs on: the caller is unheard while it
+# plays and the brain does not cut it, so a notice cut after its first word is not a
+# case greet() has.
 #
 # AUDIO is pipecat's AudioBufferProcessor, below the output transport, where it sees
 # the caller's audio on its way down and the bot's as it is played: what the caller
@@ -103,6 +106,15 @@ def notice_line(espeak_language: str | None) -> str:
     return i18n.for_espeak(espeak_language)._("This call is being recorded.")
 
 
+def start_frame() -> AudioBufferStartRecordingFrame:
+    """pipecat's start for the recorder, kept through an interruption (Frame.interruptible,
+    set per frame): it is made only once the caller has been told, and an interruption
+    landing in the recorder's queue must not lose it."""
+    frame = AudioBufferStartRecordingFrame()
+    frame.interruptible = False
+    return frame
+
+
 def _clock(secs: float) -> str:
     m, s = divmod(max(secs, 0.0), 60)
     return f"{int(m):02d}:{s:04.1f}"
@@ -131,6 +143,7 @@ class _PlayedLines(FrameProcessor):
         super().__init__()
         self._rec = recording
         self._own: set = set()          # context ids of the pipeline's own lines
+        self._armed_own: set = set()    # ... of those, the ones started while armed
         self._words: dict = {}          # context id -> [start secs, [words]]
 
     def _now(self) -> float:
@@ -139,16 +152,19 @@ class _PlayedLines(FrameProcessor):
     def _flush(self, ctx, how: str = "") -> None:
         start, words = self._words.pop(ctx, (None, None))
         self._own.discard(ctx)
+        self._armed_own.discard(ctx)
         if words:
             self._rec.line(start, f"Assistant{how}", "".join(words).strip())
 
     async def _start_on(self, ctx) -> None:
         """An armed recording starts at the first word of what it was armed for."""
         armed = self._rec.armed
-        if armed == "any" or (armed == "notice" and ctx in self._own):
+        # "notice": a pipeline line that STARTED while armed -- the notice, queued after
+        # the arming; not one already playing when greet() armed it.
+        if armed == "any" or (armed == "notice" and ctx in self._armed_own):
             self._rec.begin()
-            # Straight into the recorder below: nothing between can drop it.
-            await self.push_frame(AudioBufferStartRecordingFrame())
+            # Straight into the recorder below, and kept through an interruption.
+            await self.push_frame(start_frame())
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -158,6 +174,8 @@ class _PlayedLines(FrameProcessor):
             elif isinstance(frame, TTSStartedFrame):
                 if getattr(frame, "append_to_context", True) is False:
                     self._own.add(frame.context_id)
+                    if self._rec.armed == "notice":
+                        self._armed_own.add(frame.context_id)
             elif isinstance(frame, TTSTextFrame) and frame.text:
                 ctx = getattr(frame, "context_id", None)
                 if not self._rec.started:
