@@ -1251,9 +1251,13 @@ resolve_gateway_token() {
 
 # The OpenClaw config both agent paths share; only the brain URL differs.
 #
-# talk.realtime — brain=none: the teaport brain orchestrates the turn, so OpenClaw must not
-# answer too. The token matches brain.env's GATEWAY_TOKEN so the brain accepts the relayed
-# session.
+# talk.realtime — brain=agent-consult: the teaport brain orchestrates the turn and asks
+# OpenClaw only through its consult tool, which is what agent-consult means. It is also the
+# only brain OpenClaw (2026.9.x) runs a realtime session with ("realtime talk.session.create
+# requires ... brain=\"agent-consult\""; none is for transcription sessions), and the iOS
+# app's Talk falls back to on-device speech for any other value, so brain=none -- written
+# here before -- kept the OpenClaw app off the teaport voice entirely. The token matches
+# brain.env's GATEWAY_TOKEN so the brain accepts the relayed session.
 #
 # device-pair — what `openclaw qr` advertises to a phone. Two non-obvious parts:
 #   * `enabled` must be explicit. The plugin ships enabledByDefault, but as a *bundled* plugin
@@ -1268,7 +1272,7 @@ resolve_gateway_token() {
 write_talk_patch() {
   cat > "$1" <<JSON
 { "talk": { "realtime": {
-  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
+  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "agent-consult",
   "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } },
   "plugins": { "entries": { "device-pair": {
   "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } } } } }
@@ -1356,7 +1360,7 @@ agent_openclaw() {
   run "$OPENCLAW" plugins enable teaport-realtime
 
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
@@ -1459,7 +1463,7 @@ agent_nemoclaw() {
   #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
   #    the pairing URL is the host front door, exactly as on the host-OpenClaw path.
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
