@@ -180,7 +180,7 @@ ONLY_BRAIN_STUBS = r'''
 STAGED=/opt/teaport/venvs/new
 systemctl() { [ "$1" = cat ]; }   # the brain unit is installed
 for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_retire \
-         install_busy_lamp install_dns_resilience brain_prune; do eval "$f() { echo STEP $f; }"; done
+         install_busy_lamp install_dns_resilience install_arp_multihome brain_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
 
@@ -235,8 +235,9 @@ def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
     for venv in ("link", "dir", "dangling"):
         rc, out = _brain_only(tempdir("teaport-only-"), venv=venv)
         assert rc == 0 and "no brain venv" not in out and "STEP brain_swap" in out, (venv, out)
-        # The resolver's drop-in rides the brain update too, after the verified swap.
+        # The resolver's and the ARP drop-ins ride the brain update too, after the verified swap.
         assert out.index("STEP brain_swap") < out.index("STEP install_dns_resilience"), out
+        assert out.index("STEP brain_swap") < out.index("STEP install_arp_multihome"), out
 
 
 # --- the resolver's serve-stale drop-in ------------------------------------------------
@@ -289,6 +290,155 @@ def test_the_dns_drop_in_is_skipped_where_it_would_do_nothing():
         (rc, out), dropin = _dns(tmp, **kw)
         assert rc == 0 and why in out and "skipped" in out, (case, out)
         assert not dropin.exists() and _sudo_calls(tmp) == [], (case, out)
+
+
+# --- the ARP drop-in for Ethernet and Wi-Fi on one subnet (#225) -----------------------
+
+def _arp(tmp, jetson=True, dry_run=False, fail="", sysctl_rc=0, takes=True):
+    """install_arp_multihome against a temp drop-in, marker and /proc conf/all; the real
+    write_root, sudo recorded. install writes the file (FAIL=install fails it); sysctl
+    exits SYSCTL_RC and, when TAKES=1, leaves 1 and 2 in the fake /proc (FAIL=sysctl:
+    exit 1, nothing applied)."""
+    proc = pathlib.Path(tmp, "proc")
+    if not proc.exists():
+        proc.mkdir()
+        (proc / "arp_ignore").write_text("0\n")
+        (proc / "arp_announce").write_text("0\n")
+    tegra = pathlib.Path(tmp, "nv_tegra_release")
+    if jetson:
+        tegra.write_text("# R39 (release)\n")
+    dropin = pathlib.Path(tmp, "etc/sysctl.d/60-teaport-multihome.conf")
+    applied = pathlib.Path(tmp, "state/arp-multihome.applied")
+    script = (f'ARP_SYSCTL_DROPIN="{dropin}"; ARP_APPLIED="{applied}"; ARP_PROC="{proc}"; '
+              f'NV_TEGRA_RELEASE="{tegra}"; DRY_RUN={int(dry_run)}; FAIL="{fail}"; '
+              f'SYSCTL_RC={sysctl_rc}; TAKES={int(takes)}\n'
+              'SUDO() { printf "%s\\n" "$*" >> "$T/sudo.log"; [ "$DRY_RUN" = 1 ] && return 0; '
+              '[ "$1" = "$FAIL" ] && return 1; '
+              'case "$1" in install) mkdir -p "$(dirname "${@: -1}")"; cat > "${@: -1}" ;; '
+              'rm) command rm -f "${@: -1}" ;; '
+              'sysctl) [ "$TAKES" = 1 ] && { echo 1 > "$ARP_PROC/arp_ignore"; '
+              'echo 2 > "$ARP_PROC/arp_announce"; }; return "$SYSCTL_RC" ;; esac; }\n'
+              'install_arp_multihome; echo DONE\n')
+    return _run(tmp, script, ["write_root", "install_arp_multihome"]), dropin, applied
+
+
+def _sysctls(tmp):
+    return [c for c in _sudo_calls(tmp) if c.startswith("sysctl")]
+
+
+def test_the_arp_drop_in_is_written_applied_and_recorded_once():
+    tmp = tempdir("teaport-arp-")
+    (rc, out), dropin, applied = _arp(tmp)
+    assert rc == 0 and "DONE" in out and "WARN" not in out, out
+    text = dropin.read_text()
+    assert "net.ipv4.conf.all.arp_ignore = 1\n" in text, text
+    assert "net.ipv4.conf.all.arp_announce = 2\n" in text, text
+    assert applied.read_text() == text, applied.read_text()
+    calls = _sudo_calls(tmp)
+    # Any old record goes first, then the file, then the apply, then the new record.
+    assert calls[0] == f"rm -f {applied}", calls
+    assert calls[1] == f"install -D -m 0644 -o root -g root /dev/stdin {dropin}", calls
+    # Applied the way boot applies it: every sysctl.d file in order, so an operator's
+    # drop-in that sorts after this one still wins.
+    assert calls[2] == "sysctl -q --system", calls
+    # A re-run with the file and the record in place touches nothing, whatever the live
+    # values are: an operator's later drop-in (99-local.conf) is not overridden.
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (pathlib.Path(tmp, "proc") / "arp_ignore").write_text("2\n")
+    (rc, out), _, _ = _arp(tmp)
+    assert rc == 0 and _sudo_calls(tmp) == [], (_sudo_calls(tmp), out)
+
+
+def test_the_arp_drop_in_is_rewritten_and_reapplied_when_it_changed():
+    tmp = tempdir("teaport-arp-")
+    _, dropin, _ = _arp(tmp)
+    dropin.write_text("net.ipv4.conf.all.arp_ignore = 0\n")   # an edit to our file
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (rc, out), _, _ = _arp(tmp)
+    calls = _sudo_calls(tmp)
+    assert rc == 0 and "arp_ignore = 1" in dropin.read_text(), out
+    assert any(c.endswith(str(dropin)) for c in calls) and "sysctl -q --system" in calls, calls
+
+
+def test_an_unrelated_key_failing_sysctl_is_not_a_failed_apply():
+    # sysctl --system exits 1 for another file's key the kernel lacks (net.bridge.* with
+    # no br_netfilter) after applying ours: the live values decide, and they are right.
+    tmp = tempdir("teaport-arp-")
+    (rc, out), _, applied = _arp(tmp, sysctl_rc=1)
+    assert rc == 0 and "WARN" not in out and "DONE" in out, out
+    assert applied.exists(), out
+
+
+def test_an_apply_that_did_not_take_is_retried_by_the_next_run():
+    tmp = tempdir("teaport-arp-")
+    (rc, out), dropin, applied = _arp(tmp, fail="sysctl")
+    assert rc == 0 and "WARN network: ARP is arp_ignore=0 arp_announce=0" in out, out
+    assert "the next run tries again" in out and dropin.exists() and not applied.exists(), out
+    # The next run finds the file as it wants it but no record: it applies again (the
+    # file is not rewritten), and this time it takes.
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (rc, out), _, _ = _arp(tmp)
+    calls = _sudo_calls(tmp)
+    assert rc == 0 and "WARN" not in out and applied.exists(), out
+    assert not any(c.endswith(str(dropin)) for c in calls) and _sysctls(tmp) == ["sysctl -q --system"], calls
+    # and then it is done
+    pathlib.Path(tmp, "sudo.log").unlink()
+    _arp(tmp)
+    assert _sudo_calls(tmp) == [], _sudo_calls(tmp)
+
+
+def test_a_rewritten_drop_in_whose_apply_fails_is_retried_despite_an_old_record():
+    # An earlier run applied and recorded; then the file was edited from outside. This
+    # run rewrites it and the apply fails: the old record must not make the next run skip.
+    tmp = tempdir("teaport-arp-")
+    _, dropin, applied = _arp(tmp)
+    assert applied.exists()
+    dropin.write_text("net.ipv4.conf.all.arp_ignore = 0\n")
+    for name in ("arp_ignore", "arp_announce"):
+        (pathlib.Path(tmp, "proc") / name).write_text("0\n")
+    (rc, out), _, _ = _arp(tmp, fail="sysctl")
+    assert rc == 0 and "the next run tries again" in out and not applied.exists(), out
+    assert "arp_ignore = 1" in dropin.read_text()
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (rc, out), _, _ = _arp(tmp)
+    assert rc == 0 and "WARN" not in out and applied.exists(), out
+    assert _sysctls(tmp) == ["sysctl -q --system"], _sudo_calls(tmp)
+
+
+def test_an_operators_later_drop_in_is_said_once_and_left_alone():
+    # sysctl --system applied every file cleanly and the values are not ours: a drop-in
+    # sorting after ours (99-local.conf: arp_ignore = 2) sets them on purpose. One log
+    # line, recorded, and the next run neither re-applies nor says anything.
+    tmp = tempdir("teaport-arp-")
+    proc = pathlib.Path(tmp, "proc")
+    proc.mkdir()
+    (proc / "arp_ignore").write_text("2\n")
+    (proc / "arp_announce").write_text("2\n")
+    (rc, out), _, applied = _arp(tmp, takes=False)
+    assert rc == 0 and "WARN" not in out and applied.exists(), out
+    lines = [ln for ln in out.splitlines() if "sets ARP to arp_ignore=2 arp_announce=2" in ln]
+    assert len(lines) == 1 and lines[0].startswith("LOG network: a sysctl.d drop-in after"), out
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (rc, out), _, _ = _arp(tmp, takes=False)
+    assert rc == 0 and out.strip() == "DONE" and _sudo_calls(tmp) == [], (out, _sudo_calls(tmp))
+
+
+def test_a_failed_write_warns_and_goes_on():
+    tmp = tempdir("teaport-arp-")
+    (rc, out), dropin, applied = _arp(tmp, fail="install")
+    assert rc == 0 and "WARN network: could not write" in out and "DONE" in out, out
+    assert _sysctls(tmp) == [] and not applied.exists(), _sudo_calls(tmp)
+
+
+def test_the_arp_drop_in_leaves_a_non_jetson_alone_but_a_dry_run_shows_it():
+    tmp = tempdir("teaport-arp-")
+    (rc, out), dropin, _ = _arp(tmp, jetson=False)
+    assert rc == 0 and "not a Jetson" in out and not dropin.exists(), out
+    assert _sudo_calls(tmp) == [], out
+    (rc, out), dropin, applied = _arp(tmp, jetson=False, dry_run=True)
+    assert rc == 0 and f"[dry-run] write {dropin}" in out and not dropin.exists(), out
+    assert "WARN" not in out and not applied.exists(), out
+    assert _sysctls(tmp) == ["sysctl -q --system"], _sudo_calls(tmp)
 
 
 # --- the freshness check looks at what is installed ----------------------------------
