@@ -201,6 +201,7 @@ class _Tap:
     mint: asyncio.Future | None = None  # the mint's task, cancelled to stop it
     stopped: bool = False      # stopped by the pairing (cancel, withdraw, its end)
     made_ms: int | None = None  # _wall_ms() when its handoff was made
+    peer: str | None = None    # the address that pressed it (_peer_of), if known
 
 
 @dataclass(eq=False)
@@ -229,11 +230,12 @@ class _Session:
     def minting(self) -> bool:
         return any(t.minting for t in self.taps)
 
-    def app_made_ms(self) -> int | None:
-        """When the first app setup code of this pairing was handed out, if one was."""
-        return min((t.made_ms for t in self.taps
-                    if t.choice == APP and t.made_ms is not None and not t.stopped),
-                   default=None)
+    def app_taps(self) -> list[_Tap]:
+        """App choices whose setup code was handed out and is still watched for: the
+        only ones a connection can be the doing of (_reconnected_app)."""
+        now = _clock()
+        return [t for t in self.taps if t.choice == APP and t.made_ms is not None
+                and t.peer is not None and t.until > now]
 
     def watch_until(self) -> float | None:
         """The end of the watch for made handoffs (a minting tap's claim is not one:
@@ -368,22 +370,47 @@ def _connects(devices: list[dict]) -> dict[str, int]:
 
 
 def _reconnected_app(devices: list[dict], seen: dict[str, int],
-                     since_ms: int | None) -> dict | None:
-    """An OpenClaw app already paired that connected after its setup code was handed out.
-    Pasting the code into an app paired before re-pairs the same device, and OpenClaw
-    neither adds an entry nor approves it again: its connection is the only sign (seen
-    on the box, 11-02, the iPhone app re-paired after a certificate change, the screen
-    waiting on "finish on your device" until it gave up). Only after an app choice
-    (since_ms) and only an app (a node): a browser handoff approves its browser again,
-    which _new_device already sees. The latest connection wins."""
-    if since_ms is None:
-        return None
+                     taps: list[_Tap]) -> dict | None:
+    """An OpenClaw app already paired that connected, from the phone that pressed "use the
+    app", after that phone's setup code was handed out. Pasting the code into an app
+    paired before re-pairs the same device, and OpenClaw neither adds an entry nor
+    approves it again: its connection is the only sign (seen on the box, 11-02, the
+    iPhone app re-paired after a certificate change, the screen waiting on "finish on
+    your device" until it gave up). Nothing ties a connection to our code, so it must
+    come from the address that tapped (the app and the browser are one phone) -- any app
+    reconnecting meanwhile (another phone brought to the foreground, a gateway restart)
+    is not ours. Only app taps still watched (taps), only an app (a node): a browser
+    handoff approves its browser again, which _new_device already sees. The latest
+    connection wins."""
     back = [d for d in devices
             if ("node" in (d.get("roles") or []) or d.get("clientMode") == "node")
             and d.get("lastSeenReason") in _CONNECT_REASONS
-            and int(d.get("lastSeenAtMs") or 0) >= since_ms
-            and int(d.get("lastSeenAtMs") or 0) > seen.get(str(d["deviceId"]), 0)]
+            and int(d.get("lastSeenAtMs") or 0) > seen.get(str(d["deviceId"]), 0)
+            and any(int(d.get("lastSeenAtMs") or 0) >= t.made_ms
+                    and _same_address(d.get("remoteIp"), t.peer) for t in taps)]
     return max(back, key=lambda d: int(d.get("lastSeenAtMs") or 0), default=None)
+
+
+def _same_address(a: str | None, b: str | None) -> bool:
+    """One address written two ways (IPv6 forms, an IPv4-mapped IPv6) is one address."""
+    def norm(x):
+        try:
+            ip = ipaddress.ip_address(str(x).strip().strip("[]"))
+        except ValueError:
+            return None
+        return getattr(ip, "ipv4_mapped", None) or ip
+    na, nb = norm(a), norm(b)
+    return na is not None and na == nb
+
+
+def _peer_of(request: Request) -> str | None:
+    """The address that sent a request through the front door: uvicorn's client when its
+    proxy headers made it the phone's, else the first X-Forwarded-For hop Caddy set."""
+    peer = request.client.host if request.client else None
+    if peer and not _is_loopback(peer):
+        return peer
+    hop = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return hop or None
 
 
 def _new_device(devices: list[dict], known: dict[str, int]) -> dict | None:
@@ -662,7 +689,7 @@ async def wait(offer: Offer) -> Result:
                 found = None
                 if done and devices is not None:
                     found = (_new_device(devices, s.known)
-                             or _reconnected_app(devices, s.seen, s.app_made_ms()))
+                             or _reconnected_app(devices, s.seen, s.app_taps()))
                 if found is not None and s.result is None:
                     name = device_name(found)
                     logger.info(f"pairing: paired {name!r}")
@@ -977,7 +1004,8 @@ async def redeem(code: str, request: Request) -> Response:
         return _choose(s.code.code)  # nothing chosen: nothing spent
     s.code_dead = True
     _spent.append(s.code.code)
-    tap = _Tap(choice, _clock() + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS) + _window(choice))
+    tap = _Tap(choice, _clock() + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS) + _window(choice),
+               peer=_peer_of(request))
     s.taps.append(tap)
     _pulse(s)
     logger.info(f"pairing: a code was used ({choice}); making the handoff")
