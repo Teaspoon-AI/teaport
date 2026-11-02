@@ -965,6 +965,90 @@ async def test_the_busy_line_is_one_framed_response_closed_only_after_it_played(
     _fresh()
 
 
+async def _greeting(gate, ws=None):
+    """A Talk client's greeting through _greet_as_response, on a real gate; greet() only
+    records itself (the test plays the greeting through the gate's frames)."""
+    ws = ws or _WS({"client": "openclaw:a"})
+
+    class _Session:
+        followup_gate = gate
+
+        async def greet(self):
+            ws.sent.append("greet")
+    return ws, await gs._greet_as_response(ws, _Session())
+
+
+def _kinds(ws):
+    return [m["type"] + ":" + m["state"] if isinstance(m, dict) else m for m in ws.sent]
+
+
+async def test_the_greeting_is_one_framed_response_done_only_after_it_played():
+    """The greeting goes out at connect, before a Talk client's mic has sent anything (the
+    iPhone app's mic starts after it), so OpenClaw's relay has no turn for it and fails the
+    session on unowned output. Framed like the busy line: start before the greeting, done
+    only once it has played -- not when greet() returns, which is before."""
+    gate = _gate()
+    ws, task = await _greeting(gate)
+    await _feed(gate, BotStartedSpeakingFrame())
+    await asyncio.sleep(0.05)
+    assert _kinds(ws) == ["response:start", "greet"], ws.sent       # still speaking
+    await _feed(gate, BotStoppedSpeakingFrame())
+    await asyncio.wait_for(task, 1)
+    assert _kinds(ws) == ["response:start", "greet", "response:done"], ws.sent
+    assert not gs._GREETINGS                                        # nothing held after it
+
+
+async def test_a_line_right_after_the_greeting_stays_inside_its_response():
+    """A failed completion speaks its error line just after the reply ends: the done waits
+    for a quiet window, so the line is not left with no owner."""
+    gate = _gate()
+    gate._quiet_secs = 0.2
+    ws, task = await _greeting(gate)
+    await _feed(gate, BotStartedSpeakingFrame(), BotStoppedSpeakingFrame())
+    await asyncio.sleep(0.05)                                       # idle, but not quiet yet
+    await _feed(gate, BotStartedSpeakingFrame())                    # the error line
+    await asyncio.sleep(0.3)
+    assert "response:done" not in _kinds(ws), ws.sent
+    await _feed(gate, BotStoppedSpeakingFrame())
+    await asyncio.wait_for(task, 1)
+    assert _kinds(ws)[-1] == "response:done"
+
+
+async def test_a_greeting_whose_session_ends_never_holds_it():
+    """A client gone mid-greeting: its task is cancelled (on_client_disconnected), and a
+    gate that never goes idle again (a cancel sends no bot-stopped) ends it at the cap."""
+    gate = _gate()
+    ws, task = await _greeting(gate)
+    await _feed(gate, BotStartedSpeakingFrame())
+    task.cancel()
+    await asyncio.wait({task}, timeout=1)
+    assert task.cancelled() and not gs._GREETINGS
+    saved = gs.GREETING_DONE_MAX_SECS
+    gs.GREETING_DONE_MAX_SECS = 0.1
+    try:
+        gate = _gate()
+        ws, task = await _greeting(gate)
+        await _feed(gate, BotStartedSpeakingFrame())                # and never stops
+        await asyncio.wait_for(task, 1)
+        assert _kinds(ws)[-1] == "response:done" and not gs._GREETINGS
+    finally:
+        gs.GREETING_DONE_MAX_SECS = saved
+
+
+async def test_a_client_gone_before_the_done_is_no_error():
+    gate = _gate()
+    ws = _WS({"client": "openclaw:a"})
+    ws, task = await _greeting(gate, ws)
+
+    async def gone(text):
+        raise RuntimeError("websocket closed")
+    await _feed(gate, BotStartedSpeakingFrame())
+    await asyncio.sleep(0.02)                                       # the greeting plays
+    ws.send_text = gone
+    await _feed(gate, BotStoppedSpeakingFrame())
+    await asyncio.wait_for(task, 1)                                 # logged, not raised
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
