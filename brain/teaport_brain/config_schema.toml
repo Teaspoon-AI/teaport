@@ -780,7 +780,7 @@ min = 1
 default = 2
 read = "startup"
 tier = "setup"
-help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. On SIP, while the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
+help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. While the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
 
 [[settings]]
 name = "SIP_ENDPOINT_STOP_SECS"
@@ -1022,7 +1022,7 @@ max = 1
 default = 0.6
 read = "startup"
 tier = "tuning"
-help = "Silero confidence that counts toward the fast speech-onset signal the reply hold (and, on SIP, the barge-in pause) uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides. The STT reads the same test after a VAD stop: an onset since the stop holds a complete verdict's commit until the test's own offset (the caller paused again), and the silence hint does not count past any chunk at this confidence."
+help = "Silero confidence that counts toward the fast speech-onset signal the reply hold and the barge-in pause use. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides. The STT reads the same test after a VAD stop: an onset since the stop holds a complete verdict's commit until the test's own offset (the caller paused again), and the silence hint does not count past any chunk at this confidence."
 
 [[settings]]
 name = "TEAPORT_ONSET_MIN_MS"
@@ -1044,7 +1044,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "SIP only: the moment the caller starts talking over the bot (the fast speech-onset test, or the VAD), pause playout. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. No effect on Talk, whose relay can only clear its client's buffer."
+help = "The moment the user starts talking over the bot (the fast speech-onset test, or the VAD), pause playout, on the phone and on Talk (the app, the dashboard, Discord, the box's mic) alike. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. On Talk the voice stops after what the client already holds (on the box's speaker, one 40 ms block and the bridge's 120 ms lead: about 0.15-0.2 s)."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_RESUME_S"
@@ -1080,7 +1080,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "SIP only, with TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
+help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
 
 [[settings]]
 name = "TEAPORT_STOP_WORDS"

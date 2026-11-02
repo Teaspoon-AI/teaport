@@ -75,24 +75,24 @@
 # typically fires within ~100-250 ms of the onset of real speech -- well ahead of the
 # VAD's edge -- while a short click or a burst of echo residue does not last long
 # enough. How well it rejects echo depends on the line: behind the SIP gateway's echo
-# canceller the caller's audio is near silent while they are quiet, and a line with
-# real echo residue, a poor handset or background speech is where it would trip. The
-# limit on echo-like pauses below bounds that; raise TEAPORT_ONSET_MIN_MS /
-# TEAPORT_ONSET_CONFIDENCE if the bot stutters on its own echo.
+# canceller, the XVF3800's in the room, or a browser's, the caller's audio is near
+# silent while they are quiet, and a line with real echo residue, a poor handset or
+# background speech is where it would trip. The limit on echo-like pauses below bounds
+# that; raise TEAPORT_ONSET_MIN_MS / TEAPORT_ONSET_CONFIDENCE if the bot stutters on its
+# own echo.
 #
-# WHERE THE PAUSE HAPPENS. In the output transport (SipGatewayOutputTransport), which
-# simply stops writing until resumed: everything after the pause point stays in
-# pipecat's MediaSender queue, in order. The SIP gateway's playout queue holds only
-# what the brain's real-time send clock has put there -- about one 20 ms frame, because
-# that clock (SipGatewayOutputTransport._write_audio_sleep) sends with ZERO lead: a
-# burst-lead send clock would leave that much more in the gateway's queue to play
-# through a pause -- so a brain-side pause is audible within ~40 ms and the gateway
-# needs no pause control of its own (it has none; protocol v0 has no flush either). The OpenClaw Talk relay
-# is different: the client buffers audio we cannot see, and its only control is
-# "clear", which throws the buffer away -- a pause there would lose audio, and a
-# resume would have to know how much. So the pauser is only built for a transport
-# that can pause (supports_playout_pause); on Talk it is absent and barge-in is as
-# before.
+# WHERE THE PAUSE HAPPENS. In the output transport (playout_pause.PausablePlayout, on
+# SIP and on /talk alike), which simply stops writing until resumed: everything after
+# the pause point stays in pipecat's MediaSender queue, in order. Both transports send
+# at real time, one frame ahead of playout at most, so what is downstream of the brain
+# is only what was just written: about one 20 ms frame in the SIP gateway's playout
+# queue (audible within ~40 ms; protocol v0 has no pause or flush, and needs none), and
+# on /talk one 40 ms block plus the client's own jitter margin -- the room bridge's
+# 120 ms card lead, a browser's playout buffer. No client is told: it plays what it
+# has, then what it plays when no audio comes (the bridge pads with silence), and goes
+# on when the audio does. A send clock with a longer lead would put that much more
+# audio past the brain's reach, to play through every pause; that is why they keep
+# none beyond the one frame (playout_pause.py).
 #
 # BOOKKEEPING. The transport announces each pause and resume (PlayoutPauseFrame, both
 # directions): the TranscriptLedger freezes its playout layout through it and moves
@@ -101,11 +101,22 @@
 # strategy learns the bot is silent.
 #
 # Known limits:
-#   * A pause is ~150-250 ms behind the caller's onset, plus the gateway's frame and
-#     the network; what played before it is heard.
-#   * While paused, the transport keeps releasing word captions on the wall clock (the
-#     assistant aggregator's running text runs ahead of the voice; the heard
-#     correction at a cut trims it back to what was heard, as on any cut).
+#   * A pause is ~150-250 ms behind the caller's onset, plus the gateway's frame or
+#     the client's jitter margin, and the network; what played before it is heard.
+#   * That margin is measured for the room bridge (its 120 ms card lead) and for SIP,
+#     not for the OpenClaw Talk view: a browser that buffers more plays on that much
+#     longer after the pause, and the ledger's heard cut (lag_secs) and the
+#     captions are short of what was heard by the same amount -- the same assumption
+#     the ledger already made on Talk for every cut, pause or not.
+#   * While paused, the transport keeps releasing the reply's words on the wall clock
+#     (pipecat's clock knows nothing of the pause): the assistant aggregator's running
+#     text and the Talk view's captions run ahead of the voice -- the heard correction
+#     at a cut trims the context back to what was heard, as on any cut -- and so do the
+#     room echo guard's "played" stamps, so after a pause longer than about half a
+#     second the resumed reply's echo can pass it as the user's words. The room bridge
+#     also counts a pause as the reply's end (its mouth timing, a goodbye "heard out").
+#     One design of the playout timing across a pause is the follow-up (#255, branch
+#     feat/pause-word-clock).
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
 #
@@ -146,7 +157,7 @@ from teaport_brain.endpointing import (
 )
 from teaport_brain.settings import setting
 
-# On for a transport that can pause (SIP); there is none to pause on Talk.
+# On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk).
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
 # The LONGEST a pause with no words waits after the caller's speech (both the VAD and
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
@@ -241,14 +252,16 @@ class PlayoutPauseFrame(SystemFrame):
     SpeakingFrame, with sibling ids."""
 
     paused: bool = True
-    # How long after this frame the audio really stops: the frame already written plays
-    # out its 20 ms slot first. The ledger credits playout up to then.
+    # How long after this frame the audio really stops: what was already sent still
+    # plays out -- the frame playing and the one queued behind it, up to two 20 ms
+    # frames on SIP and two 40 ms blocks on /talk (playout_pause.PausablePlayout._wrote).
+    # The ledger credits playout up to then.
     lag_secs: float = 0.0
     # On a pause: the audio it held back, when the reply is fully synthesized (so this is
     # all that is left to play), else -1. The start strategy treats the bot as silent
     # once this much time has passed since the pause began: it would have finished by
     # then without the pause. A reply whose synthesis completes DURING the pause gets
-    # the pause announced again with its tail (sip_transport._track_tail).
+    # the pause announced again with its tail (playout_pause.PausablePlayout.process_frame).
     tail_secs: float = -1.0
 
 

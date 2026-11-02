@@ -244,14 +244,14 @@ async def _dial(query):
                                      client_notes=SimpleNamespace(limits=lambda: {})))
         return built[-1]
 
-    saved = (gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for)
-    gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner = Transport, build, Runner
+    saved = (gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for)
+    gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner = Transport, build, Runner
     arb.tts_for = _TTS
     ws = _WS(query)
     try:
         await gs.run_relay_bot(ws)
     finally:
-        gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for = saved
+        gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for = saved
     return ws, bool(ran)
 
 

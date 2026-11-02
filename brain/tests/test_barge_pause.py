@@ -199,7 +199,9 @@ async def test_speech_then_no_words_pauses_at_once_and_resumes_without_loss():
         assert rig.pause_frames(FrameDirection.DOWNSTREAM) == [True, False]
         lags = [f.lag_secs for _, d, f in rig.bottom.frames
                 if isinstance(f, PlayoutPauseFrame) and f.paused]
-        assert lags and 0.0 < lags[0] <= 0.021, f"pause lag {lags}: the rest of one 20 ms slot"
+        # What was sent and is still to play: the frame playing and the one queued
+        # behind it (the send clock runs one frame ahead).
+        assert lags and 0.015 <= lags[0] <= 0.041, f"pause lag {lags}: one to two 20 ms frames"
         tails = [f.tail_secs for _, d, f in rig.bottom.frames
                  if isinstance(f, PlayoutPauseFrame) and f.paused]
         assert 1.2 <= tails[0] <= 1.5, f"tail at the pause {tails}: ~1.4 s of 2.0 s left"
@@ -327,6 +329,29 @@ async def test_no_pause_while_the_bot_is_silent_and_a_cap_on_a_long_one():
         await asyncio.sleep(1.0)
         assert [x[1] for x in out.calls] == [True, False], out.calls
         assert 0.75 <= out.calls[1][0] - out.calls[0][0] <= 0.9
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end():
+    # The pause landed in a gap the TTS had not filled: the transport's queue ran dry and
+    # it said the bot stopped (after 0.35 s, or pipecat's 3 s fallback). The pause is not
+    # lifted for it: a caller's lone word may still be on its way to the judge, and the
+    # next sentence must not start over it. Its quiet window ends it, as any pause's.
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        await asyncio.sleep(0.3)
+        await p.on_onset(False)                          # quiet: the window starts
+        await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        assert p.paused and [x[1] for x in out.calls] == [True], out.calls
+        await asyncio.sleep(RESUME_S + 0.1)
+        assert not p.paused and [x[1] for x in out.calls] == [True, False], out.calls
     finally:
         await task.cancel()
         await run
@@ -627,8 +652,8 @@ async def test_renewed_speech_cancels_a_pending_resume():
 
 
 async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
-    from teaport_brain import sip_transport
-    guard, sip_transport._PAUSE_GUARD_S = sip_transport._PAUSE_GUARD_S, 0.3
+    from teaport_brain import playout_pause
+    guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.3
     try:
         async with Rig(with_pauser=False) as rig:
             await rig.speak()
@@ -639,7 +664,33 @@ async def test_the_transport_resumes_on_its_own_before_the_write_deadline():
             assert len(gaps) == 1 and 0.25 <= gaps[0][1] - gaps[0][0] <= 0.4, gaps
             assert rig.pause_frames(FrameDirection.DOWNSTREAM) == [True, False]
     finally:
-        sip_transport._PAUSE_GUARD_S = guard
+        playout_pause._PAUSE_GUARD_S = guard
+
+
+async def test_one_sip_writes_waits_share_one_guard():
+    # A SIP write of several datagrams (a direct write: the end's silence, a DTMF
+    # tone) waits on the pause once per datagram. Its waits share the one guard:
+    # MediaSender bounds the whole write at 10 s. (Reply audio comes one datagram per
+    # write, audio_out_10ms_chunks=2, each with a budget of its own.)
+    from pipecat.frames.frames import OutputAudioRawFrame
+    from teaport_brain import playout_pause
+    guard, playout_pause._PAUSE_GUARD_S = playout_pause._PAUSE_GUARD_S, 0.4
+    try:
+        async with Rig(with_pauser=False) as rig:
+            await rig.out.set_playout_paused(True)
+            t0 = time.monotonic()
+            writer = asyncio.create_task(rig.out.write_audio_frame(
+                OutputAudioRawFrame(b"\x01\x00" * BYTES_PER_FRAME * 2, SR, 1)))
+            await asyncio.sleep(0.3)
+            await rig.out.set_playout_paused(False)     # the first datagram goes
+            await asyncio.sleep(0.005)
+            await rig.out.set_playout_paused(True)      # the second waits: same write
+            await asyncio.wait_for(writer, 2.0)
+            held = time.monotonic() - t0
+            assert held <= 0.4 + 0.1, f"the write was held {held:.2f}s: past its one guard"
+            assert len(rig.wire.datagrams) == 4, "all of the write went out"
+    finally:
+        playout_pause._PAUSE_GUARD_S = guard
 
 
 async def test_an_interruption_clears_the_pause_everywhere():
@@ -687,7 +738,7 @@ async def test_a_write_woken_with_its_buffer_gone_sends_no_empty_datagram():
     assert not writer.done(), "the write should be holding at the pause"
     out._audio_send_buffer.clear()
     out._drop_pause()
-    await asyncio.wait_for(writer, 1.0)
+    assert await asyncio.wait_for(writer, 1.0) is False, "a cut frame was not written"
     await wire.stop()
     assert all(len(d) == 1 + BYTES_PER_FRAME for d in wire.datagrams), (
         [len(d) for d in wire.datagrams])

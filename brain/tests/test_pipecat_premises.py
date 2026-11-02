@@ -1560,6 +1560,30 @@ async def check_the_brain_never_speculates():
     assert not offenders, f"the brain speculates now: {offenders}"
 
 
+async def check_the_websocket_transport_builds_its_output_from_its_own_parts():
+    """talk_transport.TalkWebsocketTransport rebuilds pipecat's FastAPI websocket output
+    from the transport's _client, _params and _output_name, after the base __init__ built
+    one. That holds while the base builds it from those parts and wires nothing else to
+    it.
+
+    If it goes: /talk's output is not the one that pauses, or loses wiring the base
+    gave the first one, silently."""
+    from types import SimpleNamespace
+    from pipecat.transports.websocket.fastapi import (
+        FastAPIWebsocketOutputTransport, FastAPIWebsocketParams)
+    from teaport_brain.gateway_serializer import TeaportGatewaySerializer
+    from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTransport
+    t = TalkWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
+        serializer=TeaportGatewaySerializer()))
+    out = t.output()
+    assert type(out) is TalkOutputTransport
+    assert out._client is t._client and out._params is t._params
+    for holder in (t, t._client, t._input, t._client._callbacks):
+        for v in vars(holder).values():
+            assert not (isinstance(v, FastAPIWebsocketOutputTransport) and v is not out), (
+                f"pipecat's own output is still wired into {type(holder).__name__}")
+
+
 CHECKS = [v for k, v in list(globals().items()) if k.startswith("check_")]
 
 

@@ -2589,6 +2589,12 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 What is not modelled:
 - The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
 - The 8 s pause cap: a caller still talking keeps the pause; the cap ends it as a pause end.
+- A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
+  finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
+  dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
+  pause stays until its own quiet window, verdict or cap ends it
+  (`test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end`), so the model's pause
+  ends are the code's. An underrun without a pause is not modelled either.
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.
@@ -2758,11 +2764,16 @@ tool round lands when they release it, and a reply released by a timer but not y
 started is still the one a continuation drops. With
 `EARLY_FINAL = FALSE` (every row above) no commit finds the gate armed, so
 `retryOnQuiet` and `retryMerges` are one machine and those rows keep `retryOnQuiet`.
-Talk and the room mic run the same turn machine and fence, without the hold
-(`TEAPORT_REPLY_HOLD_TALK` defaults off) or the pause (their transport cannot pause):
-`HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as before
-#85 — and without a gate nothing knows the first reply has not played, so the second
-commit stays a second message there. The room's own turn timing (`ROOM_*`, #159) and
+Talk and the room mic run the same turn machine, fence and barge-in pause (the `/talk`
+transport pauses as the SIP one does, `playout_pause.py`), without the hold
+(`TEAPORT_REPLY_HOLD_TALK` defaults off): `HOLD = "none"`, `PAUSE = "shipped"`.
+`ut_talk_shipped_all` holds every property but `NoStaleReply` and `NoSplitTurn`, which
+fail as before #85 (`ut_talk_shipped_nostalereply`, `ut_talk_shipped_nosplitturn`) —
+without a gate nothing knows the first reply has not played, so the second commit stays
+a second message there. Nothing in the pause's own properties leans on the hold:
+`ut_talk_judge_all` holds them with the judge on as well, and the witnesses
+(`ut_talk_pause_reach`, `ut_talk_judge_reach`) show the pause and the judging are
+reached without it. The room's own turn timing (`ROOM_*`, #159) and
 `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
 ### Known limits of this model
@@ -3611,6 +3622,7 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | A context that timed out mid-reply is re-created under the SAME id | LedgerPlayout (`TtsRestart`; `ledger_split` settled) | `check_a_timed_out_context_resumes_under_its_own_id` | `services/tts_service.py:1277-1282` (`_turn_context_id`) | ✓ | ✓ |
 | `start_word_timestamps` takes its baseline from its first `get_clock()` read | PlayoutClock (`pc_second_realClock`) | guard `engine_tts._require_baseline_clock_read` (behavioural); `test_tts_streaming.py::test_a_moved_baseline_clock_read_fails_the_session_build` | `services/tts_service.py:1381-1398` | ✓ (that test) | ✓ (main's suite) |
 | The output transport releases timed frames by (pts, arrival), not arrival order | PlayoutClock (`Pop`, `pc_release_words`) | `check_the_transport_releases_timed_frames_by_pts_then_arrival` | `transports/base_output.py:640-649, 1079-1100` | ✓ | ✓ |
+| `FastAPIWebsocketTransport` builds its output from `_client`, `_params` and `_output_name` and wires it to nothing else, so `TalkWebsocketTransport` can replace it | -- (the brain's: the /talk pause) | `check_the_websocket_transport_builds_its_output_from_its_own_parts` | -- | -- | `transports/websocket/fastapi.py:670` ✓ |
 | What the transport pushes on after writing a chunk carries no `context_id` | Ledger, LedgerPlayout (the untagged rebuild) | `check_the_transport_repushes_played_audio_untagged` | `transports/base_output.py:896-923` | ✓ | ✓ |
 | The assistant aggregator commits a cut reply at the interruption and a reply at its End; words after the End go to the next message | UserTurn (`CutLands`), PlayoutClock (`Pop`) | `check_the_assistant_aggregator_commits_at_the_interruption_and_the_end` | `llm_response_universal.py:1748-1750, 2053-2061, 2076-2097` | ✓ | ✓ |
 | The stop strategy's own rules the brain subclasses: an interim un-finalizes, the fallback for a transcript with no VAD stop, `_maybe_trigger_user_turn_stopped` as every path's gate | SttCommit (`StratDelta`, `StratFinal`, the owed close) | `test_endpointing.py`, `test_earlier_final_does_not_end_the_turn.py` (real strategy) | `turns/user_stop/turn_analyzer_user_turn_stop_strategy.py` | ✓ (those tests) | ✓ (main's suite) |
