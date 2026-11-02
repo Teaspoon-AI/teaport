@@ -37,6 +37,9 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
+    "llm_error_speaker.py": {
+        "t._(text)",                         # its three notices: N_() there
+    },
     "wifi_setup.py": {
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here

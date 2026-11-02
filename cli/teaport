@@ -63,17 +63,20 @@ def at(t):
     same_day = time.strftime("%Y-%m-%d", lt) == time.strftime("%Y-%m-%d")
     return time.strftime("%H:%M" if same_day else "%Y-%m-%d %H:%M", lt)
 why = (" (%s)" % a["reason"]) if a.get("reason") else ""
+when = ("" if st in ("ok", "untried") else
+        "since %s, last at %s, %d time(s)%s" % (at(a["since"]), at(a.get("last") or a["since"]),
+                                                a.get("count", 0), why))
 if st == "ok":
     text = "working"
 elif st == "untried":
     text = "none asked for since the brain started"
 elif st == "account":
-    text = ("refused since %s%s: the account behind the answers needs attention, and"
-            " it will not pass by itself — check the key and its account on the settings"
-            " page" % (at(a["since"]), why))
+    text = ("refused %s: the account behind the answers needs attention, and it will"
+            " not pass by itself — check the key and its account on the settings page;"
+            " this clears on the next answered request" % when)
 else:
-    text = ("failing since %s%s, %d time(s): the provider had trouble; this usually"
-            " passes — if it keeps up, see teaport logs brain" % (at(a["since"]), why, a.get("count", 0)))
+    text = ("failing %s: the provider had trouble; this usually passes and clears on"
+            " the next answered request — if it keeps up, see teaport logs brain" % when)
 print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
 }
 answers_line() {  # the answers, as a status line

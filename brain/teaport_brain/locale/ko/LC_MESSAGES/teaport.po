@@ -397,3 +397,12 @@ msgstr "전화 받고 올게요 — 금방 돌아올게요."
 
 msgid "Sorry about that — where were we?"
 msgstr "기다리게 해서 미안해요 — 우리 어디까지 얘기했죠?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "죄송해요, 방금은 답을 받지 못했어요. 다시 시도해 주시겠어요?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 계정에 확인이 필요하고, 다시 시도해도 해결되지 않아요. 제 설정 페이지에서 고칠 수 있어요."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "계정 문제가 해결될 때까지는 아직 답할 수 없어요."

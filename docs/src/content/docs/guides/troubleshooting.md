@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:225-329#0535c9ab -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:228-332#0535c9ab -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:225-329#0535c9ab -->
+<!-- source: cli/teaport:228-332#0535c9ab -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -388,7 +388,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:225-329#0535c9ab -->
+<!-- source: cli/teaport:228-332#0535c9ab -->
 
 **Fix**
 
@@ -513,18 +513,20 @@ for OpenRouter.
 **Cause** The model provider refused the key, or the account behind the key has
 no credit or allowance left. For example, a key that reached its spending limit.
 Every request fails until you change the key or the account, so asking again
-does not help. For other failures, such as a provider that is busy or slow,
+does not help. teaport says this once, and on later failed turns it says that
+it still can't answer. For other failures, such as a provider that is busy or slow,
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:77-89#47bb2043 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:88-103#a0771306 -->
 
 **Fix**
 
 1. Run `teaport status`. The `answers (brain)` line shows when the refusals
-   started and the provider's reason, for example `refused since 02:56 (Key
-   limit exceeded (total limit))`. `teaport doctor` reports the same line as a
-   failure.
+   started, when the last one happened, and the provider's reason, for example
+   `refused since 02:56, last at 03:10, 4 time(s) (Key limit exceeded (total
+   limit))`. `teaport doctor` reports the same line as a failure. The line stays
+   until the provider accepts a request, even after you fix the key.
 2. Check the account on the provider's site: its credit, and the limit of the
    key.
 3. If the key changed, enter the new key in `LLM_API_KEY` on the configuration
@@ -532,7 +534,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:55-84#8e77a680 -->
+<!-- source: cli/teaport:55-87#9f442c04 -->
 
 ## teaport does not remember anything
 

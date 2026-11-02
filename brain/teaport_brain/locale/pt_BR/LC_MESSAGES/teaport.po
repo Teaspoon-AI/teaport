@@ -288,3 +288,12 @@ msgstr "Vou atender a ligação — já volto."
 
 msgid "Sorry about that — where were we?"
 msgstr "Desculpe a interrupção — onde a gente estava?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Desculpe, não consegui uma resposta agora há pouco. Pode tentar de novo?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Desculpe, não consigo responder agora: a conta que uso para as minhas respostas precisa de atenção, e tentar de novo não vai adiantar. Dá para resolver na minha página de configurações."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Ainda não consigo responder até que a minha conta seja resolvida."

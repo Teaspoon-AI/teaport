@@ -45,7 +45,8 @@ from pipecat.utils.errors import ErrorCategory  # noqa: E402
 from teaport_brain import llm_error_speaker as les  # noqa: E402
 from teaport_brain import services  # noqa: E402
 from teaport_brain.llm_error_speaker import (  # noqa: E402
-    ACCOUNT_TEXT, ERROR_TEXT, AnswerHealth, LLMErrorSpeaker, failure_reason)
+    ACCOUNT_STILL_TEXT, ACCOUNT_TEXT, ERROR_TEXT, AnswerHealth, LLMErrorSpeaker,
+    failure_reason, redact)
 
 # Made-up secrets that must never surface in anything the new code says or serves.
 FAKE_KEY = "sk-test-0123456789abcdefABCDEF"
@@ -153,25 +154,46 @@ async def test_an_unclassified_frame_falls_back_to_its_exception():
     assert await _spoken(LLMErrorSpeaker(), frame) == [ERROR_TEXT]
 
 
-async def test_the_account_line_has_its_own_longer_window():
-    """Inside the window the account line is said once; a passing glitch said a moment
-    earlier does not swallow it (it is news), and it does not swallow the next glitch's
-    line once that window is over."""
+async def test_the_account_window_full_line_then_short_never_try_again():
+    """The full account line once per account window; every other failed account turn
+    inside it gets the short line, never silence; the vague "try again" is not said
+    inside it (it would contradict "trying again won't help"), even past its own window.
+    A passing glitch said a moment earlier does not swallow the account line."""
     llm, _ = _llm()
     speaker = LLMErrorSpeaker()
     account = ErrorFrame(error="x", processor=llm, category=ErrorCategory.AUTHORIZATION)
     glitch = ErrorFrame(error="x", processor=llm, category=ErrorCategory.SERVER)
     assert await _spoken(speaker, glitch) == [ERROR_TEXT]
     assert await _spoken(speaker, account) == [ACCOUNT_TEXT]
-    assert await _spoken(speaker, account) == []
+    assert await _spoken(speaker, account) == [ACCOUNT_STILL_TEXT]
+    assert await _spoken(speaker, account) == [ACCOUNT_STILL_TEXT]
     window = les._DEBOUNCE_SECS
     # Past the ordinary window, short of the account one.
-    speaker._last = {False: speaker._last[False] - window - 1,
-                     True: speaker._last[True] - window - 1}
+    speaker._said -= window + 1
+    speaker._said_account -= window + 1
+    assert await _spoken(speaker, glitch) == []
+    assert await _spoken(speaker, account) == [ACCOUNT_STILL_TEXT]
+    # Past the account window: the full line again, and the vague line is back.
+    speaker._said_account -= window * les.ACCOUNT_DEBOUNCE_FACTOR
+    speaker._said -= window * les.ACCOUNT_DEBOUNCE_FACTOR
     assert await _spoken(speaker, glitch) == [ERROR_TEXT]
-    assert await _spoken(speaker, account) == []
-    speaker._last[True] -= window * les.ACCOUNT_DEBOUNCE_FACTOR
     assert await _spoken(speaker, account) == [ACCOUNT_TEXT]
+
+
+async def test_the_notices_follow_the_voice_language():
+    """Said in the session's voice language (i18n catalogs), read at each notice."""
+    from teaport_brain import i18n
+    llm, _ = _llm()
+    lang = ["es"]
+    speaker = LLMErrorSpeaker(lang_fn=lambda: lang[0])
+    account = ErrorFrame(error="x", processor=llm, category=ErrorCategory.QUOTA)
+    es = i18n.for_espeak("es")
+    full = await _spoken(speaker, account)
+    assert full == [es._(ACCOUNT_TEXT)] and full != [ACCOUNT_TEXT], full
+    lang[0] = "fr-fr"
+    short = await _spoken(speaker, account)
+    assert short == [i18n.for_espeak("fr-fr")._(ACCOUNT_STILL_TEXT)], short
+    assert short != [ACCOUNT_STILL_TEXT]
 
 
 async def test_other_processors_errors_are_not_spoken():
@@ -182,7 +204,7 @@ async def test_other_processors_errors_are_not_spoken():
 
 
 def test_spoken_lines_are_plain_words():
-    for text in (ACCOUNT_TEXT, ERROR_TEXT):
+    for text in (ACCOUNT_TEXT, ACCOUNT_STILL_TEXT, ERROR_TEXT):
         assert not re.search(r"\b(LLM|API|language model|speech engine|\d{3})\b", text,
                              re.IGNORECASE), text
 
@@ -198,6 +220,35 @@ def test_the_reason_is_the_providers_words_without_links_or_keys():
     assert failure_reason(bare) == "refused", failure_reason(bare)
     for make in (*ACCOUNT_CASES.values(), *PASSING_CASES.values()):
         _no_secrets(failure_reason(make()), "failure_reason")
+    # A key the provider masked keeps no part of itself, not even its visible tail.
+    masked = _status_error(401, "Incorrect key provided: sk-proj-****\u2026abcd. Check it.")
+    assert failure_reason(masked) == "Incorrect key provided: Check it", failure_reason(masked)
+    assert redact("key sk-proj-****\u2026abcd") == "key <key>"
+    assert redact("tail ****abcd only") == "tail <key> only"
+
+
+async def test_the_error_log_line_is_redacted():
+    """pipecat logs ErrorFrame.error itself; it is redacted before pipecat sees it, while
+    the exception stays whole for the category."""
+    services.ANSWERS = AnswerHealth()
+    llm, pushed = _llm()
+    frame = await _raise_through(llm, pushed, SPENT_KEY_403())
+    _no_secrets(frame.error, "the error log line")
+    assert "<link>" in frame.error and frame.category is ErrorCategory.AUTHORIZATION
+
+
+async def test_only_provider_failures_are_recorded():
+    """An exception no provider request raises is the brain's own bug: not blamed on the
+    provider in status."""
+    health = services.ANSWERS = AnswerHealth()
+    llm, pushed = _llm()
+    await _raise_through(llm, pushed, ValueError("bad context"))
+    await _raise_through(llm, pushed, KeyError("x"))
+    assert health.status() == {"state": "untried"}, health.status()
+    await _raise_through(llm, pushed, PASSING_CASES["read timeout"]())
+    assert health.status()["state"] == "failing", health.status()
+    await _raise_through(llm, pushed, asyncio.TimeoutError())
+    assert health.status()["count"] == 2, health.status()
 
 
 async def test_status_records_the_failure_and_clears_on_success():
@@ -288,8 +339,9 @@ def test_status_and_doctor_show_an_account_failure_until_a_success():
     served = {"ok": True, "answers": health.status()}
     shown = _status_answers(served)
     hhmm = time.strftime("%H:%M", time.localtime(health.status()["since"]))
-    assert shown.startswith(f"refused since {hhmm} (Key limit exceeded (total limit))"), shown
-    assert "settings page" in shown, shown
+    assert shown.startswith(f"refused since {hhmm}, last at {hhmm}, 1 time(s) "
+                            "(Key limit exceeded (total limit))"), shown
+    assert "settings page" in shown and "clears on the next answered request" in shown, shown
     doctor = _doctor_answers(served)
     assert len(doctor) == 1 and doctor[0].startswith("FAIL answers: refused since"), doctor
     for text in (shown, *doctor):

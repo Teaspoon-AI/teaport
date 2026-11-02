@@ -36,7 +36,7 @@ from teaport_brain import barge_pause, llm_http2
 from teaport_brain import owed as owed_mod
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
-from teaport_brain.llm_error_speaker import ANSWERS
+from teaport_brain.llm_error_speaker import ANSWERS, redact
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 from teaport_brain.tts_text import has_speech
@@ -704,7 +704,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # The provider accepted the request (a refusal raises before the stream opens):
-        # whatever run of failures /health was reporting is over (#205).
+        # whatever run of failures /health was reporting is over (#205). On EVERY open,
+        # so a stream that opens and then fails mid-way (a read timeout) starts a new run:
+        # since/count restart there. That is deliberate -- the account was accepted, so
+        # the run before it is over -- and a provider that keeps failing mid-stream shows
+        # as "failing" with a count of 1 and a fresh "since" on each turn.
         ANSWERS.succeeded()
         # _RenumberedStream, not the bare generator — see the class docstring: a
         # generator has no close(), so wrapping in one silently disabled base_llm's
@@ -715,7 +719,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
         """Every error this service reports also goes on the record /health serves
         (llm_error_speaker.ANSWERS, #205) -- here rather than in LLMErrorSpeaker, which
         is not in the pipeline when TEAPORT_LLM_ERROR_SPEECH is off. After super(): that
-        is where pipecat settles the frame's category."""
+        is where pipecat settles the frame's category.
+
+        The message is redacted first (llm_error_speaker.redact): base_llm writes the
+        exception into it, and a provider's refusal can carry the link to the key's
+        management page, with the key's id in its path, into pipecat's own error log
+        line. The exception itself is kept whole for classification."""
+        error.error = redact(error.error)
         if force_treat_as_permanent:
             await super().push_error_frame(error, force_treat_as_permanent=True)
         else:

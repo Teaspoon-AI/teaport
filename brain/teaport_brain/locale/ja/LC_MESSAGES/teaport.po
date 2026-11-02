@@ -288,3 +288,12 @@ msgstr "電話に出ますね — すぐ戻ります。"
 
 msgid "Sorry about that — where were we?"
 msgstr "お待たせしました — どこまで話しましたっけ？"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "すみません、今は答えを得られませんでした。もう一度お試しいただけますか？"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "すみません、今はお答えできません。回答に使っているアカウントに対応が必要で、もう一度試しても解決しません。設定ページで直すことができます。"
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "アカウントの問題が解決するまで、まだお答えできません。"

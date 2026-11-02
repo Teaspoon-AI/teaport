@@ -299,3 +299,12 @@ msgstr "سأرد على المكالمة — سأعود بعد لحظة."
 
 msgid "Sorry about that — where were we?"
 msgstr "عذرًا على المقاطعة — أين كنا؟"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن. هل يمكنك المحاولة مرة أخرى؟"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب الذي أستخدمه لإجاباتي يحتاج إلى مراجعة، ولن تفيد إعادة المحاولة. يمكن إصلاحه من صفحة الإعدادات الخاصة بي."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية مشكلة حسابي."

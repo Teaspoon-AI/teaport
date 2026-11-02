@@ -288,3 +288,12 @@ msgstr "我去接一下电话——马上回来。"
 
 msgid "Sorry about that — where were we?"
 msgstr "抱歉打断了——我们刚才说到哪儿了？"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "抱歉，刚才没能得到回答。你能再试一次吗？"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处理，再试一次也没有用。可以在我的设置页面上解决。"
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "在我的账户问题解决之前，我仍然无法回答。"
