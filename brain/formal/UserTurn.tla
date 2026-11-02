@@ -799,7 +799,7 @@ StopStarts ==
     IF pausedP THEN PAUSE /= "noStopWord" ELSE PAUSE /= "pausedStopOnly"
 StopWord ==
     /\ ~endQueued
-    /\ PAUSE /= "off"
+    \* No PAUSE guard: the strategy is every session's, pauser or none.
     /\ turns < MaxTurns /\ ~userTurn /\ botSpeaking /\ ~stopInFlight
     /\ IF judging /\ JUDGE = "noReask"
          THEN \* Held with the rest: "Okay -- stop." waits on the verdict on "Okay".

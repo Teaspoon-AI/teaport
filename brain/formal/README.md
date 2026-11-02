@@ -2653,7 +2653,7 @@ the caller stops, so the bot talks on through the caller's whole interjection �
 typically most of a second.
 `BargeInPauser` (`barge_pause.py`) pauses playout at the transport on the caller's
 speech; their words cancel the reply as before (`TEAPORT_INTERRUPT_MIN_WORDS`, or an
-utterance of stop words, paused or not — #216), no words resume it. A pause holds back the reply's
+utterance of stop words, paused or not, pause on or off — #216), no words resume it. A pause holds back the reply's
 own end with its audio, so the bot counts as speaking until the resume — which is where
 the review's must-fix came from.
 

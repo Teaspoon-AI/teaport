@@ -45,7 +45,11 @@
 # What it gets wrong: the user repeating the bot's last words straight back while it is
 # still talking. That costs those words, not the turn -- and a "wait" the user says
 # within LOOKBACK_SECS of the bot saying "wait" is taken as its echo: they say it again,
-# or more than it.
+# or more than it. The bridge's echo meter (xvf_echo.EchoMeter: how far the user's voice
+# stands above the echo) would tell the two apart, but it lives in the bridge, not in
+# this process. And after a barge-in pause longer than about half a second the resumed
+# reply's echo can pass (the "played" stamps run on through the pause, #255): one such
+# "wait" now cuts the reply.
 #
 import collections
 import time
@@ -55,7 +59,7 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TTSTextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.barge_pause import is_stop_utterance
+from teaport_brain.barge_pause import fold_shh, is_stop_utterance
 from teaport_brain.settings import setting
 from teaport_brain.wake_words import normalize
 
@@ -86,7 +90,7 @@ class BotWords:
 
     def played(self, text: str) -> None:
         now = self.clock()
-        for w in normalize(text)[0].split():
+        for w in _match_words(normalize(text)[0]):
             self._words.append((now, w))
         while self._words and now - self._words[0][0] > KEEP_SECS:
             self._words.popleft()
@@ -99,6 +103,12 @@ class BotWords:
             return []
         start = since - LOOKBACK_SECS
         return [(t, w) for t, w in self._words if t >= start]
+
+
+def _match_words(norm: str) -> list[str]:
+    """Normalized words as both sides of the match see them: any "shh" spelling folded
+    the way the stop words fold it (barge_pause.fold_shh)."""
+    return [fold_shh(w) for w in norm.split()]
 
 
 def echo_run(words: list[str], bot: list[str], starts,
@@ -173,7 +183,10 @@ class EchoGuard:
         bot = [w for _, w in heard]
         starts = [j for j, (t, _) in enumerate(heard) if t <= since - MIN_LAG_SECS]
         # An interim is held on less: one word after a fragment may still become a run.
-        k, matched = echo_run(words, bot, starts, behind_fragment=2 if final else 1)
+        # Matched on the folded words ("shhh" as said, "shh" as played); `words` keeps
+        # the normalized ones, whose lengths place the cut in `text` below.
+        k, matched = echo_run(_match_words(norm), bot, starts,
+                              behind_fragment=2 if final else 1)
         if not final and k and k == len(words):
             return ""
         if k == 0 or not _taken(matched, whole=k == len(words)):

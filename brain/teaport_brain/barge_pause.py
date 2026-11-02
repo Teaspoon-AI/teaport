@@ -527,10 +527,16 @@ class BargeInPauser(FrameProcessor):
 _SHH = re.compile(r"s*h{2,}")
 
 
+def fold_shh(word: str) -> str:
+    """Every "shhh" ("sshh", "shhhh") as "shh": the one fold the stop words and the echo
+    guard's word match share."""
+    return "shh" if _SHH.fullmatch(word) else word
+
+
 def _tokens(text: str) -> list:
     """The words of `text` (word_tokens, the rule sliced turn texts share), every "shhh"
     as "shh"."""
-    return ["shh" if _SHH.fullmatch(w) else w for w in word_tokens(text)]
+    return [fold_shh(w) for w in word_tokens(text)]
 
 
 def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
@@ -633,7 +639,9 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # Paused or not (#216): the pause fails most on short unvoiced words, and
             # "stop" is one, so the word that must always work is the likeliest to land
             # on a reply still playing.
-            logger.debug(f"{self}: stop word over the bot "
+            # info: a cut on the bot's own echoed stop word (SIP and non-room Talk
+            # have no echo guard) must show in the journal.
+            logger.info(f"{self}: stop word over the bot "
                          f"({'paused' if self._playout_paused else 'playing'}, "
                          f"{frame.text!r}) -- starting the turn")
             await self.trigger_user_turn_started()

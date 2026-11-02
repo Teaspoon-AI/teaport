@@ -140,6 +140,26 @@ def test_one_word_is_the_bots_only_when_long_or_a_stop_word():
     assert g.strip("Wait, wait.", final=True, since=_echo_of(1)) == "Wait, wait."
 
 
+def test_the_users_wait_just_after_the_bots_wait_is_taken_as_echo():
+    # The accepted cost of taking the bot's stop words as echo (#216): the guard cannot
+    # tell the user's "Wait." from the bot's within the lookback, and drops it. Saying
+    # it again later, or saying more, gets through.
+    g, clock = _guard("Please wait while I check.")
+    assert g.strip("Wait.", final=True, since=_echo_of(1)) == ""
+    assert g.strip("Wait, stop.", final=True, since=_echo_of(1)) == "Wait, stop."
+    late = clock.t + echo_guard.ACTIVE_SECS + 0.1
+    assert g.strip("Wait.", final=True, since=late) == "Wait."
+
+
+def test_any_shh_spelling_heard_back_is_the_bots():
+    # The match folds "shh" spellings as the stop words do (barge_pause.fold_shh).
+    g, clock = _guard("Shhh, listen to this part.")
+    assert g.strip("Shh.", final=True, since=_echo_of(0)) == ""
+    assert g.strip("sshhhh", final=False, since=_echo_of(0)) == ""
+    g, clock = _guard("Shh, listen to this part.")
+    assert g.strip("Shhhh!", final=True, since=_echo_of(0)) == ""
+
+
 def test_a_stop_phrase_heard_back_is_the_bots():
     g, clock = _guard("Hold on, let me look that up.")
     assert g.strip("Hold on.", final=True, since=_echo_of(0)) == ""
