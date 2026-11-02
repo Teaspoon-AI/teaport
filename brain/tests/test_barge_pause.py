@@ -401,15 +401,6 @@ async def test_a_stale_resume_notice_does_not_end_a_newer_pause():
         await run
 
 
-def test_a_pause_is_capped_under_the_transports_write_guard():
-    # Neither the cap nor the resume window may reach the transport's guard: the pauser
-    # ends a long pause, the guard is only a backstop.
-    from teaport_brain import playout_pause
-    p = BargeInPauser(_FakeOut(), resume_secs=8.0, max_secs=8.0)
-    assert p._max_secs < playout_pause._PAUSE_GUARD_S, p._max_secs
-    assert p._resume_secs < playout_pause._PAUSE_GUARD_S, p._resume_secs
-
-
 async def test_an_echo_like_burst_does_not_pause():
     # Residual echo shows up as a short run of confident frames. The onset test wants
     # TEAPORT_ONSET_MIN_MS (128 ms) of it; 96 ms is not enough, 160 ms is.
@@ -750,14 +741,22 @@ def test_the_longest_cap_and_its_grace_end_before_the_transport_s_guard():
     # One guard, the transport's and the pauser's; the longest cap the setting allows,
     # with the grace after its close of held words, ends before it -- and a cap asked
     # for past it, or a resume window that would stretch the cap past it, is held to it.
-    from teaport_brain import barge_pause as bp, sip_transport
+    from teaport_brain import barge_pause as bp, playout_pause
     from teaport_brain.settings import ROWS
-    assert sip_transport._PAUSE_GUARD_S is bp.PAUSE_GUARD_S
+    from teaport_brain.sip_transport import SipGatewayOutputTransport
+    from teaport_brain.talk_transport import TalkOutputTransport
+    # The guard lives in barge_pause; playout_pause's wait, which both transports use,
+    # takes it from there.
+    assert playout_pause._PAUSE_GUARD_S is bp.PAUSE_GUARD_S
+    for cls in (SipGatewayOutputTransport, TalkOutputTransport):
+        assert cls._wait_if_paused is playout_pause.PausablePlayout._wait_if_paused, cls
     assert ROWS["TEAPORT_BARGE_PAUSE_MAX_S"]["max"] == bp.MAX_CAP_S
+    assert ROWS["TEAPORT_BARGE_PAUSE_RESUME_S"]["max"] == bp.MAX_CAP_S
     assert bp.MAX_CAP_S + bp._FINAL_GRACE_S < bp.PAUSE_GUARD_S
     for kw in ({"max_secs": 8.0}, {"max_secs": 1.0, "resume_secs": 8.0}):
-        assert BargeInPauser(_FakeOut(), **{"resume_secs": RESUME_S, **kw})._max_secs \
-            == bp.MAX_CAP_S, kw
+        p = BargeInPauser(_FakeOut(), **{"resume_secs": RESUME_S, **kw})
+        assert p._max_secs == bp.MAX_CAP_S, kw
+        assert p._resume_secs <= bp.MAX_CAP_S, kw
 
 
 async def test_an_interruption_in_the_cap_s_grace_ends_the_grace_too():
