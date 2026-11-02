@@ -1242,7 +1242,8 @@ check_openclaw_version() {
     openclaw) got="$("$OPENCLAW" --version 2>/dev/null || true)" ;;
     nemoclaw)
       resolve_nemoclaw
-      got="$(timeout 60 "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw --version 2>/dev/null || true)" ;;
+      # </dev/null: a prompt (a stopped sandbox, a login) fails fast into the warning.
+      got="$(timeout 60 "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw --version </dev/null 2>/dev/null || true)" ;;
     *) return 0 ;;
   esac
   got="$(printf '%s\n' "$got" | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)"

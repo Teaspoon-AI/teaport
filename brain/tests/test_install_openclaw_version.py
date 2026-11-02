@@ -75,5 +75,21 @@ def test_an_unreadable_version_warns_and_voice_only_or_no_pin_says_nothing():
     assert "WARN" not in out and "LOG" not in out and "SPEC=openclaw\n" in out
 
 
+def test_the_real_manifest_names_it_and_the_guide_installs_the_same():
+    # install.sh's own mget reads the shipped manifest's pin, and the guide's Node.js and
+    # OpenClaw lines are the manifest's (the docs lint checks the citation, not the values).
+    import json
+    root = INSTALL.parent
+    for manifest in ("stable.json", "beta.json"):
+        p = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _fn("mget")
+                            + 'MF="$M"; mget openclaw.version'], capture_output=True, text=True,
+                           env={**os.environ, "M": str(root / "manifest" / manifest)})
+        assert p.returncode == 0 and p.stdout.strip() == "2026.9.7", (manifest, p.stderr)
+    pin = json.loads((root / "manifest" / "stable.json").read_text())["openclaw"]
+    guide = (root / "docs/src/content/docs/getting-started/installation.md").read_text()
+    assert f"setup_{pin['node']}.x" in guide
+    assert f"npm install -g openclaw@{pin['version']}" in guide
+
+
 if __name__ == "__main__":
     appliance.run_tests([fn for name, fn in list(globals().items()) if name.startswith("test_")])

@@ -18,6 +18,8 @@
 #     skips it on a box without);
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
+#     Required in every manifest, and checked against registry.npmjs.org: a manifest
+#     without it, or an npm registry that does not answer, fails the check.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
