@@ -102,7 +102,7 @@ from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import host_context
 from teaport_brain.settings import setting
-from teaport_brain import agent_backend, audio_dump, display, sdnotify
+from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
@@ -842,6 +842,9 @@ async def run_connection(sock, on_ready=None):
         half_duplex = HalfDuplexInputGate() if HALF_DUPLEX else None
         if half_duplex is not None:
             input_procs.append(half_duplex)
+        # The owner's recording of the call (TEAPORT_CALL_RECORDING, off by default).
+        recording = (call_recording.CallRecording(call_id, ring.caller, resumed=resumed)
+                     if call_recording.ENABLED else None)
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,
@@ -854,6 +857,7 @@ async def run_connection(sock, on_ready=None):
             # file, with a warning). A caller is on the line: a gateway not up yet gets
             # the short patience, not the asleep room's.
             host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
+            recording=recording,
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound
@@ -897,6 +901,11 @@ async def run_connection(sock, on_ready=None):
             teardowns.add(t)
             t.add_done_callback(teardowns.discard)
 
+        if recording is not None:
+            @session.task.event_handler("on_pipeline_finished")
+            async def close_recording(_task, _frame):
+                recording.close()
+
         runner_task = asyncio.create_task(
             PipelineRunner(handle_sigint=False).run(session.task)
         )
@@ -913,10 +922,19 @@ async def run_connection(sock, on_ready=None):
                 return
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
+        # A recorded call starts with the notice, in the call's language, before the
+        # greeting. Not on a resumed call: that caller heard it when the call began.
+        notice = None
+        if (recording is not None and recording.active and call_recording.NOTICE
+                and not resumed):
+            notice = call_recording.notice_line(
+                getattr(getattr(session, "tts", None), "espeak_language", None))
         if prepared:
-            await session.greet(resumed=resumed, prepared=prepared)
+            await session.greet(resumed=resumed, prepared=prepared, notice=notice)
         else:
-            await session.greet(resumed=resumed)
+            await session.greet(resumed=resumed, notice=notice)
+        if notice and not session.should_end:
+            recording.note(notice)
         if session.should_end:
             # STT is unavailable — the engine's single slot is held by another process
             # (a standalone rig) or the engine is unreachable. greet() spoke the

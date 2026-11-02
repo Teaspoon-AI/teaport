@@ -293,3 +293,7 @@ msgstr "Je prends l'appel — je reviens tout de suite."
 
 msgid "Sorry about that — where were we?"
 msgstr "Désolé pour l'interruption — où en étions-nous ?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Cet appel est enregistré."

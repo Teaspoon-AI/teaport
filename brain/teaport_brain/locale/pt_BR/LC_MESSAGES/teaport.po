@@ -288,3 +288,7 @@ msgstr "Vou atender a ligação — já volto."
 
 msgid "Sorry about that — where were we?"
 msgstr "Desculpe a interrupção — onde a gente estava?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Esta ligação está sendo gravada."

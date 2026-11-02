@@ -296,3 +296,7 @@ msgstr "Я отвечу на звонок — скоро вернусь."
 
 msgid "Sorry about that — where were we?"
 msgstr "Извините за паузу — на чём мы остановились?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Этот звонок записывается."

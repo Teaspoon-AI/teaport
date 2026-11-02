@@ -41,6 +41,7 @@ RECORDING = {
     "TEAPORT_TRACE": False,
     "TEAPORT_ENDPOINT_DEBUG": False,
     "TEAPORT_AUDIO_DUMP": None,  # a directory; none = off
+    "TEAPORT_CALL_RECORDING": "off",
 }
 
 SECRET = "the caller's private words"

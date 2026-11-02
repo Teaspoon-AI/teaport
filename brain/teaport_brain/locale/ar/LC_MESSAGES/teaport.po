@@ -299,3 +299,7 @@ msgstr "سأرد على المكالمة — سأعود بعد لحظة."
 
 msgid "Sorry about that — where were we?"
 msgstr "عذرًا على المقاطعة — أين كنا؟"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "يتم تسجيل هذه المكالمة."

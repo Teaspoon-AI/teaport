@@ -277,6 +277,9 @@ class TranscriptLedger(BaseObserver):
         # any of it is heard: owed.py asks its gist judge then (#210), so the verdict is in
         # by the time the reply has played.
         self.on_reply_text = None
+        # Called as on_utterance(u) with each Utterance as it is charted: the owner's
+        # call transcript (call_recording.py, #114) writes the lines from here.
+        self.on_utterance = None
         # What has been PUSHED to the TTS of each response (on_push_frame): the guard's
         # output, by its LLMFullResponseStartFrame's id, as {"reply", "parts", "text"} --
         # "text" set once its End was pushed. The TTS reads its input in order, and its
@@ -1105,6 +1108,11 @@ class TranscriptLedger(BaseObserver):
                 e.overlap = True
         self.events.append(u)
         self._log(u)
+        if self.on_utterance is not None:
+            try:
+                self.on_utterance(u)
+            except Exception as e:  # noqa: BLE001 -- an observer must never raise
+                logger.warning(f"LEDGER: the utterance feed raised {e!r}")
 
     def _log(self, u: Utterance):
         if u.cut_short:

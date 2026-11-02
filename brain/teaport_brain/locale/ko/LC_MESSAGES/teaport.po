@@ -397,3 +397,7 @@ msgstr "전화 받고 올게요 — 금방 돌아올게요."
 
 msgid "Sorry about that — where were we?"
 msgstr "기다리게 해서 미안해요 — 우리 어디까지 얘기했죠?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "이 통화는 녹음되고 있습니다."

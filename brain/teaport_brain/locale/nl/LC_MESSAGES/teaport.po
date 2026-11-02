@@ -288,3 +288,7 @@ msgstr "Ik neem het gesprek even aan — zo terug."
 
 msgid "Sorry about that — where were we?"
 msgstr "Sorry voor de onderbreking — waar waren we gebleven?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Dit gesprek wordt opgenomen."

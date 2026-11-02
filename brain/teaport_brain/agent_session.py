@@ -217,12 +217,15 @@ _STT_RESOLVE_INTERVAL_S = 0.1
 
 
 def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
-                            context_notes: bool = False, tools=()) -> list:
+                            context_notes: bool = False, tools=(),
+                            recorded: str | None = None) -> list:
     """The context's starting messages: the shared persona system prompt, the
     AGENT-FIRST directive when that mode is on (naming the session's direct `tools`), a
     reply-language directive when a non-English TTS voice/language was selected, and,
     where the front-end takes client
-    context notes (/talk), the line that says they are never instructions. Used both at
+    context notes (/talk), the line that says they are never instructions, and on a
+    recorded phone call the line that says so (call_recording.CallRecording.prompt_line).
+    Used both at
     build time and for the SIP per-call reset so a reset restores the exact starting
     context."""
     msgs = [{"role": "system", "content": system_prompt}]
@@ -232,6 +235,8 @@ def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
         msgs.append({"role": "system", "content": f"Always reply to the user in {lang_name}."})
     if context_notes:
         msgs.append({"role": "system", "content": CONTEXT_NOTES_LINE})
+    if recorded:
+        msgs.append({"role": "system", "content": recorded})
     return msgs
 
 
@@ -313,7 +318,7 @@ class AgentSession:
         self.call_prompt = None
 
     async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True,
-                    prepared: str | None = None):
+                    prepared: str | None = None, notice: str | None = None):
         """Greet the user with an LLM turn — but only through a working STT.
 
         `resumed` is for a session that picks up a call already in progress (the SIP
@@ -339,7 +344,11 @@ class AgentSession:
         room must not announce a busy engine to it, so the line is not spoken and the
         front-end ends the session quietly (end_reason says why). hello=False: the STT
         check alone, no greeting (one asleep, or a conversation continued, is not
-        greeted)."""
+        greeted).
+
+        `notice`: a line said first, before the greeting and outside the context (a
+        recorded call's recording notice, call_recording.notice_line). Only when the
+        greeting is: a call that cannot be heard is not recorded talking to anyone."""
         await self._stt_resolved()
         if self.stt.stt_available is not True:
             # Say WHICH failure it was. slot_busy is True only when the engine actively
@@ -366,6 +375,10 @@ class AgentSession:
             return
         if not hello:
             return
+        if notice:
+            # append_to_context=False: the pipeline talking, not the model -- a filler
+            # to the ledger, and queued ahead of the greeting, so it plays first.
+            await self.task.queue_frames([TTSSpeakFrame(notice, append_to_context=False)])
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         if prepared:
@@ -626,7 +639,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         front_end: str | None = None,
                         via: str | None = None,
                         host=None,
-                        run_control: bool = False) -> AgentSession:
+                        run_control: bool = False,
+                        recording=None) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -677,6 +691,10 @@ def build_agent_session(transport, *, voice: str | None = None,
       joins the pipeline, below the transcript emitter (run_control.py), and the model is
       offered openclaw_agent_control, which the Talk client runs (tools.py, run control).
       Talk only.
+    - recording: the owner's recording of this phone call (call_recording.CallRecording),
+      or None. Its processors go directly below the output transport (and the guard's
+      word tap), it writes the ledger's lines as its transcript, and the model is told
+      the call is recorded. SIP only.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -783,7 +801,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
     initial = _build_initial_messages(system_prompt, lang_name, context_notes=context_notes,
-                                      tools=session_tools)
+                                      tools=session_tools,
+                                      recorded=recording.prompt_line if recording else None)
     context = LLMContext(initial, tools=build_tools_schema(tool_ctx))
     if wake_gate is not None:
         wake_gate.context = context
@@ -888,6 +907,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # transport.output() caches, but naming it says so rather than relying on it.
     transport_output = transport.output()
     ledger = TranscriptLedger(tts=tts, output=transport_output)
+    if recording is not None:
+        recording.attach(ledger)
     # Holds a fresh reply while the caller is talking over its start, and has the
     # corrector fold the caller's next turn into the one it then drops (reply_hold.py).
     turn_merge = reply_hold.TurnMerge() if reply_hold_enabled else None
@@ -1137,6 +1158,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         transport_output,
         # Directly below the transport: each word's text frame passes here as it plays.
         guard.tap() if guard is not None else None,
+        # The owner's call recording (call_recording.py): below the transport, where
+        # the bot's audio passes as it plays and the caller's on its way down.
+        *(recording.processors if recording is not None else []),
         followup_gate,  # track user/bot/LLM activity → the door for the brain's own runs (owed.py)
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(followup_gate),  # glibc arena pages back to the OS at a quiet moment (CUDA at session end)

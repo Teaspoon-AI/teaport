@@ -28,7 +28,7 @@
 #   caller-<callid>.marks  bot playout spans as SAMPLE OFFSETS into that wav
 #
 # A call that already has a dump gets caller-<callid>.r1.wav/.marks (then .r2, ...)
-# rather than truncating it: that is a call the SIP gateway replayed to a restarted
+# rather than truncating it (recordings.free_stem): that is a call the SIP gateway replayed to a restarted
 # brain, and the first process's recording is the only copy of that part of the call.
 # Each pair keeps the same stem, so anything that pairs a .marks with its .wav by name
 # still does.
@@ -46,6 +46,7 @@
 # bf16. The loss is the model family's, not the audio path's — teagram-engine#7.
 #
 import os
+import re
 import wave
 
 from loguru import logger
@@ -58,6 +59,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain import recordings
 from teaport_brain.settings import setting
 
 # A directory, or empty for off. Deliberately not a bool: a capture needs somewhere to
@@ -71,15 +73,11 @@ ENABLED = bool(DUMP_DIR)
 MAX_SECS = setting("TEAPORT_AUDIO_DUMP_MAX_SECS")
 
 
-def _free_stem(stem: str) -> str:
-    """`stem`, or `stem.r1`, `stem.r2`, ... -- the first with neither a .wav nor a
-    .marks on disk. Never truncate an existing dump: the same call id recorded twice is
-    a call resumed by a restarted brain, and the earlier file is its first half."""
-    candidate, n = stem, 0
-    while os.path.exists(candidate + ".wav") or os.path.exists(candidate + ".marks"):
-        n += 1
-        candidate = f"{stem}.r{n}"
-    return candidate
+# Retention (recordings.prune), applied at each new dump: past KEEP_DAYS a dump goes,
+# then the oldest until the directory is under MAX_MB. Only caller-* files are touched.
+KEEP_DAYS = setting("TEAPORT_AUDIO_DUMP_KEEP_DAYS")
+MAX_MB = setting("TEAPORT_AUDIO_DUMP_MAX_MB")
+_NAMES = re.compile(r"caller-")
 
 
 class CallerAudioTap(FrameProcessor):
@@ -94,7 +92,8 @@ class CallerAudioTap(FrameProcessor):
         super().__init__()
         self._sr = sample_rate
         safe = "".join(c for c in (call_id or "call") if c.isalnum() or c in "-_")[:64]
-        stem = _free_stem(os.path.join(DUMP_DIR, f"caller-{safe}"))
+        stem = recordings.free_stem(os.path.join(DUMP_DIR, f"caller-{safe}"),
+                                    (".wav", ".marks"))
         self._wav_path = stem + ".wav"
         self._marks_path = stem + ".marks"
         self._wav = None
@@ -112,6 +111,8 @@ class CallerAudioTap(FrameProcessor):
                               f" @ {sample_rate} Hz mono s16\n")
             self._marks.flush()
             logger.info(f"audio dump: capturing caller PCM to {self._wav_path}")
+            recordings.prune_soon(DUMP_DIR, KEEP_DAYS, MAX_MB, _NAMES,
+                                  keep=frozenset({os.path.basename(stem).split(".", 1)[0]}))
         except OSError as e:
             # A tap that cannot open its files must not stop the call.
             logger.warning(f"audio dump: disabled — cannot write to {DUMP_DIR!r} ({e})")

@@ -288,3 +288,7 @@ msgstr "電話に出ますね — すぐ戻ります。"
 
 msgid "Sorry about that — where were we?"
 msgstr "お待たせしました — どこまで話しましたっけ？"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "この通話は録音されています。"

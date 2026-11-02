@@ -288,3 +288,7 @@ msgstr "ज़रा कॉल ले लूँ — बस एक पल मे�
 
 msgid "Sorry about that — where were we?"
 msgstr "माफ़ कीजिए — हम कहाँ थे?"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "यह कॉल रिकॉर्ड की जा रही है।"
