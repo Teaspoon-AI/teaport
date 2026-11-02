@@ -453,7 +453,6 @@ def test_a_stop_word_ends_a_paused_reply_and_a_backchannel_does_not():
             await s.process_frame(cls(text, "u", "t"))
             return bool(started)
 
-        assert not await said("Stop."), "while audible, one word stays under the guard"
         await s.process_frame(PlayoutPauseFrame(paused=True))
         assert await said("Stop."), "a lone stop word must end a paused reply"
         assert await said("wait", interim=False)
@@ -463,12 +462,63 @@ def test_a_stop_word_ends_a_paused_reply_and_a_backchannel_does_not():
         assert not await said("No."), "'no' is deliberately not a stop word"
         assert await said("hang on please"), "two words still interrupt, as before"
         await s.process_frame(PlayoutPauseFrame(paused=False))
-        assert not await said("Stop.")
+        assert await said("Stop."), "resumed: a stop word still ends it (#216)"
         await s.process_frame(PlayoutPauseFrame(paused=True))
         await s.process_frame(BotStoppedSpeakingFrame())
         assert await said("Stop."), "bot silent: one word is a turn anyway"
 
     asyncio.run(run())
+
+
+def test_a_stop_word_ends_a_reply_that_never_paused():
+    # #216: the pause fails most on short unvoiced words, and "stop" is one -- a lone
+    # "Stop." over a reply still playing must end it, on every front end (the strategy
+    # is the session's, paused or not, pause on or off). Everything else keeps
+    # TEAPORT_INTERRUPT_MIN_WORDS.
+    async def run(min_words):
+        started = []
+        s = PauseAwareMinWordsStrategy(min_words=min_words)
+
+        async def on_started(_s, *a, **k):
+            started.append(True)
+
+        s.add_event_handler("on_user_turn_started", on_started)
+        await s.process_frame(BotStartedSpeakingFrame())
+
+        async def said(text, interim=False):
+            started.clear()
+            cls = InterimTranscriptionFrame if interim else TranscriptionFrame
+            await s.process_frame(cls(text, "u", "t"))
+            return bool(started)
+
+        assert await said("Stop."), "a lone stop word over a playing reply"
+        assert await said("Wait!", interim=True), "its interim too, as while paused"
+        assert await said("Hold on."), "a stop phrase -- even as a backchannel"
+        assert await said("Shhh"), "any shh spelling"
+        assert await said("Wait, wait!")
+        assert not await said("Yeah."), "a backchannel stays under the guard"
+        assert not await said("No."), "'no' is deliberately not a stop word"
+        return s
+
+    asyncio.run(run(2))
+    s = asyncio.run(run(3))
+    # min_words=3: two words that are not all stop words stay under it.
+    async def two_words():
+        started = []
+
+        async def on_started(_s, *a, **k):
+            started.append(True)
+
+        s.add_event_handler("on_user_turn_started", on_started)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.process_frame(TranscriptionFrame("stop by", "u", "t"))
+        assert not started, "'stop by' is not a stop, and two words are under 3"
+        await s.process_frame(TranscriptionFrame("hold it", "u", "t"))
+        assert not started, "'hold it' is not all stop words"
+        await s.process_frame(TranscriptionFrame("please hold on", "u", "t"))
+        assert started, "three words: the guard's own count"
+
+    asyncio.run(two_words())
 
 
 def test_a_stop_word_counts_only_when_the_whole_utterance_is_one():

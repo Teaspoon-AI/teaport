@@ -780,7 +780,7 @@ min = 1
 default = 2
 read = "startup"
 tier = "setup"
-help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. While the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
+help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. An utterance made only of TEAPORT_STOP_WORDS interrupts at any length, paused or not; while the barge-in pause has the bot paused, once the paused reply would have finished anyway one word is enough."
 
 [[settings]]
 name = "SIP_ENDPOINT_STOP_SECS"
@@ -1101,7 +1101,7 @@ type = "string"
 default = "stop,wait,hold on,hold,pause,enough,quiet,shh,shush"
 read = "startup"
 tier = "tuning"
-help = "Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
+help = "Comma-separated words or phrases that end a reply on their own, whether or not it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says. On the room mic, the bot's own stop word heard back is dropped by TEAPORT_ECHO_GUARD; on other lines the line's echo cancelling has to keep it out. Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
 
 [[settings]]
 name = "TEAPORT_ECHO_GUARD"

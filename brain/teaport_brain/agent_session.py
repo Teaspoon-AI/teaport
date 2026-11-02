@@ -851,9 +851,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # [VAD, Transcription] start — VAD-start would interrupt on any
                 # sound, defeating the guard.
                 #
-                # PauseAware: the same rule, plus a single stop word while playout is
-                # paused by the barge-in pauser below (barge_pause.py); without a
-                # pause it is MinWordsUserTurnStartStrategy exactly.
+                # PauseAware: the same rule, plus an utterance of stop words at any
+                # length, paused or not (#216), and the paused-reply rules of the
+                # barge-in pauser below (barge_pause.py).
                 start=[start_strategy],
                 # The closer FIRST: it ends the turn before the brain's strategy could
                 # speculate on the turn's earlier words; that one still sees the frame.

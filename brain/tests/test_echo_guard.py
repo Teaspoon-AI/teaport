@@ -127,11 +127,23 @@ def test_a_word_misheard_missed_inserted_or_clipped_still_follows_the_bot():
     assert g.strip(said, True, since) == said
 
 
-def test_one_word_is_the_bots_only_when_long_and_not_a_stop():
+def test_one_word_is_the_bots_only_when_long_or_a_stop_word():
     g, clock = _guard("Sorry. Wait for it. Okay.")
     assert g.strip("Sorry.", final=True, since=_echo_of(0)) == ""
     assert g.strip("Okay.", final=True, since=_echo_of(4)) == "Okay."   # short: the user's too
-    assert g.strip("Wait.", final=True, since=_echo_of(1)) == "Wait."   # a stop word stops the bot
+    # A stop word cuts the reply on its own, paused or not (#216): its echo is taken
+    # however short...
+    assert g.strip("Wait.", final=True, since=_echo_of(1)) == ""
+    # ...but only the bot's own: a stop word it did not say is the user's.
+    assert g.strip("Stop.", final=True, since=_echo_of(1)) == "Stop."
+    # More stop words than the bot said is the user saying it.
+    assert g.strip("Wait, wait.", final=True, since=_echo_of(1)) == "Wait, wait."
+
+
+def test_a_stop_phrase_heard_back_is_the_bots():
+    g, clock = _guard("Hold on, let me look that up.")
+    assert g.strip("Hold on.", final=True, since=_echo_of(0)) == ""
+    assert g.strip("Hold on", final=False, since=_echo_of(0)) == ""
 
 
 def test_nothing_is_taken_once_the_bot_has_been_quiet():
@@ -154,7 +166,12 @@ def test_an_interim_that_follows_the_bot_waits_and_the_users_words_go():
     assert g.strip("Is", final=False, since=since) == ""          # could be either: wait
     assert g.strip("Is that", final=False, since=since) == ""
     assert g.strip("Is that a type", final=False, since=since) == "Is that a type"
-    assert g.strip("Wait", final=False, since=since) == "Wait"   # a stop word never waits
+    assert g.strip("Wait", final=False, since=since) == "Wait"   # not the bot's: goes now
+    # The bot's own stop word waits like any echo-like interim (#216): pushed, it alone
+    # would cut the reply.
+    g, clock = _guard("Please wait while I check.")
+    assert g.strip("wait", final=False, since=_echo_of(1)) == ""
+    assert g.strip("Stop", final=False, since=_echo_of(1)) == "Stop"
 
 
 def test_an_echo_never_reaches_two_words():
@@ -260,6 +277,44 @@ async def _no_guard():
 
 def test_without_a_guard_every_word_goes():
     asyncio.run(_no_guard())
+
+
+async def _echo_of_a_stop_word_over_the_reply(said, bot_said):
+    """The room mic's STT (with its guard) hears `said` while the bot plays `bot_said`;
+    what it pushes goes to the session's start strategy, the bot speaking, playout not
+    paused. Did the reply get cut?"""
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+    from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
+
+    stt = Recorder()
+    g, clock = _guard(bot_said)
+    stt.echo_guard = g
+    clock.t = _echo_of(1)                               # echo of the bot's 2nd word
+    started = []
+    s = PauseAwareMinWordsStrategy(min_words=2)
+
+    async def on_started(_s, *a, **k):
+        started.append(True)
+
+    s.add_event_handler("on_user_turn_started", on_started)
+    await s.process_frame(BotStartedSpeakingFrame())
+    await _say(stt, said)
+    for f in stt.pushed:
+        await s.process_frame(f)
+    return bool(started), _texts(stt.pushed)
+
+
+def test_the_bots_own_wait_heard_back_does_not_cut_the_reply():
+    # #216 risk 1: a lone stop word now cuts a reply that is still playing, so the
+    # bot's own "wait" coming back through the speaker must not. The guard runs in the
+    # STT, before any transcript reaches the start strategy.
+    cut, texts = asyncio.run(_echo_of_a_stop_word_over_the_reply(
+        "Wait.", "Please wait while I check the weather for you."))
+    assert not cut and texts == [], texts
+    # The same word from the user, the bot not having said it: the reply is cut.
+    cut, texts = asyncio.run(_echo_of_a_stop_word_over_the_reply(
+        "Stop.", "Please wait while I check the weather for you."))
+    assert cut and texts[-1] == "Stop.", texts
 
 
 async def _sessions():
