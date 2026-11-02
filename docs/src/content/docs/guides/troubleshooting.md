@@ -50,7 +50,7 @@ pronunciation dictionary. See
 **Cause** You are not on a Jetson, or the Jetson image carries no
 `/etc/nv_tegra_release`. The installer works only on Jetson devices.
 
-<!-- source: install.sh:250#6bef2c33 -->
+<!-- source: install.sh:245#6bef2c33 -->
 
 **Fix**
 
@@ -62,7 +62,7 @@ pronunciation dictionary. See
 **Cause** The device runs a JetPack that the engine does not support. The engine
 ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-<!-- source: install.sh:231-245#a6431d65 -->
+<!-- source: install.sh:226-240#a6431d65 -->
 
 **Fix**
 
@@ -83,7 +83,7 @@ ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 **Cause** The engine links against `libopenblas.so.0`. JetPack does not include
 it.
 
-<!-- source: install.sh:277-286#99af061f -->
+<!-- source: install.sh:272-281#99af061f -->
 
 **Fix**
 
@@ -99,7 +99,7 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:451-461#fc133eae -->
+<!-- source: install.sh:446-456#fc133eae -->
 
 **Fix**
 
@@ -111,7 +111,7 @@ robotic espeak prosody. The dictionary check is necessary, so keep it.
 **Cause** A downloaded file does not agree with the checksum in the manifest.
 The partial `.part` file remains on the disk.
 
-<!-- source: install.sh:163-166#d700a861 -->
+<!-- source: install.sh:158-161#d700a861 -->
 
 **Fix**
 
@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1577#2ca3ef5a; install.sh:1883-1941#52b36989 -->
+<!-- source: install.sh:1572#2ca3ef5a; install.sh:1878-1936#52b36989 -->
 
 ## The page opens but nothing happens
 
@@ -201,7 +201,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:1452-1465#c562c839 -->
+<!-- source: install.sh:1447-1460#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -232,7 +232,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:1471-1475#bf1269bd -->
+<!-- source: install.sh:1466-1470#bf1269bd -->
 
 **Fix**
 
@@ -263,7 +263,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1303-1315#a65c0a82 -->
+<!-- source: install.sh:1298-1310#a65c0a82 -->
 
 **Fix**
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1883-1941#52b36989; install.sh:1755-1800#cd323bfa -->
+<!-- source: install.sh:1878-1936#52b36989; install.sh:1750-1795#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:1956-1962#4326c857; install.sh:2023-2025#1153cfec -->
+<!-- source: install.sh:1951-1957#4326c857; install.sh:2018-2020#1153cfec -->
 
 ## Phone calls go unanswered
 
@@ -408,7 +408,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:276#649012b4; install.sh:441-442#12d8444d -->
+<!-- source: install.sh:271#649012b4; install.sh:436-437#12d8444d -->
 
 **Fix**
 
@@ -506,7 +506,7 @@ miss the endpoint or the key.
 The installer offers `gpt-oss-120b` as the default value. That default is wrong
 for OpenRouter.
 
-<!-- source: install.sh:1554#2e67295a; install.sh:1567-1570#cefd034b -->
+<!-- source: install.sh:1549#2e67295a; install.sh:1562-1565#cefd034b -->
 
 ## teaport does not remember anything
 
@@ -514,7 +514,7 @@ for OpenRouter.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:148#d3cc622a; install.sh:1452-1465#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:148#d3cc622a; install.sh:1447-1460#c562c839 -->
 
 **Fix**
 
