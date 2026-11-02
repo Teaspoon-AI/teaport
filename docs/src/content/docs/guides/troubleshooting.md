@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1540#2ca3ef5a; install.sh:1822-1870#fb689c3c -->
+<!-- source: install.sh:1540#2ca3ef5a; install.sh:1846-1904#52b36989 -->
 
 ## The page opens but nothing happens
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1822-1870#fb689c3c; install.sh:1716-1761#cd323bfa -->
+<!-- source: install.sh:1846-1904#52b36989; install.sh:1718-1763#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:1885-1891#4326c857; install.sh:1952-1954#1153cfec -->
+<!-- source: install.sh:1919-1925#4326c857; install.sh:1986-1988#1153cfec -->
 
 ## Phone calls go unanswered
 
