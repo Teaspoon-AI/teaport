@@ -48,7 +48,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 from teaport_brain.agent_session import build_agent_session
-from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
+from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import host_context
 from teaport_brain import pairing
 from teaport_brain import run_control
@@ -398,6 +398,8 @@ async def run_relay_bot(websocket: WebSocket):
         input_processors=input_procs,
         # Off by default on Talk until measured there (reply_hold.TALK_ENABLED).
         reply_hold_enabled=reply_hold.TALK_ENABLED,
+        # The barge-in pause too: off on Talk until #255 (barge_pause.TALK_ENABLED).
+        barge_pause_enabled=barge_pause.TALK_ENABLED,
         wake_gate=gate,
         # A wake session asleep for hours is not idle: the bridge ends it (keep-alive).
         cancel_on_idle_timeout=False if gate is not None else None,

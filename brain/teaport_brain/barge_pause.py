@@ -87,7 +87,7 @@
 # at real time, one frame ahead of playout at most, so what is downstream of the brain
 # is only what was just written: about one 20 ms frame in the SIP gateway's playout
 # queue (audible within ~40 ms; protocol v0 has no pause or flush, and needs none), and
-# on /talk one 40 ms block plus the client's own jitter margin -- the room bridge's
+# on /talk up to two 40 ms blocks plus the client's own jitter margin -- the room bridge's
 # 120 ms card lead, a browser's playout buffer. No client is told: it plays what it
 # has, then what it plays when no audio comes (the bridge pads with silence), and goes
 # on when the audio does. A send clock with a longer lead would put that much more
@@ -157,8 +157,11 @@ from teaport_brain.endpointing import (
 )
 from teaport_brain.settings import setting
 
-# On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk).
+# On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
+# -- on /talk (the room mic, the app, the dashboard, Discord) only with TALK_ENABLED as
+# well: off there until the playout timing across a pause is done (#255; Known limits).
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
+TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
 # The LONGEST a pause with no words waits after the caller's speech (both the VAD and
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
@@ -386,6 +389,12 @@ class BargeInPauser(FrameProcessor):
             await self._speech("vad", True)
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             await self._speech("vad", False)
+        elif isinstance(frame, PlayoutPauseFrame) and not frame.paused and self._paused:
+            # The transport resumed on its own (its write guard): the pause is over here
+            # too, or this pauser would refuse the next one and count the bot paused.
+            logger.info("BARGE-PAUSE: the transport resumed playout on its own "
+                        "(its write guard)")
+            self._end()
         elif isinstance(frame, InterruptionFrame):
             # The words came: the barge-in cancels the reply. The transport drops its
             # pause with the queued audio when the interruption reaches it.

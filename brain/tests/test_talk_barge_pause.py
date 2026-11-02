@@ -291,7 +291,12 @@ async def test_a_talk_session_builds_the_pauser():
     from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
 
     for front_end in ("talk", "room"):
-        session = build_agent_session(_talk_transport(_Socket()), front_end=front_end)
+        # Off on Talk by default (TEAPORT_BARGE_PAUSE_TALK, until #255): /talk passes it.
+        off = build_agent_session(_talk_transport(_Socket()), front_end=front_end,
+                                  barge_pause_enabled=False)
+        assert not isinstance(off.ledger._output.previous, BargeInPauser)
+        session = build_agent_session(_talk_transport(_Socket()), front_end=front_end,
+                                      barge_pause_enabled=True)
         pauser = session.ledger._output.previous
         assert isinstance(pauser, BargeInPauser), f"{front_end}: above the transport: {pauser!r}"
         p = session.tts

@@ -83,7 +83,6 @@ class PausablePlayout:
         # resume.
         self._playing = asyncio.Event()
         self._playing.set()
-        self._paused_at = None
         self._pause_lag = 0.0
         # Bumped when an interruption drops a pause: a write that was waiting on it
         # learns that its audio belongs to a reply that is gone.
@@ -105,14 +104,12 @@ class PausablePlayout:
         lag = 0.0
         if paused:
             self._playing.clear()
-            self._paused_at = time.monotonic()
             # What was sent before the pause still plays out: the listener stops hearing
             # the reply that much later (the frame playing and the one queued behind it).
-            lag = max(0.0, self._heard_until - self._paused_at)
+            lag = max(0.0, self._heard_until - time.monotonic())
             self._pause_lag = lag
         else:
             self._playing.set()
-            self._paused_at = None
             self._next_send_time = 0.0
         tail = self.playout_tail_secs() if paused else None
         await self._announce_pause(lag=lag, tail=-1.0 if tail is None else tail,
@@ -160,7 +157,6 @@ class PausablePlayout:
         if not self._playing.is_set():
             self._pause_epoch += 1
         self._playing.set()
-        self._paused_at = None
 
     def playout_tail_secs(self):
         """How much of the reply is left to play, if it is all here -- its synthesis is
@@ -170,7 +166,7 @@ class PausablePlayout:
         close to its end, and a pause's tail_secs is this."""
         if not self._synth_done:
             return None
-        if self._paused_at is not None:
+        if not self._playing.is_set():
             return self._unplayed_s + self._pause_lag
         return self._unplayed_s + max(0.0, self._heard_until - time.monotonic())
 

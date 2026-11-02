@@ -357,6 +357,25 @@ async def test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end():
         await run
 
 
+async def test_a_resume_the_transport_made_on_its_own_ends_the_pause_here_too():
+    # The transport's write guard resumes playout itself: the pauser must not go on
+    # counting the bot paused (it would refuse the next pause).
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert p.paused
+        await task.queue_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        assert not p.paused, "the pauser still counts the bot paused"
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_an_echo_like_burst_does_not_pause():
     # Residual echo shows up as a short run of confident frames. The onset test wants
     # TEAPORT_ONSET_MIN_MS (128 ms) of it; 96 ms is not enough, 160 ms is.

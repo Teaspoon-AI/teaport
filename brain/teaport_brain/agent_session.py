@@ -620,6 +620,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                         caption_every_final: bool = False,
                         context_notes: bool = False,
                         reply_hold_enabled: bool = False,
+                        barge_pause_enabled: bool = True,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
@@ -921,7 +922,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # losing audio (playout_pause.PausablePlayout): the SIP transport and /talk's both
     # send at real time, a frame ahead at most, so the unplayed reply is still here.
     barge_pauser = (barge_pause.BargeInPauser(transport_output)
-                    if barge_pause.ENABLED
+                    if barge_pause.ENABLED and barge_pause_enabled
                     and getattr(transport_output, "supports_playout_pause", False)
                     else None)
     if barge_pauser is not None:

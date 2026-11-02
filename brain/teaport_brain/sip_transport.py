@@ -548,10 +548,10 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
     async def _write_audio_sleep(self):
         """Pace the playout to the real-time media clock (drift-corrected).
 
-        ZERO lead, and barge_pause.py depends on it: each datagram goes out in its own
-        20 ms slot, so the gateway's playout queue never holds more than about one frame
-        of what was written, and a playout pause is audible within ~40 ms with no pause
-        control at the gateway. A send clock that kept a burst lead in the gateway's
+        One frame ahead at most, and barge_pause.py depends on it: after the first two
+        go back to back, each datagram goes out in its own 20 ms slot, so the gateway's
+        playout queue never holds more than about one frame beyond the one playing, and
+        a playout pause is audible within ~40 ms with no pause control at the gateway. A send clock that kept a burst lead in the gateway's
         queue (the SIP stutter fix that was held off) would play that lead through
         every pause, and would need a gateway-side pause/flush to keep it tight."""
         now = time.monotonic()
