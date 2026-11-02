@@ -261,6 +261,31 @@ def check_a_traceback_shows_no_locals():
     assert "private" not in out, out
 
 
+def check_trace_stays_off_without_words():
+    """TRACE lines are not redacted (the scan reads DEBUG and up), so LOGURU_LEVEL=TRACE
+    must not bring them, with their transcripts, into the journal."""
+    buf, real = io.StringIO(), sys.stderr
+    old = os.environ.get("LOGURU_LEVEL")
+    os.environ["LOGURU_LEVEL"] = "TRACE"
+    sys.stderr = buf
+    try:
+        conversation_log.install()
+        scope = {"__name__": "pipecat.turns.eager_end_of_turn_mixin", "logger": logger}
+        exec("logger.trace(f'eager end of turn: [{t}]')", scope, {"t": SECRET})
+        logger.debug("debug still shows")
+    finally:
+        sys.stderr = real
+        if old is None:
+            os.environ.pop("LOGURU_LEVEL", None)
+        else:
+            os.environ["LOGURU_LEVEL"] = old
+        logger.configure(patcher=lambda record: None)
+        logger.remove()
+        logger.add(sys.stderr)
+    out = buf.getvalue()
+    assert "debug still shows" in out and "private" not in out, out
+
+
 if __name__ == "__main__":
     appliance.run_tests([
         check_recording_switches_default_off,
@@ -269,4 +294,5 @@ if __name__ == "__main__":
         check_pipecat_text_lines_are_redacted,
         check_install_redacts_pipecat_records,
         check_a_traceback_shows_no_locals,
+        check_trace_stays_off_without_words,
     ])

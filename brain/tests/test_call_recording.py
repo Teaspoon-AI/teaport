@@ -163,28 +163,53 @@ def _words(ctx, *words):
     return [TTSTextFrame(text=w, aggregated_by="word", context_id=ctx) for w in words]
 
 
-async def test_the_pipelines_own_lines_and_a_reply_cut_by_the_hangup_are_written():
+def _own_started(ctx):
+    f = TTSStartedFrame(context_id=ctx)
+    f.append_to_context = False
+    return f
+
+
+async def test_the_notice_starts_the_recording_as_it_plays_and_lines_are_written():
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("c9", mode="transcript", directory=d)
         [tap] = rec.processors
-        started = TTSStartedFrame(context_id="n")
-        started.append_to_context = False
+        rec.arm("notice")
         frames = [
-            # Before the start: not the caller's to be recorded yet.
-            *_words("x", "unrecorded"),
-            AudioBufferStartRecordingFrame(),
-            started, *_words("n", "This", "call", "is", "being", "recorded."),
+            # A reply's words before the notice plays: not the caller's to record yet.
+            TTSStartedFrame(context_id="x"), *_words("x", "unrecorded"),
+            _own_started("n"), *_words("n", "This", "call", "is", "being", "recorded."),
             TTSStoppedFrame(context_id="n"),
-            # A reply still playing when the call ends: the ledger never charts it.
-            TTSStartedFrame(context_id="r"), *_words("r", "We", "open"),
+            # A reply that played through: the ledger's to chart, not this tap's.
+            TTSStartedFrame(context_id="r"), *_words("r", "We", "open", "at", "nine."),
+            TTSStoppedFrame(context_id="r"),
+            # A filler and a reply still playing when the call ends.
+            _own_started("f"), *_words("f", "One", "moment."),
+            TTSStartedFrame(context_id="q"), *_words("q", "On", "Sundays"),
         ]
-        await run_test(tap, frames_to_send=frames)
+        down, _ = await run_test(tap, frames_to_send=frames)
         rec.close()
+        kinds = [type(f).__name__ for f in down]
+        first_notice_word = next(i for i, f in enumerate(down)
+                                 if isinstance(f, TTSTextFrame) and f.text == "This")
+        assert kinds[first_notice_word - 1] == "AudioBufferStartRecordingFrame", kinds
+        assert kinds.count("AudioBufferStartRecordingFrame") == 1, kinds
         lines = open(rec.txt_path, encoding="utf-8").read().splitlines()[2:]
         assert [re.sub(r"^\[[^\]]*\] ", "", ln) for ln in lines] == [
             "Assistant: This call is being recorded.",
-            "Assistant (call ended): We open",
+            "Assistant (call ended): One moment.",
+            "Assistant (call ended): On Sundays",
         ], lines
+
+
+async def test_a_notice_that_never_plays_starts_nothing():
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c10", mode="both", directory=d)
+        tap = rec.processors[0]
+        rec.arm("notice")
+        frames = [TTSStartedFrame(context_id="g"), *_words("g", "Hello", "there.")]
+        down, _ = await run_test(tap, frames_to_send=frames)
+        assert not rec.started and os.listdir(d) == []
+        assert not any(isinstance(f, AudioBufferStartRecordingFrame) for f in down)
 
 
 def test_the_model_is_told_only_when_something_is_kept():
@@ -300,40 +325,46 @@ async def test_the_notice_plays_whole_before_the_greeting_outside_the_context():
             rec = call_recording.CallRecording("c4", mode="both", directory=d)
             s = _session(recording=rec)
             await s.greet(prepared=prepared, notice=NOTICE)
-            start, notice, greeting = _spoken(s)
-            assert isinstance(start, AudioBufferStartRecordingFrame), _spoken(s)
+            assert rec.armed == "notice", "it starts as the notice plays"
+            # The fake plays the notice with no word frames (a voice without word
+            # timings): told in full, the recording starts right after it.
+            notice, start, greeting = _spoken(s)
             assert isinstance(notice, TTSSpeakFrame) and notice.text == NOTICE
             assert notice.append_to_context is False, "the notice is not the model's words"
+            assert isinstance(start, AudioBufferStartRecordingFrame), _spoken(s)
             assert (isinstance(greeting, LLMRunFrame) if prepared is None
                     else greeting.text == prepared), _spoken(s)
             # The caller is unheard while the notice is queued and plays (no "hello?" cuts
             # it), and heard again by the time the greeting is queued.
-            assert s.muted_while_queued[-1] is False and all(s.muted_while_queued[:-1])
+            assert s.muted_while_queued[-1] is False and all(s.muted_while_queued[:-2])
             assert not s.input_mute.muted
-    s = _session(recording=object.__new__(call_recording.CallRecording))
-    s.recording.audio = s.recording.transcript = True
+    rec = call_recording.CallRecording("c6", mode="both", directory="/nonexistent/x")
+    s = _session(recording=rec)
     s.stt = type("S", (), {"stt_available": False, "slot_busy": False})()
     await s.greet(notice=NOTICE)
-    assert not any(isinstance(f, AudioBufferStartRecordingFrame) or
-                   getattr(f, "text", "") == NOTICE for f in s.task.queued), (
-        "a call that cannot be heard is neither told nor recorded")
+    assert rec.armed is None and not any(
+        isinstance(f, AudioBufferStartRecordingFrame) or getattr(f, "text", "") == NOTICE
+        for f in s.task.queued), "a call that cannot be heard is neither told nor recorded"
 
 
-async def test_with_the_notice_off_the_recording_starts_at_the_greeting():
+async def test_with_the_notice_off_the_greeting_starts_the_recording():
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("c5", mode="audio", directory=d)
         s = _session(recording=rec)
         await s.greet(prepared="Hello.")
-        assert [type(f).__name__ for f in _spoken(s)] == [
-            "AudioBufferStartRecordingFrame", "TTSSpeakFrame"], _spoken(s)
+        assert rec.armed == "any"
+        assert [type(f).__name__ for f in _spoken(s)] == ["TTSSpeakFrame"], _spoken(s)
 
 
 async def test_a_notice_that_never_plays_out_still_lets_the_greeting_and_the_caller_in():
-    s = _session(plays=False)
-    s.NOTICE_MAX_SECS = 0.05
-    await s.greet(prepared="Hello.", notice=NOTICE)
-    assert [getattr(f, "text", None) for f in _spoken(s)] == [NOTICE, "Hello."], s.task.queued
-    assert not s.input_mute.muted, "the caller must not stay unheard"
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c7", mode="both", directory=d)
+        s = _session(plays=False, recording=rec)
+        s.NOTICE_MAX_SECS = 0.05
+        await s.greet(prepared="Hello.", notice=NOTICE)
+        assert [getattr(f, "text", None) for f in _spoken(s)] == [NOTICE, "Hello."], s.task.queued
+        assert not s.input_mute.muted, "the caller must not stay unheard"
+        assert rec.armed is None and not rec.started, "not told, so not recorded"
 
 
 def test_the_notice_is_in_the_calls_language():

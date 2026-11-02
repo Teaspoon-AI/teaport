@@ -19,11 +19,14 @@
 # recording it had: its rest goes to <stem>.r1.wav/.txt beside the first part, one group
 # that retention keeps or deletes whole (recordings.py).
 #
-# NOTHING IS RECORDED UNTIL THE CALLER IS TOLD. The recording starts with pipecat's own
-# AudioBufferStartRecordingFrame, which AgentSession.greet queues right before the
-# notice (or the greeting, with the notice off), never on a call that cannot be heard
-# (greet speaks the "I can't hear you" line instead, and nothing starts). Before it, no
-# file exists: a call that never connects leaves none.
+# NOTHING IS RECORDED UNTIL THE CALLER IS TOLD. AgentSession.greet arms the recording
+# (arm), and it starts when the notice's first word PLAYS -- with the notice off, the
+# greeting's: _PlayedLines, below the output transport, sees the word as it is played
+# and pushes pipecat's own AudioBufferStartRecordingFrame straight into the recorder.
+# Started there and not queued from the top, no interruption can delete the start on its
+# way, and a notice that never plays starts nothing (greet says so in the log). A call
+# that cannot be heard is never armed (greet speaks the "I can't hear you" line instead).
+# Before the start no file exists: a call that never connects leaves none.
 #
 # AUDIO is pipecat's AudioBufferProcessor, below the output transport, where it sees
 # the caller's audio on its way down and the bot's as it is played: what the caller
@@ -40,7 +43,8 @@
 # reply's unheard words until the corrector trims them. _PlayedLines, below the
 # transport, gives what the ledger does not chart: the lines the pipeline says itself
 # (the notice, a tool's "one moment", a failure notice: append_to_context=False), each
-# once it has played, and a reply still playing when the call ended.
+# once it has played, and whatever was still playing when the call ended. It keeps a
+# reply's words only while it plays: its stop or its cut is the ledger's to chart.
 #
 # The NOTICE (TEAPORT_CALL_RECORDING_NOTICE, on by default): a recorded call starts with
 # "This call is being recorded." in the call's language (i18n.py), before the greeting,
@@ -117,10 +121,11 @@ def _resumed_stem(directory: str, safe: str) -> str | None:
 
 
 class _PlayedLines(FrameProcessor):
-    """Below the output transport: the words of each TTS context as they play. Writes
-    the lines the ledger does not chart -- the pipeline's own (append_to_context=False),
-    each when it has played or is cut -- and, at the call's end, a reply still playing.
-    A reply the ledger charts is dropped here (CallRecording.on_utterance)."""
+    """Below the output transport: the words of each TTS context as they play. Starts an
+    armed recording at the first word it is armed for (CallRecording.arm), and writes the
+    lines the ledger does not chart -- the pipeline's own (append_to_context=False), each
+    when it has played or is cut -- and, at the call's end, whatever was still playing.
+    A reply's words are kept only while it plays: its stop or its cut is the ledger's."""
 
     def __init__(self, recording: "CallRecording"):
         super().__init__()
@@ -137,35 +142,44 @@ class _PlayedLines(FrameProcessor):
         if words:
             self._rec.line(start, f"Assistant{how}", "".join(words).strip())
 
-    def drop_replies(self) -> None:
-        """The ledger charted a reply: what this holds of replies is its."""
-        for ctx in [c for c in self._words if c not in self._own]:
-            del self._words[ctx]
+    async def _start_on(self, ctx) -> None:
+        """An armed recording starts at the first word of what it was armed for."""
+        armed = self._rec.armed
+        if armed == "any" or (armed == "notice" and ctx in self._own):
+            self._rec.begin()
+            # Straight into the recorder below: nothing between can drop it.
+            await self.push_frame(AudioBufferStartRecordingFrame())
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         try:
             if isinstance(frame, AudioBufferStartRecordingFrame):
-                self._rec.begin()
-            elif not self._rec.started:
-                pass
+                self._rec.begin()       # queued from the top (greet's fallback)
             elif isinstance(frame, TTSStartedFrame):
                 if getattr(frame, "append_to_context", True) is False:
                     self._own.add(frame.context_id)
             elif isinstance(frame, TTSTextFrame) and frame.text:
-                entry = self._words.setdefault(getattr(frame, "context_id", None),
-                                               [self._now(), []])
-                spaced = getattr(frame, "includes_inter_frame_spaces", False)
-                entry[1].append(frame.text if spaced else frame.text + " ")
+                ctx = getattr(frame, "context_id", None)
+                if not self._rec.started:
+                    await self._start_on(ctx)
+                if self._rec.started and self._rec.transcript:
+                    entry = self._words.setdefault(ctx, [self._now(), []])
+                    spaced = getattr(frame, "includes_inter_frame_spaces", False)
+                    entry[1].append(frame.text if spaced else frame.text + " ")
             elif isinstance(frame, TTSStoppedFrame):
                 if frame.context_id in self._own:
                     self._flush(frame.context_id)
+                else:
+                    self._words.pop(frame.context_id, None)   # the ledger charts it
             elif isinstance(frame, InterruptionFrame):
-                for ctx in list(self._own):
-                    self._flush(ctx, " (cut off)")
+                for ctx in list(self._words):
+                    if ctx in self._own:
+                        self._flush(ctx, " (cut off)")
+                    else:
+                        del self._words[ctx]                   # the ledger charts the cut
             elif isinstance(frame, (EndFrame, CancelFrame)):
                 for ctx in list(self._words):
-                    self._flush(ctx, " (call ended)" if ctx not in self._own else "")
+                    self._flush(ctx, " (call ended)")
         except Exception as e:  # noqa: BLE001 -- a transcript must never stop a call
             logger.warning(f"call recording: played-lines tap failed ({e!r})")
         await self.push_frame(frame, direction)
@@ -174,7 +188,7 @@ class _PlayedLines(FrameProcessor):
 class CallRecording:
     """One call's recording: what build_agent_session puts in its pipeline (processors),
     the ledger it listens to (attach), what the model is told (prompt_line), and the
-    frame that starts it (start_frame, queued by AgentSession.greet)."""
+    word that starts it (arm, by AgentSession.greet)."""
 
     def __init__(self, call_id: str, caller: str | None = None, *, mode: str | None = None,
                  directory: str | None = None, resumed: bool = False):
@@ -184,6 +198,8 @@ class CallRecording:
         self.audio = mode in ("audio", "both")
         self.transcript = mode in ("transcript", "both")
         self.started = False
+        # What starts it (arm): "notice" -- the notice's first word; "any" -- any word.
+        self.armed = None
         self._call_id, self._caller, self._resumed = call_id, caller, resumed
         safe = "".join(c for c in (call_id or "call") if c.isalnum() or c in "-_")[:64]
         base = (_resumed_stem(self.directory, safe) if resumed else None) or os.path.join(
@@ -231,9 +247,10 @@ class CallRecording:
         return (f"This phone call is being recorded ({what} is kept). If the caller asks "
                 "whether the call is recorded, tell them it is.")
 
-    def start_frame(self) -> Frame | None:
-        """What starts the recording, queued just before the notice (or the greeting)."""
-        return AudioBufferStartRecordingFrame() if self.active else None
+    def arm(self, on: str | None) -> None:
+        """Start at the first word that plays of the notice ("notice") or of anything
+        ("any": the notice is off, so the greeting's); None disarms."""
+        self.armed = on if self.active else None
 
     def attach(self, ledger) -> None:
         """Write the ledger's lines to the transcript as it charts them."""
@@ -287,9 +304,7 @@ class CallRecording:
             return
         if u.speaker == "user":
             self.line(u.t_start, "Caller", u.text)
-            return
-        self._played.drop_replies()
-        if u.cut_short:
+        elif u.cut_short:
             self.line(u.t_start, "Assistant (cut off)", (u.heard_text or "").strip() or "...")
         else:
             self.line(u.t_start, "Assistant", u.text)

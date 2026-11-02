@@ -26,6 +26,7 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    AudioBufferStartRecordingFrame,
     BotSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
@@ -381,13 +382,25 @@ class AgentSession:
             return
         if not hello:
             return
-        # A recorded call starts recording here, with the caller about to be told (the
-        # notice), never before and never on a call that cannot be heard (above).
-        start = self.recording.start_frame() if self.recording is not None else None
+        # A recorded call is armed here, never on a call that cannot be heard (above):
+        # it starts as the notice plays (call_recording.py), or the greeting with the
+        # notice off.
+        rec = self.recording if self.recording is not None and self.recording.active else None
         if notice:
-            await self._say_notice(notice, before=(start,) if start is not None else ())
-        elif start is not None:
-            await self.task.queue_frames([start])
+            if rec is not None:
+                rec.arm("notice")
+            heard = await self._say_notice(notice)
+            if rec is not None and not rec.started:
+                if heard:
+                    # Played to its end, but no word of it reached the recorder (a voice
+                    # without word timings): the caller has been told, so start now.
+                    await self.task.queue_frames([AudioBufferStartRecordingFrame()])
+                else:
+                    rec.arm(None)
+                    logger.warning("the recording notice was not heard -- this call is "
+                                   "not recorded")
+        elif rec is not None:
+            rec.arm("any")
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         if prepared:
@@ -403,12 +416,12 @@ class AgentSession:
     # The owner's recording of this call (call_recording.CallRecording); None off a call.
     recording = None
 
-    async def _say_notice(self, notice: str, before: tuple = ()) -> None:
+    async def _say_notice(self, notice: str) -> bool:
         """Play `notice` heard in full (_say_whole: the pipeline talking, not the model),
-        then listen to the caller again."""
+        then listen to the caller again. True when it played to its end."""
         try:
-            await self._say_whole(notice, self.NOTICE_MAX_SECS, before=before,
-                                  name="the recording notice")
+            return await self._say_whole(notice, self.NOTICE_MAX_SECS,
+                                         name="the recording notice")
         finally:
             if self.input_mute is not None:
                 self.input_mute.muted = False
@@ -446,15 +459,13 @@ class AgentSession:
     _OWN_LINE_SETTLE_S = 0.2
 
     @contextlib.asynccontextmanager
-    async def own_line(self, line: str, *, append_to_context: bool, before: tuple = ()):
+    async def own_line(self, line: str, *, append_to_context: bool):
         """Stop whatever is being said and put `line` in its place, yielding the watch on
         its delivery (FollowupGate.watch_delivery): the session's last line
         (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
         The cut is the brain's, not the caller's: the owed book counts no cut telling and
         reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
-        not a timer the ledger's charting of the cut could lose to. `before`: frames
-        queued with the line, just ahead of it and after the interruption, which clears
-        frames still queued (a recording's start frame: call_recording.py)."""
+        not a timer the ledger's charting of the cut could lose to."""
         owed = getattr(self.llm, "owed", None)
         if owed is not None:
             owed.own_cut = True
@@ -464,8 +475,8 @@ class AgentSession:
             # Armed after the interruption has gone through (it settles every watched
             # reply as cut) and before the line is queued.
             delivery = self.followup_gate.watch_delivery()
-            await self.task.queue_frames([*before, TTSSpeakFrame(
-                line, append_to_context=append_to_context)])
+            await self.task.queue_frames([TTSSpeakFrame(line,
+                                                        append_to_context=append_to_context)])
             yield delivery
         finally:
             if owed is not None:
@@ -484,15 +495,14 @@ class AgentSession:
                                      name="the session's last line")
 
     async def _say_whole(self, line: str, max_secs: float, *, name: str,
-                         append_to_context: bool = False, before: tuple = ()) -> bool:
+                         append_to_context: bool = False) -> bool:
         """Say `line` heard in full: stop listening (so talking over it cannot cut it),
         put it in place of whatever is being said (own_line), and wait -- up to max_secs
         -- until it has played. True when it played to the end. The caller is left
         unheard: the caller of this decides when to listen again."""
         if self.input_mute is not None:
             self.input_mute.muted = True
-        async with self.own_line(line, append_to_context=append_to_context,
-                                 before=before) as delivery:
+        async with self.own_line(line, append_to_context=append_to_context) as delivery:
             try:
                 await asyncio.wait_for(delivery.done.wait(), max_secs)
             except asyncio.TimeoutError:
