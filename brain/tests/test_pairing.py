@@ -39,6 +39,7 @@
 # Run: python test_pairing.py   (or via pytest)
 #
 import asyncio
+from types import SimpleNamespace
 import json
 import os
 import stat
@@ -103,19 +104,26 @@ def _setup(cli: FakeCli, host="teaport.local"):
     pairing._spent.clear()
     pairing._recent.clear()
     pairing._clock = time.monotonic
+    pairing._wall_ms = lambda: 5_000_000
     pairing.POLL_SECS = 0.01
     pairing.OPENED_WAIT_SECS = 0.3
     pairing.APP_WAIT_SECS = 0.3
     agent_backend.HAS_AGENT = True
 
 
-def _client(peer="127.0.0.1", proto="https"):
-    """A client as Caddy is one: a loopback peer that says X-Forwarded-Proto https."""
+PHONE = "2600:1700:100:7040::a874"   # the phone that taps, as Caddy forwards it
+
+
+def _client(peer="127.0.0.1", proto="https", phone=PHONE):
+    """A client as Caddy is one: a loopback peer that says X-Forwarded-Proto https, and
+    the phone's own address in X-Forwarded-For."""
     app = FastAPI()
     app.include_router(pairing.router)
+    headers = {"X-Forwarded-Proto": proto} if proto else {}
+    if phone:
+        headers["X-Forwarded-For"] = phone
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 40000)),
-                             base_url="http://box",
-                             headers={"X-Forwarded-Proto": proto} if proto else {})
+                             base_url="http://box", headers=headers)
 
 
 async def _take(c, code, choice="dashboard"):
@@ -748,6 +756,90 @@ def test_the_apps_node_and_operator_as_two_entries_are_one_pairing():
             assert (await _take(c, offer.code, "app")).status_code == 200
         assert (await pairing.wait(offer)) == pairing.Result("paired", "Ana's iPhone")
     asyncio.run(go())
+
+
+def _app(seen_ms, reason="connect", ip=PHONE, **more):
+    """The OpenClaw app on a phone, paired long ago (one entry, node and operator)."""
+    return {"deviceId": "dev-ios", "displayName": "iPhone", "clientId": "openclaw-ios",
+            "clientMode": "node", "roles": ["node", "operator"], "approvedAtMs": 1500,
+            "lastSeenAtMs": seen_ms, "lastSeenReason": reason, "remoteIp": ip, **more}
+
+
+def test_an_app_paired_before_that_connects_after_its_code_is_paired():
+    # Pasting the setup code into an app paired before re-pairs the same device:
+    # OpenClaw adds no entry and approves nothing again, so its connection after the code
+    # was handed out is what says it worked (the box, 11-02: the screen waited on "finish
+    # on your device" until it gave up).
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A, _app(4_000_000)], [DEV_A, _app(4_000_000)],
+                       [DEV_A, _app(5_000_100)]]
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await _take(c, offer.code, "app")).status_code == 200
+        assert (await pairing.wait(offer)) == pairing.Result("paired", "iPhone")
+    asyncio.run(go())
+
+
+def test_a_connection_is_counted_only_when_it_can_be_the_codes_doing():
+    # Not before the code was handed out, not a presence ping (the app in the background),
+    # and not after a dashboard choice (a browser handoff approves its browser again, which
+    # is what that choice watches for): each of those ends "opened", as before.
+    # Nor another phone's app (one brought to the foreground meanwhile, a gateway
+    # restart reconnecting every app): only the phone that tapped. Nor a connection the
+    # snapshot already had.
+    cases = {"before the code": ("app", _app(4_999_000), _app(4_000_000)),
+             "a presence ping": ("app", _app(5_000_100, reason="background"), _app(4_000_000)),
+             "a dashboard choice": ("dashboard", _app(5_000_100), _app(4_000_000)),
+             "another phone": ("app", _app(5_000_100, ip="2600:1700:100:7040::beef"),
+                               _app(4_000_000)),
+             "no newer than the snapshot": ("app", _app(5_000_100), _app(5_000_100))}
+    for name, (choice, later, first) in cases.items():
+        async def go():
+            cli = FakeCli()
+            cli.devices = [[DEV_A, first], [DEV_A, later]]
+            _setup(cli)
+            pairing.OPENED_WAIT_SECS = pairing.APP_WAIT_SECS = 0.1
+            offer = await pairing.start()
+            async with _client() as c:
+                assert (await _take(c, offer.code, choice)).status_code in (200, 303), name
+            return await pairing.wait(offer)
+        assert asyncio.run(go()).outcome == "opened", name
+
+
+def test_an_app_tap_whose_watch_ran_out_counts_for_nothing_later():
+    # A re-ask in the same pairing, then a dashboard choice: the app tap before it is no
+    # longer watched, so an app connecting during the dashboard's watch is not "paired".
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A, _app(4_000_000)]]
+        _setup(cli)
+        pairing.APP_WAIT_SECS, pairing.OPENED_WAIT_SECS = 0.1, 0.3
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await _take(c, offer.code, "app")).status_code == 200
+        again = await pairing.start()            # while the app is watched: same pairing
+        assert pairing._session is not None and len(pairing._session.taps) == 1
+        await asyncio.sleep(0.15)                                 # the app's watch is over
+        cli.devices = [[DEV_A, _app(5_000_100)]]
+        async with _client() as c:
+            await _take(c, again.code, "dashboard")
+        return await pairing.wait(again)
+    assert asyncio.run(go()).outcome == "opened"
+
+
+def test_the_tapping_address_is_read_both_ways_round():
+    # uvicorn's proxy headers make the client the phone; without them it is Caddy, and
+    # the phone is the first X-Forwarded-For hop. One address, two spellings, is one.
+    req = lambda host, xff=None: SimpleNamespace(  # noqa: E731
+        client=SimpleNamespace(host=host), headers={"x-forwarded-for": xff} if xff else {})
+    assert pairing._peer_of(req("192.168.1.50")) == "192.168.1.50"
+    assert pairing._peer_of(req("127.0.0.1", "192.168.1.50, 10.0.0.1")) == "192.168.1.50"
+    assert pairing._peer_of(req("127.0.0.1")) is None
+    assert pairing._same_address("2600:1700:100:7040:0:0:0:a874", PHONE)
+    assert pairing._same_address("::ffff:192.168.1.50", "192.168.1.50")
+    assert not pairing._same_address(None, None) and not pairing._same_address("x", "x")
 
 
 def test_a_failed_app_mint_ends_the_offer_and_says_so():
