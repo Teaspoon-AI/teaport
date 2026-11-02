@@ -86,6 +86,8 @@ SCREEN_TITLE = "Setup mode"
 # After it: the box has left setup mode and is on the user's network.
 CONNECTED_TITLE = "Wi-Fi"
 CONNECTED_SCREEN_SECS = 10
+# How long avahi-publish must stay up before its .local name is shown.
+PUBLISH_SETTLE_SECS = 0.2
 # The status reason when the page's server cannot start; English only (see _run).
 PAGE_FAILED = "the Wi-Fi page could not start"
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
@@ -450,6 +452,16 @@ class Setup:
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
+            return
+        # Without avahi-daemon it exits within milliseconds -- after page_url's poll()
+        # would already have counted it as running. A short wait catches that; past it,
+        # the live poll() takes over (avahi dying later).
+        try:
+            rc = self.avahi.wait(timeout=PUBLISH_SETTLE_SECS)
+        except subprocess.TimeoutExpired:
+            return
+        log(f"avahi-publish exited at once ({rc}) — only the captive page and 10.42.0.1 work")
+        self.avahi = None
 
     def page_url(self, ssid: str) -> str:
         """The page's address, the one the screen shows, the status carries and the voice

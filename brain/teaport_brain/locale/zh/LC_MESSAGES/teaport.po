@@ -37,8 +37,11 @@ msgstr "好的，我已经退出配网模式，一切都恢复原样了。"
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "好的，已经取消了，一切都和原来一样。"
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "已经取消了，一切都和原来一样。"
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "配网模式已关闭，一切都和原来一样。"
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "请稍等，我正在准备配网模式。想停下来就说取消。"
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "暂时还停不下来。请稍后再说一次取消。"

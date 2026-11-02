@@ -5,6 +5,7 @@ details digit by digit, following status.json, repeat and cancel). No radio need
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -386,21 +387,22 @@ def _no_avahi(setup, avahi=None):
 
 
 class FakeAvahi:
-    """avahi-publish as page_url sees it: running (poll() is None) while `up`."""
+    """avahi-publish as a real, live process (a sleep) that a test can kill, so page_url's
+    poll() sees it as on the box: running until killed."""
 
     def __init__(self):
-        self.up = True
+        self.procs = []
 
     def start(self, setup, name):
-        fake = self
+        proc = subprocess.Popen(["sleep", "30"])
+        self.procs.append(proc)
+        setup.avahi, setup.avahi_name = proc, name
+        return proc
 
-        class Proc:
-            def poll(self):
-                return None if fake.up else 1
-
-            def terminate(self):
-                pass
-        setup.avahi, setup.avahi_name = Proc(), name
+    def kill(self):
+        for proc in self.procs:
+            proc.kill()
+            proc.wait()
 
 
 def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None):
@@ -634,7 +636,9 @@ BARE_SAID = "go to one zero dot four two dot zero dot one, and pick your Wi-Fi."
 
 def test_with_avahi_up_the_local_name_is_everywhere():
     screen, sent = _screen()
-    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, avahi=FakeAvahi())
+    avahi = FakeAvahi()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, avahi=avahi)
+    avahi.kill()
     assert sent[0]["lines"][2] == seen[1]["url"] == "http://teaport-9e35.local"
     assert wv.instructions(seen[1], EN, spelled=True).endswith(LOCAL_SAID)
 
@@ -656,7 +660,9 @@ def test_avahi_dying_mid_setup_switches_the_next_show_to_the_bare_address():
     join = nm.join
 
     def join_and_lose_avahi(*a):
-        avahi.up = False
+        avahi.kill()                       # the one running now dies...
+        avahi.start = lambda setup, name: (setattr(setup, "avahi", None),
+                                           setattr(setup, "avahi_name", name))  # ...for good
         return join(*a)
     nm.join = join_and_lose_avahi
     rc, seen = _run_setup(nm, screen=screen, avahi=avahi,
@@ -671,10 +677,22 @@ def test_avahi_dying_mid_setup_switches_the_next_show_to_the_bare_address():
     assert wv.instructions(ups[1], EN, spelled=True).endswith(BARE_SAID)
 
 
+def test_an_avahi_publish_that_exits_at_once_is_not_shown(monkeypatch):
+    """No avahi-daemon: avahi-publish exits within milliseconds, after Popen returns.
+    A real process here (/bin/false), so the race is the real one."""
+    setup = ws.Setup(FakeNM([]), _Recorded(tempdir()), port=0)
+    monkeypatch.setattr(ws.shutil, "which", lambda name: "/bin/false")
+    setup.publish("teaport-9e35")
+    assert setup.page_url("teaport-9e35") == f"http://{wifi.AP_ADDRESS}"
+    assert setup.avahi is None
+
+
 @pytest.mark.parametrize("ssid", ["東京-box", "mybox"])
 def test_a_folded_or_custom_name_gets_the_bare_address_even_with_avahi(ssid):
     screen, sent = _screen()
-    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid, avahi=FakeAvahi())
+    avahi = FakeAvahi()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid, avahi=avahi)
+    avahi.kill()
     assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
     assert wv.instructions(seen[1], EN, spelled=True).endswith(BARE_SAID)
 

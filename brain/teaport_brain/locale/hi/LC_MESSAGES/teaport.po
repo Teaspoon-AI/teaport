@@ -37,8 +37,11 @@ msgstr "ठीक है, मैंने सेट अप मोड बंद �
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "ठीक है, मैंने इसे रद्द कर दिया है। सब कुछ पहले जैसा है।"
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "मैंने इसे रद्द कर दिया है। सब कुछ पहले जैसा है।"
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "सेट अप मोड बंद कर दिया गया। सब कुछ पहले जैसा है।"
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "एक पल रुकिए, सेट अप मोड तैयार हो रहा है। रोकना हो तो कैंसल बोलिए।"
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "अभी रोका नहीं जा सका। थोड़ी देर में फिर से कैंसल बोलिए।"

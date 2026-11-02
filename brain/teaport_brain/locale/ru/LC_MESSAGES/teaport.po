@@ -43,8 +43,11 @@ msgstr "Хорошо, режим подключения выключен, всё
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "Хорошо, отменено. Всё как было."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "Отменено. Всё как было."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "Режим подключения выключен. Всё как было."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Минутку, я готовлю режим подключения. Скажите «отмена», чтобы остановить."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "Пока не получилось остановить. Скажите «отмена» ещё раз чуть позже."

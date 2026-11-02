@@ -40,8 +40,11 @@ msgstr "알겠어요. 연결 모드를 끝내고 원래대로 되돌려 놓았�
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "알겠어요. 취소했어요. 모두 원래대로예요."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "취소했어요. 모두 원래대로예요."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "연결 모드가 꺼졌어요. 모두 원래대로예요."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "잠시만요, 연결 모드를 준비하고 있어요. 멈추시려면 '취소'라고 말해 주세요."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "아직 멈추지 못했어요. 잠시 후에 다시 '취소'라고 말해 주세요."

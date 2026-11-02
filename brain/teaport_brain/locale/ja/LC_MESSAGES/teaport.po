@@ -37,8 +37,11 @@ msgstr "わかりました。セットアップモードを終了して、元の
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "わかりました。キャンセルしました。元の状態のままです。"
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "キャンセルしました。元の状態のままです。"
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "セットアップモードはオフになりました。元の状態のままです。"
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "少々お待ちください。セットアップモードの準備をしています。やめるには「キャンセル」と言ってください。"
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "まだ中止できませんでした。少ししてから、もう一度「キャンセル」と言ってください。"

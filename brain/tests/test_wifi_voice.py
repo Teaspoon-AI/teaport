@@ -218,7 +218,7 @@ def test_a_stop_before_setup_mode_does_not_claim_to_leave_it(fast):
         v.alive = False
         await asyncio.sleep(0.2)
         assert v.state == "idle"
-        assert v.said[-1] == "I've cancelled that. Everything is as it was."
+        assert v.said[-1] == "Setup mode was turned off. Everything is as it was."
 
     async def cancel():
         path = _path()
@@ -231,6 +231,24 @@ def test_a_stop_before_setup_mode_does_not_claim_to_leave_it(fast):
         assert v.said[-1] == "Okay, I've cancelled that. Everything is as it was."
     asyncio.run(outside())
     asyncio.run(cancel())
+
+
+def test_words_while_getting_ready_do_not_claim_setup_mode(fast):
+    """Still looking for networks: other words get a "one moment", not "I'm in setup
+    mode"; after the announcement, the running hint."""
+    async def run():
+        path = _path()
+        v = Voice(path)
+        assert await v._heard("set up wifi") and await v._heard("yes")
+        _write(path, phase="scanning")
+        await asyncio.sleep(0.05)
+        assert await v._heard("what's taking so long")
+        assert v.said[-1] == "One moment, I'm getting setup mode ready. Say cancel to stop."
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        assert await v._heard("what's taking so long")
+        assert v.said[-1].startswith("I'm in setup mode. Say repeat")
+    asyncio.run(run())
 
 
 def test_a_failed_stop_says_only_what_is_true(fast):

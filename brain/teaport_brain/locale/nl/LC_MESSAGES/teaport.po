@@ -37,8 +37,11 @@ msgstr "Oké, ik heb de verbindingsmodus verlaten en alles teruggezet zoals het 
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "Oké, ik heb het geannuleerd. Alles is zoals het was."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "Ik heb het geannuleerd. Alles is zoals het was."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "De verbindingsmodus is uitgezet. Alles is zoals het was."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Even geduld, ik maak de verbindingsmodus klaar. Zeg annuleer om te stoppen."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "Ik kon nog niet stoppen. Zeg zo nog een keer annuleer."

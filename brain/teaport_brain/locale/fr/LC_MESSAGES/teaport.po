@@ -42,8 +42,11 @@ msgstr "D'accord, j'ai quitté le mode configuration et tout remis comme avant."
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "D'accord, j'ai annulé. Tout est comme avant."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "J'ai annulé. Tout est comme avant."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "Le mode configuration a été désactivé. Tout est comme avant."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Un instant, je prépare le mode configuration. Dites annuler pour arrêter."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "Je n'ai pas encore pu arrêter. Redites annuler dans un instant."

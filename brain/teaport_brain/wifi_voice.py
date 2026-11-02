@@ -566,7 +566,7 @@ class WifiSetupVoice(FrameProcessor):
             return t._("Okay, I've left setup mode and put things back as they were.")
         if cancelled:
             return t._("Okay, I've cancelled that. Everything is as it was.")
-        return t._("I've cancelled that. Everything is as it was.")
+        return t._("Setup mode was turned off. Everything is as it was.")
 
     def _stopped_line(self, reason: str) -> str:
         """An error's line: a leaving once the user has heard the box is in setup mode,
@@ -646,9 +646,11 @@ class WifiSetupVoice(FrameProcessor):
             await self._shielded(self._cancel())
         elif heard("repeat", text, t) and self._last.get("phase") == "ap_up":
             await self.say(instructions(self._last, t, spelled=True))  # the details, read out
-        else:
+        elif self._in_mode:
             await self.say(t._("I'm in setup mode. Say repeat to hear the details, "
                                "or cancel to leave setup mode."))
+        else:
+            await self.say(t._("One moment, I'm getting setup mode ready. Say cancel to stop."))
         return True
 
 

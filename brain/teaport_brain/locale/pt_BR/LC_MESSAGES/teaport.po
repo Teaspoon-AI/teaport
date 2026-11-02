@@ -37,8 +37,11 @@ msgstr "Tudo bem. Saí do modo de conexão e deixei tudo como estava."
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "Tudo bem, cancelei. Está tudo como estava."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "Cancelei. Está tudo como estava."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "O modo de conexão foi desligado. Está tudo como estava."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Só um momento, estou preparando o modo de conexão. Diga cancelar para parar."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "Ainda não consegui parar. Diga cancelar de novo daqui a pouco."

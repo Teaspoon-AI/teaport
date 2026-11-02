@@ -37,8 +37,11 @@ msgstr "Okay, ich habe den Einrichtungsmodus beendet und alles wieder so eingest
 msgid "Okay, I've cancelled that. Everything is as it was."
 msgstr "Okay, ich habe das abgebrochen. Alles ist wie vorher."
 
-msgid "I've cancelled that. Everything is as it was."
-msgstr "Ich habe das abgebrochen. Alles ist wie vorher."
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "Der Einrichtungsmodus wurde ausgeschaltet. Alles ist wie vorher."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Einen Moment, ich bereite den Einrichtungsmodus vor. Sag abbrechen, um aufzuhören."
 
 msgid "I couldn't stop yet. Say cancel again in a moment."
 msgstr "Ich konnte noch nicht aufhören. Sag gleich noch einmal abbrechen."
