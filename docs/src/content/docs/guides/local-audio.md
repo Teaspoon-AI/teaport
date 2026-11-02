@@ -53,7 +53,7 @@ On an XVF3800, the LED ring shows phone-call state: breathing red while a call r
 
 The XVF3800 cancels echo in hardware, and the bridge keeps the chip's echo suppression following the measured echo: how loud the device's own voice is at the microphone, against yours. `LOCAL_AUDIO_ECHO_CONTROL`, `LOCAL_AUDIO_MIC_GAIN_DB`, and `LOCAL_AUDIO_ECHO_MARGIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2495-2535#c927325b -->
+<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2508-2548#c927325b -->
 
 ## What's next
 

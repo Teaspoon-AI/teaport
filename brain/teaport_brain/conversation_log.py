@@ -23,7 +23,6 @@
 # TEAPORT_LOG_CONVERSATIONS on too. TEAPORT_AUDIO_DUMP is the one that records on its
 # own: it writes caller audio files, and is off unless it names a directory.
 #
-import os
 import re
 import sys
 
@@ -84,7 +83,7 @@ def redact(record: dict) -> None:
 
 def install(level: str | None = None) -> None:
     """This process's logging: loguru's stderr sink (the journal), at `level` (else
-    LOGURU_LEVEL, else loguru's DEBUG; never below DEBUG unless TEAPORT_LOG_CONVERSATIONS
+    LOGURU_LEVEL, default DEBUG; never below DEBUG unless TEAPORT_LOG_CONVERSATIONS
     is on), with pipecat's text-carrying lines redacted.
     Called first thing by each entry point, the way a pipecat app owns its logging
     setup. configure() sets loguru's one logger-wide patcher; neither pipecat nor the
@@ -93,7 +92,7 @@ def install(level: str | None = None) -> None:
     diagnose is off unless TEAPORT_LOG_CONVERSATIONS is on: loguru's default sink prints
     every frame's local variables in a traceback (its docs warn it leaks data in
     production), and a frame holding a caller's words would put them in the journal."""
-    level = level or os.environ.get("LOGURU_LEVEL", "DEBUG")
+    level = level or setting("LOGURU_LEVEL")
     if not LOG_WORDS and logger.level(level).no < logger.level("DEBUG").no:
         # TRACE lines are not redacted (test_conversation_log scans DEBUG and up):
         # pipecat's carry transcripts and word times.

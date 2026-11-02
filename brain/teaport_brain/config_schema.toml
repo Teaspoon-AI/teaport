@@ -1954,6 +1954,19 @@ help = "Write what callers, the room and the bot say into the journal. Off, log 
 note = "This records conversations, phone calls included: the journal is kept on disk. Recording-consent law differs by place; the owner decides and is responsible. Every other switch here logs words only with this one on, except TEAPORT_AUDIO_DUMP."
 
 [[settings]]
+name = "LOGURU_LEVEL"
+store = "brain_env"
+consumer = "loguru"
+group = "diag"
+type = "enum"
+values = ["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"]
+default = "DEBUG"
+read = "startup"
+tier = "diag"
+help = "The journal's log level for the brain. The room process logs at INFO whatever this says."
+note = "TRACE takes effect only with TEAPORT_LOG_CONVERSATIONS on: TRACE lines carry what people say."
+
+[[settings]]
 name = "LEDGER_TRACE"
 store = "brain_env"
 group = "diag"

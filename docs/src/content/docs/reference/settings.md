@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2654#bcd5a3b4 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2667#e580f66d -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -283,6 +283,7 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 | `TEAPORT_ENDPOINT_DEBUG` | **off** | VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal. |
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
 | `TEAPORT_LOG_CONVERSATIONS` | **off** | Write what callers, the room and the bot say into the journal. Off, log lines keep their timing and length but not the words. This records conversations, phone calls included: the journal is kept on disk. Recording-consent law differs by place; the owner decides and is responsible. Every other switch here logs words only with this one on, except TEAPORT_AUDIO_DUMP. |
+| `LOGURU_LEVEL` | `DEBUG` | The journal's log level for the brain. The room process logs at INFO whatever this says. One of `TRACE`, `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `CRITICAL`. TRACE takes effect only with TEAPORT_LOG_CONVERSATIONS on: TRACE lines carry what people say. |
 | `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1, or 0 for off. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
 | `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. This records callers' voices to disk, whatever TEAPORT_LOG_CONVERSATIONS says. Recording-consent law differs by place; the owner decides and is responsible. |
