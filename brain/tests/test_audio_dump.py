@@ -191,9 +191,9 @@ async def _talk_input_processors(dump_dir):
             pass
 
     saved = {k: getattr(gs, k) for k in
-             ("FastAPIWebsocketTransport", "build_agent_session", "PipelineRunner")}
+             ("TalkWebsocketTransport", "build_agent_session", "PipelineRunner")}
     saved_dump = (ad.DUMP_DIR, ad.ENABLED)
-    gs.FastAPIWebsocketTransport = _Transport
+    gs.TalkWebsocketTransport = _Transport
     gs.build_agent_session = build
     gs.PipelineRunner = _Runner
     ad.DUMP_DIR, ad.ENABLED = dump_dir, bool(dump_dir)

@@ -68,12 +68,9 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InterruptionFrame,
-    OutputAudioRawFrame,
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
     StartFrame,
-    TTSStartedFrame,
-    TTSStoppedFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.serializers.base_serializer import FrameSerializer
@@ -82,10 +79,7 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.utils.base_object import BaseObject
 
-# A playout pause ends on its own after _PAUSE_GUARD_S, under pipecat's write deadline;
-# the pauser's cap stays below it (barge_pause.py PAUSE_GUARD_S, MAX_CAP_S).
-from teaport_brain.barge_pause import PAUSE_GUARD_S as _PAUSE_GUARD_S
-from teaport_brain.barge_pause import PlayoutPauseFrame
+from teaport_brain.playout_pause import PausablePlayout
 from teaport_brain.sip_serializer import (
     BYTES_PER_FRAME,
     PIPELINE_SAMPLE_RATE,
@@ -381,7 +375,7 @@ class SipGatewayInputTransport(BaseInputTransport):
         await self._transport.cleanup()
 
 
-class SipGatewayOutputTransport(BaseOutputTransport):
+class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
     """Per-call output side. Cuts playout into 640-byte protocol frames, hands each to
     the serializer, and paces the result at real time over the persistent connection.
     Structured like FastAPIWebsocketOutputTransport minus the WAV-header path. Its
@@ -428,85 +422,13 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         # recv then TRUNCATES it to 2048 and 62 KB of playout vanishes silently.
         self._audio_send_buffer = bytearray()
         self._started = False
-        # Set = writing; cleared while playout is paused (barge_pause.BargeInPauser). The
-        # pause holds write_audio_frame between two 640-byte datagrams, so what has not
-        # been written stays where it is -- this frame's remainder in _audio_send_buffer,
-        # the rest in MediaSender's queue -- and plays from that sample on resume.
-        self._playing = asyncio.Event()
-        self._playing.set()
-        self._paused_at = None
-        # Audio handed to this transport and not yet written (seconds), and whether the
-        # context it belongs to has finished synthesizing: playout_tail_secs().
-        self._unplayed_s = 0.0
-        self._synth_done = False
-
-    # A BargeInPauser may be put in front of this transport (agent_session.py).
-    supports_playout_pause = True
-
-    async def set_playout_paused(self, paused: bool):
-        """Stop writing the bot's audio, or start again, at the next 20 ms frame
-        boundary, and say so both ways (PlayoutPauseFrame) for the ledger, the TTS and
-        the turn-start strategy. The gateway's playout queue holds about one frame of
-        what was written (the send clock runs at real time with no lead), so the caller
-        hears the stop within ~40 ms; it has no pause control and needs none."""
-        if paused == (not self._playing.is_set()):
-            return
-        lag = 0.0
-        if paused:
-            self._playing.clear()
-            self._paused_at = time.monotonic()
-            # The datagram written last plays until the send clock's next slot; the
-            # write loop blocks there, so that is when the caller stops hearing it.
-            lag = max(0.0, self._next_send_time - self._paused_at)
-        else:
-            self._playing.set()
-            self._paused_at = None
-            # Restart the send clock from now: a clock left at its old slot would
-            # "catch up" by bursting the frames the pause skipped.
-            self._next_send_time = 0.0
-        tail = self.playout_tail_secs() if paused else None
-        await self._announce_pause(lag=lag, tail=-1.0 if tail is None else tail,
-                                   paused=paused)
-
-    async def _announce_pause(self, *, lag: float, tail: float, paused: bool = True):
-        down = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail)
-        up = PlayoutPauseFrame(paused=paused, lag_secs=lag, tail_secs=tail)
-        down.broadcast_sibling_id, up.broadcast_sibling_id = up.id, down.id
-        await self.push_frame(down)
-        await self.push_frame(up, FrameDirection.UPSTREAM)
-
-    async def _wait_if_paused(self):
-        if self._playing.is_set():
-            return
-        try:
-            await asyncio.wait_for(self._playing.wait(), timeout=_PAUSE_GUARD_S)
-        except asyncio.TimeoutError:
-            logger.warning(f"{self}: playout pause still held after {_PAUSE_GUARD_S:.0f}s "
-                           "-- resuming before the write deadline costs the call its voice")
-            await self.set_playout_paused(False)
-
-    def _drop_pause(self):
-        """An interruption or the end of the call: the queued audio is gone (or going),
-        so there is nothing to resume -- just stop blocking."""
-        self._playing.set()
-        self._paused_at = None
-
-    def playout_tail_secs(self):
-        """How much of the reply is left to play, if it is all here -- its synthesis is
-        over (the TTSStoppedFrame has reached this transport) -- else None. Counted from
-        what was handed to this transport less the 20 ms frames written since; the
-        barge-in pauser does not pause a reply this close to its end."""
-        return self._unplayed_s if self._synth_done else None
-
-    def _track_tail(self, frame: Frame, direction: FrameDirection):
-        if direction != FrameDirection.DOWNSTREAM:
-            return
-        if isinstance(frame, OutputAudioRawFrame) and frame.sample_rate:
-            self._unplayed_s += frame.num_frames / frame.sample_rate
-        elif isinstance(frame, TTSStartedFrame):
-            self._synth_done = False
-        elif isinstance(frame, TTSStoppedFrame):
-            self._synth_done = True
+        # The playout pause (barge_pause.BargeInPauser) is PausablePlayout's: the write
+        # loop below holds between two 640-byte datagrams, so what has not been written
+        # stays where it is -- this frame's remainder in _audio_send_buffer, the rest in
+        # MediaSender's queue -- and plays from that sample on resume. The gateway's
+        # playout queue holds about one frame of what was written (the send clock runs at
+        # real time, one frame ahead), so the caller hears the stop within ~40 ms; it has
+        # no pause control and needs none.
 
     async def setup(self, setup: FrameProcessorSetup):
         await super().setup(setup)
@@ -543,27 +465,16 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         await self.set_transport_ready(frame)
 
     # stop/cancel/cleanup must NOT close the socket or touch the receive loop — the
-    # connection outlives this per-call transport. We only run the base teardown.
-    async def stop(self, frame: EndFrame):
-        self._drop_pause()
-        await super().stop(frame)
-
-    async def cancel(self, frame: CancelFrame):
-        self._drop_pause()
-        await super().cancel(frame)
+    # connection outlives this per-call transport. stop/cancel are the base teardown plus
+    # PausablePlayout's (it lifts a pause).
 
     async def cleanup(self):
         await super().cleanup()
         await self._transport.cleanup()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        self._track_tail(frame, direction)
-        if (isinstance(frame, TTSStoppedFrame) and direction == FrameDirection.DOWNSTREAM
-                and not self._playing.is_set()):
-            # The reply's synthesis completed while playout is paused: its tail is known
-            # only now. Say the pause again, with it, so the start strategy can tell when
-            # the reply would have ended without the pause (barge_pause.py).
-            await self._announce_pause(lag=0.0, tail=self._unplayed_s)
+        # PausablePlayout (next in line) tracks the reply's tail and drops a pause on
+        # an interruption.
         await super().process_frame(frame, direction)
         if isinstance(frame, InterruptionFrame):
             # Barge-in. Drop any partially buffered playout so stale PCM isn't replayed
@@ -573,8 +484,6 @@ class SipGatewayOutputTransport(BaseOutputTransport):
             # Protocol v0 has no playout flush, so it serializes to None today; wiring
             # it now means a v1 flush control needs no change on this side.
             self._audio_send_buffer.clear()
-            self._drop_pause()
-            self._unplayed_s, self._synth_done = 0.0, False
             await self._write_frame(frame)
             self._next_send_time = 0.0
 
@@ -613,10 +522,16 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         if self._connection.is_closing or not self._connection.is_connected:
             return False
         self._audio_send_buffer.extend(bytes(frame.audio))
+        # One bound for every pause this write waits on, datagram after datagram: the
+        # whole call is what MediaSender's write timeout measures.
+        deadline = self.write_deadline()
         while len(self._audio_send_buffer) >= BYTES_PER_FRAME:
-            await self._wait_if_paused()
-            if len(self._audio_send_buffer) < BYTES_PER_FRAME:
-                break  # an interruption cleared the buffer while we were paused
+            if not await self._wait_if_paused(deadline) \
+                    or len(self._audio_send_buffer) < BYTES_PER_FRAME:
+                # An interruption dropped the pause and cleared the buffer: what this
+                # frame had left was not written. (Unlike /talk, the buffer goes whole,
+                # an uninterruptible frame's included: at most one datagram's worth.)
+                return False
             chunk = bytes(self._audio_send_buffer[:BYTES_PER_FRAME])
             del self._audio_send_buffer[:BYTES_PER_FRAME]
             # Cut BEFORE tagging: the 0x11 tag is per datagram, so pipecat's own
@@ -626,17 +541,17 @@ class SipGatewayOutputTransport(BaseOutputTransport):
             # serializer sees the same frame type the pipeline produced.
             await self._write_frame(type(frame)(
                 chunk, sample_rate=frame.sample_rate, num_channels=frame.num_channels))
-            self._unplayed_s = max(0.0, self._unplayed_s - self._send_interval)
+            self._wrote(self._send_interval)
             await self._write_audio_sleep()
         return True
 
     async def _write_audio_sleep(self):
         """Pace the playout to the real-time media clock (drift-corrected).
 
-        ZERO lead, and barge_pause.py depends on it: each datagram goes out in its own
-        20 ms slot, so the gateway's playout queue never holds more than about one frame
-        of what was written, and a playout pause is audible within ~40 ms with no pause
-        control at the gateway. A send clock that kept a burst lead in the gateway's
+        One frame ahead at most, and barge_pause.py depends on it: after the first two
+        go back to back, each datagram goes out in its own 20 ms slot, so the gateway's
+        playout queue never holds more than about one frame beyond the one playing, and
+        a playout pause is audible within ~40 ms with no pause control at the gateway. A send clock that kept a burst lead in the gateway's
         queue (the SIP stutter fix that was held off) would play that lead through
         every pause, and would need a gateway-side pause/flush to keep it tight."""
         now = time.monotonic()
