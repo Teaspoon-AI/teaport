@@ -175,11 +175,40 @@ def test_pcm_status_parsing():
     st = la.parse_pcm_status(RUNNING)
     assert st == {"state": "RUNNING", "owner_pid": 15188, "hw_ptr": 28560,
                   "appl_ptr": 32680, "delay": 4148}
-    assert la.played_frames(st) == 28560 - 28          # delay beyond the ring: in flight
+    # Played, in our own count: written, less what is on the way (pipe) and in the card.
+    assert la.played_frames(st, 40000, 960) == 40000 - 960 - 4148
     assert la.parse_pcm_status("closed\n") is None
     assert la.parse_pcm_status("error -19\n") is None
-    assert la.played_frames(dict(st, state="XRUN")) is None
-    assert la.played_frames(dict(st, delay=10**9)) == 28560   # nonsense in-flight: ignored
+    assert la.played_frames(dict(st, state="XRUN"), 40000, 0) is None
+    assert la.played_frames(dict(st, delay=10**9), 40000, 0) is None   # nonsense: no resync
+    assert la.played_frames(st, 1000, 0) == 0 and la.played_frames(st, 9000, -10**6) == 9000
+
+
+def test_an_underrun_does_not_send_the_timeline_hours_ahead():
+    """aplay recovers from an underrun with snd_pcm_prepare, which sets hw_ptr back to 0.
+    Anchored on hw_ptr, the feed then thought itself as far ahead of the card as the
+    bridge had been up, wrote nothing, and the room heard nothing for hours (the box,
+    11-01..02). Counted back from what we wrote, the lead stays what is really queued."""
+    play, clock, sunk = _playback()
+    for _ in range(3000):                               # an hour, in 1.2 s steps
+        clock.t += 1.2
+        play.pump()
+    after_reset = dict(la.parse_pcm_status(RUNNING), hw_ptr=320, appl_ptr=1920, delay=1600)
+    play.resync(la.played_frames(after_reset, play.written, 0), clock.t)
+    before = len(sunk)
+    clock.t += 0.1
+    play.pump()
+    assert len(sunk) > before                           # still feeding the card
+    assert play.written / la.DEVICE_RATE - (clock.t - play._start) < la.LEAD_SECS + 0.03
+
+
+def test_a_card_that_stops_moving_or_a_feed_that_stops_writing_is_a_stall():
+    S, G = la.STALL_SECS, la.STALL_GRACE_SECS
+    assert la.playback_stalled(G - 0.1, 0.0, None, -100.0) is None      # still opening
+    assert la.playback_stalled(G + 5, 0.0, G + 4, G + 5) is None        # moving, writing
+    assert "not moved" in la.playback_stalled(G + 5, 0.0, G + 5 - S, G + 5)
+    assert "nothing written" in la.playback_stalled(G + 5, 0.0, None, G + 5 - S)
+    assert la.playback_stalled(G + 5, 0.0, None, G + 5 - S + 0.1) is None
 
 
 def test_pcm_status_dir_from_the_device_string():

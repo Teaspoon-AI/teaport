@@ -125,7 +125,7 @@ A tool appears in a session only when what it needs is there: the agent gateway 
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces features; the plugin, the phone, and Discord announce none and never see these tools.
 
-<!-- source: brain/teaport_brain/tools.py:33-38#88656142; brain/teaport_brain/local_audio.py:232-235#1adbafcf; plugin/README.md:39-44#638406a1 -->
+<!-- source: brain/teaport_brain/tools.py:33-38#88656142; brain/teaport_brain/local_audio.py:240-243#1adbafcf; plugin/README.md:39-44#638406a1 -->
 
 ## Network ports
 
