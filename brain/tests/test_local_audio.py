@@ -175,11 +175,91 @@ def test_pcm_status_parsing():
     st = la.parse_pcm_status(RUNNING)
     assert st == {"state": "RUNNING", "owner_pid": 15188, "hw_ptr": 28560,
                   "appl_ptr": 32680, "delay": 4148}
-    assert la.played_frames(st) == 28560 - 28          # delay beyond the ring: in flight
+    # Played, in our own count: written, less what is on the way (pipe) and in the card.
+    assert la.played_frames(st, 40000, 960) == 40000 - 960 - 4148
     assert la.parse_pcm_status("closed\n") is None
     assert la.parse_pcm_status("error -19\n") is None
-    assert la.played_frames(dict(st, state="XRUN")) is None
-    assert la.played_frames(dict(st, delay=10**9)) == 28560   # nonsense in-flight: ignored
+    assert la.played_frames(dict(st, state="XRUN"), 40000, 0) is None
+    assert la.played_frames(dict(st, delay=10**9), 40000, 0) is None   # nonsense: no resync
+    assert la.played_frames(st, 1000, 0) == 0       # never below nothing played
+
+
+def test_an_underrun_does_not_send_the_timeline_hours_ahead():
+    """aplay recovers from an underrun with snd_pcm_prepare, which sets hw_ptr back to 0.
+    Anchored on hw_ptr, the feed then thought itself as far ahead of the card as the
+    bridge had been up, wrote nothing, and the room heard nothing for hours (the box,
+    11-01..02). Counted back from what we wrote, the lead stays what is really queued."""
+    play, clock, sunk = _playback()
+    for _ in range(3000):                               # an hour, in 1.2 s steps
+        clock.t += 1.2
+        play.pump()
+    after_reset = dict(la.parse_pcm_status(RUNNING), hw_ptr=320, appl_ptr=1920, delay=1600)
+    play.resync(la.played_frames(after_reset, play.written, 0), clock.t)
+    before = len(sunk)
+    clock.t += 0.1
+    play.pump()
+    assert len(sunk) > before                           # still feeding the card
+    assert play.written / la.DEVICE_RATE - (clock.t - play._start) < la.LEAD_SECS + 0.03
+
+
+def _watch(feeding, freeze=0.0, secs=0.6):
+    """Card._stall_watch on a stand-in card with STALL_SECS 0.2 and no grace: a feeder
+    writes and moves the card while `feeding()` is true; `freeze` blocks the whole event
+    loop once, that long. Returns the CardError raised within `secs`, or None."""
+    import asyncio
+    from types import SimpleNamespace
+
+    async def go():
+        card = SimpleNamespace(play=SimpleNamespace(wrote_at=time.monotonic()),
+                               _moved_at=time.monotonic())
+
+        async def feeder():
+            while True:
+                if feeding():
+                    card.play.wrote_at = card._moved_at = time.monotonic()
+                await asyncio.sleep(0.01)
+
+        async def blocker():
+            await asyncio.sleep(0.1)
+            time.sleep(freeze)                     # the loop itself stands still
+
+        tasks = [asyncio.create_task(feeder()), asyncio.create_task(blocker())]
+        try:
+            await asyncio.wait_for(la.Card._stall_watch(card, time.monotonic()), secs)
+        except la.CardError as e:
+            return e
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            for t in tasks:
+                t.cancel()
+    saved = la.STALL_SECS, la.STALL_GRACE_SECS
+    la.STALL_SECS, la.STALL_GRACE_SECS = 0.2, 0.0
+    try:
+        return asyncio.run(go())
+    finally:
+        la.STALL_SECS, la.STALL_GRACE_SECS = saved
+
+
+def test_the_watchdog_is_a_task_of_its_own_and_forgives_a_frozen_loop():
+    # Its own task: a feed blocked in drain() cannot silence it. A healthy feed never
+    # trips it; one that stops does, within STALL_SECS; and a whole event loop frozen
+    # past STALL_SECS (nothing could write, aplay recovers once the feed writes again) is
+    # not taken for a dead card.
+    assert _watch(lambda: True) is None
+    start = time.monotonic()
+    err = _watch(lambda: time.monotonic() - start < 0.15)
+    assert err is not None and "stalled" in str(err)
+    assert _watch(lambda: True, freeze=0.3) is None
+
+
+def test_a_card_that_stops_moving_or_a_feed_that_stops_writing_is_a_stall():
+    S, G = la.STALL_SECS, la.STALL_GRACE_SECS
+    assert la.playback_stalled(G - 0.1, 0.0, None, -100.0) is None      # still opening
+    assert la.playback_stalled(G + 5, 0.0, G + 4, G + 5) is None        # moving, writing
+    assert "not moved" in la.playback_stalled(G + 5, 0.0, G + 5 - S, G + 5)
+    assert "nothing written" in la.playback_stalled(G + 5, 0.0, None, G + 5 - S)
+    assert la.playback_stalled(G + 5, 0.0, None, G + 5 - S + 0.1) is None
 
 
 def test_pcm_status_dir_from_the_device_string():
