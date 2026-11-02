@@ -115,7 +115,7 @@
 #     room echo guard's "played" stamps, so after a pause longer than about half a
 #     second the resumed reply's echo can pass it as the user's words. The room bridge
 #     also counts a pause as the reply's end (its mouth timing, a goodbye "heard out").
-#     One design of the playout timing across a pause is the follow-up (branch
+#     One design of the playout timing across a pause is the follow-up (#255, branch
 #     feat/pause-word-clock).
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
