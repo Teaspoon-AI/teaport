@@ -293,3 +293,15 @@ msgstr "Je prends l'appel — je reviens tout de suite."
 
 msgid "Sorry about that — where were we?"
 msgstr "Désolé pour l'interruption — où en étions-nous ?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Désolé, je n'ai pas pu obtenir de réponse à l'instant. Pouvez-vous réessayer ?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Désolé, je ne peux pas répondre pour le moment : le compte que j'utilise pour mes réponses a besoin d'attention, et réessayer n'y changera rien. Cela peut se régler sur ma page de réglages."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Je ne peux toujours pas répondre tant que mon compte n'est pas réglé."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Désolé, je n'ai pas pu obtenir de réponse à l'instant."

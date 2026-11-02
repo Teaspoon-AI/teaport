@@ -288,3 +288,15 @@ msgstr "Voy a contestar — vuelvo enseguida."
 
 msgid "Sorry about that — where were we?"
 msgstr "Perdona la interrupción — ¿por dónde íbamos?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Lo siento, no pude obtener una respuesta en ese momento. ¿Puedes intentarlo de nuevo?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Lo siento, ahora mismo no puedo responder: la cuenta que uso para mis respuestas necesita atención, y volver a intentarlo no servirá. Se puede arreglar en mi página de ajustes."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Sigo sin poder responder hasta que se resuelva lo de mi cuenta."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Lo siento, no pude obtener una respuesta en ese momento."

@@ -288,3 +288,15 @@ msgstr "ज़रा कॉल ले लूँ — बस एक पल मे�
 
 msgid "Sorry about that — where were we?"
 msgstr "माफ़ कीजिए — हम कहाँ थे?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "माफ़ कीजिए, अभी मुझे जवाब नहीं मिल पाया। क्या आप फिर से कोशिश करेंगे?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "माफ़ कीजिए, मैं अभी जवाब नहीं दे सकता: जिस खाते से मुझे जवाब मिलते हैं, उस पर ध्यान देने की ज़रूरत है, और फिर से कोशिश करने से कुछ नहीं होगा। इसे मेरे सेटिंग्स पेज पर ठीक किया जा सकता है।"
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "जब तक मेरा खाता ठीक नहीं होता, मैं अब भी जवाब नहीं दे सकता।"
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "माफ़ कीजिए, अभी मुझे जवाब नहीं मिल पाया।"

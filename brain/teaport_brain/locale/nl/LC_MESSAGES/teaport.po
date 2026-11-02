@@ -288,3 +288,15 @@ msgstr "Ik neem het gesprek even aan — zo terug."
 
 msgid "Sorry about that — where were we?"
 msgstr "Sorry voor de onderbreking — waar waren we gebleven?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Sorry, ik kreeg net geen antwoord. Wil je het nog eens proberen?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorden gebruik heeft aandacht nodig, en opnieuw proberen helpt niet. Het is op te lossen op mijn instellingenpagina."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Ik kan nog steeds niet antwoorden tot mijn account in orde is."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Sorry, ik kreeg net geen antwoord."

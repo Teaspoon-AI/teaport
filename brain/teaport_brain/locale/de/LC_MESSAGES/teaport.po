@@ -288,3 +288,15 @@ msgstr "Ich gehe kurz ran — bin gleich wieder da."
 
 msgid "Sorry about that — where were we?"
 msgstr "Entschuldige die Unterbrechung — wo waren wir stehen geblieben?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen. Kannst du es noch einmal versuchen?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für meine Antworten nutze, braucht Aufmerksamkeit, und ein neuer Versuch hilft nicht. Das lässt sich auf meiner Einstellungsseite beheben."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Ich kann erst wieder antworten, wenn mein Konto in Ordnung gebracht ist."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."

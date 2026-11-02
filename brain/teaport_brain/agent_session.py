@@ -1099,7 +1099,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
         # single LLM error and only ever caught the TTS's, which it then blamed on the
         # model.
-        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
+        # In the voice's language, read live as WifiSetupVoice reads it.
+        (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
+         if llm_error_speaker.ENABLED else None),
         llm,
         # Retires ClientNotes' reaction order the moment the model starts answering from
         # it. HERE and nowhere else: LLMTextFrame is consumed by the TTS
