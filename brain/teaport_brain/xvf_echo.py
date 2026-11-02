@@ -54,6 +54,7 @@
 # xvf_led.ChipSetting): no device, no Linux, nothing done; never raises; a failure is
 # logged once until it works again. ECHO_CONTROL off: the chip is not touched.
 #
+import os
 import struct
 import time
 
@@ -76,6 +77,12 @@ FACTORY = ((PP_ECHOONOFF, 1), (PP_NLATTENONOFF, 1), (PP_DTSENSITIVE, 0))
 DUPLEX = ((PP_ECHOONOFF, 1), (PP_NLATTENONOFF, 0), (PP_DTSENSITIVE, 15))
 
 ECHO_CONTROL = setting("LOCAL_AUDIO_ECHO_CONTROL")
+# Retired with the meter (settings.py, RETIRED): an env file that still sets it is told,
+# not silently ignored.
+if os.getenv("LOCAL_AUDIO_ECHO_MARGIN_DB") is not None:
+    logger.warning("LOCAL_AUDIO_ECHO_MARGIN_DB is no longer read: the bridge holds one echo "
+                   "suppression setting that lets your voice through; remove it from "
+                   "local-audio.env")
 MIC_GAIN_DB = setting("LOCAL_AUDIO_MIC_GAIN_DB")
 
 
@@ -136,7 +143,11 @@ class EchoSuppression(xvf_led.ChipSetting):
         self.held = False  # plugged in, out, or re-enumerated: a chip not yet set
 
     def _failed(self) -> None:
-        self.held = False  # part-written, or not read: not known to hold it
+        # A part-write of ours cleared `held` before it began (_change), so it is not
+        # taken for a reset. A failure before any write (a chip mid-reset failing a
+        # read) leaves `held` as it was: the reset the next check finds is still a
+        # reset, and logged as one.
+        pass
 
     def _change(self, dev) -> None:
         found = tuple((cmd, _get(dev, cmd)) for cmd, _ in DUPLEX)

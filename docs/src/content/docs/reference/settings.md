@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2552#7091a1f9 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2562#526d24b1 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 

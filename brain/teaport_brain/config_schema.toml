@@ -2413,6 +2413,16 @@ tier = "tuning"
 help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: a fixed mic gain instead of the chip's automatic gain, and echo suppression set to take out the bot's own voice but let yours through. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged)."
 
 [[settings]]
+name = "LOCAL_AUDIO_ECHO_MARGIN_DB"
+docs = false
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+read = "startup"
+tier = "diag"
+help = "Retired 2026-11-02: the bridge no longer measures the echo to decide the chip's echo suppression; it holds one setting that lets your voice through (LOCAL_AUDIO_ECHO_CONTROL). If it is still set, the bridge ignores it and logs a warning saying so."
+
+[[settings]]
 name = "LOCAL_AUDIO_MIC_GAIN_DB"
 store = "local_audio_env"
 group = "local_audio"

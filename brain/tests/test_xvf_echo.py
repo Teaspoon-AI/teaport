@@ -224,6 +224,22 @@ def test_a_chip_reset_under_the_same_node_is_set_again_and_logged():
     assert len(lines) == 1 and "reset" in lines[0] and "setting it again" in lines[0], lines
 
 
+def test_a_reset_after_a_failed_check_is_still_logged_as_a_reset():
+    # A chip mid-reset often fails a transfer: that check fails before writing anything,
+    # and the next one finds the chip at its saved values. That is still a reset.
+    dev = FakePP()
+    echo = _echo(dev)
+    assert echo.apply()
+    _reset_in_place(dev)
+    dev.fail = OSError("transfer timed out")
+    with _Lines("WARNING") as lines:
+        assert not echo.apply()                # the check that failed
+        dev.fail = None
+        assert echo.apply()                    # the next: set again
+    assert dev.state() == MEASURED and dev.agc() == (0, GAIN)
+    assert any("reset" in ln and "setting it again" in ln for ln in lines), lines
+
+
 def test_the_agc_alone_reset_is_set_again():
     dev = FakePP()
     echo = _echo(dev)

@@ -45,9 +45,7 @@
 # What it gets wrong: the user repeating the bot's last words straight back while it is
 # still talking. That costs those words, not the turn -- and a "wait" the user says
 # within LOOKBACK_SECS of the bot saying "wait" is taken as its echo: they say it again,
-# or more than it. The bridge's echo meter (xvf_echo.EchoMeter: how far the user's voice
-# stands above the echo) would tell the two apart, but it lives in the bridge, not in
-# this process. And after a barge-in pause longer than about half a second the resumed
+# or more than it. And after a barge-in pause longer than about half a second the resumed
 # reply's echo can pass (the "played" stamps run on through the pause, #255): one such
 # "wait" now cuts the reply.
 #
