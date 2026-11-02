@@ -33,6 +33,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 )
 from pipecat.utils.utils import obj_id
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain import settings
 from teaport_brain.settings import setting
 
@@ -826,7 +827,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _finalize_on_wordless_close(self, how: str):
         if self._text:
             logger.debug(f"{self}: the utterance's segment {how} -- "
-                         f"{self._text[:40]!r} is the turn's transcript")
+                         f"{quoted(self._text[:40])} is the turn's transcript")
         self._transcript_finalized = True
         await self._maybe_trigger_user_turn_stopped()
 

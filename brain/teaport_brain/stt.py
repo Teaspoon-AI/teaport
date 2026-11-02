@@ -77,6 +77,7 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain import echo_guard
 from teaport_brain.endpointing import (
     NO_STOP,
@@ -1870,7 +1871,7 @@ class TeaportSTTService(WebsocketSTTService):
             # be are now committed as a turn of their own.
             n, words, what = self._last_drop
             self._drop_backstops += 1
-            logger.info(f"[TURN] VAD stop {n}'s {what} {list(words)}, and the backstop now "
+            logger.info(f"[TURN] VAD stop {n}'s {what} {quoted(list(words))}, and the backstop now "
                         f"commits the open words as a turn of their own "
                         f"(dropped-then-backstop={self._drop_backstops})")
         await self._send_commit(final=True, why="backstop")
@@ -2667,7 +2668,7 @@ class TeaportSTTService(WebsocketSTTService):
             # no stop (as the engine's own close of words is), and the turn they open is
             # asked on them (TURN TEXT).
             if corrected:
-                logger.info(f"{head}: final {kind} {list(added)} where nothing was asked "
+                logger.info(f"{head}: final {kind} {quoted(list(added))} where nothing was asked "
                             f"-- they go on as new words ({tally})")
                 await self._close({"type": "transcription.final", "text": final}, None,
                                   final, corrected if turn.woke else final, turn.since)
@@ -2679,8 +2680,8 @@ class TeaportSTTService(WebsocketSTTService):
             # Only the bot's own words differ, and the echo guard took them off both.
             logger.info(f"{head}: final {kind}, the same once the echo guard has run ({tally})")
             return
-        logger.info(f"{head}: final {kind} added={list(added)} dropped={list(dropped)}: "
-                    f"asked {turn.pushed!r}, final {corrected!r} ({tally})")
+        logger.info(f"{head}: final {kind} added={quoted(list(added))} dropped={quoted(list(dropped))}: "
+                    f"asked {quoted(turn.pushed)}, final {quoted(corrected)} ({tally})")
         await self.push_frame(TurnTextFinalFrame(stop_n=turn.stop_n, asked=turn.pushed,
                                                  final=corrected, kind=kind, added=added,
                                                  dropped=dropped, pushed_at=turn.preview_at))

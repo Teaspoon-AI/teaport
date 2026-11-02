@@ -52,7 +52,7 @@ from pipecat.transports.websocket.fastapi import (
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
-from teaport_brain import host_context
+from teaport_brain import conversation_log, host_context
 from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
@@ -750,6 +750,7 @@ def main():
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=LISTEN_PORT)
     args = parser.parse_args()
+    conversation_log.install()
     if not GATEWAY_TOKEN:
         logger.warning(
             "GATEWAY_TOKEN is not set — /talk is UNAUTHENTICATED: anyone who can "

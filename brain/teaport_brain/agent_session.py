@@ -520,7 +520,7 @@ class AgentSession:
         try:
             await self.task.queue_frames([OutputTransportMessageUrgentFrame(message=message)])
         except Exception as e:  # noqa: BLE001 — a pipeline already ending
-            logger.debug(f"could not tell the client {message}: {e!r}")
+            logger.debug(f"could not tell the client a {message.get('type')!r}: {e!r}")
 
     async def _keep_alive_on_hold(self) -> None:
         while True:

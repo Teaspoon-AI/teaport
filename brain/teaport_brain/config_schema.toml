@@ -342,10 +342,10 @@ name = "TEAPORT_RAW_LLM_CAPTURE"
 store = "brain_env"
 group = "llm"
 type = "flag"
-default = true
+default = false
 read = "startup"
 tier = "diag"
-help = "Log a completion verbatim when it degenerates. Healthy turns log nothing."
+help = "Log a completion when it degenerates. Healthy turns log nothing. Its text is logged only with TEAPORT_LOG_CONVERSATIONS on."
 
 # ---- engine connection
 
@@ -1868,6 +1868,17 @@ tier = "diag"
 help = "The per-frame confidence census interval (500 frames ≈ 16 s)."
 
 [[settings]]
+name = "TEAPORT_LOG_CONVERSATIONS"
+store = "brain_env"
+group = "diag"
+type = "flag"
+default = false
+read = "startup"
+tier = "diag"
+help = "Write what callers, the room and the bot say into the journal. Off, log lines keep their timing and length but not the words."
+note = "This records conversations, phone calls included: the journal is kept on disk. Recording-consent law differs by place; the owner decides and is responsible. Every other switch here logs words only with this one on, except TEAPORT_AUDIO_DUMP."
+
+[[settings]]
 name = "LEDGER_TRACE"
 store = "brain_env"
 group = "diag"
@@ -1897,6 +1908,7 @@ type = "dir"
 read = "startup"
 tier = "diag"
 help = "A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off."
+note = "This records callers' voices to disk, whatever TEAPORT_LOG_CONVERSATIONS says. Recording-consent law differs by place; the owner decides and is responsible."
 
 [[settings]]
 name = "TEAPORT_AUDIO_DUMP_MAX_SECS"

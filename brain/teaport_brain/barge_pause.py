@@ -138,6 +138,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.endpointing import (
     NO_STOP,
     STT_FRAMES,
@@ -599,7 +600,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             return await super()._handle_transcription(frame)
         if is_stop_utterance(frame.text, self._stop_words):
             logger.debug(f"{self}: stop word while playout is paused "
-                         f"({frame.text!r}) -- starting the turn")
+                         f"({quoted(frame.text)}) -- starting the turn")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
         if self._would_end_at is not None and time.monotonic() >= self._would_end_at:
@@ -757,7 +758,7 @@ class BargeInJudgeGate(FrameProcessor):
         except Exception as e:  # noqa: BLE001 -- a judge failure is no verdict
             verdict, why = None, f" ({type(e).__name__}: {e})"
         self.verdicts[verdict] += 1
-        logger.info(f"BARGE-JUDGE: {(verdict or 'no verdict').upper()}{why} on {said!r} "
+        logger.info(f"BARGE-JUDGE: {(verdict or 'no verdict').upper()}{why} on {quoted(said)} "
                     f"in {time.monotonic() - t0:.2f}s")
         async with self._lock:
             if self._task is asyncio.current_task():

@@ -50,6 +50,7 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TTSTextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.barge_pause import is_stop_utterance
 from teaport_brain.settings import setting
 from teaport_brain.wake_words import normalize
@@ -201,7 +202,7 @@ class PlayedWordsTap(FrameProcessor):
 
 def log_strip(kind: str, text: str, kept: str) -> None:
     if kept:
-        logger.info(f"echo guard: {kind} began with the bot's own words; kept {kept!r} "
-                    f"of {text!r}")
+        logger.info(f"echo guard: {kind} began with the bot's own words; kept {quoted(kept)} "
+                    f"of {quoted(text)}")
     else:
-        logger.info(f"echo guard: {kind} {text!r} is the bot's own words; dropped")
+        logger.info(f"echo guard: {kind} {quoted(text)} is the bot's own words; dropped")

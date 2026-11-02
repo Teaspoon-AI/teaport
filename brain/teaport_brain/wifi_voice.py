@@ -55,6 +55,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from teaport_brain.conversation_log import quoted
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
@@ -555,7 +556,7 @@ class WifiSetupVoice(FrameProcessor):
         t = self.t
         self._returning = []
         if self._echo(text):
-            logger.debug(f"wifi setup: {text[:40]!r} is the box's own voice — ignored")
+            logger.debug(f"wifi setup: {quoted(text[:40])} is the box's own voice — ignored")
             return True
         if self.state == "confirm" and self._clock() - self._asked > CONFIRM_SECS:
             logger.info("wifi setup: the question went unanswered — back to conversation")

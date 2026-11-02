@@ -128,6 +128,8 @@ import numpy as np
 import soxr
 from loguru import logger
 
+from teaport_brain import conversation_log
+from teaport_brain.conversation_log import quoted
 from teaport_brain import display, xvf_echo
 from teaport_brain.face_mood import LEAD_WORDS, LazyVader, lead_words
 from teaport_brain.wake_words import parse_phrases as wake_phrases
@@ -1986,7 +1988,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 elif role == "assistant" and face.assistant(text, final, m.get("utterance")):
                     play.mark_voiced()
                 if final:
-                    logger.info(f"{role}: {text}")
+                    logger.info(f"{role}: {quoted(text)}")
 
     restart = Restart(play, face)
 
@@ -2278,4 +2280,5 @@ async def main() -> None:
 if __name__ == "__main__":
     logger.remove()
     logger.add(sys.stderr, level="INFO")
+    conversation_log.install()
     asyncio.run(main())

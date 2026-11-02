@@ -103,6 +103,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.endpointing import STT_FRAMES
 from teaport_brain.taken_turn import is_taken, taken
 
@@ -226,17 +227,17 @@ class RunControlClaims(FrameProcessor):
             held[0] = taken(final)
             if self.taken_words is not None:
                 await self.taken_words.took(text, "taken by OpenClaw's run control")
-            logger.info(f"RUN-CONTROL: OpenClaw took {text!r} (asked {waited:.2f}s); the "
+            logger.info(f"RUN-CONTROL: OpenClaw took {quoted(text)} (asked {waited:.2f}s); the "
                         "model does not answer it")
             if self.notes is not None:
                 self.notes.add_notice(_NOTICE.format(json.dumps(text, ensure_ascii=False)))
         elif not ending:
             if why:
                 self.unanswered += 1
-                logger.warning(f"RUN-CONTROL: {why} for {text!r}; the turn goes on")
+                logger.warning(f"RUN-CONTROL: {why} for {quoted(text)}; the turn goes on")
             else:
                 self.passed += 1
-                logger.debug(f"RUN-CONTROL: {text!r} is the model's ({waited:.2f}s)")
+                logger.debug(f"RUN-CONTROL: {quoted(text)} is the model's ({waited:.2f}s)")
         # What was held behind it goes on, up to the next final that asks (module
         # comment, A SECOND FINAL): that one is asked about, the rest held behind it. At
         # the session's end everything goes, unasked.

@@ -96,7 +96,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.runner import PipelineRunner
 
-from teaport_brain import reply_hold
+from teaport_brain.conversation_log import quoted
+from teaport_brain import conversation_log, reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import host_context
@@ -674,7 +675,7 @@ async def run_connection(sock, on_ready=None):
 
     @connection.event_handler("on_dtmf")
     async def on_dtmf(_connection, call_id, digit):
-        logger.info(f"dtmf {digit!r} (call {call_id})")
+        logger.info(f"dtmf {quoted(digit)} (call {call_id})")
 
     async def cancel_setup(reason: str, call_id: str | None = None):
         """Abandon an in-flight bring-up. `call_id` guards it the same way
@@ -1047,6 +1048,7 @@ def main():
     parser.add_argument("--socket", default=SIP_SOCKET,
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
+    conversation_log.install()
     logger.info(agent_backend.startup_line())
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup

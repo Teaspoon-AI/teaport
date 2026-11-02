@@ -32,6 +32,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.settings import setting
 from teaport_brain.tts_text import has_speech
@@ -300,7 +301,7 @@ class HeardContextCorrector(FrameProcessor):
                     msgs = self._context.get_messages()
                     self._context.set_messages(msgs[:idx] + notes + [prev])
                 logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
-                            f"-> one user turn …{msg_text(prev)[-60:]!r}")
+                            f"-> one user turn …{quoted(msg_text(prev)[-60:])}")
                 return
         logger.info("HeardCorrector[merge]: the unanswered turn is not the caller's message "
                     "before this one; left as two turns")
@@ -406,7 +407,7 @@ class HeardContextCorrector(FrameProcessor):
             # A spoken message was committed (possibly partial TTS text).
             if heard:
                 _set_msg_text(anchor, heard)  # in-place; dict ref is shared
-                logger.info(f"HeardCorrector[truncate]: spoken reply -> heard …{heard[-40:]!r}")
+                logger.info(f"HeardCorrector[truncate]: spoken reply -> heard …{quoted(heard[-40:])}")
             elif anchor.get("tool_calls"):
                 # Not the newest any more, it can be the call a tool result answers:
                 # removing it would orphan the result.
@@ -422,7 +423,7 @@ class HeardContextCorrector(FrameProcessor):
                 end = next(i for i, m in enumerate(msgs) if m is anchor) + 1
                 self._context.set_messages(
                     msgs[:end] + [{"role": "assistant", "content": heard}] + msgs[end:])
-                logger.info(f"HeardCorrector[truncate]: inserted heard reply …{heard[-40:]!r}")
+                logger.info(f"HeardCorrector[truncate]: inserted heard reply …{quoted(heard[-40:])}")
         elif anchor is None:
             # Nothing was committed for the cut turn, so there is nothing to correct.
             # Not a warning: this is the ordinary shape of a reply barged over before
