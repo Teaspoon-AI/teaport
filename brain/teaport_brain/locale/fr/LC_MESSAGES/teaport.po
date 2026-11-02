@@ -21,26 +21,29 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: fr\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Voulez-vous configurer le Wi-Fi ? Je serai hors ligne quelques minutes, le temps que vous le fassiez sur votre téléphone. Dites oui ou non."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Voulez-vous configurer le Wi-Fi ? Je passerai en mode configuration et serai hors ligne quelques minutes, le temps que vous le fassiez sur votre téléphone. Dites oui ou non."
 
-msgid "Wi-Fi setup is already running."
-msgstr "La configuration du Wi-Fi est déjà en cours."
+msgid "I'm already in setup mode."
+msgstr "Je suis déjà en mode configuration."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "D'accord. Un instant, je recherche les réseaux disponibles."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "Malheureusement, je n'ai pas pu lancer la configuration du Wi-Fi sur cet appareil."
+msgid "I'm in setup mode."
+msgstr "Je suis en mode configuration."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "D'accord, j'ai arrêté la configuration du Wi-Fi et tout remis comme avant."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "Malheureusement, je n'ai pas pu passer en mode configuration."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "La configuration du Wi-Fi n'a pas démarré. Réessayez dans un instant."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "D'accord, j'ai quitté le mode configuration et tout remis comme avant."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "Je vous attends toujours sur la page de configuration."
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "Je n'ai pas pu passer en mode configuration. Réessayez dans un instant."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "Je suis toujours en mode configuration, je vous attends."
 
 msgid "That didn't work: {reason}."
 msgstr "Cela n'a pas fonctionné : {reason}."
@@ -51,11 +54,11 @@ msgstr "C'est noté. Je me connecte à {network}. Reconnectez votre téléphone 
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "J'ai rejoint {network} et je suis de nouveau en ligne."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "La configuration du Wi-Fi a pris trop de temps, j'ai donc tout remis comme avant."
+msgid "Setup mode timed out, so I've put things back as they were."
+msgstr "Le mode configuration a pris trop de temps, j'ai donc tout remis comme avant."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "La configuration du Wi-Fi s'est arrêtée : {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "J'ai quitté le mode configuration : {reason}."
 
 msgid "your network"
 msgstr "votre réseau"
@@ -66,14 +69,14 @@ msgstr "un problème est survenu"
 msgid "Okay, never mind."
 msgstr "D'accord, pas de problème."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "Dites oui pour lancer la configuration du Wi-Fi, ou non."
+msgid "Say yes to go into setup mode, or no."
+msgstr "Dites oui pour passer en mode configuration, ou non."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "La configuration du Wi-Fi est en cours. Dites répéter pour réentendre les informations, ou annuler pour arrêter."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
+msgstr "Je suis en mode configuration. Dites répéter pour réentendre les informations, ou annuler pour arrêter."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "Sur votre téléphone, connectez-vous au réseau Wi-Fi {ssid}. Le mot de passe est {password}. Une page de configuration devrait s'ouvrir automatiquement. Sinon, allez à l'adresse {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
+msgstr "Sur votre téléphone, connectez-vous au réseau Wi-Fi {ssid}. Le mot de passe est {password}. Suivez ensuite les étapes pour me connecter au Wi-Fi. Si elles ne s'ouvrent pas automatiquement, allez à l'adresse {url}."
 
 msgid "You can also read these details on my screen."
 msgstr "Vous pouvez aussi lire ces informations sur mon écran."
@@ -102,14 +105,14 @@ msgstr "cet appareil n'a pas de module Wi-Fi"
 msgid "the setup network would not start"
 msgstr "le réseau de configuration n'a pas pu démarrer"
 
-msgid "the setup page could not start"
-msgstr "la page de configuration n'a pas pu démarrer"
+msgid "the Wi-Fi page could not start"
+msgstr "la page Wi-Fi n'a pas pu démarrer"
 
 msgid "open"
 msgstr "ouvert"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Configuration Wi-Fi de Teaport"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Connecter Teaport au Wi-Fi"
 
 msgid "Connect to Wi-Fi"
 msgstr "Se connecter au Wi-Fi"

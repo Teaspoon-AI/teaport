@@ -143,7 +143,7 @@ def test_a_unit_that_dies_mid_setup_is_said_and_let_go(fast):
         v.alive = False
         await asyncio.sleep(0.2)
         assert v.state == "idle"
-        assert v.said[-1] == "Wi-Fi setup stopped: something went wrong."
+        assert v.said[-1] == "I've left setup mode: something went wrong."
         assert not await v._heard("what time is it")      # the model has it again
     asyncio.run(run())
 
@@ -160,7 +160,7 @@ def test_a_unit_stopped_from_outside_says_it_put_things_back(fast):
         v.alive = False
         await asyncio.sleep(0.2)
         assert v.state == "idle"
-        assert v.said[-1] == "Okay, I've stopped Wi-Fi setup and put things back as they were."
+        assert v.said[-1] == "Okay, I've left setup mode and put things back as they were."
     asyncio.run(run())
 
 
@@ -222,7 +222,7 @@ def test_a_setup_that_never_reports_is_stopped_not_just_abandoned(fast, monkeypa
         return v
     v = asyncio.run(run())
     assert v.state == "idle" and v.calls == ["restart", "stop"]
-    assert v.said[-1].startswith("Wi-Fi setup didn't start")
+    assert v.said[-1].startswith("I couldn't go into setup mode")
 
 
 def test_a_failed_stop_is_not_reported_as_stopped(fast):
@@ -232,8 +232,8 @@ def test_a_failed_stop_is_not_reported_as_stopped(fast):
         v = Voice(path, results={"stop": (1, "sudo: a password is required")})
         await _running(v, path)
         assert await v._heard("cancel")
-        assert v.state == "running" and v.said[-1].startswith("I'm in Wi-Fi setup")
-        assert not any("stopped Wi-Fi setup" in s for s in v.said)
+        assert v.state == "running" and v.said[-1].startswith("I'm in setup mode. Say repeat")
+        assert not any("left setup mode" in s for s in v.said)
         _write(path, phase="connected", target="home")   # still followed
         await asyncio.sleep(0.05)
         assert "online again" in v.said[-1]
@@ -295,7 +295,7 @@ def test_a_sentence_with_a_yes_word_in_it_is_not_a_yes(text):
         return v
     v = asyncio.run(run())
     assert v.state == "confirm" and v.calls == []
-    assert v.said[-1] == "Say yes to start Wi-Fi setup, or no."
+    assert v.said[-1] == "Say yes to go into setup mode, or no."
 
 
 @pytest.mark.parametrize("text", ["yes", "Yes please.", "Okay, go ahead", "sure", "yeah do it"])
@@ -731,7 +731,7 @@ async def _ends(path, outcome):
         await asyncio.sleep(0.03)
         _write(path, phase="timeout")
     elif outcome in ("stopped", "error"):
-        _write(path, phase=outcome, **({"reason": "the setup page could not start"}
+        _write(path, phase=outcome, **({"reason": "the Wi-Fi page could not start"}
                                        if outcome == "error" else {}))
 
 
@@ -742,7 +742,7 @@ ENDINGS = {
                "to join failed: the password was not accepted.",
     "stopped": "it was stopped from outside before it finished; the box's Wi-Fi is back as "
                "it was before.",
-    "error": "it failed: the setup page could not start.",
+    "error": "it failed: the Wi-Fi page could not start.",
 }
 
 
@@ -860,7 +860,7 @@ def test_a_cancel_the_unit_reports_before_its_stop_returns_is_still_the_users(fa
     v, context = asyncio.run(run())
     assert _notices(context) == [
         NOTICE + "the user cancelled it; the box's Wi-Fi is back as it was before."]
-    assert v.said[-1] == "Okay, I've stopped Wi-Fi setup and put things back as they were."
+    assert v.said[-1] == "Okay, I've left setup mode and put things back as they were."
     assert not v._cancelling
 
 

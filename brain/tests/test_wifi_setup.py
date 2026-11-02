@@ -510,7 +510,7 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
     assert all("qr" not in s for s in shown[1:])                         # only then
     assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
                                  "http://teaport-9e35.local"]
-    assert shown[0]["title"] == "Wi-Fi setup" and shown[0]["ttl"] == display.HOLD_TTL_SECS
+    assert shown[0]["title"] == "Setup mode" and shown[0]["ttl"] == display.HOLD_TTL_SECS
     assert shown[1]["lines"] == ["Joining", "home"]
     # The last word: up for its seconds after the unit has exited, not taken down.
     assert sent[-1]["lines"] == ["Connected to", "home"]
@@ -801,7 +801,11 @@ def test_the_voice_flow_confirms_starts_speaks_and_finishes(monkeypatch):
     said = asyncio.run(run())
     assert said[0].startswith("Do you want to set up Wi-Fi?")
     assert sum("four, seven, one, nine" in s for s in said) == 2   # spoken, then repeated
-    assert any("I'm in Wi-Fi setup" in s for s in said)
+    # The first time names the state the box is in; a repeat is the details alone.
+    spoken = [s for s in said if "four, seven, one, nine" in s]
+    assert spoken[0].startswith("I'm in setup mode. On your phone, join")
+    assert spoken[1].startswith("On your phone, join")
+    assert any("I'm in setup mode. Say repeat" in s for s in said)
     assert any("joining home" in s for s in said) and "online again" in said[-1]
 
 
@@ -823,7 +827,7 @@ def test_no_and_cancel_and_mumbling(monkeypatch):
 
     calls, said = asyncio.run(run())
     assert calls == [("restart", wv.UNIT), ("stop", wv.UNIT)]
-    assert "never mind" in said[1] and "stopped Wi-Fi setup" in said[-1]
+    assert "never mind" in said[1] and "left setup mode" in said[-1]
 
 
 def test_a_unit_that_will_not_start_is_said_not_hidden():
@@ -834,7 +838,7 @@ def test_a_unit_that_will_not_start_is_said_not_hidden():
         return v.state, v.said[-1]
 
     state, last = asyncio.run(run())
-    assert state == "idle" and "couldn't start" in last
+    assert state == "idle" and "couldn't go into setup mode" in last
 
 
 if __name__ == "__main__":

@@ -243,7 +243,8 @@ def instructions(status: dict, t: i18n.T) -> str:
         url = f" {t.p('spell', 'dot')} ".join(
             " ".join(t.p("digit", d) for d in part) for part in "10.42.0.1".split("."))
     said = t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
-               "A setup page should open by itself. If it doesn't, go to {url}.").format(
+               "Then follow the steps to connect me to Wi-Fi. If they don't open by "
+               "themselves, go to {url}.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
     # The box's display has them too, and a code that joins if the avatar could draw it
     # (wifi_setup.py, display.py) -- and with a code, a name it can only point at.
@@ -324,13 +325,14 @@ class WifiSetupVoice(FrameProcessor):
         if self.state == "running":
             self._by_model = self._by_model or by_model  # it asked: it hears the end
             t = self.t
-            await self.say(t._("Wi-Fi setup is already running.") + (
+            await self.say(t._("I'm already in setup mode.") + (
                 " " + instructions(self._last, t) if self._last.get("phase") == "ap_up" else ""))
             return
         self.state, self._unclear, self._held = "confirm", 0, []
         self._asked, self._by_model = self._clock(), by_model
-        await self.say(self.t._("Do you want to set up Wi-Fi? I'll go offline for a few "
-                                "minutes while you do it on your phone. Say yes or no."))
+        await self.say(self.t._("Do you want to set up Wi-Fi? I'll go into setup mode and be "
+                                "offline for a few minutes while you do it on your phone. "
+                                "Say yes or no."))
 
     async def _shielded(self, coro) -> None:
         """Run a unit operation to its end even if the frame that asked for it is
@@ -350,7 +352,7 @@ class WifiSetupVoice(FrameProcessor):
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")
             self.state = "idle"
             self._ended("it could not start; nothing changed.")
-            await self.say(self.t._("Sorry, I couldn't start Wi-Fi setup on this box."))
+            await self.say(self.t._("Sorry, I couldn't go into setup mode."))
             return
         logger.info("wifi setup: started")
         self._poller = self._spawn(self._follow())
@@ -369,13 +371,13 @@ class WifiSetupVoice(FrameProcessor):
             # Still running, as far as anyone knows: keep following it, and say only
             # what is true -- setup is on, and cancel is the way out.
             logger.warning(f"wifi setup: could not stop {UNIT}: {err}")
-            await self.say(self.t._("I'm in Wi-Fi setup. Say repeat to hear the details "
+            await self.say(self.t._("I'm in setup mode. Say repeat to hear the details "
                                     "again, or cancel to stop."))
             return
         await self._stop_following()
         self.state = "idle"
         self._ended(f"the user cancelled it; {_PUT_BACK}")
-        await self.say(self.t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
+        await self.say(self.t._("Okay, I've left setup mode and put things back as they were."))
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
@@ -421,7 +423,7 @@ class WifiSetupVoice(FrameProcessor):
                 if status["phase"] == "ap_up" and now - reminded >= REMIND_SECS:
                     reminded = now
                     t = self.t
-                    await self.say(t._("I'm still waiting for you on the setup page.") + " "
+                    await self.say(t._("I'm still in setup mode, waiting for you.") + " "
                                    + instructions(status, t))
             elif now - started > START_TIMEOUT_SECS:
                 # Nothing from it: it did not start -- or runs where we cannot read it.
@@ -430,7 +432,7 @@ class WifiSetupVoice(FrameProcessor):
                 await self._stop_unit()
                 self.state = "idle"
                 self._ended("it did not start; nothing changed.")
-                await self.say(self.t._("Wi-Fi setup didn't start. Please try again in a moment."))
+                await self.say(self.t._("I couldn't go into setup mode. Please try again in a moment."))
                 return
             if now - started > DEADLINE_SECS:
                 logger.warning("wifi setup: still running past the unit's own hard stop")
@@ -469,7 +471,7 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"
         t = self.t
         self._ended("it stopped without saying how (something went wrong).")
-        await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
+        await self.say(t._("I've left setup mode: {reason}.").format(
             reason=t._("something went wrong")))
 
     def _ended(self, outcome: str, online: bool = False) -> None:
@@ -495,7 +497,8 @@ class WifiSetupVoice(FrameProcessor):
             # The reasons are English msgids from wifi.py / wifi_setup.py.
             lead = (t._("That didn't work: {reason}.").format(reason=t._(self._why)) + " "
                     if status.get("error") and self._why else "")
-            await self.say(lead + instructions(status, t))
+            # The first time: say what state the box is in (a retry has the reason).
+            await self.say((lead or t._("I'm in setup mode.") + " ") + instructions(status, t))
         elif phase == "joining":
             await self.say(t._("Got it. I'm joining {network}. Switch your phone back to it.")
                            .format(network=network))
@@ -513,18 +516,18 @@ class WifiSetupVoice(FrameProcessor):
             # The reasons are English msgids (wifi.py / wifi_setup.py): no password.
             self._ended(f"it timed out; {_PUT_BACK}" + (
                 f" The last attempt to join failed: {self._why}." if self._why else ""))
-            await self.say(t._("Wi-Fi setup timed out, so I've put things back as they were."))
+            await self.say(t._("Setup mode timed out, so I've put things back as they were."))
         elif phase == "stopped":
             # The unit was stopped from outside (systemctl, the config page, a restart)
             # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
             self.state = "idle"
             self._ended(f"the user cancelled it; {_PUT_BACK}" if self._cancelling else
                         f"it was stopped from outside before it finished; {_PUT_BACK}")
-            await self.say(t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
+            await self.say(t._("Okay, I've left setup mode and put things back as they were."))
         elif phase == "error":
             self.state = "idle"
             self._ended(f"it failed: {status.get('reason') or 'something went wrong'}.")
-            await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
+            await self.say(t._("I've left setup mode: {reason}.").format(
                 reason=t._(status.get("reason") or N_("something went wrong"))))
 
     # -- the frames
@@ -589,7 +592,7 @@ class WifiSetupVoice(FrameProcessor):
                     self._ended(_UNCONFIRMED)
                     return False
                 self._held.append(text)
-                await self.say(t._("Say yes to start Wi-Fi setup, or no."))
+                await self.say(t._("Say yes to go into setup mode, or no."))
             return True
         # running
         if heard("cancel", text, t):
@@ -597,7 +600,7 @@ class WifiSetupVoice(FrameProcessor):
         elif heard("repeat", text, t) and self._last.get("phase") == "ap_up":
             await self.say(instructions(self._last, t))
         else:
-            await self.say(t._("I'm in Wi-Fi setup. Say repeat to hear the details again, "
+            await self.say(t._("I'm in setup mode. Say repeat to hear the details again, "
                                "or cancel to stop."))
         return True
 

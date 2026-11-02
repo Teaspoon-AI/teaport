@@ -16,26 +16,29 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: hi\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "क्या वाई-फ़ाई सेट अप करना है? सेट अप आपके फ़ोन से होगा, और उस दौरान कुछ मिनट तक मेरा इंटरनेट बंद रहेगा। हाँ या नहीं बोलिए।"
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "क्या वाई-फ़ाई सेट अप करना है? सेट अप मोड चालू हो जाएगा, और जब तक आप अपने फ़ोन से यह करेंगे, कुछ मिनट तक मेरा इंटरनेट बंद रहेगा। हाँ या नहीं बोलिए।"
 
-msgid "Wi-Fi setup is already running."
-msgstr "वाई-फ़ाई सेट अप पहले से चल रहा है।"
+msgid "I'm already in setup mode."
+msgstr "सेट अप मोड पहले से चालू है।"
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "ठीक है। ज़रा रुकिए, मैं आस-पास के नेटवर्क ढूँढ लूँ।"
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "माफ़ कीजिए, इस डिवाइस पर वाई-फ़ाई सेट अप शुरू नहीं हो पाया।"
+msgid "I'm in setup mode."
+msgstr "सेट अप मोड चालू हो गया है।"
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "ठीक है, मैंने वाई-फ़ाई सेट अप रोक दिया है और सब कुछ पहले जैसा कर दिया है।"
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "माफ़ कीजिए, सेट अप मोड चालू नहीं हो पाया।"
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "वाई-फ़ाई सेट अप शुरू नहीं हुआ। थोड़ी देर बाद फिर से कोशिश कीजिए।"
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "ठीक है, मैंने सेट अप मोड बंद कर दिया है और सब कुछ पहले जैसा कर दिया है।"
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "मुझे अब भी सेट अप पेज पर आपका इंतज़ार है।"
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "सेट अप मोड चालू नहीं हुआ। थोड़ी देर बाद फिर से कोशिश कीजिए।"
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "सेट अप मोड अभी भी चालू है, मुझे आपका इंतज़ार है।"
 
 msgid "That didn't work: {reason}."
 msgstr "यह कोशिश कामयाब नहीं हुई, क्योंकि {reason}।"
@@ -46,11 +49,11 @@ msgstr "ठीक है। अब {network} से कनेक्ट किय
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "{network} से कनेक्शन हो गया है, और इंटरनेट फिर से चालू है।"
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "वाई-फ़ाई सेट अप का समय ख़त्म हो गया, इसलिए मैंने सब कुछ पहले जैसा कर दिया है।"
+msgid "Setup mode timed out, so I've put things back as they were."
+msgstr "सेट अप मोड का समय ख़त्म हो गया, इसलिए मैंने सब कुछ पहले जैसा कर दिया है।"
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "वाई-फ़ाई सेट अप रुक गया, क्योंकि {reason}।"
+msgid "I've left setup mode: {reason}."
+msgstr "सेट अप मोड बंद हो गया, क्योंकि {reason}।"
 
 msgid "your network"
 msgstr "आपके नेटवर्क"
@@ -61,14 +64,14 @@ msgstr "कुछ गड़बड़ हो गई"
 msgid "Okay, never mind."
 msgstr "ठीक है, रहने देते हैं।"
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "वाई-फ़ाई सेट अप शुरू करना हो तो हाँ बोलिए, वरना नहीं।"
+msgid "Say yes to go into setup mode, or no."
+msgstr "सेट अप मोड चालू करना हो तो हाँ बोलिए, वरना नहीं।"
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "अभी वाई-फ़ाई सेट अप चल रहा है। जानकारी फिर से सुननी हो तो दोबारा बोलिए, और रोकना हो तो कैंसल बोलिए।"
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
+msgstr "अभी सेट अप मोड चालू है। जानकारी फिर से सुननी हो तो दोबारा बोलिए, और रोकना हो तो कैंसल बोलिए।"
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "अपने फ़ोन को उस वाई-फ़ाई नेटवर्क से जोड़िए, जिसका नाम है {ssid}। पासवर्ड है {password}। सेट अप पेज अपने आप खुल जाना चाहिए। अगर न खुले, तो ब्राउज़र में यह पता खोलिए, {url}।"
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
+msgstr "अपने फ़ोन को उस वाई-फ़ाई नेटवर्क से जोड़िए, जिसका नाम है {ssid}। पासवर्ड है {password}। फिर मुझे वाई-फ़ाई से जोड़ने के लिए दिए गए चरणों का पालन कीजिए। अगर वे अपने आप न खुलें, तो ब्राउज़र में यह पता खोलिए, {url}।"
 
 msgid "You can also read these details on my screen."
 msgstr "यह जानकारी आप मेरी स्क्रीन पर भी देख सकते हैं।"
@@ -97,14 +100,14 @@ msgstr "इस डिवाइस में वाई-फ़ाई नहीं 
 msgid "the setup network would not start"
 msgstr "सेट अप वाला नेटवर्क चालू नहीं हो पाया"
 
-msgid "the setup page could not start"
-msgstr "सेट अप पेज चालू नहीं हो पाया"
+msgid "the Wi-Fi page could not start"
+msgstr "वाई-फ़ाई पेज चालू नहीं हो पाया"
 
 msgid "open"
 msgstr "बिना पासवर्ड"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Teaport वाई-फ़ाई सेटअप"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Teaport को वाई-फ़ाई से कनेक्ट करें"
 
 msgid "Connect to Wi-Fi"
 msgstr "वाई-फ़ाई से कनेक्ट करें"

@@ -518,7 +518,7 @@ it still can't answer. For other failures, such as a provider that is busy or sl
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:90-108#f6017ca9 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:90-109#a900570e -->
 
 **Fix**
 

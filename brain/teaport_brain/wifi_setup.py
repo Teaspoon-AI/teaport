@@ -82,7 +82,7 @@ STATUS_FILE = "status.json"
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
 # The display's lines: what wifi_voice says aloud, for reading off the box.
-SCREEN_TITLE = "Wi-Fi setup"
+SCREEN_TITLE = "Setup mode"
 CONNECTED_SCREEN_SECS = 10
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
@@ -211,7 +211,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
     return PAGE.format(
         lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
         picker=render_picker(t), lang_q=t.lang,
-        title=html.escape(t._("Teaport Wi-Fi setup")),
+        title=html.escape(t._("Connect Teaport to Wi-Fi")),
         heading=html.escape(t._("Connect to Wi-Fi")),
         intro=html.escape(t._("Pick your network and type its password. Teaport will leave "
                               "this setup network and join yours, and say out loud whether "
@@ -542,8 +542,8 @@ class Setup:
                 try:
                     self.serve()
                 except OSError as e:
-                    log(f"the setup page could not start: {e}")
-                    self.status.set("error", reason=N_("the setup page could not start"))
+                    log(f"the Wi-Fi page could not start: {e}")
+                    self.status.set("error", reason=N_("the Wi-Fi page could not start"))
                     self._put_back()
                     return 1
             self.publish(ssid)

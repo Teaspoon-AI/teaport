@@ -21,26 +21,29 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: ar\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "هل نبدأ إعداد الواي فاي؟ سينقطع اتصالي بالإنترنت لبضع دقائق أثناء الإعداد من هاتفك. يُرجى الإجابة بنعم أو لا."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "هل نبدأ إعداد الواي فاي؟ سأدخل وضع الإعداد، وسينقطع اتصالي بالإنترنت لبضع دقائق أثناء الإعداد من هاتفك. يُرجى الإجابة بنعم أو لا."
 
-msgid "Wi-Fi setup is already running."
-msgstr "إعداد الواي فاي جارٍ بالفعل."
+msgid "I'm already in setup mode."
+msgstr "أنا في وضع الإعداد بالفعل."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "حسنًا. لحظة واحدة، سأبحث عن الشبكات المتاحة."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "عذرًا، تعذّر بدء إعداد الواي فاي على هذا الجهاز."
+msgid "I'm in setup mode."
+msgstr "أنا الآن في وضع الإعداد."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "حسنًا، أوقفتُ إعداد الواي فاي وأعدتُ كل شيء كما كان."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "عذرًا، تعذّر الدخول إلى وضع الإعداد."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "لم يبدأ إعداد الواي فاي. يُرجى المحاولة مرة أخرى بعد قليل."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "حسنًا، خرجتُ من وضع الإعداد وأعدتُ كل شيء كما كان."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "ما زلتُ في انتظارك على صفحة الإعداد."
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "تعذّر الدخول إلى وضع الإعداد. يُرجى المحاولة مرة أخرى بعد قليل."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "ما زلتُ في وضع الإعداد بانتظارك."
 
 msgid "That didn't work: {reason}."
 msgstr "لم ينجح ذلك: {reason}."
@@ -51,11 +54,11 @@ msgstr "فهمت. أنضمّ الآن إلى {network}. يُرجى إعادة ت
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "انضممتُ إلى {network}، وعاد اتصالي بالإنترنت."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "انتهت مهلة إعداد الواي فاي، لذا أعدتُ كل شيء كما كان."
+msgid "Setup mode timed out, so I've put things back as they were."
+msgstr "انتهت مهلة وضع الإعداد، لذا أعدتُ كل شيء كما كان."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "توقف إعداد الواي فاي: {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "خرجتُ من وضع الإعداد: {reason}."
 
 msgid "your network"
 msgstr "شبكتك"
@@ -66,14 +69,14 @@ msgstr "حدث خطأ ما"
 msgid "Okay, never mind."
 msgstr "حسنًا، لا بأس."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "يُرجى قول «نعم» لبدء إعداد الواي فاي، أو «لا» للإلغاء."
+msgid "Say yes to go into setup mode, or no."
+msgstr "يُرجى قول «نعم» للدخول إلى وضع الإعداد، أو «لا» للإلغاء."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "أنا الآن في وضع إعداد الواي فاي. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» لإيقاف الإعداد."
+msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to stop."
+msgstr "أنا الآن في وضع الإعداد. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» للخروج منه."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. يُفترض أن تُفتح صفحة الإعداد تلقائيًا، وإن لم تُفتح، فعنوانها {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then follow the steps to connect me to Wi-Fi. If they don't open by themselves, go to {url}."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ثم يُرجى اتباع الخطوات لتوصيلي بالواي فاي. وإن لم تُفتح تلقائيًا، فعنوانها {url}."
 
 msgid "You can also read these details on my screen."
 msgstr "يمكنك أيضًا قراءة هذه التفاصيل على شاشتي."
@@ -102,14 +105,14 @@ msgstr "لا يحتوي هذا الجهاز على وحدة واي فاي"
 msgid "the setup network would not start"
 msgstr "تعذّر تشغيل شبكة الإعداد"
 
-msgid "the setup page could not start"
-msgstr "تعذّر تشغيل صفحة الإعداد"
+msgid "the Wi-Fi page could not start"
+msgstr "تعذّر تشغيل صفحة الواي فاي"
 
 msgid "open"
 msgstr "مفتوحة"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "إعداد Wi-Fi في Teaport"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "توصيل Teaport بشبكة Wi-Fi"
 
 msgid "Connect to Wi-Fi"
 msgstr "الاتصال بشبكة Wi-Fi"
