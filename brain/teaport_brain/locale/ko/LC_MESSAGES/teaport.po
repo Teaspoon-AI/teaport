@@ -37,8 +37,14 @@ msgstr "죄송해요, 연결 모드로 바꾸지 못했어요."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "알겠어요. 연결 모드를 끝내고 원래대로 되돌려 놓았어요."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "알겠어요. 멈추고 원래대로 되돌려 놓았어요."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "알겠어요. 취소했어요. 모두 원래대로예요."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "취소했어요. 모두 원래대로예요."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "아직 멈추지 못했어요. 잠시 후에 다시 '취소'라고 말해 주세요."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "연결 모드로 바꾸지 못했어요. 잠시 후에 다시 시도해 주세요."
@@ -86,7 +92,7 @@ msgid "On your phone, join the Wi-Fi network shown on my screen, using the passw
 msgstr "휴대폰에서 제 화면에 나온 와이파이 네트워크에, 화면에 나온 비밀번호로 연결해 주세요. 그다음 휴대폰 브라우저에서 제 화면에 있는 주소로 접속해 와이파이를 골라 주세요. 정보를 읽어 드리길 원하시면 '다시 말해 줘'라고 말해 주세요."
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "휴대폰 카메라로 제 화면의 코드를 스캔해서 제 연결용 네트워크에 연결해 주세요. 그다음 휴대폰 브라우저에서 제 화면에 있는 주소로 접속해 와이파이를 골라 주세요. 정보를 읽어 드리길 원하시면 '다시 말해 줘'라고 말해 주세요."
+msgstr "휴대폰 카메라로 제 화면의 코드를 스캔해서 제 연결용 네트워크에 접속해 주세요. 그다음 휴대폰 브라우저에서 제 화면에 있는 주소로 접속해 와이파이를 골라 주세요. 정보를 읽어 드리길 원하시면 '다시 말해 줘'라고 말해 주세요."
 
 msgid "the saved settings for it did not work"
 msgstr "저장된 설정으로는 연결하지 못했어요"
@@ -119,7 +125,7 @@ msgid "Connect to Wi-Fi"
 msgstr "Wi-Fi에 연결"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "네트워크를 선택하고 비밀번호를 입력해 주세요. Teaport가 이 연결용 네트워크 연결을 끊고 선택한 네트워크에 연결한 뒤, 연결 결과를 음성으로 알려 드려요."
+msgstr "네트워크를 선택하고 비밀번호를 입력해 주세요. Teaport가 이 연결용 네트워크를 끄고 선택한 네트워크에 연결한 뒤, 연결 결과를 음성으로 알려 드려요."
 
 msgid "No networks found — use Other."
 msgstr "검색된 네트워크가 없어요. '기타'에서 직접 입력해 주세요."
@@ -146,7 +152,7 @@ msgid "Joining {network}…"
 msgstr "{network}에 연결 중…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport가 지금 이 연결용 네트워크 연결을 끊어요. 휴대폰을 다시 {network}에 연결해 주세요. 연결 결과는 Teaport가 음성으로 알려 드려요. 연결에 실패하면 연결용 네트워크가 다시 나타나요. 그때 다시 시도해 주세요."
+msgstr "Teaport가 지금 이 연결용 네트워크를 꺼요. 휴대폰을 다시 {network}에 연결해 주세요. 연결 결과는 Teaport가 음성으로 알려 드려요. 연결에 실패하면 연결용 네트워크가 다시 나타나요. 그때 다시 시도해 주세요."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "{network}에 연결하지 못했어요. {reason}. 다시 시도해 주세요."

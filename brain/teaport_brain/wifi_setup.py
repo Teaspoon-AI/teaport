@@ -86,8 +86,6 @@ SCREEN_TITLE = "Setup mode"
 # After it: the box has left setup mode and is on the user's network.
 CONNECTED_TITLE = "Wi-Fi"
 CONNECTED_SCREEN_SECS = 10
-# How long avahi-publish must stay up to count as announcing the .local name.
-PUBLISH_SETTLE_SECS = 0.3
 # The status reason when the page's server cannot start; English only (see _run).
 PAGE_FAILED = "the Wi-Fi page could not start"
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
@@ -438,27 +436,18 @@ class Setup:
             network=network, reason=t._(reason))
 
     # -- the network side (main thread)
-    def publish(self, name: str) -> bool:
-        """Announce name.local for the page. True while avahi-publish is running: one
-        that is missing, cannot start or exits at once (no avahi-daemon) leaves only the
-        bare address, which the screen and the voice then give instead."""
+    def publish(self, name: str) -> None:
+        """Announce name.local for the page, best effort: typing it works on some phones,
+        but the screen and the voice give only the bare address, which always works."""
         exe = shutil.which("avahi-publish")
         if not exe:
             log("avahi-publish not installed — only the captive page and 10.42.0.1 work")
-            return False
+            return
         try:
             self.avahi = subprocess.Popen([exe, "-a", "-R", f"{name}.local", self.address],
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
-            return False
-        try:
-            rc = self.avahi.wait(timeout=PUBLISH_SETTLE_SECS)
-        except subprocess.TimeoutExpired:
-            return True
-        log(f"avahi-publish exited at once ({rc}) — only the captive page and 10.42.0.1 work")
-        self.avahi = None
-        return False
 
     def unpublish(self) -> None:
         if self.avahi and self.avahi.poll() is None:
@@ -537,8 +526,7 @@ class Setup:
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
-        # The display's font draws ASCII only: a name outside it is folded, and the
-        # address shown is then the one that needs no name.
+        # The display's font draws ASCII only: a name outside it is folded.
         shown_ssid = display.fold_ascii(ssid)
         while True:
             ok, err = self.nm.ap_up(dev, ssid, password)
@@ -565,12 +553,11 @@ class Setup:
                     self.status.set("error", reason=PAGE_FAILED)
                     self._put_back()
                     return 1
+            self.publish(ssid)
             # The address the screen shows, the status carries and the voice reads: the
-            # .local name only while it is announced and the font draws it as it is, else
-            # the bare address, which needs neither (and no captive-portal check either).
-            published = self.publish(ssid)
-            url = (f"http://{ssid}.local" if published and shown_ssid == ssid
-                   else f"http://{self.address}")
+            # bare one, which needs no name service, no ASCII name and no captive-portal
+            # check (a .local name needs avahi on the box and mDNS on the phone).
+            url = f"http://{self.address}"
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
             # name, whatever the font can draw -- and is sent only to an avatar that

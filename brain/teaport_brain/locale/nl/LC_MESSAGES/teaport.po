@@ -34,8 +34,14 @@ msgstr "Sorry, ik kon niet naar de verbindingsmodus gaan."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Oké, ik heb de verbindingsmodus verlaten en alles teruggezet zoals het was."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "Oké, ik ben gestopt en heb alles teruggezet zoals het was."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Oké, ik heb het geannuleerd. Alles is zoals het was."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "Ik heb het geannuleerd. Alles is zoals het was."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ik kon nog niet stoppen. Zeg zo nog een keer annuleer."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Ik kon niet naar de verbindingsmodus gaan. Probeer het zo nog een keer."

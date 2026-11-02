@@ -34,8 +34,14 @@ msgstr "माफ़ कीजिए, सेट अप मोड चालू �
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "ठीक है, मैंने सेट अप मोड बंद कर दिया है और सब कुछ पहले जैसा कर दिया है।"
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "ठीक है, मैंने रोक दिया है और सब कुछ पहले जैसा कर दिया है।"
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "ठीक है, मैंने इसे रद्द कर दिया है। सब कुछ पहले जैसा है।"
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "मैंने इसे रद्द कर दिया है। सब कुछ पहले जैसा है।"
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "अभी रोका नहीं जा सका। थोड़ी देर में फिर से कैंसल बोलिए।"
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "सेट अप मोड चालू नहीं हुआ। थोड़ी देर बाद फिर से कोशिश कीजिए।"

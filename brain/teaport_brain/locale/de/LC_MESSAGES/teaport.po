@@ -34,8 +34,14 @@ msgstr "Tut mir leid, ich konnte nicht in den Einrichtungsmodus wechseln."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Okay, ich habe den Einrichtungsmodus beendet und alles wieder so eingestellt wie vorher."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "Okay, ich habe aufgehört und alles wieder so eingestellt wie vorher."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Okay, ich habe das abgebrochen. Alles ist wie vorher."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "Ich habe das abgebrochen. Alles ist wie vorher."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ich konnte noch nicht aufhören. Sag gleich noch einmal abbrechen."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Ich konnte nicht in den Einrichtungsmodus wechseln. Versuch es bitte gleich noch einmal."

@@ -164,7 +164,7 @@ def test_with_a_code_on_screen_it_points_there_and_repeat_reads_the_details(fast
         assert await v._heard("repeat")
         again = v.said[-1]
         assert again.startswith("On your phone, join the Wi-Fi network ")
-        assert "four, seven" in again and "dot local, and pick your Wi-Fi." in again
+        assert "four, seven" in again and "zero dot one, and pick your Wi-Fi." in again
     asyncio.run(run())
 
 
@@ -218,7 +218,7 @@ def test_a_stop_before_setup_mode_does_not_claim_to_leave_it(fast):
         v.alive = False
         await asyncio.sleep(0.2)
         assert v.state == "idle"
-        assert v.said[-1] == "Okay, I've stopped and put things back as they were."
+        assert v.said[-1] == "I've cancelled that. Everything is as it was."
 
     async def cancel():
         path = _path()
@@ -228,9 +228,33 @@ def test_a_stop_before_setup_mode_does_not_claim_to_leave_it(fast):
         await asyncio.sleep(0.05)
         assert await v._heard("cancel")
         assert v.state == "idle"
-        assert v.said[-1] == "Okay, I've stopped and put things back as they were."
+        assert v.said[-1] == "Okay, I've cancelled that. Everything is as it was."
     asyncio.run(outside())
     asyncio.run(cancel())
+
+
+def test_a_failed_stop_says_only_what_is_true(fast):
+    """systemctl stop failed: still running as far as anyone knows. Before setup mode
+    the box must not say it is in it; after, the running hint is true."""
+    async def before():
+        path = _path()
+        v = Voice(path, results={"stop": (1, "denied")})
+        assert await v._heard("set up wifi") and await v._heard("yes")
+        _write(path, phase="scanning")
+        await asyncio.sleep(0.05)
+        assert await v._heard("cancel")
+        assert v.state == "running"
+        assert v.said[-1] == "I couldn't stop yet. Say cancel again in a moment."
+
+    async def after():
+        path = _path()
+        v = Voice(path, results={"stop": (1, "denied")})
+        await _running(v, path)
+        assert await v._heard("cancel")
+        assert v.state == "running"
+        assert v.said[-1].startswith("I'm in setup mode. Say repeat")
+    asyncio.run(before())
+    asyncio.run(after())
 
 
 def test_a_unit_stopped_from_outside_says_it_put_things_back(fast):

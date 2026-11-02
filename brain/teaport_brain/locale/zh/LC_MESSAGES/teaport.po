@@ -34,8 +34,14 @@ msgstr "抱歉，我没能进入配网模式。"
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "好的，我已经退出配网模式，一切都恢复原样了。"
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "好的，已经停下了，一切都恢复原样了。"
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "好的，已经取消了，一切都和原来一样。"
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "已经取消了，一切都和原来一样。"
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "暂时还停不下来。请稍后再说一次取消。"
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "没能进入配网模式，请稍后再试一次。"

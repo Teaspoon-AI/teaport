@@ -57,6 +57,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
+from teaport_brain.wifi import AP_ADDRESS
 from teaport_brain.wifi_setup import PAGE_FAILED
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
 
@@ -255,18 +256,10 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
                        "the password shown there. Then, in your phone's browser, go to "
                        "the address on my screen and pick your Wi-Fi. Say repeat if you'd "
                        "like me to read the details.")
-    name = ssid.split("-", 1)[1] if ssid.startswith(SSID_WORD + "-") else ""
-    # The address the screen shows (wifi_setup.py): the .local name while it is
-    # announced and drawn as it is, else the bare address.
-    host = (status.get("url") or (f"http://{ssid}.local" if name else "")).removeprefix("http://")
-    if name and host == f"{ssid}.local":
-        parts = spell(name, t).split(t.p("spell", ", "))
-        url = " ".join([SSID_WORD, t.p("spell", "dash"), *parts, t.p("spell", "dot"), "local"])
-    else:
-        # The setup network's address, digit by digit: "one zero dot four two dot ...".
-        address = host if re.fullmatch(r"[0-9.]+", host) else "10.42.0.1"
-        url = f" {t.p('spell', 'dot')} ".join(
-            " ".join(t.p("digit", d) for d in part) for part in address.split("."))
+    # The address the screen shows (wifi_setup.py), digit by digit: "one zero dot four
+    # two dot ...".
+    url = f" {t.p('spell', 'dot')} ".join(
+        " ".join(t.p("digit", d) for d in part) for part in AP_ADDRESS.split("."))
     return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "Then open your browser, go to {url}, and pick your Wi-Fi.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
@@ -391,13 +384,16 @@ class WifiSetupVoice(FrameProcessor):
             # Still running, as far as anyone knows: keep following it, and say only
             # what is true -- setup is on, and cancel is the way out.
             logger.warning(f"wifi setup: could not stop {UNIT}: {err}")
-            await self.say(self.t._("I'm in setup mode. Say repeat to hear the details, "
-                                    "or cancel to leave setup mode."))
+            if self._in_mode:
+                await self.say(self.t._("I'm in setup mode. Say repeat to hear the details, "
+                                        "or cancel to leave setup mode."))
+            else:
+                await self.say(self.t._("I couldn't stop yet. Say cancel again in a moment."))
             return
         await self._stop_following()
         self.state = "idle"
         self._ended(f"the user cancelled it; {_PUT_BACK}")
-        await self.say(self._put_back_line())
+        await self.say(self._put_back_line(cancelled=True))
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
@@ -544,7 +540,7 @@ class WifiSetupVoice(FrameProcessor):
             self.state = "idle"
             self._ended(f"the user cancelled it; {_PUT_BACK}" if self._cancelling else
                         f"it was stopped from outside before it finished; {_PUT_BACK}")
-            await self.say(self._put_back_line())
+            await self.say(self._put_back_line(cancelled=self._cancelling))
         elif phase == "error":
             self.state = "idle"
             self._ended(f"it failed: {status.get('reason') or 'something went wrong'}.")
@@ -555,12 +551,15 @@ class WifiSetupVoice(FrameProcessor):
                 await self.say(self._stopped_line(
                     t._(status.get("reason") or N_("something went wrong"))))
 
-    def _put_back_line(self) -> str:
-        """A stop (the user's cancel, or from outside): setup mode is left only once the
-        user heard the box go into it."""
+    def _put_back_line(self, cancelled: bool) -> str:
+        """A stop -- the user's spoken cancel, or from outside (the Settings page, a
+        restart): setup mode is left only once the user heard the box go into it."""
+        t = self.t
         if self._in_mode:
-            return self.t._("Okay, I've left setup mode and put things back as they were.")
-        return self.t._("Okay, I've stopped and put things back as they were.")
+            return t._("Okay, I've left setup mode and put things back as they were.")
+        if cancelled:
+            return t._("Okay, I've cancelled that. Everything is as it was.")
+        return t._("I've cancelled that. Everything is as it was.")
 
     def _stopped_line(self, reason: str) -> str:
         """An error's line: a leaving once the user has heard the box is in setup mode,

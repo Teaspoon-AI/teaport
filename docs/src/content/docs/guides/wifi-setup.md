@@ -18,7 +18,7 @@ If the device has no internet connection, put it in setup mode: it opens a tempo
 
 Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no internet, either phrase starts setup mode without the agent: the device asks whether to go into setup mode, and after you say yes, it opens its setup network and says that it is in setup mode.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:352-354,520#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
+<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:345-347,516#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it.
 
@@ -29,12 +29,12 @@ If the device is already online, the phrase is ordinary speech. The agent hears 
 A device with a screen shows, under the title "Setup mode", the setup network's name, its password, and an address to open, with a QR code beside them when the screen can draw one. The device tells you what to do in the same order:
 
 1. Join the setup network from your phone. With a QR code on the screen, scan it with the phone's camera. Otherwise, join the network shown on the screen, named `teaport-XXXX` (`teaport` plus the last four characters of the device's Wi-Fi MAC address, for example `teaport-ab12`), and type the password shown on the screen.
-2. In the phone's browser, go to the address on the screen: `http://teaport-ab12.local`, for example, or `http://10.42.0.1` when the device cannot announce its `.local` name or draw the network's name as it is.
+2. In the phone's browser, go to the address on the screen, `http://10.42.0.1`.
 3. Pick your Wi-Fi network and type its password. The setup network goes down and the device joins yours.
 
-Say "repeat" to hear the network's name, the password, and the address read out. A device without a screen reads them out straight away. Some phones open the page on their own after they join the setup network; if yours does not, use the address. The address `http://10.42.0.1/` always works.
+Say "repeat" to hear the network's name, the password, and the address read out. A device without a screen reads them out straight away. Some phones open the page on their own after they join the setup network; if yours does not, use the address.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:236-272#15aa4b9e; brain/teaport_brain/wifi_voice.py:642#d902fb7c; brain/teaport_brain/wifi_setup.py:571-583#3a59129a; brain/teaport_brain/wifi_setup.py:85#bf4c222f; brain/teaport_brain/wifi_setup.py:15-19#a67a8952 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:237-265#fad5790e; brain/teaport_brain/wifi_voice.py:641#d902fb7c; brain/teaport_brain/wifi_setup.py:556-570#f3fc37fa; brain/teaport_brain/wifi_setup.py:85#bf4c222f; brain/teaport_brain/wifi_setup.py:15-19#a67a8952 -->
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes fresh random digits for each run, shown on the screen, or read out when the device has no screen or you say "repeat".
 
@@ -44,7 +44,7 @@ The setup network uses WPA2. Its password is the one printed on the paper insert
 
 The page tells you that the device is joining your network, so switch your phone back to it. The device leaves setup mode and says that it is connected to your network and online again; a screen shows "Connected to" and the network's name under the title "Wi-Fi" for a few seconds.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:257-266#99955446; brain/teaport_brain/wifi_voice.py:532-533#d7938890; brain/teaport_brain/wifi_setup.py:604-605#bd5d3568; brain/teaport_brain/wifi_setup.py:87#296b6e77 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:255-264#99955446; brain/teaport_brain/wifi_voice.py:528-529#d7938890; brain/teaport_brain/wifi_setup.py:591-592#bd5d3568; brain/teaport_brain/wifi_setup.py:87#296b6e77 -->
 
 ## If the join fails
 
@@ -68,7 +68,7 @@ sudo systemctl stop teaport-wifi-setup
 
 The device takes the setup network down, undoes a half-finished join, and restores the previous connection.
 
-<!-- source: systemd/teaport-wifi-setup.service.in:61-63#70ebb3ad; brain/teaport_brain/wifi_setup.py:521#21bb505f -->
+<!-- source: systemd/teaport-wifi-setup.service.in:61-63#70ebb3ad; brain/teaport_brain/wifi_setup.py:510#21bb505f -->
 
 ## What's next
 

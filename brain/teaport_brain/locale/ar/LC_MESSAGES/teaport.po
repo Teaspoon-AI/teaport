@@ -39,8 +39,14 @@ msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "حسنًا، خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "حسنًا، توقفتُ وأعدتُ كل شيء كما كان."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "حسنًا، ألغيتُ ذلك. كل شيء كما كان."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "ألغيتُ ذلك. كل شيء كما كان."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "لم أتمكن من الإيقاف بعد. يُرجى قول «إلغاء» مرة أخرى بعد قليل."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "تعذّر الدخول إلى وضع التوصيل. يُرجى المحاولة مرة أخرى بعد قليل."

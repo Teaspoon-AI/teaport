@@ -39,8 +39,14 @@ msgstr "Mi dispiace, non è stato possibile passare in modalità di configurazio
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Va bene, ho chiuso la modalità di configurazione e ho rimesso tutto com'era."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "Va bene, ho interrotto e ho rimesso tutto com'era."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Va bene, ho annullato. È tutto com'era."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "Ho annullato. È tutto com'era."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Non è stato ancora possibile fermarsi. Di' di nuovo annulla tra un momento."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Non è stato possibile passare in modalità di configurazione. Riprova tra un momento."

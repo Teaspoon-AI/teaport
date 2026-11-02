@@ -34,8 +34,14 @@ msgstr "すみません、セットアップモードに切り替えられませ
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "わかりました。セットアップモードを終了して、元の状態に戻しました。"
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "わかりました。中止して、元の状態に戻しました。"
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "わかりました。キャンセルしました。元の状態のままです。"
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "キャンセルしました。元の状態のままです。"
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "まだ中止できませんでした。少ししてから、もう一度「キャンセル」と言ってください。"
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "セットアップモードに切り替えられませんでした。少し待ってから、もう一度お試しください。"

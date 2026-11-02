@@ -34,8 +34,14 @@ msgstr "Desculpe, não consegui entrar no modo de conexão."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Tudo bem. Saí do modo de conexão e deixei tudo como estava."
 
-msgid "Okay, I've stopped and put things back as they were."
-msgstr "Tudo bem. Parei e deixei tudo como estava."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Tudo bem, cancelei. Está tudo como estava."
+
+msgid "I've cancelled that. Everything is as it was."
+msgstr "Cancelei. Está tudo como estava."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ainda não consegui parar. Diga cancelar de novo daqui a pouco."
 
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Não consegui entrar no modo de conexão. Tente de novo daqui a pouco."
