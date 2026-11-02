@@ -40,6 +40,9 @@ msgstr "Извините, не получилось перейти в режим
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Хорошо, режим подключения выключен, всё возвращено как было."
 
+msgid "Okay, I've stopped and put things back as they were."
+msgstr "Хорошо, всё остановлено и возвращено как было."
+
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Не получилось перейти в режим подключения. Попробуйте ещё раз чуть позже."
 
@@ -78,17 +81,17 @@ msgstr "Хорошо, тогда не будем."
 msgid "Say yes to go into setup mode, or no."
 msgstr "Скажите «да», чтобы перейти в режим подключения, или «нет»."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
-msgstr "Сейчас я в режиме подключения. Скажите «повтори», чтобы услышать данные ещё раз, или «отмена», чтобы выйти из режима подключения."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Сейчас я в режиме подключения. Скажите «повтори», чтобы услышать данные, или «отмена», чтобы выйти из режима подключения."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
 msgstr "На телефоне подключитесь к сети вай-фай {ssid}. Пароль такой: {password}. Затем откройте браузер, перейдите по адресу {url} и выберите свой вай-фай."
 
-msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "На телефоне подключитесь к сети вай-фай и введите пароль, которые показаны на моём экране. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "На телефоне подключитесь к сети вай-фай, показанной на моём экране, с паролем, который показан там же. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "Отсканируйте код на моём экране камерой телефона, чтобы подключиться к моей сети. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
+msgstr "Отсканируйте код на моём экране камерой телефона, чтобы подключиться к моей сети для подключения. Затем в браузере телефона откройте адрес с моего экрана и выберите свой вай-фай. Скажите «повтори», если нужно зачитать данные вслух."
 
 msgid "the saved settings for it did not work"
 msgstr "сохранённые настройки для этой сети не подошли"
@@ -109,10 +112,7 @@ msgid "this box has no Wi-Fi device"
 msgstr "в этом устройстве нет модуля вай-фай"
 
 msgid "the setup network would not start"
-msgstr "сеть для настройки не запустилась"
-
-msgid "the Wi-Fi page could not start"
-msgstr "страница для подключения к вай-фаю не запустилась"
+msgstr "сеть для подключения не запустилась"
 
 msgid "open"
 msgstr "открытая"
@@ -124,7 +124,7 @@ msgid "Connect to Wi-Fi"
 msgstr "Подключение к Wi-Fi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "Выберите свою сеть и введите пароль. Teaport отключится от этой сети настройки, подключится к вашей и скажет вслух, удалось ли подключиться."
+msgstr "Выберите свою сеть и введите пароль. Teaport отключится от этой сети для подключения, подключится к вашей и скажет вслух, удалось ли подключиться."
 
 msgid "No networks found — use Other."
 msgstr "Сети не найдены — выберите «Другая сеть»."
@@ -151,7 +151,7 @@ msgid "Joining {network}…"
 msgstr "Подключение к {network}…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport сейчас отключается от этой сети настройки. Снова подключите телефон к {network}. Teaport скажет вслух, удалось ли подключиться; если нет, сеть настройки появится снова и можно будет попробовать ещё раз."
+msgstr "Teaport сейчас отключается от этой сети для подключения. Снова подключите телефон к {network}. Teaport скажет вслух, удалось ли подключиться; если нет, сеть для подключения появится снова и можно будет попробовать ещё раз."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "Не удалось подключиться к {network}: {reason}. Попробуйте ещё раз."

@@ -34,6 +34,9 @@ msgstr "Tut mir leid, ich konnte nicht in den Einrichtungsmodus wechseln."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Okay, ich habe den Einrichtungsmodus beendet und alles wieder so eingestellt wie vorher."
 
+msgid "Okay, I've stopped and put things back as they were."
+msgstr "Okay, ich habe aufgehört und alles wieder so eingestellt wie vorher."
+
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Ich konnte nicht in den Einrichtungsmodus wechseln. Versuch es bitte gleich noch einmal."
 
@@ -70,14 +73,14 @@ msgstr "Okay, schon gut."
 msgid "Say yes to go into setup mode, or no."
 msgstr "Sag ja, um in den Einrichtungsmodus zu wechseln, oder nein."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
-msgstr "Ich bin gerade im Einrichtungsmodus. Sag wiederholen, um die Angaben noch einmal zu hören, oder abbrechen, um den Einrichtungsmodus zu verlassen."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Ich bin gerade im Einrichtungsmodus. Sag wiederholen, um die Angaben zu hören, oder abbrechen, um den Einrichtungsmodus zu verlassen."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
 msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Öffne dann deinen Browser, geh zu {url} und wähle dein WLAN aus."
 
-msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "Verbinde dein Handy mit dem WLAN und gib das Passwort ein, die auf meinem Display stehen. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Verbinde dein Handy mit dem WLAN, das auf meinem Display steht, und nimm das Passwort, das dort angezeigt wird. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
 msgstr "Scanne den Code auf meinem Display mit der Kamera deines Handys, um dich mit meinem Einrichtungsnetzwerk zu verbinden. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
@@ -102,9 +105,6 @@ msgstr "Dieses Gerät hat kein WLAN"
 
 msgid "the setup network would not start"
 msgstr "Das Einrichtungsnetzwerk ließ sich nicht starten"
-
-msgid "the Wi-Fi page could not start"
-msgstr "Die WLAN-Seite ließ sich nicht starten"
 
 msgid "open"
 msgstr "offen"

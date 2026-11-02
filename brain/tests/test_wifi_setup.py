@@ -378,19 +378,20 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _no_avahi(setup):
-    """No real avahi-publish from a test: it would announce a .local name on this machine."""
-    setup.publish = lambda name: None
+def _no_avahi(setup, announced=True):
+    """No real avahi-publish from a test: it would announce a .local name on this machine.
+    `announced`: what publish() reports (False: avahi missing or exited at once)."""
+    setup.publish = lambda name: announced
     setup.unpublish = lambda: None
 
 
-def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", announced=True):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one."""
     status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
-    _no_avahi(setup)
+    _no_avahi(setup, announced)
     result = {}
 
     def run():
@@ -606,6 +607,34 @@ def test_a_folded_name_without_a_code_is_shown_folded():
     _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid="東京-box")
     assert seen[1]["qr"] is False
     assert sent[0]["lines"][0] == "Network  -box" and "qr" not in sent[0]
+    # The address the screen shows is the one the status carries for the voice.
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+
+
+def test_without_the_local_name_the_screen_and_voice_give_the_bare_address():
+    """avahi-publish missing or gone at once (no avahi-daemon): no phone resolves the
+    .local name (an iPhone, which also may not open the page by itself, is left with
+    nothing), so the screen, the status and the voice all give 10.42.0.1."""
+    screen, sent = _screen()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, announced=False)
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+    said = wv.instructions(seen[1], EN, spelled=True)
+    assert "go to one zero dot four two dot zero dot one, and pick" in said
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=_screen()[0])   # announced
+    assert seen[1]["url"] == "http://teaport-9e35.local"
+
+
+def test_publish_reports_whether_the_name_is_announced(monkeypatch):
+    setup = ws.Setup(FakeNM([]), _Recorded(tempdir()), port=0)
+    monkeypatch.setattr(ws.shutil, "which", lambda name: None)
+    assert setup.publish("teaport-9e35") is False                      # not installed
+    monkeypatch.setattr(ws.shutil, "which", lambda name: "/bin/false")
+    assert setup.publish("teaport-9e35") is False and setup.avahi is None   # exited at once
+    real = ws.subprocess.Popen
+    monkeypatch.setattr(ws.shutil, "which", lambda name: "/bin/sleep")
+    monkeypatch.setattr(ws.subprocess, "Popen", lambda args, **kw: real(["/bin/sleep", "5"], **kw))
+    assert setup.publish("teaport-9e35") is True                       # still running
+    setup.unpublish()
 
 
 @pytest.mark.parametrize("qr_max", [0, 37])
@@ -745,10 +774,10 @@ def test_the_voice_follows_what_the_user_does_screen_first():
                   "network. Then, in your phone's browser, go to the address on my screen "
                   "and pick your Wi-Fi. Say repeat if you'd like me to read the details.")
     text = wv.instructions(dict(st, screen=True), EN)
-    assert text == ("On your phone, join the Wi-Fi network and enter the password shown on "
-                    "my screen. Then, in your phone's browser, go to the address on my "
-                    "screen and pick your Wi-Fi. Say repeat if you'd like me to read the "
-                    "details.")
+    assert text == ("On your phone, join the Wi-Fi network shown on my screen, using the "
+                    "password shown there. Then, in your phone's browser, go to the address "
+                    "on my screen and pick your Wi-Fi. Say repeat if you'd like me to read "
+                    "the details.")
     # No screen, or a repeat: spelled, network, password, address.
     assert wv.instructions(dict(st, screen=False), EN) == SPELLED
     for extra in ({"screen": True}, {"screen": True, "qr": True}):
@@ -763,6 +792,17 @@ def test_a_name_the_screen_folds_is_spelled_without_a_code():
     assert wv.instructions(st, EN).startswith("On your phone, join the Wi-Fi network capital C, A, F, é")
     assert "on my screen" not in wv.instructions(st, EN)
     assert "Scan the code" in wv.instructions(dict(st, qr=True), EN)   # the code has it
+
+
+def test_the_spelled_address_is_the_one_on_the_screen():
+    """A folded name, or no .local name announced: the screen shows 10.42.0.1, and a
+    repeat (or no screen) reads that, not the .local name."""
+    st = {"ssid": "teaport-9e35", "password": "47190352", "screen": True}
+    bare = wv.instructions(dict(st, url="http://10.42.0.1"), EN, spelled=True)
+    assert bare.endswith("go to one zero dot four two dot zero dot one, and pick your Wi-Fi.")
+    assert "dot local" not in bare
+    local = wv.instructions(dict(st, url="http://teaport-9e35.local"), EN, spelled=True)
+    assert "teaport dash nine E three five dot local" in local
 
 
 @pytest.mark.parametrize("text,hit", [
@@ -856,7 +896,8 @@ def test_no_and_cancel_and_mumbling(monkeypatch):
 
     calls, said = asyncio.run(run())
     assert calls == [("restart", wv.UNIT), ("stop", wv.UNIT)]
-    assert "never mind" in said[1] and "left setup mode" in said[-1]
+    # Cancelled before the setup network was up: never in setup mode, so not "left".
+    assert "never mind" in said[1] and said[-1] == "Okay, I've stopped and put things back as they were."
 
 
 def test_a_unit_that_will_not_start_is_said_not_hidden():

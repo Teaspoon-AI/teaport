@@ -34,6 +34,9 @@ msgstr "抱歉，我没能进入配网模式。"
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "好的，我已经退出配网模式，一切都恢复原样了。"
 
+msgid "Okay, I've stopped and put things back as they were."
+msgstr "好的，已经停下了，一切都恢复原样了。"
+
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "没能进入配网模式，请稍后再试一次。"
 
@@ -70,17 +73,17 @@ msgstr "好的，那就先不设置了。"
 msgid "Say yes to go into setup mode, or no."
 msgstr "要进入配网模式就说好的，不要就说不用。"
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
-msgstr "我正处于配网模式。想再听一遍就说重复，想退出配网模式就说取消。"
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "我正处于配网模式。想听详细信息就说重复，想退出配网模式就说取消。"
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
 msgstr "请用手机连接无线网络{ssid}。密码是{password}。然后打开浏览器，访问{url}，选择你的无线网络。"
 
-msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "请用手机连接我屏幕上显示的无线网络，并输入屏幕上显示的密码。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "请用手机连接我屏幕上显示的无线网络，密码也显示在屏幕上。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "请用手机相机扫描我屏幕上的二维码，连接我的热点。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
+msgstr "请用手机相机扫描我屏幕上的二维码，连接我的配网热点。然后在手机浏览器里打开我屏幕上的地址，选择你的无线网络。想让我把详细信息读出来，就说重复。"
 
 msgid "the saved settings for it did not work"
 msgstr "这个网络之前保存的设置不起作用"
@@ -101,10 +104,7 @@ msgid "this box has no Wi-Fi device"
 msgstr "这台设备没有无线网卡"
 
 msgid "the setup network would not start"
-msgstr "设置用的热点启动不了"
-
-msgid "the Wi-Fi page could not start"
-msgstr "无线网络页面启动不了"
+msgstr "配网热点启动不了"
 
 msgid "open"
 msgstr "无密码"
@@ -116,7 +116,7 @@ msgid "Connect to Wi-Fi"
 msgstr "连接 Wi-Fi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "选择你的网络并输入密码。Teaport 会断开这个设置热点，连接到你的网络，并用语音告诉你是否成功。"
+msgstr "选择你的网络并输入密码。Teaport 会断开这个配网热点，连接到你的网络，并用语音告诉你是否成功。"
 
 msgid "No networks found — use Other."
 msgstr "没有找到网络，请选择“其他网络”。"
@@ -143,7 +143,7 @@ msgid "Joining {network}…"
 msgstr "正在连接 {network}…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport 正在断开这个设置热点。请把手机切换回 {network}。Teaport 会用语音告诉你是否连接成功；如果没有成功，设置热点会重新出现，你可以再试一次。"
+msgstr "Teaport 正在断开这个配网热点。请把手机切换回 {network}。Teaport 会用语音告诉你是否连接成功；如果没有成功，配网热点会重新出现，你可以再试一次。"
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "无法连接 {network}：{reason}。请重试。"

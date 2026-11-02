@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2554#21592d97 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2554#7c6a2917 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -212,7 +212,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 
 These settings name the Wi-Fi setup network and set its password.
 
-In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert.
+In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box shows the network, the password and the page's address on its screen, or reads them out if it has none. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert.
 
 | Setting | Default | Description |
 |---|---|---|

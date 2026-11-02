@@ -34,6 +34,9 @@ msgstr "Sorry, ik kon niet naar de verbindingsmodus gaan."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "Oké, ik heb de verbindingsmodus verlaten en alles teruggezet zoals het was."
 
+msgid "Okay, I've stopped and put things back as they were."
+msgstr "Oké, ik ben gestopt en heb alles teruggezet zoals het was."
+
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "Ik kon niet naar de verbindingsmodus gaan. Probeer het zo nog een keer."
 
@@ -70,17 +73,17 @@ msgstr "Oké, dan niet."
 msgid "Say yes to go into setup mode, or no."
 msgstr "Zeg ja om naar de verbindingsmodus te gaan, of nee."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
-msgstr "Ik sta in de verbindingsmodus. Zeg herhaal om de gegevens nog een keer te horen, of annuleer om de verbindingsmodus te verlaten."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Ik sta in de verbindingsmodus. Zeg herhaal om de gegevens te horen, of annuleer om de verbindingsmodus te verlaten."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
 msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {password}. Open daarna je browser, ga naar {url} en kies je wifi."
 
-msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "Verbind je telefoon met het wifinetwerk op mijn scherm en vul het wachtwoord in dat erbij staat. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Verbind je telefoon met het wifinetwerk op mijn scherm, met het wachtwoord dat daar staat. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "Scan de code op mijn scherm met de camera van je telefoon om met mijn netwerk te verbinden. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
+msgstr "Scan de code op mijn scherm met de camera van je telefoon om met mijn verbindingsnetwerk te verbinden. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
 
 msgid "the saved settings for it did not work"
 msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"
@@ -101,10 +104,7 @@ msgid "this box has no Wi-Fi device"
 msgstr "dit apparaat heeft geen wifi"
 
 msgid "the setup network would not start"
-msgstr "het instelnetwerk startte niet"
-
-msgid "the Wi-Fi page could not start"
-msgstr "de wifipagina kon niet starten"
+msgstr "het verbindingsnetwerk startte niet"
 
 msgid "open"
 msgstr "open"
@@ -116,7 +116,7 @@ msgid "Connect to Wi-Fi"
 msgstr "Verbinden met wifi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "Kies je netwerk en typ het wachtwoord. Teaport verlaat dan dit instelnetwerk, maakt verbinding met het jouwe en zegt hardop of dat gelukt is."
+msgstr "Kies je netwerk en typ het wachtwoord. Teaport verlaat dan dit verbindingsnetwerk, maakt verbinding met het jouwe en zegt hardop of dat gelukt is."
 
 msgid "No networks found — use Other."
 msgstr "Geen netwerken gevonden – kies ‘Ander’."
@@ -143,7 +143,7 @@ msgid "Joining {network}…"
 msgstr "Verbinden met {network}…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport verlaat nu dit instelnetwerk. Zet je telefoon weer op {network}. Teaport zegt hardop of de verbinding gelukt is; zo niet, dan komt het instelnetwerk terug en kun je het opnieuw proberen."
+msgstr "Teaport verlaat nu dit verbindingsnetwerk. Zet je telefoon weer op {network}. Teaport zegt hardop of de verbinding gelukt is; zo niet, dan komt het verbindingsnetwerk terug en kun je het opnieuw proberen."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "Kan geen verbinding maken met {network}: {reason}. Probeer het opnieuw."

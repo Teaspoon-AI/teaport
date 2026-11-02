@@ -30,8 +30,8 @@
 # ASCII, which its built-in font draws (network names folded into it); the voice and
 # the page speak the user's language.
 #
-# The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
-# address, and follows status.json in the unit's RuntimeDirectory (phase: scanning,
+# The brain (wifi_voice.py) starts this unit, points at the screen (or, without one,
+# speaks the network, the password and the address), and follows status.json in the unit's RuntimeDirectory (phase: scanning,
 # ap_up, joining, connected, failed, timeout, error) to say what happened — the phone
 # has left the page by then. Each run has its own run id, so a stale file is never read
 # as this run's news.
@@ -86,6 +86,10 @@ SCREEN_TITLE = "Setup mode"
 # After it: the box has left setup mode and is on the user's network.
 CONNECTED_TITLE = "Wi-Fi"
 CONNECTED_SCREEN_SECS = 10
+# How long avahi-publish must stay up to count as announcing the .local name.
+PUBLISH_SETTLE_SECS = 0.3
+# The status reason when the page's server cannot start; English only (see _run).
+PAGE_FAILED = "the Wi-Fi page could not start"
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = setting("WIFI_SETUP_PASSWORD", default="")
@@ -434,16 +438,27 @@ class Setup:
             network=network, reason=t._(reason))
 
     # -- the network side (main thread)
-    def publish(self, name: str) -> None:
+    def publish(self, name: str) -> bool:
+        """Announce name.local for the page. True while avahi-publish is running: one
+        that is missing, cannot start or exits at once (no avahi-daemon) leaves only the
+        bare address, which the screen and the voice then give instead."""
         exe = shutil.which("avahi-publish")
         if not exe:
             log("avahi-publish not installed — only the captive page and 10.42.0.1 work")
-            return
+            return False
         try:
             self.avahi = subprocess.Popen([exe, "-a", "-R", f"{name}.local", self.address],
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
+            return False
+        try:
+            rc = self.avahi.wait(timeout=PUBLISH_SETTLE_SECS)
+        except subprocess.TimeoutExpired:
+            return True
+        log(f"avahi-publish exited at once ({rc}) — only the captive page and 10.42.0.1 work")
+        self.avahi = None
+        return False
 
     def unpublish(self) -> None:
         if self.avahi and self.avahi.poll() is None:
@@ -522,7 +537,6 @@ class Setup:
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
-        url = f"http://{ssid}.local"
         # The display's font draws ASCII only: a name outside it is folded, and the
         # address shown is then the one that needs no name.
         shown_ssid = display.fold_ascii(ssid)
@@ -546,10 +560,17 @@ class Setup:
                     self.serve()
                 except OSError as e:
                     log(f"the Wi-Fi page could not start: {e}")
-                    self.status.set("error", reason=N_("the Wi-Fi page could not start"))
+                    # Not spoken (the voice says it could not go into setup mode and
+                    # to try again): the reason is for the log and the model's notice.
+                    self.status.set("error", reason=PAGE_FAILED)
                     self._put_back()
                     return 1
-            self.publish(ssid)
+            # The address the screen shows, the status carries and the voice reads: the
+            # .local name only while it is announced and the font draws it as it is, else
+            # the bare address, which needs neither (and no captive-portal check either).
+            published = self.publish(ssid)
+            url = (f"http://{ssid}.local" if published and shown_ssid == ssid
+                   else f"http://{self.address}")
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
             # name, whatever the font can draw -- and is sent only to an avatar that
@@ -559,9 +580,7 @@ class Setup:
             code = wifi_qr(ssid, password)
             code = code if self.screen and self.screen.fits_qr(code) else None
             name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
-            shown = self._show([f"Network  {name}", f"Password  {password}",
-                                url if shown_ssid == ssid else f"http://{self.address}"],
-                               qr=code)
+            shown = self._show([f"Network  {name}", f"Password  {password}", url], qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
                             qr=shown and code is not None)

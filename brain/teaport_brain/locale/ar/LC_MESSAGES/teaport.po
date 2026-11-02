@@ -39,6 +39,9 @@ msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل."
 msgid "Okay, I've left setup mode and put things back as they were."
 msgstr "حسنًا، خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
+msgid "Okay, I've stopped and put things back as they were."
+msgstr "حسنًا، توقفتُ وأعدتُ كل شيء كما كان."
+
 msgid "I couldn't go into setup mode. Please try again in a moment."
 msgstr "تعذّر الدخول إلى وضع التوصيل. يُرجى المحاولة مرة أخرى بعد قليل."
 
@@ -75,17 +78,17 @@ msgstr "حسنًا، لا بأس."
 msgid "Say yes to go into setup mode, or no."
 msgstr "يُرجى قول «نعم» للدخول إلى وضع التوصيل، أو «لا» للإلغاء."
 
-msgid "I'm in setup mode. Say repeat to hear the details again, or cancel to leave setup mode."
-msgstr "أنا الآن في وضع التوصيل. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» للخروج من وضع التوصيل."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "أنا الآن في وضع التوصيل. يُرجى قول «كرّر» لسماع التفاصيل، أو «إلغاء» للخروج من وضع التوصيل."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
 msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ثم يُرجى فتح المتصفح والانتقال إلى {url} واختيار شبكة الواي فاي الخاصة بك."
 
-msgid "On your phone, join the Wi-Fi network and enter the password shown on my screen. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي وإدخال كلمة المرور الظاهرتين على شاشتي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي الظاهرة على شاشتي، باستخدام كلمة المرور الظاهرة هناك. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
 msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
-msgstr "يُرجى مسح الرمز الظاهر على شاشتي بكاميرا هاتفك للانضمام إلى شبكتي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
+msgstr "يُرجى مسح الرمز الظاهر على شاشتي بكاميرا هاتفك للانضمام إلى شبكة التوصيل الخاصة بي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
 msgid "the saved settings for it did not work"
 msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"
@@ -106,10 +109,7 @@ msgid "this box has no Wi-Fi device"
 msgstr "لا يحتوي هذا الجهاز على وحدة واي فاي"
 
 msgid "the setup network would not start"
-msgstr "تعذّر تشغيل شبكة الإعداد"
-
-msgid "the Wi-Fi page could not start"
-msgstr "تعذّر تشغيل صفحة الواي فاي"
+msgstr "تعذّر تشغيل شبكة التوصيل"
 
 msgid "open"
 msgstr "مفتوحة"
@@ -121,7 +121,7 @@ msgid "Connect to Wi-Fi"
 msgstr "الاتصال بشبكة Wi-Fi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "اختر شبكتك وأدخل كلمة مرورها. سيقطع Teaport اتصاله بشبكة الإعداد هذه ويتصل بشبكتك، ثم يُعلن بصوت مسموع ما إذا نجح الاتصال."
+msgstr "اختر شبكتك وأدخل كلمة مرورها. سيقطع Teaport اتصاله بشبكة التوصيل هذه ويتصل بشبكتك، ثم يُعلن بصوت مسموع ما إذا نجح الاتصال."
 
 msgid "No networks found — use Other."
 msgstr "لم يُعثر على أي شبكة — اختر «شبكة أخرى»."
@@ -151,7 +151,7 @@ msgid "Joining {network}…"
 msgstr "جارٍ الانضمام إلى شبكة ⁨{network}⁩…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "يقطع Teaport الآن اتصاله بشبكة الإعداد هذه. أعِد توصيل هاتفك بشبكة ⁨{network}⁩. سيُعلن Teaport بصوت مسموع ما إذا نجح الاتصال؛ وإن لم ينجح، فستعود شبكة الإعداد ويمكنك المحاولة مرة أخرى."
+msgstr "يقطع Teaport الآن اتصاله بشبكة التوصيل هذه. أعِد توصيل هاتفك بشبكة ⁨{network}⁩. سيُعلن Teaport بصوت مسموع ما إذا نجح الاتصال؛ وإن لم ينجح، فستعود شبكة التوصيل ويمكنك المحاولة مرة أخرى."
 
 # Page only: {network} (a network name, often Latin) is wrapped in invisible Unicode
 # isolates U+2068 … U+2069 so a name like "Guest 5G!" or "(Home) 2.4" keeps its

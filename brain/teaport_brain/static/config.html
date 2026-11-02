@@ -504,9 +504,9 @@
     setupBtn.onclick = async () => {
       const sure = await confirmDialog('Put this box in setup mode?', [
         'The box leaves its current network and opens its own, which a phone joins to pick a network. This page loses the box until it is back.',
-        'The box says the setup network name and password out loud. It gives up after ten minutes and goes back to its old network.'], 'Enter setup mode');
+        'The box shows the setup network\'s name and password on its screen, or reads them out if it has none. It gives up after ten minutes and goes back to its old network.'], 'Enter setup mode');
       if (!sure) return;
-      try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Entering setup mode. Listen to the box for the network name and password.'; }
+      try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Entering setup mode. Check the box\'s screen, or listen to it, for the network name and password.'; }
       catch (e) { out.textContent = 'Could not start it: ' + e.message; }
     };
     sec.replaceChildren(head,
