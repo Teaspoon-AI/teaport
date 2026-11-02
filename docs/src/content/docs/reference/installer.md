@@ -101,9 +101,6 @@ The installer honors the overrides in this table; the default applies when the v
 | `TEAPORT_BRIDGE_SRC` | None | Install the bridge from this local directory instead of cloning. |
 | `TEAPORT_ENABLE_LOCAL_AUDIO` | `0` | `1` enables the local microphone and speaker bridge, a USB mic array. |
 | `TEAPORT_LOCAL_AUDIO_DEVICE` | `hw:CARD=Array,DEV=0`, the device in `.env` | The ALSA device for the local audio bridge. |
-| `TEAPORT_ENABLE_OLED_AVATAR` | `0` | `1` installs the OLED face and its unit. The face repository is private, so the installer skips it where access is missing. |
-| `TEAPORT_OLED_PORT`, `TEAPORT_OLED_ADDR` | None; the installer probes for `0x3c` or `0x3d` | The OLED panel's I2C bus and address. |
-| `TEAPORT_OLED_SRC` | None | Install the avatar from a local checkout instead of cloning. |
 | `TEAPORT_ALLOW_STALE_SOURCE` | `0` | `1` installs from a checkout that is behind its upstream. |
 | `TEAPORT_OPENCLAW_HEAP_MIB` | `1536` | The host OpenClaw gateway's JS heap limit. |
 | `TEAPORT_HOST` | `teaport.local`; `teaport-ab12.local` when another device already answers to that name | The front door's name. A re-run keeps the name an earlier run chose, unless another device answers to it. |
@@ -276,9 +273,7 @@ The Wi-Fi setup flow: a temporary setup network and a page where a phone enters 
 
 <!-- source: install.sh:2584-2588,2603-2609#141b4978; systemd/teaport-wifi-setup.service.in:25#d769a920 -->
 
-The OLED face is separate: with `TEAPORT_ENABLE_OLED_AVATAR=1`, the installer hands over to the avatar checkout's own `install.sh`, which installs `teaport-oled-avatar.service` and leaves it off when it finds no panel.
-
-<!-- source: install.sh:2648-2652,2654#ea4613d7 -->
+Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 
 The installer also enables `avahi-daemon` and `caddy`.
 
