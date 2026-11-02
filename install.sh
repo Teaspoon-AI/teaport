@@ -1223,6 +1223,43 @@ detect_agent() {
   return 0
 }
 resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$HOME/.local/bin/nemoclaw")"; }
+# openclaw_spec — what to `npm install -g`: the OpenClaw release this one is tested with
+# (manifest openclaw.version), or plain openclaw from a manifest that names none.
+openclaw_spec() {
+  local v; v="$(mget openclaw.version 2>/dev/null || true)"
+  if [ -n "$v" ]; then printf 'openclaw@%s\n' "$v"; else printf 'openclaw\n'; fi
+}
+# check_openclaw_version — the box's OpenClaw (on the host, or in the NemoClaw sandbox)
+# against the release this one is tested with. teaport leans on OpenClaw's own behaviour
+# (the Talk relay's response ownership, the realtime brain, pairing and setup codes), read
+# from that release's source, and the guide's `npm install -g openclaw` would otherwise
+# take whatever is newest. A warning, not a stop: an operator may run another on purpose.
+check_openclaw_version() {
+  local want got=""
+  want="$(mget openclaw.version 2>/dev/null || true)"
+  if [ -z "$want" ]; then return 0; fi
+  case "$AGENT_MODE" in
+    openclaw) got="$("$OPENCLAW" --version 2>/dev/null || true)" ;;
+    nemoclaw)
+      resolve_nemoclaw
+      # </dev/null: a prompt (a stopped sandbox, a login) fails fast into the warning.
+      got="$(timeout 60 "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw --version </dev/null 2>/dev/null || true)" ;;
+    *) return 0 ;;
+  esac
+  got="$(printf '%s\n' "$got" | grep -oE '[0-9]{4}\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [ -z "$got" ]; then
+    warn "could not read the OpenClaw version; this release is tested with OpenClaw $want"
+  elif [ "$got" != "$want" ]; then
+    warn "OpenClaw $got is installed; this release of teaport is tested with OpenClaw $want"
+    if [ "$AGENT_MODE" = openclaw ]; then
+      warn "to match it: back up ~/.openclaw, then sudo npm install -g $(openclaw_spec) and openclaw doctor --fix"
+    else
+      warn "the sandbox's OpenClaw comes with NemoClaw: use the NemoClaw release that ships OpenClaw $want"
+    fi
+  else
+    log "OpenClaw $got (the release this one is tested with)"
+  fi
+}
 resolve_gateway_token() {
   [ -n "$GATEWAY_TOKEN" ] && return 0
   if [ -n "${TEAPORT_GATEWAY_TOKEN:-}" ]; then GATEWAY_TOKEN="$TEAPORT_GATEWAY_TOKEN"; return 0; fi
@@ -1303,7 +1340,7 @@ phase_agent() {
     openclaw) agent_openclaw ;;
     *)
       log "no agent detected — voice-only install"
-      warn "to add the agent later: install OpenClaw on the host (sudo npm install -g openclaw)"
+      warn "to add the agent later: install OpenClaw on the host (sudo npm install -g $(openclaw_spec))"
       warn "or NemoClaw (bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)), then re-run this installer"
       ;;
   esac
@@ -2750,7 +2787,7 @@ usage_footer() {
   else
     # Voice-only has no gateway, so no dashboard and no front door to point at.
     printf '  next:    voice-only install — the brain listens on ws://127.0.0.1:%s/talk and nothing fronts it.\n' "$BRAIN_PORT"
-    printf '           install OpenClaw (sudo npm install -g openclaw) or NemoClaw, then re-run to add Talk.\n'
+    printf '           install OpenClaw (sudo npm install -g %s) or NemoClaw, then re-run to add Talk.\n' "$(openclaw_spec)"
   fi
   cat <<EOF
   ops:     teaport status | teaport doctor | teaport logs [engine|brain]
@@ -2831,6 +2868,7 @@ main() {
   # installed: phase_agent gives the name to OpenClaw, phase_services writes brain.env.
   # Only an install with an agent has a front door (phase_frontdoor).
   detect_agent
+  check_openclaw_version
   if [ -n "$AGENT_MODE" ]; then resolve_frontdoor
   elif [ -n "$TLS_CERT" ]; then warn "TEAPORT_TLS_CERT is ignored: a voice-only install has no front door"; fi
   phase_sysdeps

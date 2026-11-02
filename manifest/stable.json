@@ -55,6 +55,11 @@
     "npm": "@teaspoon-ai/openclaw-teaport-realtime",
     "version": "0.1.0"
   },
+  "openclaw": {
+    "_note": "The OpenClaw release this teaport release is tested against: the guide installs exactly this (npm install -g openclaw@<version>, on Node.js <node>.x, OpenClaw's own engines requirement), and install.sh warns when the box's OpenClaw (host or NemoClaw sandbox) is another. Moving to a newer OpenClaw is a tested step: the Talk relay, pairing and setup codes are checked against its source, then this is bumped (with nemoclaw.tested_tag when NemoClaw ships the same release).",
+    "version": "2026.9.7",
+    "node": "24"
+  },
   "nemoclaw": {
     "tested_tag": "TODO"
   },
