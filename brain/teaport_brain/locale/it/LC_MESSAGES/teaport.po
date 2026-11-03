@@ -343,3 +343,13 @@ msgstr "Ora sono pronto. Fammi di nuovo la domanda."
 
 msgid "I'm ready now. Please start a new conversation with me."
 msgstr "Ora sono pronto. Inizia una nuova conversazione con me."
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "Ciao, sono Teaport. Collegami a internet. Un momento, cerco le reti disponibili."
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "Puoi dire «configura il Wi-Fi» in qualsiasi momento per riprovare."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Ora sono online, quindi ho chiuso la modalità di configurazione."

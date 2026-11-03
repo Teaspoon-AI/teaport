@@ -53,6 +53,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    OutputTransportMessageUrgentFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
 )
@@ -61,7 +62,7 @@ from teaport_brain import display, i18n
 from teaport_brain.conversation_log import quoted
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS
-from teaport_brain.wifi_setup import PAGE_FAILED
+from teaport_brain.wifi_setup import NO_WIFI_DEVICE, PAGE_FAILED
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
 
 UNIT = "teaport-wifi-setup"
@@ -100,6 +101,19 @@ ECHO_TAIL_SECS = 1.5
 ECHO_LINES_SECS = 120.0
 # The setup network's name is teaport-<hex>: the word is said as a word.
 SSID_WORD = "teaport"
+# The first-boot setup (first_boot.py, begin_first_boot): the welcome, in place of the
+# "Okay." that answers a yes; then, the usual setup-mode instructions once it is up.
+WELCOME_TEXT = N_("Hi, I'm Teaport. Let's get me online. Give me a moment to look for "
+                  "networks.")
+# After a first-boot setup that left the box offline: it does not start again by itself
+# until the next boot. The quoted words are the start phrase (tests/test_i18n.py).
+AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
+# The first-boot setup, left because the box came online by another way (_leave_online).
+ONLINE_NOW_TEXT = N_("I'm online now, so I've left setup mode.")
+# While setup runs, the client hears it is under way (_keep_awake): the call id it is
+# told by, and how long that holds unless it is said again.
+WORKING_ID = "wifi-setup"
+KEEP_AWAKE_SECS = REMIND_SECS + 60.0
 # Pieces of the line the model gets when setup ends (_ended). English: it is context.
 _PUT_BACK = "the box's Wi-Fi is back as it was before."
 _UNCONFIRMED = "the user did not confirm, so it never started."
@@ -145,6 +159,12 @@ _TASHKEEL = re.compile("[ً-ٰٟـ]")
 _QUESTION = re.compile("[?？؟]")
 # Scripts written without spaces between words (Han, kana): sized by characters.
 _UNSPACED = re.compile("[぀-ヿ㐀-䶿一-鿿豈-﫿]")
+
+
+def _first_boot():
+    """first_boot.py, imported where it is used: it imports this module."""
+    from teaport_brain import first_boot
+    return first_boot
 
 
 def heard(meaning: str, text: str, t: i18n.T) -> bool:
@@ -298,6 +318,7 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"  # idle | confirm | running
         self._unclear = 0
         self._asked = 0.0  # when the confirm question was put
+        self._lapser: asyncio.Task | None = None  # lapses it (_question_lapses)
         # The words setup took while asking (the phrase, unclear answers): given back to
         # the model if the answer never becomes a yes or a no.
         self._held: list[str] = []
@@ -317,6 +338,10 @@ class WifiSetupVoice(FrameProcessor):
         self.notes = None
         self._by_model = False  # this setup began with the wifi_setup tool
         self._cancelling = False  # the user's cancel is stopping the unit (_cancel)
+        # This setup is the first-boot one (first_boot.py): it began with the welcome, and
+        # an end that leaves the box offline says how to start it again.
+        self._first_boot = False
+        self._kept = -math.inf  # when the bridge was last told setup is under way
 
     @property
     def t(self) -> i18n.T:
@@ -365,9 +390,70 @@ class WifiSetupVoice(FrameProcessor):
             return
         self.state, self._unclear, self._held = "confirm", 0, []
         self._asked, self._by_model = self._clock(), by_model
+        # The question lapses by itself: nobody may say anything after it (they walked
+        # off), and until then the room counts as busy with setup (gateway_server).
+        if self._lapser is not None:
+            self._lapser.cancel()
+        self._lapser = self._spawn(self._question_lapses(self._asked))
         await self.say(self.t._("Do you want to set up Wi-Fi? I'll go into setup mode and be "
                                 "offline for a few minutes while you do it on your phone. "
                                 "Say yes or no."))
+
+    def _lapse(self) -> None:
+        """The confirm question went unanswered: back to conversation."""
+        logger.info("wifi setup: the question went unanswered — back to conversation")
+        self.state, self._held = "idle", []
+        self._ended(_UNCONFIRMED)
+
+    async def _question_lapses(self, asked: float) -> None:
+        """CONFIRM_SECS after the question asked at `asked`: unanswered, it lapses."""
+        await asyncio.sleep(CONFIRM_SECS)
+        if self.state == "confirm" and self._asked == asked:
+            self._lapse()
+
+    async def begin_first_boot(self) -> bool:
+        """Go into setup mode unasked, with the welcome instead of the question: a new box
+        that is offline at boot (first_boot.py). No confirmation: it is offline already, so
+        there is nothing to lose. False when setup is already asking or running."""
+        if self.state != "idle":
+            return False
+        self._first_boot, self._by_model = True, False
+        await self._shielded(self._start(welcome=True))
+        return True
+
+    async def _say_end(self, line: str, retry: bool = True) -> None:
+        """A setup's last line. After the first-boot setup, while the box is still new
+        (never online: it is offline), how to start it again -- it does not start again by
+        itself before the next boot. Not when trying again cannot help (`retry` False: no
+        Wi-Fi device, the unit would not start) or the line says so already."""
+        if self._first_boot and retry and _first_boot().is_new():
+            line += " " + self.t._(AGAIN_TEXT)
+        self._first_boot = False
+        await self.say(line)
+
+    async def _leave_online(self) -> None:
+        """The first-boot setup, and the box came online meanwhile (Ethernet plugged in, a
+        network back: first_boot's watcher saw it): setup mode is left at once -- the
+        setup network would only keep the box off a network it no longer needs."""
+        logger.info("wifi setup: the box is online now — leaving the first-boot setup")
+        await self._stop_unit()
+        self.state, self._first_boot = "idle", False
+        self._ended(f"the box came online by itself; {_PUT_BACK}", online=True)
+        await self.say(self.t._(ONLINE_NOW_TEXT))
+
+    async def _keep_awake(self, on: bool) -> None:
+        """Tell the client that setup is under way (or over), the way an answer still owed
+        is told ({"type": "working"}): the local audio bridge's conversation does not go to
+        sleep on the minutes the user spends on their phone, which would stop this voice
+        following the setup. "typing": false -- nothing to type through (thinking_sound.py
+        leaves it alone). Refreshed from _follow, well inside KEEP_AWAKE_SECS."""
+        message = {"type": "working", "call_id": WORKING_ID, "typing": False}
+        message.update({"secs": KEEP_AWAKE_SECS} if on else {"done": True})
+        self._kept = self._clock() if on else -math.inf
+        try:
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=message))
+        except Exception as e:  # noqa: BLE001 — a pipeline already ending
+            logger.debug(f"wifi setup: could not tell the client ({e!r})")
 
     async def _shielded(self, coro) -> None:
         """Run a unit operation to its end even if the frame that asked for it is
@@ -375,22 +461,27 @@ class WifiSetupVoice(FrameProcessor):
         unit asked to start, nobody following it) or half a cancel is worse than either."""
         await asyncio.shield(self._spawn(coro))
 
-    async def _start(self) -> None:
+    async def _start(self, welcome: bool = False) -> None:
         self.state, self._last, self._why = "running", {}, ""
         self._in_mode = False  # set by the first ap_up announcement
         # What the status file says before this run: any other content is this run's.
         # By content, not by clock: the clock jumps when the box comes online (NTP).
         old = self._read_file()
         self._before = (old.get("run_id"), old.get("time")) if old else None
-        await self.say(self.t._("Okay. Give me a moment to look for networks."))
+        # Any setup spends this boot's first-boot try: one the owner started is not
+        # followed by one nobody asked for.
+        _first_boot().setup_started()
+        await self.say(self.t._(WELCOME_TEXT) if welcome
+                       else self.t._("Okay. Give me a moment to look for networks."))
         rc, err = await self._run("restart", UNIT)
         if rc != 0:
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")
             self.state = "idle"
             self._ended("it could not start; nothing changed.")
-            await self.say(self.t._("Sorry, I couldn't go into setup mode."))
+            await self._say_end(self.t._("Sorry, I couldn't go into setup mode."), retry=False)
             return
-        logger.info("wifi setup: started")
+        logger.info("wifi setup: started" + (" (first boot)" if welcome else ""))
+        await self._keep_awake(True)
         self._poller = self._spawn(self._follow())
 
     async def _cancel(self) -> None:
@@ -416,7 +507,7 @@ class WifiSetupVoice(FrameProcessor):
         await self._stop_following()
         self.state = "idle"
         self._ended(f"the user cancelled it; {_PUT_BACK}")
-        await self.say(self._put_back_line(cancelled=True))
+        await self._say_end(self._put_back_line(cancelled=True))
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
@@ -447,12 +538,27 @@ class WifiSetupVoice(FrameProcessor):
         return status
 
     async def _follow(self) -> None:
+        try:
+            await self._following()
+        finally:
+            await self._keep_awake(False)
+
+    async def _following(self) -> None:
         started = reminded = checked = self._clock()
         seen = False  # a status of this run has been read: the unit is up
         while self.state == "running":
             await asyncio.sleep(POLL_SECS)
             status = self._read()
             now = self._clock()
+            if now - self._kept >= KEEP_AWAKE_SECS / 3:
+                await self._keep_awake(True)
+            # The first-boot setup, and the box is online by another way meanwhile -- not
+            # while it joins the network picked on the phone: that is this setup's own
+            # success, which "connected" announces.
+            if (self._first_boot and self._last.get("phase") in (None, "ap_up", "failed")
+                    and not _first_boot().is_new()):
+                await self._leave_online()
+                return
             if status is not None:
                 seen = True
                 if self._news(status):
@@ -471,7 +577,9 @@ class WifiSetupVoice(FrameProcessor):
                 await self._stop_unit()
                 self.state = "idle"
                 self._ended("it did not start; nothing changed.")
-                await self.say(self.t._("I couldn't go into setup mode. Please try again in a moment."))
+                await self._say_end(
+                    self.t._("I couldn't go into setup mode. Please try again in a moment."),
+                    retry=False)  # it says how already
                 return
             if now - started > DEADLINE_SECS:
                 logger.warning("wifi setup: still running past the unit's own hard stop")
@@ -510,7 +618,7 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"
         t = self.t
         self._ended("it stopped without saying how (something went wrong).")
-        await self.say(self._stopped_line(t._("something went wrong")))
+        await self._say_end(self._stopped_line(t._("something went wrong")))
 
     def _ended(self, outcome: str, online: bool = False) -> None:
         """Tell the model how this setup ended: "Wi-Fi setup ended: <outcome>" into its
@@ -548,6 +656,9 @@ class WifiSetupVoice(FrameProcessor):
             target = status.get("target")
             self._ended((f"connected to {json.dumps(target, ensure_ascii=False)}"
                          if target else "connected") + "; the box is online.", online=True)
+            # Online once: the box is no longer new (first_boot.py).
+            self._first_boot = False
+            _first_boot().reached_online("Wi-Fi setup connected")
             await self.say(t._("I'm connected to {network}, and I'm online again.")
                            .format(network=network))
         elif phase == "timeout":
@@ -555,24 +666,27 @@ class WifiSetupVoice(FrameProcessor):
             # The reasons are English msgids (wifi.py / wifi_setup.py): no password.
             self._ended(f"it timed out; {_PUT_BACK}" + (
                 f" The last attempt to join failed: {self._why}." if self._why else ""))
-            await self.say(t._("Nothing connected in time, so I've left setup mode and put things back "
-                               "as they were."))
+            await self._say_end(t._("Nothing connected in time, so I've left setup mode and put "
+                                    "things back as they were."))
         elif phase == "stopped":
             # The unit was stopped from outside (systemctl, the config page, a restart)
             # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
             self.state = "idle"
             self._ended(f"the user cancelled it; {_PUT_BACK}" if self._cancelling else
                         f"it was stopped from outside before it finished; {_PUT_BACK}")
-            await self.say(self._put_back_line(cancelled=self._cancelling))
+            await self._say_end(self._put_back_line(cancelled=self._cancelling))
         elif phase == "error":
             self.state = "idle"
             self._ended(f"it failed: {status.get('reason') or 'something went wrong'}.")
             if status.get("reason") == PAGE_FAILED:
                 # Only ever before setup mode, and nothing a user can act on but a retry.
-                await self.say(t._("I couldn't go into setup mode. Please try again in a moment."))
+                await self._say_end(
+                    t._("I couldn't go into setup mode. Please try again in a moment."),
+                    retry=False)  # it says how already
             else:
-                await self.say(self._stopped_line(
-                    t._(status.get("reason") or N_("something went wrong"))))
+                await self._say_end(self._stopped_line(
+                    t._(status.get("reason") or N_("something went wrong"))),
+                    retry=status.get("reason") != NO_WIFI_DEVICE)
 
     def _put_back_line(self, cancelled: bool) -> str:
         """A stop -- the user's spoken cancel, or from outside (the Settings page, a
@@ -602,6 +716,8 @@ class WifiSetupVoice(FrameProcessor):
             self._bot_speaking, self._quiet_since = False, self._clock()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             # The unit outlives the session; only the following stops.
+            if self._lapser is not None:
+                self._lapser.cancel()
             await self._stop_following()
         elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
               and not is_taken(frame)):
@@ -624,9 +740,7 @@ class WifiSetupVoice(FrameProcessor):
             logger.debug(f"wifi setup: {quoted(text[:40])} is the box's own voice — ignored")
             return True
         if self.state == "confirm" and self._clock() - self._asked > CONFIRM_SECS:
-            logger.info("wifi setup: the question went unanswered — back to conversation")
-            self.state, self._held = "idle", []
-            self._ended(_UNCONFIRMED)
+            self._lapse()  # its timer has not run yet (a busy loop): the words decide
         if self.state == "idle":
             if not heard("start", text, t):
                 return False
@@ -705,24 +819,31 @@ async def _output(*cmd: str, timeout: float) -> str | None:
             await p.wait()
 
 
-async def _box_online() -> bool:
-    """Is the box on the internet? Asked only when the phrase was heard, and wrong on
-    the safe side: anything but a fresh "full" leaves the phrase working.
+async def connectivity(timeout: float | None = None) -> str | None:
+    """NetworkManager's connectivity, freshly checked: "full", or what it says instead
+    ("limited", "portal", "none", "unknown"; "" when the check could not be run or took
+    longer than `timeout`, by default ONLINE_CHECK_SECS). None when NM has no connectivity
+    check configured, so nobody can tell (first_boot.py does nothing then).
 
-    NetworkManager's connectivity check must be configured (Ubuntu's
-    network-manager-config-connectivity-ubuntu, which install.sh puts there): without
-    it NM says "full" whenever there is a default route, internet or not. Then a fresh
-    check, not the cached answer, which can be minutes old after the internet drops. A
-    dead link can make the check slow; past ONLINE_CHECK_SECS it counts as offline."""
+    The check must be configured (Ubuntu's network-manager-config-connectivity-ubuntu,
+    which install.sh puts there): without it NM says "full" whenever there is a default
+    route, internet or not. A fresh check, not the cached answer, which can be minutes
+    old after the internet drops."""
     enabled = await _output(
         "busctl", "get-property", "org.freedesktop.NetworkManager",
         "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager",
         "ConnectivityCheckEnabled", timeout=NM_PROPERTY_SECS)
     if enabled != "b true":
-        return False
-    state = await _output("nmcli", "networking", "connectivity", "check",
-                          timeout=ONLINE_CHECK_SECS)
-    return state == "full"
+        return None
+    return await _output("nmcli", "networking", "connectivity", "check",
+                         timeout=ONLINE_CHECK_SECS if timeout is None else timeout) or ""
+
+
+async def _box_online() -> bool:
+    """Is the box on the internet? Asked only when the phrase was heard, and wrong on
+    the safe side: anything but a fresh "full" leaves the phrase working (no check
+    configured, a slow or dead link included)."""
+    return await connectivity() == "full"
 
 
 async def _unit_active() -> bool | None:

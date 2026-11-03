@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:2098-2107#38d9c1ca; install.sh:2056#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#f8a4e1af; brain/teaport_brain/config_schema.toml:2116-2125#38d9c1ca; install.sh:2056#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:8-12,19-25#a24a491a; brain/teaport_brain/config_schema.toml:2073-2083#39346419; brain/teaport_brain/static/config.html:263-273#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:8-12,19-25#a24a491a; brain/teaport_brain/config_schema.toml:2091-2101#39346419; brain/teaport_brain/static/config.html:263-273#2b63b6f7 -->
 
 To change a setting there:
 
@@ -110,7 +110,7 @@ On the configuration page, the restart runs the same command two seconds later. 
 
 Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model, `gpt-oss-120b` by default. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`; for a server on the device itself, `http://127.0.0.1:8182/v1`.
 
-<!-- source: brain/teaport_brain/config_schema.toml:214-245#cdd4a315 -->
+<!-- source: brain/teaport_brain/config_schema.toml:220-251#cdd4a315 -->
 
 ### With the configuration page
 
@@ -120,7 +120,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:33-38#bb168482; brain/teaport_brain/config_schema.toml:226-245#3812d0b5 -->
+<!-- source: brain/teaport_brain/config_ui.py:33-38#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5 -->
 
 ### In the configuration files
 

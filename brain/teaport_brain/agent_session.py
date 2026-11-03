@@ -1385,6 +1385,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         input_mute=input_mute,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
+    session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
+    session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:

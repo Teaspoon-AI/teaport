@@ -90,6 +90,8 @@ CONNECTED_SCREEN_SECS = 10
 PUBLISH_SETTLE_SECS = 0.2
 # The status reason when the page's server cannot start; English only (see _run).
 PAGE_FAILED = "the Wi-Fi page could not start"
+# The status reason when the box has no Wi-Fi device: nothing a retry can change.
+NO_WIFI_DEVICE = N_("this box has no Wi-Fi device")
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = setting("WIFI_SETUP_PASSWORD", default="")
@@ -501,7 +503,7 @@ class Setup:
     def _start(self, ssid: str, password: str) -> int:
         dev = self.nm.wifi_device()
         if not dev:
-            self.status.set("error", reason=N_("this box has no Wi-Fi device"))
+            self.status.set("error", reason=NO_WIFI_DEVICE)
             return 1
         self.previous = self.nm.active(dev)
         try:

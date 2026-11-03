@@ -150,6 +150,12 @@ summary = "These settings name the Wi-Fi setup network and set its password."
 blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box shows the network, the password and the page's address on its screen, or reads them out if it has none. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
+id = "first_run"
+title = "First run"
+summary = "These settings decide how a new box helps its owner set it up, with no terminal."
+blurb = "For an appliance unboxed by someone with no SSH (first_boot.py): the box's own voice and screen guide them. Off in the open install; appliance provisioning turns them on."
+
+[[groups]]
 id = "talk_client"
 title = "Talk client context notes"
 summary = "These settings cap the size, the count, and the rate of the context notes a Talk client sends."
@@ -1718,6 +1724,18 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet, or has no model set up at all) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
+
+[[settings]]
+name = "TEAPORT_SETUP_ON_FIRST_BOOT"
+store = "brain_env"
+group = "first_run"
+type = "flag"
+default = false
+read = "startup"
+tier = "setup"
+help = "A new box that is offline a minute after boot goes into setup mode by itself and greets the room without a wake word (\"Let's get me online.\"), then gives the usual setup-mode instructions. New means it has never been online: the first time it is (Ethernet, a remembered network, or a setup that connects), the brain writes ~/.local/state/teaport/setup-done and this never happens again. It tries at most once per boot (a setup started by voice counts): after a cancel or a timeout it says how to start setup by voice and waits for the next boot. Offline means NetworkManager says so twice, some seconds apart; a check that cannot answer is not offline. Needs the room mic (the local audio bridge), spoken Wi-Fi setup (TEAPORT_TOOL_WIFI_SETUP and teaport-wifi-setup) and NetworkManager's connectivity check; without them it does nothing."
+note = "Off in the open install; appliance provisioning turns it on. An image that ships must not carry setup-done."
+
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"

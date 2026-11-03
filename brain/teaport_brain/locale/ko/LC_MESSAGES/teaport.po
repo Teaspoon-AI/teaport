@@ -444,3 +444,13 @@ msgstr "이제 준비됐어요. 다시 물어봐 주세요."
 
 msgid "I'm ready now. Please start a new conversation with me."
 msgstr "이제 준비됐어요. 새 대화를 시작해 주세요."
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "안녕하세요, 저는 Teaport예요. 인터넷에 연결해 봐요. 네트워크를 찾아볼게요. 잠시만 기다려 주세요."
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "다시 시도하려면 언제든 '와이파이 설정해 줘'라고 말해 주세요."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "인터넷에 연결돼서 연결 모드를 끝냈어요."
