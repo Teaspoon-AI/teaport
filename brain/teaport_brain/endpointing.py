@@ -486,6 +486,18 @@ class SpeechDecodedFrame(_UninterruptibleData):
 
 
 @dataclass
+class SpeechHeardFrame(_UninterruptibleData):
+    """The engine has transcribed past the caller's speech that the barge-in pauser
+    asked about as the line went quiet over a paused reply (stt.watch_heard, watch
+    number `watch`): every word it will return for that speech is in the interims
+    already pushed, ahead of this frame. Pushed DOWNSTREAM by the STT for the start
+    strategy, which tells the pauser (barge_pause.py HEARD OUT); data, uninterruptible
+    and dropped by SegmentDoneSink like the frames above."""
+
+    watch: int
+
+
+@dataclass
 class NoSpeechReportFrame(_UninterruptibleData):
     """No SpeechDecodedFrame will come for VAD stop `stop_n`, though the engine
     session gives its report: the STT could not place that stop's speech end on the
@@ -523,8 +535,8 @@ class TurnTextFinalFrame(_UninterruptibleData):
 # behind the words it follows. Dropped by SegmentDoneSink once the aggregator (and the
 # turn-text corrector above the sink) has had them.
 STT_BOOKKEEPING_FRAMES = (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
-                          SpeechDecodedFrame, NoSpeechReportFrame, SpeechPreviewFrame,
-                          TurnTextFinalFrame)
+                          SpeechDecodedFrame, SpeechHeardFrame, NoSpeechReportFrame,
+                          SpeechPreviewFrame, TurnTextFinalFrame)
 
 # Everything the STT pushes for the turn strategies, in its order. A processor above the
 # aggregator that holds the STT's words -- RunControlClaims while the relay decides, the

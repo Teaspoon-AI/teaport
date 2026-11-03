@@ -28,12 +28,13 @@ from pipecat.frames.frames import (  # noqa: E402
     InterimTranscriptionFrame,
     InterruptionFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
     UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 from pipecat.pipeline.task import PipelineTask  # noqa: E402
-from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 
 from teaport_brain import barge_pause  # noqa: E402
 from teaport_brain.barge_pause import (  # noqa: E402
@@ -46,7 +47,7 @@ from teaport_brain.barge_pause import (  # noqa: E402
     judge_messages,
     judge_verdict,
 )
-from teaport_brain.endpointing import SegmentDoneFrame  # noqa: E402
+from teaport_brain.endpointing import SegmentDoneFrame, SpeechHeardFrame  # noqa: E402
 from teaport_brain.stt import FinalTranscriptionFrame  # noqa: E402
 
 from test_barge_pause import (  # noqa: E402
@@ -342,6 +343,103 @@ async def test_the_pauser_holds_its_resume_while_judging():
     finally:
         await task.cancel()
         await run
+
+
+async def test_the_stt_s_notice_is_held_behind_the_words_being_judged():
+    # Review F3: the notice says every word of the speech is in. Held with the words the
+    # judge decides, it reaches the start strategy only after them -- on a CONTINUE,
+    # after their carried-over close -- never ahead of a STOP's words.
+    for verdict in (CONTINUE, STOP):
+        judge = _Judge({"Okay": verdict}, delay=0.2)
+        async with GateRig(judge) as rig:
+            await rig.task.queue_frames([interim("Okay"), SpeechHeardFrame(watch=1)])
+            await asyncio.sleep(0.1)
+            assert not any(isinstance(f, SpeechHeardFrame) for _, _, f in rig.bottom.frames), (
+                "the notice overtook the words the judge holds")
+            await asyncio.sleep(0.3)
+            kinds = [type(f).__name__ for _, d, f in rig.bottom.frames
+                     if d == FrameDirection.DOWNSTREAM
+                     and isinstance(f, (InterimTranscriptionFrame, SpeechHeardFrame))]
+            assert kinds == (["SpeechHeardFrame"] if verdict == CONTINUE
+                             else ["InterimTranscriptionFrame", "SpeechHeardFrame"]), kinds
+
+
+class _StrategyTap(FrameProcessor):
+    """The aggregator's side of the gate: the start strategy reads what the gate lets on."""
+
+    def __init__(self, strategy):
+        super().__init__()
+        self.strategy = strategy
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM:
+            await self.strategy.process_frame(frame)
+        await self.push_frame(frame, direction)
+
+
+async def test_a_word_the_engine_returns_after_the_quiet_window_is_still_judged():
+    # #275, the live shape (2026-11-02): a short backchannel over a story trips only the
+    # onset test, and its first interim comes after the pause's quiet window. Where the
+    # STT reports, the pause waits for its notice, the word is judged over the paused
+    # reply and the reply carries on; on the window alone it resumes first, and the word
+    # then cuts the playing reply with no judge to ask.
+    for reports in (True, False):
+        out, p, ptask, prun = await _pauser_rig(max_secs=3.0)
+        judge = _Judge({"Right.": CONTINUE})
+        started = []
+
+        async def heard(watch):
+            await p.on_speech_heard(watch)
+
+        async def on_started(*_a, **_k):
+            started.append(True)
+
+        strategy = PauseAwareMinWordsStrategy(min_words=1, on_speech_heard=heard)
+        strategy.add_event_handler("on_user_turn_started", on_started)
+        gate = BargeInJudgeGate(strategy, judge, hold_resume=p.hold_resume, wait_secs=WAIT_S)
+        top, bottom = Tap(), Tap()
+        task = PipelineTask(Pipeline([top, gate, _StrategyTap(strategy), bottom]),
+                            cancel_on_idle_timeout=False)
+        run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+        asked = []
+
+        async def watch_heard(watch):
+            asked.append(watch)
+            return reports
+
+        async def set_paused(paused, _set=out.set_playout_paused):
+            await _set(paused)                    # the transport tells the strategy
+            await strategy.process_frame(PlayoutPauseFrame(paused=paused))
+        out.set_playout_paused = set_paused
+        p.watch_heard = watch_heard
+        try:
+            await asyncio.sleep(STARTUP_S)
+            await strategy.process_frame(BotStartedSpeakingFrame())
+            await ptask.queue_frames([TTSAudioRawFrame(b"\0\0" * 160, 16000, 1,
+                                                       context_id="r")])
+            await ptask.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+            await asyncio.sleep(0.05)
+            await p.on_onset(True)
+            await asyncio.sleep(0.3)
+            await p.on_onset(False)
+            await asyncio.sleep(RESUME_S + 0.15)   # the word's first interim only now
+            frames = [interim("Right.")]
+            if reports:
+                frames.append(SpeechHeardFrame(watch=asked[-1]))   # the STT's order
+            await task.queue_frames(frames)
+            await asyncio.sleep(0.4)
+            if reports:
+                assert judge.asked == ["Right."] and not started, (judge.asked, started)
+                assert not p.paused and p.resumes == 1, "carried on: the reply resumed"
+            else:
+                assert started and judge.asked == [], (
+                    "the window alone: the word cut the resumed reply, unjudged")
+        finally:
+            await task.cancel()
+            await run
+            await ptask.cancel()
+            await prun
 
 
 async def test_the_ledger_reads_the_paused_reply_and_what_was_heard():

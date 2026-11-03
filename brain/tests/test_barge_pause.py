@@ -1111,9 +1111,218 @@ async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_p
         session.stt.barge_hold(False)
         assert pauser._holds == set()
         assert pauser.before_cap == session.stt.close_held
+        # A quiet line waits for the STT to have heard the speech out (#275), and the
+        # start strategy hands the STT's notice back to this pauser.
+        assert pauser.watch_heard == session.stt.watch_heard
+        from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
+        agg = session.tts
+        while not isinstance(agg, LLMUserAggregator):
+            agg = agg.previous
+        start = agg._params.user_turn_strategies.start[0]
+        await start._on_speech_heard(5)
+        assert pauser._watch is None and not pauser._heard, "not this pauser's watch"
+        pauser._watch = 5
+        await start._on_speech_heard(5)
+        assert pauser._heard, "the strategy's notice reaches the session's pauser"
     finally:
         wire.connection.close()
         wire.gw_sock.close()
+
+
+# ---- HEARD OUT (#275): a quiet line waits for the STT to have heard the speech out --
+
+_FINAL_GRACE = 0.15
+
+
+class _Watch:
+    """The STT's watch_heard: each watch asked, and whether a notice will come."""
+
+    def __init__(self, reports=True):
+        self.reports, self.asked = reports, []
+
+    async def __call__(self, watch):
+        self.asked.append(watch)
+        return self.reports
+
+
+async def _paused_over_a_reply(p, task):
+    await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+    await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.05)
+    await p.on_onset(True)
+    await asyncio.sleep(0.3)                            # longer than a blip
+    assert p.paused
+
+
+async def _resumed_within(p, secs):
+    t = time.monotonic()
+    while p.paused and time.monotonic() - t < secs + 0.5:
+        await asyncio.sleep(0.005)
+    return not p.paused and time.monotonic() - t < secs
+
+
+async def test_a_quiet_line_waits_past_the_window_for_the_stt_to_hear_it_out():
+    # The live shape (2026-11-02): a short word over the reply trips only the onset
+    # test, and its first interim comes 20 ms after the quiet window resumed the reply.
+    # Where the STT will report, the window no longer resumes: the STT's notice does.
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch()
+    try:
+        await _paused_over_a_reply(p, task)
+        await p.on_onset(False)
+        assert p.watch_heard.asked == [p._watch] and p._watch is not None
+        await asyncio.sleep(RESUME_S + 0.2)
+        assert p.paused, "resumed on the window with the speech not yet heard out"
+        await p.on_speech_heard(p._watch)
+        assert await _resumed_within(p, 0.25), "heard out, no turn: resume after the grace"
+        assert p.resumes == 1 and p._noword == 0, "a word-less pause is not echo-like"
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_with_no_report_the_window_resumes_and_a_report_that_never_comes_is_bounded():
+    from teaport_brain import barge_pause as bp
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch(reports=False)
+    try:
+        await _paused_over_a_reply(p, task)
+        await p.on_onset(False)
+        assert p._watch is None, "no notice will come: nothing to wait for"
+        assert await _resumed_within(p, RESUME_S + 0.1), "the window, as before"
+    finally:
+        await task.cancel()
+        await run
+    saved, bp._HEARD_WAIT_S = bp._HEARD_WAIT_S, 0.6
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch()
+    try:
+        await _paused_over_a_reply(p, task)
+        await p.on_onset(False)
+        t = time.monotonic()
+        await asyncio.sleep(0.5)
+        assert p.paused
+        assert await _resumed_within(p, 0.25), "the report never came: its bound resumes"
+        assert 0.55 <= time.monotonic() - t <= 0.8
+    finally:
+        bp._HEARD_WAIT_S = saved
+        await task.cancel()
+        await run
+
+
+async def test_a_notice_for_earlier_speech_does_not_resume_later_speech():
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch()
+    try:
+        await _paused_over_a_reply(p, task)
+        await p.on_onset(False)
+        first = p._watch
+        await p.on_onset(True)                          # they go on talking
+        await p.on_speech_heard(first)                  # the first speech's notice
+        await asyncio.sleep(0.05)
+        await p.on_onset(False)
+        second = p._watch
+        assert second != first and p.watch_heard.asked == [first, second]
+        await p.on_speech_heard(first)                  # late: overtaken by the second
+        await asyncio.sleep(RESUME_S + 0.2)
+        assert p.paused, "an earlier speech's notice resumed over words still to come"
+        await p.on_speech_heard(second)
+        assert await _resumed_within(p, 0.25)
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_a_released_hold_waits_for_the_notice_and_then_for_what_it_decided():
+    # The judge carried on over the first words: more of the speech may still come, so
+    # the release waits on the STT as a quiet line does. And a release never resumes on
+    # the grace (review F2): what the hold decided -- the judge's words, the STT's final
+    # -- is only now on its way down, and its own arrival, if it starts no turn, resumes.
+    for notice_while_held in (False, True):
+        out, p, task, run = await _pauser_rig(max_secs=3.0)
+        p.watch_heard = _Watch()
+        try:
+            await _paused_over_a_reply(p, task)
+            p.hold_resume(True)
+            await p.on_onset(False)
+            if notice_while_held:
+                await p.on_speech_heard(p._watch)
+                await asyncio.sleep(0.25)
+                assert p.paused, "held: only the cap resumes"
+                p._resume_secs = 0.6                      # the window well clear of the grace
+                p.hold_resume(False)
+                await asyncio.sleep(_FINAL_GRACE + 0.05)
+                assert p.paused, "the release resumed on the grace, ahead of its close"
+                await p.on_final_without_turn()           # the close arrives: no turn
+            else:
+                p.hold_resume(False)
+                await asyncio.sleep(RESUME_S + 0.2)
+                assert p.paused, "released onto the window, the speech not heard out"
+                await p.on_speech_heard(p._watch)
+            assert await _resumed_within(p, 0.25), notice_while_held
+        finally:
+            await task.cancel()
+            await run
+
+
+async def test_a_close_of_earlier_speech_waits_for_the_notice_of_the_latest():
+    # "Yeah" closed with no turn (its VAD stop committed it), then a short word the VAD
+    # never heard: the close comes back after the line went quiet, but the later word
+    # may still be on its way. The notice, not the close, says all of it is in.
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch()
+    try:
+        await _paused_over_a_reply(p, task)
+        await p.on_onset(False)
+        await p.on_final_without_turn()                 # an earlier segment's close
+        await asyncio.sleep(RESUME_S + 0.2)
+        assert p.paused, "a close of earlier speech resumed over words still to come"
+        await p.on_speech_heard(p._watch)
+        assert await _resumed_within(p, 0.25)
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_a_blip_waits_for_the_stt_too_and_still_counts_as_echo_like():
+    # On Talk's 0.2 s stop a short "yeah" is a blip: it must not resume past its words.
+    out, p, task, run = await _pauser_rig(max_secs=3.0)
+    p.watch_heard = _Watch()
+    try:
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        await p.on_onset(False)                         # a blip
+        await asyncio.sleep(RESUME_S + 0.2)
+        assert p.paused, "a blip resumed on its window over words still to come"
+        await p.on_speech_heard(p._watch)
+        assert await _resumed_within(p, 0.25) and p._noword == 1, (
+            "heard out with no words, a blip's resume counts against the echo budget")
+    finally:
+        await task.cancel()
+        await run
+
+
+def test_the_strategy_hands_the_stt_s_notice_to_the_pauser_while_paused():
+    from teaport_brain.endpointing import SpeechHeardFrame
+
+    async def run():
+        told = []
+
+        async def speech_heard(watch):
+            told.append(watch)
+
+        s = PauseAwareMinWordsStrategy(min_words=2, on_speech_heard=speech_heard)
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.process_frame(SpeechHeardFrame(watch=1))
+        assert not told, "not paused: nothing to resume"
+        await s.process_frame(PlayoutPauseFrame(paused=True))
+        await s.process_frame(SpeechHeardFrame(watch=2))
+        assert told == [2]
+
+    asyncio.run(run())
 
 
 def main():
