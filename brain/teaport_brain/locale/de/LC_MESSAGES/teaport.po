@@ -319,3 +319,19 @@ msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "Dieses Gespräch wird aufgezeichnet."
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "Ich kann noch keine Fragen beantworten, weil das Konto, das ich für meine Antworten nutze, noch nicht eingerichtet ist."
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "Ich kann erst Fragen beantworten, wenn ich eingerichtet bin. Sag „Richte das WLAN ein“, damit ich online komme."
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "Tut mir leid, ich kann gerade keine Anrufe annehmen. Bitte versuch es später noch einmal."
+
+msgid "I'm ready now. Please ask me again."
+msgstr "Jetzt bin ich bereit. Frag mich bitte noch einmal."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "Jetzt bin ich bereit. Bitte starte ein neues Gespräch mit mir."

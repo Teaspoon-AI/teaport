@@ -291,7 +291,7 @@ class ClientNotes(FrameProcessor):
                  respond_interval_s: float = RESPOND_INTERVAL_S,
                  react_max_wait_s: float = REACT_MAX_WAIT_S,
                  burst: int = BURST, refill_per_s: float = REFILL_PER_S,
-                 clock=time.monotonic):
+                 reactions: bool = True, clock=time.monotonic):
         super().__init__()
         self._context = context
         self._gate = gate
@@ -303,6 +303,10 @@ class ClientNotes(FrameProcessor):
         self._max_notes = max(1, max_notes)
         self._respond_interval = respond_interval_s
         self._react_max_wait = react_max_wait_s
+        # False: no model to react with (#277) -- every note, and every notice, goes in
+        # as context only; a reaction would only have the box say it is not set up,
+        # unprompted.
+        self._reactions = reactions
         self._clock = clock
         self._bucket = _Bucket(burst, refill_per_s, clock())
         self._last_respond: float | None = None
@@ -379,9 +383,10 @@ class ClientNotes(FrameProcessor):
                               message="too many notes in a short time")
             return
 
-        if frame.respond:
+        respond = bool(frame.respond) and self._reactions
+        if respond:
             self._last_respond = now
-        self._pending.append(_Note(text, bool(frame.respond), frame.kind,
+        self._pending.append(_Note(text, respond, frame.kind,
                                    now + self._react_max_wait))
         if len(self._pending) > self._max_notes:
             # They could never all stay in the context anyway (see _retain).
@@ -450,6 +455,7 @@ class ClientNotes(FrameProcessor):
         text = " ".join(_text_only(text).split())
         if not text:
             return
+        respond = respond and self._reactions
         self._pending.append(_Note(text, respond, None,
                                    self._clock() + self._react_max_wait if respond else 0.0,
                                    notice=True))

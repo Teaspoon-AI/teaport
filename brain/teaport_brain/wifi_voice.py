@@ -12,7 +12,9 @@
 # The phrase only works while the box is offline (NetworkManager's connectivity check
 # does not say "full": _box_online): online, the model is there, and "set up Wi-Fi"
 # said in conversation goes to it like any other words -- it decides, and its way in is
-# the wifi_setup tool (tools.py), which hands over to the same flow. Once setup is
+# the wifi_setup tool (tools.py), which hands over to the same flow. A session with no
+# model at all (#277: no key yet) has nobody to leave it to, so there the phrase works
+# online too. Once setup is
 # asking or running, its answers
 # ("yes", "repeat", "cancel") are taken here however it began. Both exist only where
 # that tool is active — TEAPORT_TOOL_WIFI_SETUP on, the
@@ -279,8 +281,12 @@ class WifiSetupVoice(FrameProcessor):
     user's final transcripts itself and speaks fixed sentences."""
 
     def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
-                 lang_fn=lambda: "en-us", alive=None, online=None, **kw):
+                 lang_fn=lambda: "en-us", alive=None, online=None, model: bool = True,
+                 **kw):
         super().__init__(**kw)
+        # The session has a model (#277). Without one the phrase works online too: the
+        # rule that leaves it to the model online has no model to leave it to.
+        self.model = model
         # taken_turn.TakenWords, where the session keeps one (agent_session).
         self.taken_words = None
         self._lang_fn = lang_fn  # the session's TTS language now ('en-us', 'es', ...)
@@ -318,8 +324,17 @@ class WifiSetupVoice(FrameProcessor):
 
     # -- speaking
     async def say(self, text: str) -> None:
-        self._said.append((self._clock(), _norm(text)))
+        self.note_said(text)
         await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
+
+    def note_said(self, text: str) -> None:
+        """`text` is being said: heard back, it is the box's own voice (_echo). say()'s,
+        and the no-model line's, which holds the start phrase (llm_error_speaker.py)."""
+        self._said.append((self._clock(), _norm(text)))
+
+    async def box_online(self) -> bool:
+        """Is the box on the internet (_box_online, or the check it was given)?"""
+        return await self._online()
 
     def _echo(self, text: str) -> bool:
         """Is `text` the box's own voice, heard back: while it speaks or just after, a
@@ -615,7 +630,7 @@ class WifiSetupVoice(FrameProcessor):
         if self.state == "idle":
             if not heard("start", text, t):
                 return False
-            if await self._online():
+            if self.model and await self._online():
                 logger.info("wifi setup: the phrase, but the box is online — the model's call")
                 return False
             await self.begin()

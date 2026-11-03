@@ -93,7 +93,7 @@ from teaport_brain.persona import HOST_CONTEXT, HOST_RULES, build_system_prompt,
 from teaport_brain.raw_llm_capture import RawLLMCapture
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
-from teaport_brain.services import make_llm, make_stt, make_tts
+from teaport_brain.services import NoModel, make_llm, make_stt, make_tts, model_missing
 from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
@@ -295,6 +295,9 @@ class AgentSession:
         self.context = context
         self.stt = stt
         self.tts = tts
+        # None: no model could be made (#277). The session runs on without one: its
+        # requests for a reply get a fixed line (llm_error_speaker.py, NO MODEL AT ALL);
+        # a phone call is told so and hung up instead (sip_server).
         self.llm = llm
         self.ledger = ledger
         self.followup_gate = followup_gate
@@ -400,6 +403,8 @@ class AgentSession:
                                    "not recorded")
         elif rec is not None:
             rec.arm("any")
+        # Without a model the cue goes in the same way: its request is the one the
+        # no-model line answers (llm_error_speaker.py), so a greeting says it.
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         if prepared:
@@ -440,9 +445,9 @@ class AgentSession:
         of the context with the greeting cue, without tools -- so nothing is said or kept
         until greet(prepared=...) speaks it. None when the STT cannot hear (greet() says
         so instead), or the model gave no usable words (greet() asks it again, the usual
-        way)."""
+        way). None with no model (#277): greet() has its line said."""
         await self._stt_resolved()
-        if self.stt.stt_available is not True:
+        if self.stt.stt_available is not True or self.llm is None:
             return None
         ctx = LLMContext(list(self.context.get_messages())
                          + [{"role": "user", "content": self._GREETING}])
@@ -691,6 +696,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     OpenClaw path gets exactly the sequence gateway_server built inline, and the SIP
     path gets the same full stack.
 
+    The model is optional (#277). With no key or no endpoint address (services.NoModel)
+    the session is built all the same, with no LLM and nothing that needs one (tools,
+    speculation, the barge-in judge, recall): speech recognition, the fixed-phrase
+    processors (Wi-Fi setup) and the fixed lines still run, and LLMErrorSpeaker answers
+    every request for a reply in the LLM's place (llm_error_speaker.py, NO MODEL AT ALL).
+    The next session made once a key exists has a model; this one ends when it finds
+    one could be made.
+
     - voice / language: TTS selection (OpenClaw forwards them as WS query params). A
       voice's prefix implies its language; language can override the phonemizer.
       Missing/unknown → engine defaults (af_heart/en-us).
@@ -780,13 +793,21 @@ def build_agent_session(transport, *, voice: str | None = None,
     # the user's (echo_guard.py). The tap that tells it what played joins the pipeline.
     guard = echo_guard.EchoGuard() if echo_guard.ENABLED and "local" in client_features else None
     stt.echo_guard = guard
-    llm = make_llm()
+    try:
+        llm = make_llm()
+    except NoModel as e:
+        # Not a model that fails (LLMErrorSpeaker's) but none at all: the session runs on
+        # without one (the docstring; #277).
+        logger.warning(f"no model for this session ({model_missing() or e}) — it runs "
+                       "without one: speech recognition, Wi-Fi setup and fixed lines only")
+        llm = None
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
 
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
-    # that tool is on. A call itself is never asked.
-    prompt = call_prompt.CallPrompt() if front_end in ("talk", "room") else None
+    # that tool is on, and a model to call it. A call itself is never asked.
+    prompt = (call_prompt.CallPrompt() if front_end in ("talk", "room") and llm is not None
+              else None)
     # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt,
@@ -795,15 +816,20 @@ def build_agent_session(transport, *, voice: str | None = None,
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
-    logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}")
+    logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}"
+                + (" (offered to no model: there is none)" if llm is None else ""))
     # Wi-Fi setup's voice half: only where its tool is active (switched on, a local
-    # client, the unit installed). It also answers the spoken phrase with no LLM.
+    # client, the unit installed). It also answers the spoken phrase with no LLM --
+    # online too when there is none (wifi_voice.py).
     # It speaks the voice's language, read live (a switch_voice switches it too).
-    wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
+    wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
+                           model=llm is not None)
             if any(t.name == "wifi_setup" for t in session_tools) else None)
     # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
-    # that tool is active (switched on, a gateway, the room or a Talk session).
-    pairing = (SessionPairing() if any(t.name == "pair_device" for t in session_tools)
+    # that tool is active (switched on, a gateway, the room or a Talk session) and a model
+    # can call it.
+    pairing = (SessionPairing()
+               if llm is not None and any(t.name == "pair_device" for t in session_tools)
                else None)
     # Words something else answers -- Wi-Fi setup's, OpenClaw's run control's (built below
     # once the gate exists) -- go on emptied, and this ends the turn they opened
@@ -851,6 +877,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     if wake_gate is not None:
         wake_gate.context = context
         wake_gate.greeting = AgentSession._GREETING
+        # With no model the room conversation is not this session's to keep or continue
+        # (#277): turns nobody answered, restored into the next session that has a model,
+        # would be answered there out of nowhere, its greeting skipped.
+        wake_gate.remembers = llm is not None
     if wake_gate is not None and host is None and agent_backend.HAS_AGENT:
         # A room session opened while the gateway could not answer (starting or
         # restarting: teaport-brain is not ordered after it) was built from the persona
@@ -966,8 +996,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Fires memory_search on the interim and injects the hit before the LLM (placed in
     # the pipeline below). Only with a gateway: without one every search returns None
     # after its full timeout, for nothing.
-    memory_recall = MemoryRecall(context) if agent_backend.HAS_AGENT else None
-    if speculate.ENABLED:
+    memory_recall = (MemoryRecall(context) if agent_backend.HAS_AGENT and llm is not None
+                     else None)
+    speculator = None
+    if speculate.ENABLED and llm is not None:
         # Ask the LLM on the settled interim (or a final) of a turn the stop strategy
         # has not concluded on; the service adopts the stream at the commit if the
         # context is still what was asked. The corrector's rewrite of a cut reply is
@@ -996,8 +1028,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     if stt.slices_asked:
         turn_text = TurnTextCorrector(
             context_aggregator.user(),
-            speculator=speculator if speculate.ENABLED else None, taken_words=taken_words)
-        if speculate.ENABLED:
+            speculator=speculator, taken_words=taken_words)
+        if speculator is not None:
             # Words that went elsewhere are no turn's: a speculation asked on them -- on
             # the stop's preview, maybe with no turn open (stt.py THE PEEK) -- stands down.
             async def _stand_down(why):
@@ -1027,7 +1059,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (barge_pause.py, #224): the reply carries on over a backchannel. Shown the reply as
     # the ledger has it at the pause, and the caller's words that asked for it.
     barge_judge = None
-    if barge_pauser is not None and barge_pause.JUDGE:
+    if barge_pauser is not None and barge_pause.JUDGE and llm is not None:
         async def _judge_barge(said):
             paused = ledger.paused_reply()
             if paused is None:
@@ -1056,9 +1088,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # The caller started speaking: open the model's connection now if it is not open, so
     # the request carrying their words does not wait on a lookup and a handshake after
     # they stop (services.warm_connection; nothing happens while it is open).
-    @context_aggregator.user().event_handler("on_user_turn_started")
-    async def _warm_llm(_aggregator, _strategy):
-        llm.warm_connection()
+    if llm is not None:
+        @context_aggregator.user().event_handler("on_user_turn_started")
+        async def _warm_llm(_aggregator, _strategy):
+            llm.warm_connection()
 
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
@@ -1081,10 +1114,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (llm.judge_gist, asked as the reply's stream ends) and, cut, for the rest
     # (llm.judge_cut) and for whether the caller still wants it (llm.judge_decline,
     # #231) --, the gate is the door its runs go through, and a room's sleep keeps it
-    # with the conversation.
-    owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS, judge=llm.judge_cut,
-                gist=llm.judge_gist, decline=llm.judge_decline)
-    llm.owed = owed
+    # with the conversation. With no model nothing is ever owed (no tool runs), and it
+    # has no judges: a room's restored records still travel on with the conversation.
+    owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS,
+                judge=llm.judge_cut if llm is not None else None,
+                gist=llm.judge_gist if llm is not None else None,
+                decline=llm.judge_decline if llm is not None else None)
+    if llm is not None:
+        llm.owed = owed
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
     if wake_gate is not None:
@@ -1094,8 +1131,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     followup_trigger = FollowupTrigger() if context_notes else None
     # Client context notes (teaport.talk.context; /talk only). Removals go through the
     # corrector so its positional window survives them.
+    # With no model, notes go in as context only: a reaction would be a request for a
+    # reply nobody asked for, and its answer the not-set-up line.
     client_notes = (ClientNotes(context, followup_gate, followup_trigger,
-                                drop_messages=heard_corrector.drop_messages)
+                                drop_messages=heard_corrector.drop_messages,
+                                reactions=llm is not None)
                     if context_notes else None)
     if wifi is not None:
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
@@ -1115,6 +1155,19 @@ def build_agent_session(transport, *, voice: str | None = None,
     bed = (ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
                          gate=followup_gate)
            if thinking_sound.ENABLED and (front_end != "sip" or AGENT_FIRST) else None)
+    # Says something when a completion fails, in the voice's language (read live, as
+    # WifiSetupVoice reads it). With no model it is always there: it answers every
+    # request for a reply in the LLM's place (llm_error_speaker.py, NO MODEL AT ALL) --
+    # the room with how to get online where spoken Wi-Fi setup is on -- and ends the
+    # session (`end`, set below) once it finds a model could be made: through the
+    # client's restart where it has one (the room's bridge then opens the next session
+    # awake), else as any session ends. (A phone call never gets this far: sip_server
+    # says its line and hangs up.)
+    error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
+                                     no_model=llm is None, wifi=wifi, gate=followup_gate,
+                                     model_back=lambda: model_missing() is None,
+                                     restarts="restart" in client_features)
+                     if llm_error_speaker.ENABLED or llm is None else None)
 
     input_mute = InputMute()
     pipeline = Pipeline([p for p in [
@@ -1164,9 +1217,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
         # single LLM error and only ever caught the TTS's, which it then blamed on the
         # model.
-        # In the voice's language, read live as WifiSetupVoice reads it.
-        (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
-         if llm_error_speaker.ENABLED else None),
+        # With no model it is also what answers in the LLM's place (built above).
+        error_speaker,
         llm,
         # Retires ClientNotes' reaction order the moment the model starts answering from
         # it. HERE and nowhere else: LLMTextFrame is consumed by the TTS
@@ -1274,6 +1326,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     _end_session_when_unusable(transport_output, "reach the user", task)
     if client_notes is not None:
         client_notes.task = task  # a reaction is an LLMRunFrame queued on it
+    if llm is None:
+        # A model can be made now: after its "I'm ready now" the session ends (drained,
+        # so the line plays), and the front-end's next one is built with the model.
+        error_speaker.end = task.stop_when_done
 
     @task.event_handler("on_setup_timeout")
     async def _on_setup_timeout(_task):
@@ -1293,20 +1349,22 @@ def build_agent_session(transport, *, voice: str | None = None,
     # note, told by one run as it lands, and re-offered once at a long lull.
     # Agent-first runs consults SYNCHRONOUSLY on the turn (nothing owed);
     # the ThinkingSound bed covers the wait and TURN-TIMING measures to the answer.
-    register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
-                   owed=None if AGENT_FIRST else owed,
-                   # Lets the consult narrator fit its progress lines into a gap
-                   # rather than talking over the user (see _consult_progress).
-                   gate=followup_gate,
-                   client_features=tool_ctx.client_features,
-                   wifi_voice=wifi,
-                   call_prompt=prompt,
-                   run_control=tool_ctx.run_control,
-                   notes=client_notes,
-                   # OpenClaw's Talk relay stores every final in the session a
-                   # consult starts from (captions.py, caption_ahead).
-                   captions_ahead=front_end == "talk",
-                   front_end=front_end, via=via, pairing=pairing)
+    # No model, no tools: nothing would call them.
+    if llm is not None:
+        register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
+                       owed=None if AGENT_FIRST else owed,
+                       # Lets the consult narrator fit its progress lines into a gap
+                       # rather than talking over the user (see _consult_progress).
+                       gate=followup_gate,
+                       client_features=tool_ctx.client_features,
+                       wifi_voice=wifi,
+                       call_prompt=prompt,
+                       run_control=tool_ctx.run_control,
+                       notes=client_notes,
+                       # OpenClaw's Talk relay stores every final in the session a
+                       # consult starts from (captions.py, caption_ahead).
+                       captions_ahead=front_end == "talk",
+                       front_end=front_end, via=via, pairing=pairing)
 
     if pairing is not None:
         @task.event_handler("on_pipeline_finished")

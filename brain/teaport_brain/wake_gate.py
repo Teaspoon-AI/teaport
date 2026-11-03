@@ -122,6 +122,9 @@ class WakeGate:
         # (the gateway could not answer when it opened) asks for it again
         # (build_agent_session's refresh_host). None: nothing to ask.
         self.refresh = None
+        # Keeps the mic conversation (saves it at the end, restores it at a wake): False
+        # for a session with no model (#277), whose turns nobody answered.
+        self.remembers = True
         self.woke = not asleep
         self._clock = clock
         self._carry: tuple[str, float] | None = None   # (tail, when) -- see CARRY_SECS
@@ -157,7 +160,7 @@ class WakeGate:
                 await refresh()
             except Exception as e:  # noqa: BLE001 — the wake must go on
                 logger.warning(f"wake: the voice context could not be asked again ({e!r})")
-        restored = self.store.take(self.conversation_secs)
+        restored = self.store.take(self.conversation_secs) if self.remembers else None
         if restored and self.context is not None:
             self.context.add_messages(restored)
             if self.owed is not None:
@@ -177,7 +180,7 @@ class WakeGate:
 
     def ended(self) -> None:
         """The session is over: what it said is the mic conversation, to be continued."""
-        if self.woke and self.context is not None:
+        if self.woke and self.remembers and self.context is not None:
             records = []
             if self.owed is not None:
                 self.owed.close_session()
