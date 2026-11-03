@@ -1131,6 +1131,9 @@ async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_p
 
 # ---- HEARD OUT (#275): a quiet line waits for the STT to have heard the speech out --
 
+_FINAL_GRACE = 0.15
+
+
 class _Watch:
     """The STT's watch_heard: each watch asked, and whether a notice will come."""
 
@@ -1230,10 +1233,11 @@ async def test_a_notice_for_earlier_speech_does_not_resume_later_speech():
         await run
 
 
-async def test_a_released_hold_waits_for_the_notice_too():
+async def test_a_released_hold_waits_for_the_notice_and_then_for_what_it_decided():
     # The judge carried on over the first words: more of the speech may still come, so
-    # the release waits on the STT as a quiet line does -- and resumes after the grace
-    # once the notice has come, even if it came while the judge still held.
+    # the release waits on the STT as a quiet line does. And a release never resumes on
+    # the grace (review F2): what the hold decided -- the judge's words, the STT's final
+    # -- is only now on its way down, and its own arrival, if it starts no turn, resumes.
     for notice_while_held in (False, True):
         out, p, task, run = await _pauser_rig(max_secs=3.0)
         p.watch_heard = _Watch()
@@ -1245,8 +1249,12 @@ async def test_a_released_hold_waits_for_the_notice_too():
                 await p.on_speech_heard(p._watch)
                 await asyncio.sleep(0.25)
                 assert p.paused, "held: only the cap resumes"
-            p.hold_resume(False)
-            if not notice_while_held:
+                p.hold_resume(False)
+                await asyncio.sleep(_FINAL_GRACE + 0.05)
+                assert p.paused, "the release resumed on the grace, ahead of its close"
+                await p.on_final_without_turn()           # the close arrives: no turn
+            else:
+                p.hold_resume(False)
                 await asyncio.sleep(RESUME_S + 0.2)
                 assert p.paused, "released onto the window, the speech not heard out"
                 await p.on_speech_heard(p._watch)

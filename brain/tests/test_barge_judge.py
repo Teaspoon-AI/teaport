@@ -345,6 +345,25 @@ async def test_the_pauser_holds_its_resume_while_judging():
         await run
 
 
+async def test_the_stt_s_notice_is_held_behind_the_words_being_judged():
+    # Review F3: the notice says every word of the speech is in. Held with the words the
+    # judge decides, it reaches the start strategy only after them -- on a CONTINUE,
+    # after their carried-over close -- never ahead of a STOP's words.
+    for verdict in (CONTINUE, STOP):
+        judge = _Judge({"Okay": verdict}, delay=0.2)
+        async with GateRig(judge) as rig:
+            await rig.task.queue_frames([interim("Okay"), SpeechHeardFrame(watch=1)])
+            await asyncio.sleep(0.1)
+            assert not any(isinstance(f, SpeechHeardFrame) for _, _, f in rig.bottom.frames), (
+                "the notice overtook the words the judge holds")
+            await asyncio.sleep(0.3)
+            kinds = [type(f).__name__ for _, d, f in rig.bottom.frames
+                     if d == FrameDirection.DOWNSTREAM
+                     and isinstance(f, (InterimTranscriptionFrame, SpeechHeardFrame))]
+            assert kinds == (["SpeechHeardFrame"] if verdict == CONTINUE
+                             else ["InterimTranscriptionFrame", "SpeechHeardFrame"]), kinds
+
+
 class _StrategyTap(FrameProcessor):
     """The aggregator's side of the gate: the start strategy reads what the gate lets on."""
 

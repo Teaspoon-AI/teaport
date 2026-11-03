@@ -27,13 +27,14 @@
 #   * No words: a cough, a breath, a backchannel too short to count. Playout RESUMES
 #     from the very sample it stopped on -- the audio waited in the transport's own
 #     queue -- so nothing is lost or repeated. It resumes a short grace after the STT
-#     says the speech had no turn in it: its close came back so (a final under the word
-#     guard, or a wordless close), or, where the engine reports how far it has
-#     transcribed, that report passed the speech (HEARD OUT, below). Failing either, it
-#     resumes TEAPORT_BARGE_PAUSE_RESUME_S after the line went quiet, or _HEARD_WAIT_S
-#     while that report is awaited. With the VAD's own stop delay, a cough stalls the
-#     bot about ENDPOINT_STOP_SECS + 0.7 s (the report's median, plus the grace). A blip
-#     under 250 ms resumes after 0.3 s where there is no report to wait for.
+#     says the speech had no turn in it: where the engine reports how far it has
+#     transcribed, once that report has passed the speech (HEARD OUT, below); else once
+#     its close came back so (a final under the word guard, or a wordless close).
+#     Failing that, it resumes TEAPORT_BARGE_PAUSE_RESUME_S after the line went quiet,
+#     or, while the report is awaited, the longer of that and _HEARD_WAIT_S. With the
+#     VAD's own stop delay, a cough stalls the bot about ENDPOINT_STOP_SECS + 0.9 s (the
+#     report's median, plus the grace). A blip under 250 ms resumes after 0.3 s where
+#     there is no report to wait for.
 #     TEAPORT_BARGE_PAUSE_MAX_S caps a pause from its start; a barge-in the STT still
 #     holds there (stt.py TURN TEXT) closes on the words in hand first, and the reply
 #     resumes _FINAL_GRACE_S after that close, so its words are decided paused.
@@ -68,15 +69,20 @@
 # the report has passed the caller's speech (stt.watch_heard, the onset test's own speech
 # end): every word of it is then in the interims ahead of that notice
 # (endpointing.SpeechHeardFrame), which comes down behind them, through the judge's
-# gate, to the start strategy. Words there are judged as any over the pause are; with
-# none, the reply resumes _FINAL_GRACE_S after the notice. The quiet window is then only the
-# bound on a report that does not come, at _HEARD_WAIT_S: on the box (1,009 VAD stops,
-# 2026-10-30..11-03) the report passed the speech end a median 0.56 s after the stop, p99
-# 1.08 s, at most 1.19 s, so a cough waits about what the window made it wait. A blip
-# waits on it as well -- on Talk's 0.2 s stop a short "yeah" is one -- and a release of
-# the judge's or the STT's hold on the same notice. An engine without the report, or a
-# session that has none yet, resumes on the window as before. formal/UserTurn.tla's
-# NoUnjudgedWords checks it (JUDGE = "quietWindow" is the window alone).
+# gate, to the start strategy. "Passed" is a sliced turn's own rule for its final (stt.py
+# THE CUT'S MARGIN): both the start and the end bound past the voice end plus 200 ms,
+# since a word is returned once complete and its stamps can trail its voice. Words that
+# come first are judged as any over the pause are; with none, the reply resumes
+# _FINAL_GRACE_S after the notice. A close of the speech no longer resumes it while the
+# notice is awaited (a close may be of an earlier segment than the latest speech), and
+# a hold's release (the judge's, the STT's) never resumes on the grace: what it decided
+# is still on its way down. The quiet window is then only the bound on a report that
+# does not come: the longer of it and _HEARD_WAIT_S. On the box the same bounds passed a
+# turn's commit a median 0.73 s after it, at most 1.98 s (1,494 turns), so a cough waits
+# a little longer than the window made it wait. A blip waits too -- on Talk's 0.2 s
+# stop a short "yeah" is one. An engine without the report, or a session that has none
+# yet, resumes on the window as before. formal/UserTurn.tla's NoUnjudgedWords checks it
+# (JUDGE = "quietWindow" is the window alone).
 #
 # Three things it does NOT pause, each because pausing there cost more than it saved:
 #
@@ -230,9 +236,11 @@ _BLIP_RESUME_S = 0.3
 # After the STT's close of the speech came back with no turn, resume this much later.
 _FINAL_GRACE_S = 0.15
 # The longest a quiet line waits for the STT to say it has heard the speech out (HEARD
-# OUT), past which the engine is further behind than any report measured on the box
-# (at most 1.19 s after the VAD stop) and the reply resumes as on the window alone.
-_HEARD_WAIT_S = 2.0
+# OUT), past which the engine is further behind than any measured on the box and the
+# reply resumes as on the window alone. The same bounds a sliced turn's final waits on
+# passed its commit a median 0.73 s after it, p99 1.44 s, at most 1.98 s (1,494 turns,
+# 2026-10-31..11-03).
+_HEARD_WAIT_S = 2.5
 # The transport's own end to a pause (sip_transport._wait_if_paused, which takes it from
 # here): a write blocked this long resumes whatever the pauser asks, since pipecat's
 # MediaSender bounds a write at audio_out_write_timeout_secs (10 s) and treats running
@@ -410,15 +418,18 @@ class BargeInPauser(FrameProcessor):
             self._schedule_resume(_FINAL_GRACE_S, "the STT heard it out with no turn in it",
                                   echo=self._blip)
 
-    def _quiet_resume(self, why: str):
+    def _quiet_resume(self, why: str, released: bool = False):
         """The line is quiet over the pause with nothing holding it: resume after a
         grace if the STT has heard the speech out; while its notice is awaited, at the
         latest _HEARD_WAIT_S on (HEARD OUT); with no notice to come, on the window (a
-        blip's, _BLIP_RESUME_S, for speech too short to be more than echo)."""
-        if self._heard:
+        blip's, _BLIP_RESUME_S, for speech too short to be more than echo). A hold that
+        lets go (`released`) never resumes on the grace: what it decided -- the judge's
+        words, the STT's final -- is only now on its way down to the start strategy,
+        and its own arrival resumes sooner if it starts no turn."""
+        if self._heard and not released:
             self._schedule_resume(_FINAL_GRACE_S, f"{why}, the speech heard out",
                                   echo=self._blip)
-        elif self._watch is not None:
+        elif self._watch is not None and not self._heard:
             wait = max(self._resume_secs, _HEARD_WAIT_S)
             self._schedule_resume(wait, f"{why}, no report from the STT within {wait:.1f}s",
                                   echo=self._blip)
@@ -447,7 +458,7 @@ class BargeInPauser(FrameProcessor):
         self._blip = False
         if (not self._holds and self._paused and not self._speaking
                 and self._resume_task is None):
-            self._quiet_resume(f"{who} let the reply carry on")
+            self._quiet_resume(f"{who} let the reply carry on", released=True)
 
     async def _speech(self, source: str, started: bool):
         was_speaking = self._speaking

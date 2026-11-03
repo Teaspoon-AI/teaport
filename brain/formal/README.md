@@ -2830,6 +2830,11 @@ What is not modelled:
 - How long the report takes: `HeardOut` can come at any point after the caller falls
   quiet. The pauser's bound on waiting for it is a timer, so it is in the `timed` rows
   only, as the hold's are.
+- That the notice comes behind every word of the speech. `HeardOut` assumes it; the STT
+  keeps it by the bounds a sliced turn's final waits on (a word is returned once
+  complete, so the start bound must pass the speech too), which
+  `test_stt_transcription_progress.py` pins. In these rows `NoUnjudgedWords` therefore
+  checks the pause's resume: no resume while words of the speech may still come.
 - The pause cap (at most 7.5 s, under the transport's 8 s write guard): a caller still talking keeps the pause; the cap ends it as a pause end.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs

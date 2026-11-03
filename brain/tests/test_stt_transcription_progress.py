@@ -21,10 +21,11 @@
 #     so the strategy decides it with the window; a commit already sent for the stop,
 #     or a session without the report, gets neither.
 #   * the barge-in pauser's watch (stt.watch_heard, #275) is answered with
-#     SpeechHeardFrame once the report passes the onset test's voice end plus the
+#     SpeechHeardFrame once the report passes the onset test's voice end plus its own
 #     margin -- all the audio sent, with no marks or audio passed unsent -- once, the
-#     latest watch only, never across sessions; a sliced session waits on its end bound,
-#     and a session without the report says no notice will come.
+#     latest watch only, never across sessions, and behind a word stamped past the
+#     voice; a sliced session waits on both its bounds, and a session without the
+#     report says no notice will come.
 #
 # Run: python test_stt_transcription_progress.py   (or via pytest test_suite.py)
 #
@@ -278,15 +279,19 @@ def heard(s):
     return [f.watch for f in s.pushed if isinstance(f, SpeechHeardFrame)]
 
 
+HM = 200             # the watch's own margin (stt._HEARD_MARGIN_MS, = _VOUCH_MS)
+
+
 async def test_the_pausers_watch_is_answered_once_the_report_passes_the_voice():
+    assert stt_mod._HEARD_MARGIN_MS == HM == stt_mod._VOUCH_MS
     s = Recorder()
     await created(s)
     await audio(s, 2000)
     s.vad_analyzer = _Voice(s, 500)            # the voice ended at 1500 ms: no VAD stop
     assert await s.watch_heard(7) is True
-    await progress(s, 1500 + MARGIN - 20)
+    await progress(s, 1500 + HM - 20)
     assert heard(s) == [], "short of the margin past the voice's end"
-    await progress(s, 1500 + MARGIN)
+    await progress(s, 1500 + HM)
     assert heard(s) == [7], "every word of the speech is in: the pauser is told"
     await audio(s, 400)
     await progress(s, 2300)
@@ -307,9 +312,9 @@ async def test_with_no_marks_or_audio_unsent_the_watch_waits_for_all_audio_sent(
     await created(s)
     await audio(s, 2000)
     assert await s.watch_heard(1) is True      # no marks: all 2000 ms sent so far
-    await progress(s, 1900 + MARGIN)
+    await progress(s, 1900 + HM)
     assert heard(s) == []
-    await progress(s, 2000 + MARGIN)
+    await progress(s, 2000 + HM)
     assert heard(s) == [1]
     # audio passed unsent since the caller's start: the marks cannot be placed
     s = Recorder()
@@ -322,9 +327,9 @@ async def test_with_no_marks_or_audio_unsent_the_watch_waits_for_all_audio_sent(
     await audio(s, 400)                        # 1000 ms sent, 1200 ms passed down
     s.vad_analyzer = _Voice(s, 900)
     assert await s.watch_heard(2) is True
-    await progress(s, 300 + MARGIN)
+    await progress(s, 300 + HM)
     assert heard(s) == [], "the voice's end is not placed past a gap: all sent counts"
-    await progress(s, 1000 + MARGIN)
+    await progress(s, 1000 + HM)
     assert heard(s) == [2]
 
 
@@ -335,9 +340,9 @@ async def test_a_new_watch_replaces_the_last_and_a_new_session_drops_it():
     assert await s.watch_heard(1)
     await audio(s, 1000)
     assert await s.watch_heard(2)              # the caller spoke again: a later end
-    await progress(s, 1000 + MARGIN)
+    await progress(s, 1000 + HM)
     assert heard(s) == [], "the replaced watch is not answered"
-    await progress(s, 2000 + MARGIN)
+    await progress(s, 2000 + HM)
     assert heard(s) == [2]
     await audio(s, 500)
     assert await s.watch_heard(3) and heard(s) == [2]
@@ -349,24 +354,54 @@ async def test_a_new_watch_replaces_the_last_and_a_new_session_drops_it():
     assert heard(s) == [2], "the old session's watch: the pauser's bound resumes it"
 
 
-async def test_no_watch_without_a_report_and_a_sliced_session_waits_on_its_end_bound():
+async def sliced():
+    s = Recorder(progress=False)
+    await created(s, capabilities=("transcription.progress", "transcription.preview"))
+    s._slicing = True
+    return s
+
+
+async def bounds(s, start, end):
+    await s._handle_message({"type": "transcription.progress", "decoded_through_ms": 9000,
+                             "audio_through_ms": start, "end_through_ms": end})
+
+
+async def test_no_watch_without_a_report_and_a_sliced_session_waits_on_both_bounds():
     s = Recorder()
     await created(s, capabilities=None)
     await audio(s, 1000)
     assert await s.watch_heard(1) is False, "no report will say: the pauser's window"
     # Sliced: a word is returned once complete, so the decoder's own position is no
-    # bound on it -- the slices' end bound is (stt.py TURN TEXT).
-    s = Recorder(progress=False)
-    await created(s, capabilities=("transcription.progress", "transcription.preview"))
-    s._slicing = True
-    await audio(s, 1000)
-    assert await s.watch_heard(4) is True
-    await s._handle_message({"type": "transcription.progress", "decoded_through_ms": 5000,
-                             "audio_through_ms": 5000, "end_through_ms": 1000 + MARGIN - 20})
-    assert heard(s) == [], "the decoder is past it, the words ending in it are not all in"
-    await s._handle_message({"type": "transcription.progress", "decoded_through_ms": 5000,
-                             "audio_through_ms": 5000, "end_through_ms": 1000 + MARGIN})
-    assert heard(s) == [4]
+    # bound on it -- the slices' bounds are, both of them (stt.py TURN TEXT).
+    for start, end, why in ((5000, 1000 + HM - 20, "a word ending inside the margin"),
+                            (1000 + HM - 20, 5000, "a word starting inside the margin")):
+        s = await sliced()
+        await audio(s, 1000)
+        assert await s.watch_heard(4) is True
+        await bounds(s, start, end)
+        assert heard(s) == [], f"{why} may still come"
+        await bounds(s, 1000 + HM, 1000 + HM)
+        assert heard(s) == [4]
+
+
+async def test_a_word_stamped_past_the_voice_still_comes_ahead_of_the_notice():
+    # Review F1: the engine stamps "Right." as ending 200 ms past Silero's voice end, and
+    # it is still being decoded when the end bound has passed the voice end plus the
+    # report's margin. The notice must not go down ahead of it: the pause would resume
+    # on it, and the word land on the playing reply.
+    from pipecat.frames.frames import InterimTranscriptionFrame
+    s = await sliced()
+    await audio(s, 2000)
+    s.vad_analyzer = _Voice(s, 500)            # the voice ended at 1500 ms
+    assert await s.watch_heard(1)
+    await bounds(s, 1390, 1650)                # a word starting after 1390 may come
+    await s._handle_message({"type": "transcription.delta", "delta": " Right.",
+                             "end_ms": 1700, "audio_ms": 1400})
+    await bounds(s, 1700, 1700)
+    assert heard(s) == [1]
+    order = [type(f).__name__ for f in s.pushed
+             if isinstance(f, (SpeechHeardFrame, InterimTranscriptionFrame))]
+    assert order == ["InterimTranscriptionFrame", "SpeechHeardFrame"], order
 
 
 def main():

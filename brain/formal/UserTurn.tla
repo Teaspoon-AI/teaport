@@ -1648,11 +1648,13 @@ StartAnswer ==
     /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    \* As at BotStart: only speech it is paused for at its start is its pause's.
+    /\ unheard' = pausedP'
+    /\ UNCHANGED <<judging, grown, stopHeld, resumedUnder, resumeOverWords, unjudged>>
 AnswerReady == ~endQueued /\ answer = "asked" /\ ~botSpeaking /\ ~paused /\ cut = "none"
 AnswerStart ==
     /\ AnswerReady /\ ~userSpeaking            \* the TTS's speech hold
     /\ StartAnswer
-    /\ UNCHANGED judgeVars
 
 \* The TTS's speech hold runs out (TTS_USER_SPEECH_HOLD_MAX_S) with the caller still
 \* talking: the answer plays -- or, capDiscard, is discarded.
@@ -1668,8 +1670,8 @@ TtsCap ==
               /\ UNCHANGED pauseVars
               /\ UNCHANGED fenceVars
               /\ UNCHANGED toolVars
+              /\ UNCHANGED judgeVars
          ELSE StartAnswer
-    /\ UNCHANGED judgeVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)

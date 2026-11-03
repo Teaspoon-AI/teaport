@@ -633,6 +633,14 @@ PREVIEW_AT_STOP = setting("TEAPORT_STT_PREVIEW_AT_STOP")
 # report, so with either off the handshake is what it was.
 _REPORT_MARGIN_MS = setting("TEAPORT_STT_TRANSCRIBED_MARGIN_MS")
 
+# The barge-in pauser's watch (watch_heard, barge_pause.py HEARD OUT): how far past the
+# caller's voice end the report must be before every word of that speech is in hand. Its
+# own, not the speculation's margin above: a miss there is one wasted request, here a
+# word that lands on a resumed reply and cuts it unjudged. A word's stamps can trail the
+# voice that carried it (THE CUT'S MARGIN), so a sliced turn's own rule: a word that
+# starts or ends up to _VOUCH_MS past the point is still that point's.
+_HEARD_MARGIN_MS = _VOUCH_MS
+
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
 # sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
 # process_frame). That makes a missed VAD stop unrecoverable, and silently so -- the
@@ -1978,9 +1986,9 @@ class TeaportSTTService(WebsocketSTTService):
         SpeechHeardFrame(watch) once the engine has transcribed past the caller's
         speech, so every word of it is in the interims pushed ahead of it
         (barge_pause.py HEARD OUT). Its end is the onset test's voice end, on the send
-        clock as the speech end above is placed (SPEECH_DECODED), plus the report's
-        margin: or, with no marks or audio left unsent since the caller's start, all
-        the audio sent so far, which is never short of it. False where no report will
+        clock as the speech end above is placed (SPEECH_DECODED), plus _HEARD_MARGIN_MS:
+        or, with no marks or audio left unsent since the caller's start, all the audio
+        sent so far, which is never short of it. False where no report will
         say -- an engine session without one -- and the pauser resumes on its window.
         A watch replaces the one before; a new engine session drops it unanswered."""
         if not (self._reports or self._slicing):
@@ -1991,20 +1999,23 @@ class TeaportSTTService(WebsocketSTTService):
         w = self._voice_marks()
         if w is not None and w.voice_end is not None and not self._hint_gap:
             end = min(end, self._sent_samples - (self._passed_samples - w.voice_end))
-        self._heard_watch = (watch, end + _REPORT_MARGIN_MS * rate // 1000,
+        self._heard_watch = (watch, end + _HEARD_MARGIN_MS * rate // 1000,
                              time.monotonic())
         await self._push_if_heard()
         return True
 
     def _heard_through(self) -> Optional[int]:
-        """How far every word is in hand, on the send clock: a sliced session's end
-        bound (TURN TEXT: a word is returned once complete, so the decoder's own
-        position is no bound on it), else the report's position; None before either."""
+        """How far every word is in hand, on the send clock. In a sliced session the
+        lesser of its two bounds, as a turn's final waits on both (TURN TEXT): a word is
+        returned once complete, so the decoder's own position is no bound on it, and one
+        that started before the end bound may still come until the start bound passes
+        it too. Else the report's position. None before either."""
         if self._slicing:
-            if self._end_through < 0:
+            through = min(self._end_through, self._audio_through)
+            if through < 0:
                 return None
             rate = self.sample_rate or 16000
-            return self._session_origin + self._end_through * rate // 1000
+            return self._session_origin + through * rate // 1000
         return self._decoded_through
 
     async def _push_if_heard(self):
