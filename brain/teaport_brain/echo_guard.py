@@ -1,10 +1,10 @@
 #
 # echo_guard.py — the room mic must not hear the bot's own voice as the user.
 #
-# The XVF3800 cancels the speaker's echo, and its suppressor is off so the user is heard
-# over the bot, unless the bridge measures the echo within LOCAL_AUDIO_ECHO_MARGIN_DB of
-# the user's voice (xvf_echo.py). What echo is left can still reach the STT as words:
-# live 2026-10-10 at volume 80 with the suppressor off, the bot's story came back as
+# The XVF3800 cancels the speaker's echo, and the bridge holds its suppressor at a set
+# that takes the rest of the echo but lets the user through over the bot (xvf_echo.py,
+# measured 2026-11-02). What echo leaks can still reach the STT as words: live
+# 2026-10-10 at volume 80, with the suppressor then off, the bot's story came back as
 # user turns ("A curious", "In a quiet orchard of magic", "The tiny pistachio") and the
 # bot kept interrupting itself; at volume 65 in a controlled take, the bot's words were
 # prefixed to the user's ("This began with a camera. Is it a horned owl?").
@@ -45,9 +45,7 @@
 # What it gets wrong: the user repeating the bot's last words straight back while it is
 # still talking. That costs those words, not the turn -- and a "wait" the user says
 # within LOOKBACK_SECS of the bot saying "wait" is taken as its echo: they say it again,
-# or more than it. The bridge's echo meter (xvf_echo.EchoMeter: how far the user's voice
-# stands above the echo) would tell the two apart, but it lives in the bridge, not in
-# this process. And after a barge-in pause longer than about half a second the resumed
+# or more than it. And after a barge-in pause longer than about half a second the resumed
 # reply's echo can pass (the "played" stamps run on through the pause, #255): one such
 # "wait" now cuts the reply.
 #
