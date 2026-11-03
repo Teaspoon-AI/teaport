@@ -104,6 +104,7 @@ from loguru import logger
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_SPECULATIVE_REPLY")
@@ -361,7 +362,7 @@ class Speculator:
                 # The cut reply may still land after the snapshot, the corrector having
                 # nothing to rewrite now: no speculation, rather than one on a context
                 # the commit will not have.
-                logger.info(f"[SPEC] not started {text[:40]!r}: a cut reply is still "
+                logger.info(f"[SPEC] not started {quoted(text[:40])}: a cut reply is still "
                             "on its way to the context")
                 return False
             # Cancelled while it waited (the caller resumed, or their words changed or
@@ -369,7 +370,7 @@ class Speculator:
             # that closed meanwhile cancels nothing (its speculation is the commit's to
             # take), so the turn is asked about again.
             if self._epoch != epoch or not (ahead_of_turn or self._controller._user_turn):
-                logger.debug(f"[SPEC] not started {text[:40]!r}: cancelled, superseded "
+                logger.debug(f"[SPEC] not started {quoted(text[:40])}: cancelled, superseded "
                              "or committed while the cut reply landed")
                 return False
         if self._before_snapshot is not None:
@@ -393,7 +394,7 @@ class Speculator:
         spec = _Speculation(snapshot, ctx.tools, text)
         spec.task = self._spawn(spec.run(self._llm, request))
         self._current = spec
-        logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}"
+        logger.info(f"[SPEC] start {quoted(text[:60])}{f' ({why})' if why else ''}"
                     f"{f' {trigger}' if trigger else ''}")
         return True
 
@@ -435,7 +436,7 @@ class Speculator:
             return
         self.misses += 1
         logger.info(f"[SPEC] miss reason={reason} after {time.monotonic() - spec.started:.2f}s "
-                    f"{spec.text[:40]!r} {self._tally()}")
+                    f"{quoted(spec.text[:40])} {self._tally()}")
         self._release(spec)
 
     async def close(self):
@@ -477,7 +478,7 @@ class Speculator:
             reason = None
         if reason is not None:
             self.misses += 1
-            logger.info(f"[SPEC] miss reason={reason} {spec.text[:40]!r} {self._tally()}")
+            logger.info(f"[SPEC] miss reason={reason} {quoted(spec.text[:40])} {self._tally()}")
             self._release(spec)
             return None
         self.hits += 1

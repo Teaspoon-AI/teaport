@@ -315,3 +315,7 @@ msgstr "Ik kan nog steeds niet antwoorden tot mijn account in orde is."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Sorry, ik kreeg net geen antwoord."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Dit gesprek wordt opgenomen."

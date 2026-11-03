@@ -162,6 +162,8 @@ class _FakeSession:
     resumed = {}        # call id -> the `resumed` greet() was called with
     prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
     cannot_hear = set()  # call ids whose greet() finds the STT unavailable (should_end)
+    notices = {}        # call id -> the notice greet() was asked to say first, if any
+    build_kw = {}       # call id -> what build_agent_session was given (recording=, ...)
     PREPARED = "Hello there."
 
     def __init__(self, call_id):
@@ -175,9 +177,10 @@ class _FakeSession:
         """The ring head start's out-of-band greeting (a call the brain answers)."""
         return self.PREPARED
 
-    async def greet(self, resumed=False, prepared=None):
+    async def greet(self, resumed=False, prepared=None, notice=None):
         _FakeSession.resumed[self.call_id] = resumed
         _FakeSession.prepared[self.call_id] = prepared
+        _FakeSession.notices[self.call_id] = notice
         await asyncio.sleep(self.greet_delay)
         self.should_end = self.call_id in _FakeSession.cannot_hear
         _FakeSession.greeted.append(self.call_id)
@@ -209,6 +212,8 @@ class _Harness:
         _FakeSession.resumed = {}
         _FakeSession.prepared = {}
         _FakeSession.cannot_hear = set()
+        _FakeSession.notices = {}
+        _FakeSession.build_kw = {}
         self.reclaims = []
         self.controls = []
         self._patch()
@@ -239,6 +244,7 @@ class _Harness:
             # asserting "nothing was built" pass against exactly that regression.
             call_id = self._pending.pop(0) if self._pending else "<unexpected>"
             _FakeSession.built.append(call_id)
+            _FakeSession.build_kw[call_id] = kw
             return _FakeSession(call_id)
         sip_server.build_agent_session = build
 

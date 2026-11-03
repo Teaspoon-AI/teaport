@@ -71,6 +71,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain import consult_bridge
 from teaport_brain import openclaw_client as oc
 from teaport_brain.owed import CANCELLED_NOTE
@@ -442,13 +443,13 @@ async def _web_search(params: FunctionCallParams):
         # real empty result. Report it as an error so the LLM says "I can't search
         # right now" instead of a false "no results" (which reads as silence, or
         # tempts it to answer from memory / hallucinate). Not a retry hint.
-        logger.debug(f"web_search({query!r}) -> FAILED (search backend unavailable)")
+        logger.debug(f"web_search({quoted(query)}) -> FAILED (search backend unavailable)")
         await params.result_callback(
             {"error": "web search is unavailable right now — the search service did "
                       "not respond. Do not retry; tell the user you can't search at "
                       "the moment."})
         return
-    logger.debug(f"web_search({query!r}) -> {len(results)} result(s)")
+    logger.debug(f"web_search({quoted(query)}) -> {len(results)} result(s)")
     await params.result_callback(
         {"results": results} if results else {"results": [], "note": "no results found"}
     )
@@ -458,11 +459,11 @@ async def _web_fetch(params: FunctionCallParams):
     url = (params.arguments or {}).get("url", "")
     text = await oc.web_fetch(url)
     if text is None:
-        logger.debug(f"web_fetch({url!r}) -> FAILED (unreachable/blocked)")
+        logger.debug(f"web_fetch({quoted(url)}) -> FAILED (unreachable/blocked)")
         await params.result_callback(
             {"error": "couldn't reach that page — it may be blocking automated access"})
         return
-    logger.debug(f"web_fetch({url!r}) -> {len(text)} chars")
+    logger.debug(f"web_fetch({quoted(url)}) -> {len(text)} chars")
     await params.result_callback(
         {"content": text} if text else {"error": "that page had no readable content"}
     )
@@ -471,7 +472,7 @@ async def _web_fetch(params: FunctionCallParams):
 async def _search_memory(params: FunctionCallParams):
     query = (params.arguments or {}).get("query", "")
     hits = await oc.memory_search(query, max_results=3)
-    logger.debug(f"search_memory({query!r}) -> {len(hits)} hit(s)")
+    logger.debug(f"search_memory({quoted(query)}) -> {len(hits)} hit(s)")
     await params.result_callback(
         {"memories": hits} if hits else {"memories": [], "note": "nothing relevant remembered"}
     )
@@ -980,10 +981,10 @@ async def _remember(params: FunctionCallParams):
         task = asyncio.create_task(oc.reindex_memory())
         _BG.add(task)
         task.add_done_callback(_BG.discard)
-        logger.info(f"remember: saved + reindexing in background: {fact[:60]!r}")
+        logger.info(f"remember: saved + reindexing in background: {quoted(fact[:60])}")
         await params.result_callback({"saved": True, "fact": fact})
     else:
-        logger.warning(f"remember: write failed for: {fact[:60]!r}")
+        logger.warning(f"remember: write failed for: {quoted(fact[:60])}")
         await params.result_callback({"saved": False, "note": "couldn't save that"})
 
 
@@ -1114,7 +1115,7 @@ def _client_tool(name: str):
             result = {"ok": False, "error": "the device could not be reached"}
         if not isinstance(result, dict):
             result = {"ok": True, "result": result}
-        logger.info(f"{name}: {result}")
+        logger.info(f"{name}: {quoted(str(result))}")
         await params.result_callback(result)
     return handler
 
@@ -1242,7 +1243,7 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
         out = _control_result(result, None)
         if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
             logger.info(f"openclaw_agent_control: result after its cancel -- "
-                        f"{out['update'][:80]!r}")
+                        f"{quoted(out['update'][:80])}")
             notes.add_host_update(out["update"])
 
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
@@ -1250,7 +1251,7 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
                                         after_cancel=told_late)
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
-                f"{'ok' if out['ok'] else failure or 'not ok'} -- {out['update'][:80]!r}")
+                f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
     await params.result_callback(out)
 
 

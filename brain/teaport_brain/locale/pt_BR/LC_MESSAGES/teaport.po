@@ -315,3 +315,7 @@ msgstr "Ainda não consigo responder até que a minha conta seja resolvida."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Desculpe, não consegui uma resposta agora há pouco."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Esta ligação está sendo gravada."

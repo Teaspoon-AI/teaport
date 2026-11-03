@@ -315,3 +315,7 @@ msgstr "アカウントの問題が解決するまで、まだお答えできま
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "すみません、今は答えを得られませんでした。"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "この通話は録音されています。"

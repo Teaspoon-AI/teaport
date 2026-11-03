@@ -117,6 +117,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain import endpoint_debug
 from teaport_brain.settings import setting
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
@@ -393,7 +394,7 @@ class ClientNotes(FrameProcessor):
         logger.info(f"client note: {kind} ({len(text)} chars, "
                     f"respond={bool(frame.respond)}) -> {status}")
         if endpoint_debug.ENABLED:
-            logger.info(f"client note text: {text!r}")
+            logger.info(f"client note text: {quoted(text)}")
         await self._reply(frame, status=status)
         self._ensure_drainer()
 
@@ -422,7 +423,7 @@ class ClientNotes(FrameProcessor):
         status = "applied" if self._gate.is_clear() else "queued"
         logger.info(f"host note: {log_kind} ({len(text)} chars) -> {status}")
         if endpoint_debug.ENABLED:
-            logger.info(f"host note text: {text!r}")
+            logger.info(f"host note text: {quoted(text)}")
         self._ensure_drainer()
         return status
 

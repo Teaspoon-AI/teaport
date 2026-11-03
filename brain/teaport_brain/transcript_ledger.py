@@ -64,6 +64,7 @@ from typing import List, Optional
 
 from loguru import logger
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.settings import setting
 from teaport_brain.tts_text import CAPTION_LEAD_SECS, fold_unspeakable, has_speech, unsaid_markers
@@ -276,6 +277,9 @@ class TranscriptLedger(BaseObserver):
         # any of it is heard: owed.py asks its gist judge then (#210), so the verdict is in
         # by the time the reply has played.
         self.on_reply_text = None
+        # Called as on_utterance(u) with each Utterance as it is charted: the owner's
+        # call transcript (call_recording.py, #114) writes the lines from here.
+        self.on_utterance = None
         # What has been PUSHED to the TTS of each response (on_push_frame): the guard's
         # output, by its LLMFullResponseStartFrame's id, as {"reply", "parts", "text"} --
         # "text" set once its End was pushed. The TTS reads its input in order, and its
@@ -363,7 +367,7 @@ class TranscriptLedger(BaseObserver):
         if _TRACE and isinstance(f, _TRACE_TYPES) and f.id not in self._traced:
             self._traced.add(f.id)
             info = getattr(f, "text", "")
-            info = f" {info[:40]!r}" if info else ""
+            info = f" {quoted(info[:40])}" if info else ""
             # pts, not just arrival: engine-TTS word frames arrive CLUSTERED (the whole
             # clip is pushed at once), so arrival order says nothing about what played.
             # The heard-word cut is made on pts, so pts is what has to be inspectable.
@@ -603,14 +607,14 @@ class TranscriptLedger(BaseObserver):
                 if cand is None:
                     logger.warning(
                         f"LEDGER response {entry['seq']} drained with no turn open; "
-                        f"dropped {entry['text'][:40]!r}")
+                        f"dropped {quoted(entry['text'][:40])}")
                     self._reply_end(entry, None, cut=False, audio=False)
                 return
             old = cand["entry"]
             if old is not None and old is not entry:
                 logger.warning(
                     f"LEDGER response {old['seq']} was never synthesized; its context "
-                    f"was response {entry['seq']}'s. Dropped {old['text'][:40]!r}")
+                    f"was response {entry['seq']}'s. Dropped {quoted(old['text'][:40])}")
                 old["turn"] = None
                 self._reply_end(old, None, cut=False, audio=False)
             if entry in self._queue:
@@ -671,7 +675,7 @@ class TranscriptLedger(BaseObserver):
         while len(self._queue) > _MAX_QUEUED:
             old = self._queue.popleft()
             logger.warning(f"LEDGER dropped unspoken response {old['seq']}: "
-                           f"{old['text'][:40]!r} (queue overflow)")
+                           f"{quoted(old['text'][:40])} (queue overflow)")
 
     @staticmethod
     def _remember(od: OrderedDict, key, cap: int, value=None):
@@ -1053,7 +1057,7 @@ class TranscriptLedger(BaseObserver):
             # charted as any cut: the rest of it may have had words, and the
             # follow-up loop reads that cut.
             logger.warning(f"LEDGER response {entry['seq']} had nothing synthesizable; "
-                           f"not charted: {intended[:40]!r}")
+                           f"not charted: {quoted(intended[:40])}")
             self._reply_end(entry, None, cut=interrupted, audio=False)
             return
         if (interrupted and not never and turn["synth_done"]
@@ -1079,7 +1083,7 @@ class TranscriptLedger(BaseObserver):
             t_end = turn["last_end"] if turn["last_end"] is not None else t
         t_end = max(t_start, min(t, t_end))
         if never:
-            logger.warning(f"LEDGER assistant reply was never played: {intended[:60]!r}")
+            logger.warning(f"LEDGER assistant reply was never played: {quoted(intended[:60])}")
         self._add(Utterance("assistant", intended, t_start, t_end,
                             interrupted=interrupted, heard_fraction=frac,
                             heard_text=heard_text, turn_seq=turn["seq"],
@@ -1104,16 +1108,21 @@ class TranscriptLedger(BaseObserver):
                 e.overlap = True
         self.events.append(u)
         self._log(u)
+        if self.on_utterance is not None:
+            try:
+                self.on_utterance(u)
+            except Exception as e:  # noqa: BLE001 -- an observer must never raise
+                logger.warning(f"LEDGER: the utterance feed raised {e!r}")
 
     def _log(self, u: Utterance):
         if u.cut_short:
             unheard = u.unheard_tail()
             logger.info(
                 f"LEDGER +assistant CUT heard~{u.heard_fraction*100:.0f}%: "
-                f"heard {u.heard_text!r} | NOT heard {unheard!r}"
+                f"heard {quoted(u.heard_text)} | NOT heard {quoted(unheard)}"
             )
         else:
             logger.info(
                 f"LEDGER +{u.speaker}{' OVERLAP' if u.overlap else ''}: "
-                f"[{u.t_start:.1f}-{u.t_end:.1f}] {u.text!r}"
+                f"[{u.t_start:.1f}-{u.t_end:.1f}] {quoted(u.text)}"
             )

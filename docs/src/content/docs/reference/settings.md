@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2562#526d24b1 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2675#def8d4df -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -45,7 +45,7 @@ In `/etc/teaport/brain.env`.
 | `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
 | `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help. |
-| `TEAPORT_RAW_LLM_CAPTURE` | **on** | Log a completion verbatim when it degenerates. Healthy turns log nothing. |
+| `TEAPORT_RAW_LLM_CAPTURE` | **off** | Log a completion when it degenerates. Healthy turns log nothing. Its text is logged only with TEAPORT_LOG_CONVERSATIONS on. |
 
 ## Speech engine connection
 
@@ -259,6 +259,20 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 | `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |
 | `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` (`""` = off) | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
+## Call recording
+
+These settings decide whether phone calls are recorded, whether callers are told, and how long recordings are kept.
+
+In `/etc/teaport/brain.env`. Off by default. Recording-consent law differs by place: most states in the United States need one party's consent, California and about a dozen others need everyone's, and other countries have rules of their own. You choose and are responsible; this is not legal advice. Phone calls only: Talk sessions and the room mic are never recorded by these settings. Each call leaves <start time>-<call id>.wav (the caller on the left channel, the assistant on the right) and/or .txt (both sides' lines, timed) in the recordings directory. Read by teaport-brain's SIP front-end.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_CALL_RECORDING` | `off` | Record phone calls. audio: both sides of the call as one stereo file. transcript: the caller's and the assistant's lines, with times; a reply the caller cut is written as far as they heard it. both: the two. off: nothing of a call is kept. One of `off`, `audio`, `transcript`, `both`. Recording-consent law differs by place, and you are responsible for this choice. Keep TEAPORT_CALL_RECORDING_NOTICE on so callers are told. |
+| `TEAPORT_CALL_RECORDING_NOTICE` | **on** | Start each recorded call with "This call is being recorded." in the call's language, before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks. |
+| `TEAPORT_CALL_RECORDING_DIR` | `~/teaport-recordings` | Where call recordings are kept, one file per call and kind, named by the call's start time and call id. |
+| `TEAPORT_CALL_RECORDING_KEEP_DAYS` | **30** days (≥ 0) | Delete recordings older than this, checked as each call starts. 0 keeps them however old. |
+| `TEAPORT_CALL_RECORDING_MAX_MB` | **2048** MB (≥ 0) | Past this much, the oldest recordings are deleted, checked as each call starts. 0: no cap. Audio is about 4 MB a minute; a transcript, a few kB. |
+
 ## Diagnostics
 
 These settings trace and record turns for the journal and name the engine's log file.
@@ -269,10 +283,14 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 |---|---|---|
 | `TEAPORT_ENDPOINT_DEBUG` | **off** | VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal. |
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
+| `TEAPORT_LOG_CONVERSATIONS` | **off** | Write what callers, the room and the bot say into the journal. Off, log lines keep their timing and length but not the words. This records conversations, phone calls included: the journal is kept on disk. Recording-consent law differs by place; the owner decides and is responsible. Every other switch here logs words only with this one on, except TEAPORT_AUDIO_DUMP. |
+| `LOGURU_LEVEL` | `DEBUG` | The journal's log level for the brain. The room process logs at INFO whatever this says. One of `TRACE`, `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `CRITICAL`. TRACE takes effect only with TEAPORT_LOG_CONVERSATIONS on: TRACE lines carry what people say. |
 | `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1, or 0 for off. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
-| `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. |
+| `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. This records callers' voices to disk, whatever TEAPORT_LOG_CONVERSATIONS says. Recording-consent law differs by place; the owner decides and is responsible. |
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |
+| `TEAPORT_AUDIO_DUMP_KEEP_DAYS` | **0** days (≥ 0) | Delete dumps older than this, checked as each dump starts. 0 keeps them however old. |
+| `TEAPORT_AUDIO_DUMP_MAX_MB` | **4096** MB (≥ 0) | Past this much, the oldest dumps are deleted, checked as each dump starts. 0: no cap. |
 | `TEAPORT_CAPTION_USER_HOLD_S` | **1.2** s (≥ 0) | Gap after the user's last interim before assistant partials can render again; prevents the doubled assistant bubble in the Talk UI. |
 | `ENGINE_LOG` | `~/teaport-engine.log` | The engine's serve log, where the tools read decode ms/step. *Set by the installer.* |
 

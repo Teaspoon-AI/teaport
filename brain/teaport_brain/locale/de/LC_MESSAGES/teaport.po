@@ -315,3 +315,7 @@ msgstr "Ich kann erst wieder antworten, wenn mein Konto in Ordnung gebracht ist.
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Dieses Gespräch wird aufgezeichnet."

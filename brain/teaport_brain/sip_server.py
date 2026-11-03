@@ -97,12 +97,13 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.runner import PipelineRunner
 
-from teaport_brain import reply_hold
+from teaport_brain.conversation_log import quoted
+from teaport_brain import conversation_log, reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import host_context
 from teaport_brain.settings import setting
-from teaport_brain import agent_backend, audio_dump, display, sdnotify
+from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
@@ -675,7 +676,7 @@ async def run_connection(sock, on_ready=None):
 
     @connection.event_handler("on_dtmf")
     async def on_dtmf(_connection, call_id, digit):
-        logger.info(f"dtmf {digit!r} (call {call_id})")
+        logger.info(f"dtmf {quoted(digit)} (call {call_id})")
 
     async def cancel_setup(reason: str, call_id: str | None = None):
         """Abandon an in-flight bring-up. `call_id` guards it the same way
@@ -842,6 +843,9 @@ async def run_connection(sock, on_ready=None):
         half_duplex = HalfDuplexInputGate() if HALF_DUPLEX else None
         if half_duplex is not None:
             input_procs.append(half_duplex)
+        # The owner's recording of the call (TEAPORT_CALL_RECORDING, off by default).
+        recording = (call_recording.CallRecording(call_id, ring.caller, resumed=resumed)
+                     if call_recording.ENABLED else None)
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,
@@ -854,6 +858,7 @@ async def run_connection(sock, on_ready=None):
             # file, with a warning). A caller is on the line: a gateway not up yet gets
             # the short patience, not the asleep room's.
             host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
+            recording=recording,
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound
@@ -897,6 +902,11 @@ async def run_connection(sock, on_ready=None):
             teardowns.add(t)
             t.add_done_callback(teardowns.discard)
 
+        if recording is not None:
+            @session.task.event_handler("on_pipeline_finished")
+            async def close_recording(_task, _frame):
+                recording.close()
+
         runner_task = asyncio.create_task(
             PipelineRunner(handle_sigint=False).run(session.task)
         )
@@ -913,10 +923,17 @@ async def run_connection(sock, on_ready=None):
                 return
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
+        # A recorded call starts with the notice, in the call's language, before the
+        # greeting -- a resumed one too: the brain that was cut off may not have
+        # finished saying it.
+        notice = None
+        if recording is not None and recording.active and call_recording.NOTICE:
+            notice = call_recording.notice_line(
+                getattr(getattr(session, "tts", None), "espeak_language", None))
         if prepared:
-            await session.greet(resumed=resumed, prepared=prepared)
+            await session.greet(resumed=resumed, prepared=prepared, notice=notice)
         else:
-            await session.greet(resumed=resumed)
+            await session.greet(resumed=resumed, notice=notice)
         if session.should_end:
             # STT is unavailable — the engine's single slot is held by another process
             # (a standalone rig) or the engine is unreachable. greet() spoke the
@@ -1048,6 +1065,7 @@ def main():
     parser.add_argument("--socket", default=SIP_SOCKET,
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
+    conversation_log.install()
     logger.info(agent_backend.startup_line())
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup

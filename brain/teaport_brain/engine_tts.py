@@ -36,6 +36,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
 from teaport_brain.settings import ROWS, normalize, parse, setting
 from teaport_brain.barge_pause import PlayoutPauseFrame
@@ -935,7 +936,7 @@ class EngineTTSService(TTSService):
         return (pcm * 32767.0).astype("<i2").tobytes()
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
-        logger.debug(f"{self}: engine TTS [{text}]")
+        logger.debug(f"{self}: engine TTS {quoted(text)}")
         # Synthesize clause-by-clause so the (short) opening clause is the first-audio gate,
         # not the whole reply; later clauses synthesize while the first plays. Each clause's
         # seam silence is trimmed (see _SeamTrim) so the joins sound like natural
@@ -956,8 +957,8 @@ class EngineTTSService(TTSService):
             # audio context and pushed TTSStartedFrame. That the context still closes
             # at the End is tts_process_generator's doing below -- an ErrorFrame is not
             # audio, and pipecat 1.8.1 closes only after a run_tts that yielded some.)
-            logger.warning(f"{self}: nothing synthesizable in {text[:60]!r} — no audio")
-            yield ErrorFrame(error=f"tts: nothing synthesizable in {text[:60]!r}")
+            logger.warning(f"{self}: nothing synthesizable in {quoted(text[:60])} — no audio")
+            yield ErrorFrame(error=f"tts: nothing synthesizable in {quoted(text[:60])}")
             return
         await self.start_tts_usage_metrics(text)
         # NB: word times are based on self._ctx_audio_secs (carries across run_tts calls),
@@ -1010,14 +1011,14 @@ class EngineTTSService(TTSService):
                 # before #14, instead of being logged as the engine's.
                 cause = f" ({e.__cause__!r})" if e.__cause__ else ""
                 logger.error(f"engine synth error on clause (skipping): {e}{cause} "
-                             f"clause={clause[:60]!r}")
+                             f"clause={quoted(clause[:60])}")
                 failed_clauses += 1
                 continue
         # Playout forensics: which utterance emitted how much audio, into which
         # context, and when relative to barge-ins (the stale-speech bug class).
         logger.debug(f"{self}: run_tts done — {emitted_secs:.1f}s audio, "
                      f"{synth_secs:.2f}s synth, {paced_secs:.2f}s paced "
-                     f"ctx={str(context_id)[:8]} [{text[:36]}…]")
+                     f"ctx={str(context_id)[:8]} {quoted(text[:36])}")
         if failed_clauses and not emitted_audio:
             # EVERY clause failed (CUDA OOM, unsupported language, corrupted engine):
             # dead air with no signal is the worst outcome — surface it so the
@@ -1127,7 +1128,7 @@ class EngineTTSService(TTSService):
                   for (w, s) in words]
         if _TRACE:
             logger.info(f"[WTS] off={base:.2f} n={len(words)} span=[{placed[0][1]:.2f},"
-                        f"{placed[-1][1]:.2f}] first={words[0][0]!r} last={words[-1][0]!r}")
+                        f"{placed[-1][1]:.2f}] first={quoted(words[0][0])} last={quoted(words[-1][0])}")
         await self.add_word_timestamps(placed, context_id)
 
     def _note_playout(self, context_id: str, secs: float, mid_sentence: bool):
@@ -1354,7 +1355,7 @@ class EngineTTSService(TTSService):
             except (TypeError, ValueError):
                 pass
             logger.warning(f"{self}: malformed engine word timestamps, dropped: "
-                           f"{str(ts)[:80]!r}")
+                           f"{quoted(str(ts)[:80])}")
             return None
 
         def parse_phones(ts):
