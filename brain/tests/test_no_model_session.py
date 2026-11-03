@@ -546,7 +546,9 @@ async def test_health_says_no_model_is_configured_and_the_cli_shows_it():
     served = {"ok": True, "answers": answers}
     shown = _status_answers(served)
     assert shown.startswith("not set up (no endpoint address)"), shown
-    assert "/etc/teaport/brain.env" in shown and "llm_key" in shown, shown
+    # The env file where TEAPORT_ETC puts it (the CLI test sets it to a temp etc/).
+    assert "/etc/brain.env" in shown and "/etc/teaport/" not in shown, shown
+    assert "llm_key" in shown, shown
     doctor = _doctor_answers(served)
     assert len(doctor) == 1 and doctor[0].startswith("FAIL answers: not set up"), doctor
 

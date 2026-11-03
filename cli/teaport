@@ -74,9 +74,9 @@ elif st == "untried":
     text = "none asked for since the brain started"
 elif st == "unconfigured":
     text = ("not set up%s: no model is configured, so the box answers every question with"
-            " a fixed line — set LLM_BASE_URL in /etc/teaport/brain.env (then restart the brain)"
+            " a fixed line — set LLM_BASE_URL in %s/brain.env (then restart the brain)"
             " and write the key to ~/.config/teaport/llm_key, or set both on the"
-            " configuration page at :7861/config" % why)
+            " configuration page at :7861/config" % (why, sys.argv[1]))
 elif st == "account":
     text = ("refused %s: the account behind the answers needs attention, and it will"
             " not pass by itself — check the key and its account on the settings page;"
@@ -84,7 +84,7 @@ elif st == "account":
 else:
     text = ("failing %s: the provider had trouble; this usually passes and clears on"
             " the next answered request — if it keeps up, see teaport logs brain" % when)
-print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
+print("%s\t%s" % (st, text))' "$ETC" 2>/dev/null || printf 'unknown\t'
 }
 answers_line() {  # the answers, as a status line
   local line st col; line="$(brain_answers)"; st="${line%%$'\t'*}"
