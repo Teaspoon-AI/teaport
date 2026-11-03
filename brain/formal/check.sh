@@ -57,9 +57,14 @@ ROW_TIMEOUT="${TLC_ROW_TIMEOUT:-600}"
 FULL_ROW_TIMEOUT="${TLC_FULL_ROW_TIMEOUT:-3600}"
 MIN_FREE_MB="${TLC_MIN_FREE_MB:-400}"
 for v in ROW_TIMEOUT FULL_ROW_TIMEOUT MIN_FREE_MB; do
+  # Digits only, and above zero by value: "00" is zero too, and to timeout(1) zero means
+  # no limit at all -- the unbounded row this check exists to stop.
   case "${!v}" in
-    ''|*[!0-9]*|0) echo "TLC_$v must be a positive whole number, got '${!v}'" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "TLC_$v must be a positive whole number, got '${!v}'" >&2; exit 2 ;;
   esac
+  if [ "$((10#${!v}))" -le 0 ]; then
+    echo "TLC_$v must be a positive whole number, got '${!v}'" >&2; exit 2
+  fi
 done
 command -v timeout >/dev/null || { echo "check.sh needs timeout(1) (GNU coreutils)" >&2; exit 2; }
 cd "$(dirname "$0")"
