@@ -33,7 +33,7 @@ recent requests for a reply met at the model provider, the engine's license key 
 running engine last reported it, the service ports, memory, and the load average. When the Session Initiation Protocol (SIP) gateway unit is enabled, it also shows the
 `teaport-sip` service and the brain's SIP front-end. It takes no options.
 
-<!-- source: cli/teaport:196-213 @686fe4a; cli/teaport:115-132 @686fe4a -->
+<!-- source: cli/teaport:196-213#d61eeb25; cli/teaport:115-132#a99349db -->
 
 Example:
 
@@ -76,7 +76,7 @@ the trunk registration. When it finds a NemoClaw sandbox record, it names the co
 sandbox. Each check prints one line: a check mark for pass, `!` for warning, and a cross
 for failure.
 
-<!-- source: cli/teaport:305-408 @686fe4a; cli/teaport:136-162 @686fe4a; cli/teaport:56-88,283-290#e52a7ade -->
+<!-- source: cli/teaport:305-408#59b26576; cli/teaport:136-162#12df42ad; cli/teaport:56-88,283-290#e52a7ade -->
 
 Option:
 

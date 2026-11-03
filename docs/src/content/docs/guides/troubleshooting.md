@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:305-410 @686fe4a -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:305-410#889678a7 -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:305-410 @686fe4a -->
+<!-- source: cli/teaport:305-410#889678a7 -->
 
 ## The engine has no valid license key
 
@@ -163,7 +163,7 @@ not start, and `teaport status` shows `engine refused to start`.
    sudo systemctl restart teaport-engine
    ```
 
-<!-- source: cli/teaport:115-162 @686fe4a; install.sh:300-354 @686fe4a; systemd/teaport-engine.service.in:27 @686fe4a -->
+<!-- source: cli/teaport:115-162#af03c962; install.sh:300-354#0c32eccc; systemd/teaport-engine.service.in:27#15302b5a -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -413,7 +413,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:305-410 @686fe4a -->
+<!-- source: cli/teaport:305-410#889678a7 -->
 
 **Fix**
 

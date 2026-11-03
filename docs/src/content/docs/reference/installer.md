@@ -64,7 +64,7 @@ You do not need to be root. As a regular user, the installer runs each privilege
 
 The parser exits with status 2 on an unknown argument, a missing value, `--only` together with `--rollback`, or `--license-file` together with either of them. The two component flags also take an equals form, for example `--only=brain`, and the component must be `brain`.
 
-<!-- source: install.sh:86-111 @686fe4a -->
+<!-- source: install.sh:86-111#771222b8 -->
 
 | Flag | Argument | What it does |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ The parser exits with status 2 on an unknown argument, a missing value, `--only`
 | `--license-file` | A path | Checks this engine license key on this device with the installed engine, then installs it as `/etc/teaport/license.json`. A key that does not check out stops the run before any service restarts. Engine 1.7 or later. The equals form `--license-file=PATH` also works. |
 | `-h`, `--help` | None | Prints the usage text from the header comment and exits. |
 
-<!-- source: install.sh:9-34,90,117-120,227 @686fe4a; install.sh:91-94,300-332 @686fe4a -->
+<!-- source: install.sh:9-34,90,117-120,227#6dd8bae8; install.sh:91-94,300-332#9a8ca431 -->
 
 A full install writes every unit and env file and restarts the engine and the brain in one step. It has no automatic rollback, but `--rollback brain` still works after it.
 
@@ -86,7 +86,7 @@ A full install writes every unit and env file and restarts the engine and the br
 
 The installer honors the overrides in this table; the default applies when the variable is unset. `TEAPORT_REPO` and `TEAPORT_REF` belong to the one-line form alone.
 
-<!-- source: install.sh:36-56,67-79,375,1772,2398,2405,2850,2858,2873 @686fe4a -->
+<!-- source: install.sh:36-56,67-79,375,1772,2398,2405,2850,2858,2873#584e389b -->
 
 | Variable | Default | Controls |
 | --- | --- | --- |
@@ -209,7 +209,7 @@ The non-secret configuration. The installer writes `engine.env` and `brain.env` 
 
 The engine license key, from engine 1.7, when you install one with `--license-file`. It is owned by root, readable by the run user's group, mode 640. A re-run never removes it, and a different key that replaces it is kept beside it as `license.json.replaced-` followed by the date and time. `engine.env` names it to the engine in `VOX_LICENSE_FILE`.
 
-<!-- source: install.sh:300-332 @686fe4a; install.sh:2200 @686fe4a -->
+<!-- source: install.sh:300-332#3b19171a; install.sh:2200#2b86d2aa -->
 
 **`~/.config/teaport/`**
 
@@ -243,7 +243,7 @@ The installer renders the templates in `systemd/*.service.in` into `/etc/systemd
 
 The speech engine: Voxtral for speech-to-text and Kokoro for text-to-speech. Rendered on every install and enabled. It is not restarted after exit status 78, which is how engine 1.7 and later refuse to start without a valid license key when their enforcement is `on`.
 
-<!-- source: install.sh:2255,2266#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478; systemd/teaport-engine.service.in:27 @686fe4a -->
+<!-- source: install.sh:2255,2266#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478; systemd/teaport-engine.service.in:27#15302b5a -->
 
 **`teaport-brain.service`**
 

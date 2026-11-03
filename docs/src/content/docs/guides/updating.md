@@ -127,7 +127,7 @@ TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 
 No command takes a channel option: the installer parses `--dry-run`, `--accept-eula`, `--license-file`, `--only`, `--rollback`, and `--help`, and `teaport update` parses `--check`. The variable is how you choose.
 
-<!-- source: install.sh:87-101 @686fe4a; cli/teaport:412-413#07b8ea70 -->
+<!-- source: install.sh:87-101#53b8faca; cli/teaport:412-413#07b8ea70 -->
 
 ## Retained releases
 

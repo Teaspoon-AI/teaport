@@ -158,7 +158,7 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:68,400,1160,1678,1691,2882,3060,3066,1776,2162#3d53f4d3; manifest/stable.json:5-25 @686fe4a -->
+<!-- source: install.sh:68,400,1160,1678,1691,2882,3060,3066,1776,2162#3d53f4d3; manifest/stable.json:5-25#bfd17340 -->
 <!-- source: install.sh:1911-1922,1949-1994#0dba2a43 -->
 
 ## Optional components
