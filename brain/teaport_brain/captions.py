@@ -52,6 +52,7 @@
 from dataclasses import dataclass
 
 from loguru import logger
+from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
 
 import time
@@ -407,10 +408,10 @@ class CaptionTap(FrameProcessor):
             # committed the bubble showing exactly this text — a final now would
             # render as a duplicate bubble after their message and add nothing.
             if _TRACE:
-                logger.info(f"[CAP] FINAL skipped (client committed) tail={text[-40:]!r}")
+                logger.info(f"[CAP] FINAL skipped (client committed) tail={quoted(text[-40:])}")
             return
         if _TRACE:
-            logger.info(f"[CAP] FINAL ({reason}) tail={text[-40:]!r}")
+            logger.info(f"[CAP] FINAL ({reason}) tail={quoted(text[-40:])}")
         await self.push_frame(
             OutputTransportMessageUrgentFrame(message={
                 "type": "transcript", "role": "assistant",
@@ -428,7 +429,7 @@ class CaptionTap(FrameProcessor):
             ctx = frame.context_id
             if ctx in self._dead:
                 if _TRACE:
-                    logger.info(f"[CAP] dropped straggler acc={frame.accumulated_text!r} ctx={ctx}")
+                    logger.info(f"[CAP] dropped straggler acc={quoted(frame.accumulated_text)} ctx={ctx}")
                 return
             if ctx in self._ahead_ctx:
                 return  # charted when it was queued (caption_ahead)
@@ -457,7 +458,7 @@ class CaptionTap(FrameProcessor):
                     # a partial now would reopen a second one. Keep accumulating —
                     # if this utterance survives, the next emit carries it all.
                     if _TRACE:
-                        logger.info(f"[CAP] partial held (user talking) tail={snapshot[-30:]!r}")
+                        logger.info(f"[CAP] partial held (user talking) tail={quoted(snapshot[-30:])}")
                     return
                 self._last_sent = snapshot
                 if self._opened_ts is None:
@@ -518,5 +519,5 @@ class CaptionTap(FrameProcessor):
         if self._ctx is not None:
             await self._finalize("utterance switch")
         if _TRACE:
-            logger.info(f"[CAP] ctx {ctx} was charted ahead: {text!r}")
+            logger.info(f"[CAP] ctx {ctx} was charted ahead: {quoted(text)}")
         return True

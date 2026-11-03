@@ -326,3 +326,7 @@ msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية 
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "يتم تسجيل هذه المكالمة."

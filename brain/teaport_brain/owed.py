@@ -75,6 +75,7 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.processors.aggregators.llm_context import LLMContext
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.common_words import COMMON
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.heard_context import msg_text
@@ -1062,8 +1063,8 @@ class Owed:
         self._records.pop(rec.key, None)
         self._records[rec.key] = rec
         self._evict()
-        logger.info(f"OWED: {rec.key} {how} -- asked {rec.asked[:60]!r}, terms "
-                    f"{sorted(rec.terms)}")
+        logger.info(f"OWED: {rec.key} {how} -- asked {quoted(rec.asked[:60])}, terms "
+                    f"{quoted(sorted(rec.terms))}")
         return rec
 
     def _evict(self) -> None:
@@ -1183,7 +1184,7 @@ class Owed:
         else:
             why = ""
         logger.info(f"OWED: {what} {_said(verdict)}{why} in {time.monotonic() - started:.2f}s "
-                    f"on {question[:50]!r}: heard {heard[-60:]!r}")
+                    f"on {quoted(question[:50])}: heard {quoted(heard[-60:])}")
         return verdict
 
     async def _is_answer(self, question: str, text: str) -> Optional[bool]:
@@ -1339,7 +1340,7 @@ class Owed:
             logger.info(f"OWED: {key} still owed after the {reply.kind} reply "
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}"
                         f"{', for the judges' if key in asks else ''}; "
-                        f"heard {(heard or '')[:60]!r})")
+                        f"heard {quoted((heard or '')[:60])})")
         self._arm(missed)
         ids, request = self._resolve(reply, heard, cut=cut, audio=audio, text=text)
         question = (self._answers[ids[-1]].question or request) if ids else ""
@@ -1373,7 +1374,7 @@ class Owed:
         if self.judge is None:
             return None
         return await _verdict(self.judge(question, heard, rest), lambda v: f"judge {_said(v)}",
-                              f"{question[:50]!r}: heard {heard[-50:]!r}, rest {rest[:50]!r}")
+                              f"{quoted(question[:50])}: heard {quoted(heard[-50:])}, rest {quoted(rest[:50])}")
 
     async def declines_read(self, messages: list) -> None:
         """Owed.tla Decline: every reader of the records -- a render (view), the lull --
@@ -1412,7 +1413,7 @@ class Owed:
             if declined:
                 rec.state = DECLINED
                 rec.missed = False
-                logger.info(f"OWED: {rec.key} declined -- they said {words[-60:]!r} (its "
+                logger.info(f"OWED: {rec.key} declined -- they said {quoted(words[-60:])} (its "
                             "tool result stays)")
             else:
                 logger.info(f"OWED: {rec.key} stays owed -- decline check "
@@ -1427,7 +1428,7 @@ class Owed:
         return await _verdict(self.decline(question, heard, rest, words),
                               lambda v: "decline check "
                               + ("DECLINED" if v else "WANTED" if v is False else "none"),
-                              f"{question[:50]!r}: they said {words[-60:]!r}")
+                              f"{quoted(question[:50])}: they said {quoted(words[-60:])}")
 
     def _apply(self, reply, decisions: dict, ids, request, heard, text, cut,
                sync: Optional[bool], answered: Optional[bool] = None, *,
@@ -1455,7 +1456,7 @@ class Owed:
             ids = [t for t in ids if self._answers[t].replies]
             if ids and cut and not sync and answered is False:
                 logger.info(f"OWED: a reply carrying {ids} cut, and it gave no answer "
-                            f"({(text or '')[:60]!r}) -- no record")
+                            f"({quoted((text or '')[:60])}) -- no record")
                 for t in ids:
                     self._answers[t].replies -= 1
                 ids = []
@@ -1479,7 +1480,7 @@ class Owed:
         rec.decline = None
         logger.info(f"OWED: {rec.key} closed -- heard by the {reply.kind} reply "
                     f"({'cut' if cut else 'played through'}{'; ' + why if why else ''}): "
-                    f"{(heard or '')[:80]!r}")
+                    f"{quoted((heard or '')[:80])}")
 
     def _open(self, reply: Reply) -> list:
         """The sync answers `reply` was rendered with that are still open."""
@@ -1511,7 +1512,7 @@ class Owed:
         if not self._tells_fresh(reply, audio=audio, cut=cut, text=text):
             if audio and cut and not text and not reply.calls:
                 logger.info(f"OWED: a reply carrying {ids} cut before its stream ended "
-                            f"(audio played, heard {(heard or '')[:60]!r}) -- no record "
+                            f"(audio played, heard {quoted((heard or '')[:60])}) -- no record "
                             "(STREAMCUT)")
             for t in ids:
                 self._answers[t].replies -= 1

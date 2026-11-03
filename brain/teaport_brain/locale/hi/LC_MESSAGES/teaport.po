@@ -315,3 +315,7 @@ msgstr "जब तक मेरा खाता ठीक नहीं होत
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "माफ़ कीजिए, अभी मुझे जवाब नहीं मिल पाया।"
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "यह कॉल रिकॉर्ड की जा रही है।"

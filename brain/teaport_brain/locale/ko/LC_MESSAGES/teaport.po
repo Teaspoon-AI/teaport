@@ -424,3 +424,7 @@ msgstr "계정 문제가 해결될 때까지는 아직 답할 수 없어요."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "죄송해요, 방금은 답을 받지 못했어요."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "이 통화는 녹음되고 있습니다."

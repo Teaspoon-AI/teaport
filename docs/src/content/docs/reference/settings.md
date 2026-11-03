@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2565#f02d675f -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2675#13d4d947 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -45,7 +45,7 @@ In `/etc/teaport/brain.env`.
 | `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
 | `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help. |
-| `TEAPORT_RAW_LLM_CAPTURE` | **on** | Log a completion verbatim when it degenerates. Healthy turns log nothing. |
+| `TEAPORT_RAW_LLM_CAPTURE` | **off** | Log a completion when it degenerates. Healthy turns log nothing. Its text is logged only with TEAPORT_LOG_CONVERSATIONS on. |
 
 ## Speech engine connection
 
@@ -259,6 +259,20 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 | `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |
 | `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` (`""` = off) | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
+## Call recording
+
+These settings decide whether phone calls are recorded, whether callers are told, and how long recordings are kept.
+
+In `/etc/teaport/brain.env`. Off by default. Recording-consent law differs by place: most states in the United States need one party's consent, California and about a dozen others need everyone's, and other countries have rules of their own. You choose and are responsible; this is not legal advice. Phone calls only: Talk sessions and the room mic are never recorded by these settings. Each call leaves <start time>-<call id>.wav (the caller on the left channel, the assistant on the right) and/or .txt (both sides' lines, timed) in the recordings directory. Read by teaport-brain's SIP front-end.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_CALL_RECORDING` | `off` | Record phone calls. audio: both sides of the call as one stereo file. transcript: the caller's and the assistant's lines, with times; a reply the caller cut is written as far as they heard it. both: the two. off: nothing of a call is kept. One of `off`, `audio`, `transcript`, `both`. Recording-consent law differs by place, and you are responsible for this choice. Keep TEAPORT_CALL_RECORDING_NOTICE on so callers are told. |
+| `TEAPORT_CALL_RECORDING_NOTICE` | **on** | Start each recorded call with "This call is being recorded." in the call's language, before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks. |
+| `TEAPORT_CALL_RECORDING_DIR` | `~/teaport-recordings` | Where call recordings are kept, one file per call and kind, named by the call's start time and call id. |
+| `TEAPORT_CALL_RECORDING_KEEP_DAYS` | **30** days (≥ 0) | Delete recordings older than this, checked as each call starts. 0 keeps them however old. |
+| `TEAPORT_CALL_RECORDING_MAX_MB` | **2048** MB (≥ 0) | Past this much, the oldest recordings are deleted, checked as each call starts. 0: no cap. Audio is about 4 MB a minute; a transcript, a few kB. |
+
 ## Diagnostics
 
 These settings trace and record turns for the journal and name the engine's log file.
@@ -269,10 +283,14 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 |---|---|---|
 | `TEAPORT_ENDPOINT_DEBUG` | **off** | VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal. |
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
+| `TEAPORT_LOG_CONVERSATIONS` | **off** | Write what callers, the room and the bot say into the journal. Off, log lines keep their timing and length but not the words. This records conversations, phone calls included: the journal is kept on disk. Recording-consent law differs by place; the owner decides and is responsible. Every other switch here logs words only with this one on, except TEAPORT_AUDIO_DUMP. |
+| `LOGURU_LEVEL` | `DEBUG` | The journal's log level for the brain. The room process logs at INFO whatever this says. One of `TRACE`, `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `CRITICAL`. TRACE takes effect only with TEAPORT_LOG_CONVERSATIONS on: TRACE lines carry what people say. |
 | `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1, or 0 for off. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
-| `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. |
+| `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. This records callers' voices to disk, whatever TEAPORT_LOG_CONVERSATIONS says. Recording-consent law differs by place; the owner decides and is responsible. |
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |
+| `TEAPORT_AUDIO_DUMP_KEEP_DAYS` | **0** days (≥ 0) | Delete dumps older than this, checked as each dump starts. 0 keeps them however old. |
+| `TEAPORT_AUDIO_DUMP_MAX_MB` | **4096** MB (≥ 0) | Past this much, the oldest dumps are deleted, checked as each dump starts. 0: no cap. |
 | `TEAPORT_CAPTION_USER_HOLD_S` | **1.2** s (≥ 0) | Gap after the user's last interim before assistant partials can render again; prevents the doubled assistant bubble in the Talk UI. |
 | `ENGINE_LOG` | `~/teaport-engine.log` | The engine's serve log, where the tools read decode ms/step. *Set by the installer.* |
 
@@ -357,9 +375,8 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 |---|---|---|
 | `LOCAL_AUDIO_DEVICE` | `hw:CARD=Array,DEV=0` | The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others. |
 | `LOCAL_AUDIO_CAPTURE_CHANNEL` | **0** (0–1) | Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam. |
-| `LOCAL_AUDIO_ECHO_CONTROL` | **on** | Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged). |
+| `LOCAL_AUDIO_ECHO_CONTROL` | **on** | Let the bridge tune the XVF3800 so it hears you while the bot is talking: a fixed mic gain instead of the chip's automatic gain, and echo suppression set to take out the bot's own voice but let yours through. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged). |
 | `LOCAL_AUDIO_MIC_GAIN_DB` | **16.0** dB (0.0–36.0) | The fixed gain the XVF3800 applies to the mic in place of its automatic gain (which also boosted the bot's echo). Raise it if the speech engine misses quiet speech, lower it if loud speech clips. |
-| `LOCAL_AUDIO_ECHO_MARGIN_DB` | **15.0** dB (0.0–40.0) | How far your voice must stay above the bot's echo, as the bridge measures them at the mic, for the chip's echo suppressor to stay off. Closer than that, the bot's words start leaking in as yours and the suppressor comes on (it also muffles you while the bot talks). |
 | `LOCAL_AUDIO_WAKE_DB` | **-40.0** dB (-70.0–0.0) | Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. Measured on the appliance with the XVF3800's automatic gain off at the default LOCAL_AUDIO_MIC_GAIN_DB (16 dB): the quiet room about -50 dBFS (the quietest fifth of 100 ms blocks), a voice 3-4 m from the box about -28 dBFS (its median; -21 at its loudest tenth). Raise it if noise reconnects, lower it if speech does not. |
 | `LOCAL_AUDIO_WAKE_WORDS` | — | Wake words for the box's own mic, comma-separated, in any language the speech engine hears (for example `hey teaport, tea port, привет чайник`). Set, the box's speech recognition hears the room but every word is dropped, inside the brain's STT, before it can reach the model, the agent, a caption or a log — until a phrase from this list is said. Then what was said after it is the first turn ("hey teaport, what's the weather"), and the conversation needs no wake word until it sleeps again (LOCAL_AUDIO_KEEPALIVE_SECS, or "go to sleep"). Matching ignores case, punctuation and spacing but is otherwise exact: list the spellings you want ("teaport, tea port"); "teapot" wakes it only if listed. Empty: no wake words, the voice wake (LOCAL_AUDIO_WAKE_DB). SIP calls and dashboard/browser Talk sessions never need them. Any value at all means wake mode, and it fails closed: if the brain or its speech recognition cannot be reached the bridge stays deaf and retries; it never falls back to listening without the wake words. While asleep the engine's speech recognition runs on the room (the GPU stays busy, one STT session held); a phone call takes it over (the bridge stays off until the call ends), but a call that lands DURING a conversation at the box still hears the busy line (the take-the-call prompt asks the room in this case). |
 | `LOCAL_AUDIO_KEEPALIVE_SECS` | **45.0** s (5.0–3600.0) | With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS. Without wake words the session stays up, but after this long with nobody speaking (and until the first time someone does) it counts as a sleeping mic: a Talk client that connects takes the box from it quietly instead of being told the agent is busy. |

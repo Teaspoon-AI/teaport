@@ -17,7 +17,8 @@
 # This taps LLMTextFrame deltas between LLMFullResponseStart/End — the model's own text,
 # upstream of both the sentence aggregator and the TTS normalizer — and logs the whole
 # completion verbatim ONLY when it matches a degeneracy pattern. Healthy turns log
-# nothing, which is why this is safe to leave on by default.
+# nothing. Off by default all the same (#114): a degenerate completion is still the
+# bot's words, so it is logged only with TEAPORT_LOG_CONVERSATIONS on too.
 #
 # It also records `after_tool`, because the standing hypothesis is that tool-call
 # formatting is what confuses the model. That flag is the discriminator: if degenerate
@@ -26,7 +27,7 @@
 # exactly why it has to be right. See _pending_after_tool for the two ways a naive
 # implementation gets it wrong in OPPOSITE directions.
 #
-# Disable with TEAPORT_RAW_LLM_CAPTURE=0.
+# Enable with TEAPORT_RAW_LLM_CAPTURE=1.
 #
 import re
 
@@ -42,6 +43,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
 from teaport_brain.tts_text import (
     DOT_RUN,
@@ -198,6 +200,6 @@ class RawLLMCapture(FrameProcessor):
         logger.warning(
             f"RawLLMCapture: DEGENERATE completion chars={len(raw)} "
             f"after_tool={self._after_tool} dot_runs={dot_runs} ellipsis={ellipses} "
-            f"bold={bold} exotic=[{exotic}] repeated={repeated[:60]!r} "
-            f"raw={raw[:_MAX_LOG]!r}"
+            f"bold={bold} exotic=[{exotic}] repeated={quoted(repeated[:60])} "
+            f"raw={quoted(raw[:_MAX_LOG])}"
         )

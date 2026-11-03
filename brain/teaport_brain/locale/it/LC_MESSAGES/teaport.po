@@ -323,3 +323,7 @@ msgstr "Non posso ancora rispondere finché il mio account non viene sistemato."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Scusa, non sono riuscito a ottenere una risposta proprio ora."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Questa chiamata viene registrata."

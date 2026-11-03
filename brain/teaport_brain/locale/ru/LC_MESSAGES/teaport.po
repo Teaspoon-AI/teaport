@@ -323,3 +323,7 @@ msgstr "Я всё ещё не могу отвечать, пока с моим а
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Извините, сейчас не получилось получить ответ."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Этот звонок записывается."

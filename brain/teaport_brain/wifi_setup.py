@@ -58,7 +58,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import display, i18n
+from teaport_brain import conversation_log, display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
@@ -639,6 +639,7 @@ def main(argv=None) -> int:
     ap.add_argument("--status-dir", default=STATUS_DIR)
     ap.add_argument("--run-id", default="")
     args = ap.parse_args(argv)
+    conversation_log.install()
     nm = NM()
     dev = nm.wifi_device()
     ssid = setup_ssid(nm.mac(dev) if dev else "", SSID)

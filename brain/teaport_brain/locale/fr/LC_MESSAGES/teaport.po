@@ -320,3 +320,7 @@ msgstr "Je ne peux toujours pas répondre tant que mon compte n'est pas réglé.
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Désolé, je n'ai pas pu obtenir de réponse à l'instant."
+
+# The call recording notice (call_recording.py, #114).
+msgid "This call is being recorded."
+msgstr "Cet appel est enregistré."

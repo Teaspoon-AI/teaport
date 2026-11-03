@@ -112,6 +112,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
@@ -489,7 +490,7 @@ class LLMTextGuard(FrameProcessor):
         self._pending = ""
         self._pending_frame = None
         logger.warning(
-            f"LLMTextGuard: completion repeats itself — {sentence[:80]!r} "
+            f"LLMTextGuard: completion repeats itself — {quoted(sentence[:80])} "
             f"near-matches an earlier sentence of this response; dropping the "
             f"{dropped} held chars and swallowing the rest"
         )
