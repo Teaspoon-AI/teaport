@@ -351,8 +351,8 @@ msgstr "Ya tengo internet, así que salí del modo de configuración."
 msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
 msgstr "Lo siento, el asistente de voz está ocupado con otra sesión ahora mismo. Inténtalo de nuevo en un momento."
 
-msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
-msgstr "Lo siento, ahora mismo no te oigo: el reconocimiento de voz no está disponible. Cuelga y vuelve a conectar en un momento."
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "Lo siento, ahora mismo no te oigo: el reconocimiento de voz no está disponible. Inténtalo de nuevo en un momento."
 
 msgid "Still working on that — {topic}."
 msgstr "Sigo trabajando en eso — {topic}."

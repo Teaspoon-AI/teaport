@@ -460,8 +460,8 @@ msgstr "인터넷에 연결돼서 연결 모드를 끝냈어요."
 msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
 msgstr "죄송해요, 음성 비서가 지금 다른 세션 중이에요. 조금 뒤에 다시 시도해 주세요."
 
-msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
-msgstr "죄송해요, 지금은 음성 인식이 안 돼요. 전화를 끊고 잠시 후 다시 연결해 주세요."
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "죄송해요, 지금은 음성 인식이 안 돼요. 잠시 후 다시 시도해 주세요."
 
 msgid "Still working on that — {topic}."
 msgstr "아직 진행 중이에요 — {topic}."

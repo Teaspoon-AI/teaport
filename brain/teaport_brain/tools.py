@@ -611,7 +611,11 @@ def _progress_line(request, n, t):
     'that <topic>' keeps it tied to the request, so a status update heard a minute
     later still has a referent — the confusion was 'still working on it' landing
     after unrelated turns with no 'it' in sight."""
-    topic = _topic_phrase(request)
+    # The echo is the model's restatement, usually in English, and its trimming rules
+    # (_PROGRESS_TOPIC_TRAILING, the prose test) are English: in another language it
+    # would be an English fragment in the middle of a translated sentence, so those
+    # sessions get the generic line.
+    topic = _topic_phrase(request) if t.lang == i18n.SOURCE_LANG else ""
     # The topic rides as a dash appositive after a complete clause, never inside a
     # grammatical slot: the request is often a verb phrase ("find good pastry shops"),
     # and "almost there on the find good pastry shops" is broken where
@@ -623,7 +627,7 @@ def _progress_line(request, n, t):
         else t._("Almost there — hang tight.")
 
 
-async def _consult_progress(llm, request=None, gate=None):
+async def _consult_progress(llm, request=None, gate=None, tts=None):
     """'Still alive' narration for the silent background stretch. The ack ends within
     ~2s but the CLI consult takes 15-30s, and dead air reads as a hang.
 
@@ -650,8 +654,7 @@ async def _consult_progress(llm, request=None, gate=None):
     llm._teaport_progress_active = True
     try:
         t0 = time.monotonic()
-        # The session's language, read live (agent_session stashes the getter on the llm).
-        lang_fn = getattr(llm, "_teaport_lang_fn", None)
+        # The session's language is read live at each line (a switch_voice moves it).
         for n, due in enumerate(_PROGRESS_SCHEDULE):
             await asyncio.sleep(max(0.0, t0 + due - time.monotonic()))
             # Fit it into a lull the way a person waits for a gap. wait_until_idle
@@ -669,7 +672,7 @@ async def _consult_progress(llm, request=None, gate=None):
             # reply — a barge-in then deleted or rewrote the filler line instead
             # of the reply. The flag also marks the TTS context as a filler for
             # TranscriptLedger (stamped onto its TTSStartedFrame by tts_service).
-            t = i18n.for_espeak(lang_fn() if lang_fn else None)
+            t = i18n.for_espeak(getattr(tts, "espeak_language", None))
             await llm.push_frame(TTSSpeakFrame(
                 _progress_line(request, n, t), append_to_context=False))
     except asyncio.CancelledError:
@@ -688,7 +691,7 @@ def _count_consult(gate, delta: int) -> None:
 
 
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
-                            message=None):
+                            message=None, tts=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
     caller's question, `message` the whole call for the CLI lane (_consult_message; the
     question when not given). The turn already ended, so
@@ -700,7 +703,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     None when the session has no relay: then the consult goes straight to the agent."""
     from teaport_brain import consult_bridge
 
-    progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
+    progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate, tts=tts))
                 if llm is not None else None)
 
     answered = False    # the outcome landed is an answer (not a timeout, error or nothing)
@@ -843,7 +846,7 @@ def _consult_message(args: dict) -> str:
 
 
 async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=None,
-                                  relay=False):
+                                  relay=False, tts=None):
     """`relay`: the session has a relay that runs the consult (ToolContext.relay). Without
     one no tool_call is sent and no ack is waited for: the consult goes straight to the
     gateway/CLI lane (#78)."""
@@ -891,7 +894,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     if owed is not None:
         params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
-            message=_consult_message(args)))
+            message=_consult_message(args), tts=tts))
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome lands later (owed.py), rewriting this tool
@@ -1465,8 +1468,9 @@ def _bind_openclaw_agent_consult(ctx: ToolContext):
     # Through the relay only on a session that has one (ToolContext.relay).
     if ctx.owed is not None:
         return functools.partial(_openclaw_agent_consult, owed=ctx.owed, gate=ctx.gate,
-                                 relay=ctx.relay)
-    return functools.partial(_openclaw_agent_consult, gate=ctx.gate, relay=ctx.relay)
+                                 relay=ctx.relay, tts=ctx.tts)
+    return functools.partial(_openclaw_agent_consult, gate=ctx.gate, relay=ctx.relay,
+                             tts=ctx.tts)
 
 
 # In the order the model is offered them.

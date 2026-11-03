@@ -351,8 +351,8 @@ msgstr "オンラインになったので、セットアップモードを終了
 msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
 msgstr "すみません、音声アシスタントはほかのセッション中です。少し待ってからもう一度お試しください。"
 
-msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
-msgstr "すみません、今は声が聞こえません。音声認識が使えない状態です。一度切ってからまた接続してください。"
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "すみません、今は声が聞こえません。音声認識が使えない状態です。少し待ってからもう一度お試しください。"
 
 msgid "Still working on that — {topic}."
 msgstr "まだ作業中です（{topic}）。"

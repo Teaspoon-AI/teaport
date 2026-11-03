@@ -359,8 +359,8 @@ msgstr "Интернет появился, поэтому режим подкл�
 msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
 msgstr "Извините, голосовой ассистент сейчас занят другим сеансом — попробуйте ещё раз через минуту."
 
-msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
-msgstr "Извините, я вас сейчас не слышу — распознавание речи недоступно. Положите трубку и переподключитесь через минуту."
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "Извините, я вас сейчас не слышу — распознавание речи недоступно. Попробуйте ещё раз через минуту."
 
 msgid "Still working on that — {topic}."
 msgstr "Ещё работаю над этим — {topic}."

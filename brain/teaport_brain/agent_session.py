@@ -288,7 +288,7 @@ class AgentSession:
     # retries and an unreachable host is what it does not.
     _UNAVAILABLE_MESSAGE = N_(
         "Sorry, I can't hear you right now — my speech recognition isn't available. "
-        "Please hang up and reconnect in a moment."
+        "Please try again in a moment."
     )
 
     def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate,
@@ -807,11 +807,6 @@ def build_agent_session(transport, *, voice: str | None = None,
                        "without one: speech recognition, Wi-Fi setup and fixed lines only")
         llm = None
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
-    # The tools' spoken fillers read the session's language through this (tools.py,
-    # the consult narrator); a lambda keeps it live across switch_voice. (No model, no
-    # tools to narrate: llm is None then.)
-    if llm is not None:
-        llm._teaport_lang_fn = lambda: getattr(tts, "espeak_language", "en-us")
 
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where

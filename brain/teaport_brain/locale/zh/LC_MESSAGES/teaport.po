@@ -351,8 +351,8 @@ msgstr "我已经能上网了，所以退出了配网模式。"
 msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
 msgstr "抱歉，语音助手正在另一个会话中，请稍后再试。"
 
-msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
-msgstr "抱歉，我现在听不到你，语音识别不可用。请挂断后稍后重新连接。"
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "抱歉，我现在听不到你，语音识别不可用。请稍后再试。"
 
 msgid "Still working on that — {topic}."
 msgstr "还在处理这件事——{topic}。"
