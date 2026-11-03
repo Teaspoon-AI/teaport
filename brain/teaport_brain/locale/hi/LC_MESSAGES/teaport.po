@@ -506,3 +506,108 @@ msgstr "इस खाते में कोई क्रेडिट नही�
 
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "इस डिवाइस की कुंजी इसे इंस्टॉल करने वाले ने तय की है, इसलिए इसे यहाँ बदला नहीं जा सकता"
+
+# Letter names, for spelling a password aloud (wifi_voice.spell): the voice reads a bare Latin letter poorly.
+msgctxt "letter"
+msgid "A"
+msgstr "ए"
+
+msgctxt "letter"
+msgid "B"
+msgstr "बी"
+
+msgctxt "letter"
+msgid "C"
+msgstr "सी"
+
+msgctxt "letter"
+msgid "D"
+msgstr "डी"
+
+msgctxt "letter"
+msgid "E"
+msgstr "ई"
+
+msgctxt "letter"
+msgid "F"
+msgstr "एफ़"
+
+msgctxt "letter"
+msgid "G"
+msgstr "जी"
+
+msgctxt "letter"
+msgid "H"
+msgstr "एच"
+
+msgctxt "letter"
+msgid "I"
+msgstr "आई"
+
+msgctxt "letter"
+msgid "J"
+msgstr "जे"
+
+msgctxt "letter"
+msgid "K"
+msgstr "के"
+
+msgctxt "letter"
+msgid "L"
+msgstr "एल"
+
+msgctxt "letter"
+msgid "M"
+msgstr "एम"
+
+msgctxt "letter"
+msgid "N"
+msgstr "एन"
+
+msgctxt "letter"
+msgid "O"
+msgstr "ओ"
+
+msgctxt "letter"
+msgid "P"
+msgstr "पी"
+
+msgctxt "letter"
+msgid "Q"
+msgstr "क्यू"
+
+msgctxt "letter"
+msgid "R"
+msgstr "आर"
+
+msgctxt "letter"
+msgid "S"
+msgstr "एस"
+
+msgctxt "letter"
+msgid "T"
+msgstr "टी"
+
+msgctxt "letter"
+msgid "U"
+msgstr "यू"
+
+msgctxt "letter"
+msgid "V"
+msgstr "वी"
+
+msgctxt "letter"
+msgid "W"
+msgstr "डब्ल्यू"
+
+msgctxt "letter"
+msgid "X"
+msgstr "एक्स"
+
+msgctxt "letter"
+msgid "Y"
+msgstr "वाई"
+
+msgctxt "letter"
+msgid "Z"
+msgstr "ज़ेड"

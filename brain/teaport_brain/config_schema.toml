@@ -2694,7 +2694,7 @@ group = "wifi_setup"
 type = "secret"
 read = "startup"
 tier = "installer"
-help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud."
+help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Use the default's grouped form (\"k7mq-x4tn-p9wr\": three groups of four lowercase letters and digits without 0/o and 1/l/i, joined by hyphens that are part of the password) so the insert, the screen and the voice agree. Unset (or invalid): a fresh random one of that form each setup, shown, or spoken when there is no screen."
 
 [[settings]]
 name = "WIFI_SETUP_SSID"

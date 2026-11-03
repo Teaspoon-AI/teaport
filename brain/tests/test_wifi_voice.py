@@ -692,7 +692,7 @@ def test_a_flash_time_password_is_one_the_voice_can_spell():
         assert ws.setup_password(good) == good
     for bad in ("abc,defgh1", "pass/word1", "100%secure", "naïve1234", "quote'1234"):
         pw = ws.setup_password(bad)
-        assert pw.isdigit() and len(pw) == ws.PASSWORD_DIGITS, bad
+        assert len(pw) == 14 and pw.count("-") == 2 and set(pw) <= set(ws.PASSWORD_ALPHABET + "-"), bad
 
 
 # ------------------------------------------------------------------ the turn it took

@@ -387,6 +387,25 @@ def test_the_compiled_catalogs_are_current_and_read_like_gnu_msgfmt():
         assert {k: v for k, v in mo._catalog.items() if k} == po, lang
 
 
+@pytest.mark.parametrize("lang", sorted(i18n.catalogs()))
+def test_the_default_password_is_spoken_character_by_character(lang):
+    """The default setup password (wifi_setup.setup_password: three groups of four) read
+    out in every language: one spoken item per character, "dash" between the groups, and
+    no two characters of its alphabet said alike -- a reader writes down what they hear."""
+    t = i18n.get(lang)
+    sep = t.p("spell", ", ")
+    said = {c: wifi_voice.spell(c, t).strip() for c in wifi_setup.PASSWORD_ALPHABET + "-"}
+    clash = {}
+    for c, word in said.items():
+        clash.setdefault(word.casefold(), []).append(c)
+    assert not [v for v in clash.values() if len(v) > 1], (lang, clash)
+    assert said["-"] == t.p("spell", "dash")
+    pw = wifi_setup.setup_password("")
+    items = wifi_voice.spell(pw, t).split(sep)
+    assert len(items) == 14 and items[4] == items[9] == t.p("spell", "dash"), (lang, items)
+    assert "capital" not in " ".join(items).lower()  # lowercase: no "capital X"
+
+
 def test_the_session_language_picks_the_catalog():
     st = {"ssid": "teaport-9e35", "password": "47190352"}
     for code, lang in i18n.ESPEAK_TO_LANG.items():

@@ -506,3 +506,108 @@ msgstr "このアカウントには残高がありません"
 
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "この機器のキーは設置時に決められているため、ここでは変更できません"
+
+# Letter names, for spelling a password aloud (wifi_voice.spell): the voice reads a bare Latin letter poorly.
+msgctxt "letter"
+msgid "A"
+msgstr "エー"
+
+msgctxt "letter"
+msgid "B"
+msgstr "ビー"
+
+msgctxt "letter"
+msgid "C"
+msgstr "シー"
+
+msgctxt "letter"
+msgid "D"
+msgstr "ディー"
+
+msgctxt "letter"
+msgid "E"
+msgstr "イー"
+
+msgctxt "letter"
+msgid "F"
+msgstr "エフ"
+
+msgctxt "letter"
+msgid "G"
+msgstr "ジー"
+
+msgctxt "letter"
+msgid "H"
+msgstr "エイチ"
+
+msgctxt "letter"
+msgid "I"
+msgstr "アイ"
+
+msgctxt "letter"
+msgid "J"
+msgstr "ジェー"
+
+msgctxt "letter"
+msgid "K"
+msgstr "ケー"
+
+msgctxt "letter"
+msgid "L"
+msgstr "エル"
+
+msgctxt "letter"
+msgid "M"
+msgstr "エム"
+
+msgctxt "letter"
+msgid "N"
+msgstr "エヌ"
+
+msgctxt "letter"
+msgid "O"
+msgstr "オー"
+
+msgctxt "letter"
+msgid "P"
+msgstr "ピー"
+
+msgctxt "letter"
+msgid "Q"
+msgstr "キュー"
+
+msgctxt "letter"
+msgid "R"
+msgstr "アール"
+
+msgctxt "letter"
+msgid "S"
+msgstr "エス"
+
+msgctxt "letter"
+msgid "T"
+msgstr "ティー"
+
+msgctxt "letter"
+msgid "U"
+msgstr "ユー"
+
+msgctxt "letter"
+msgid "V"
+msgstr "ブイ"
+
+msgctxt "letter"
+msgid "W"
+msgstr "ダブリュー"
+
+msgctxt "letter"
+msgid "X"
+msgstr "エックス"
+
+msgctxt "letter"
+msgid "Y"
+msgstr "ワイ"
+
+msgctxt "letter"
+msgid "Z"
+msgstr "ゼット"

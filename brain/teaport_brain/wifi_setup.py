@@ -6,9 +6,10 @@
 #
 #   1. scan the networks in range (one radio: it cannot scan while it is an access point)
 #   2. become an access point, teaport-ab12 (the last four hex digits of the Wi-Fi MAC),
-#      WPA2 with a password of digits — the one written at flash time for the paper
-#      insert (WIFI_SETUP_PASSWORD in /etc/teaport/wifi-setup.env), else fresh random
-#      digits each time
+#      WPA2 with a password -- the one written at flash time for the paper insert
+#      (WIFI_SETUP_PASSWORD in /etc/teaport/wifi-setup.env), else a fresh random one each
+#      time: twelve characters in three groups of four, "k7mq-x4tn-p9wr"
+#      (setup_password), the hyphens part of it -- what the screen shows is what is typed
 #   3. serve the setup page at 10.42.0.1 (wifi.AP_ADDRESS, pinned in the setup profile),
 #      and only there — never on the box's other networks: on PAGE_PORT, which the
 #      unit's iptables rule makes port 80 for that address (port 80 itself is the front
@@ -83,7 +84,13 @@ MAX_CLIENTS = 32
 ADDRESS_WAIT_SECS = 5.0
 SSID_PREFIX = "teaport-"
 MINUTES = 10
-PASSWORD_DIGITS = 8
+# The default password (setup_password): GROUPS groups of GROUP_LEN characters joined by
+# "-", from lowercase letters and digits a reader cannot confuse (no 0/o, no 1/l/i).
+# 31^12, about 2^59: out of reach of an offline guess at a captured WPA2 handshake, which
+# eight digits (10^8) were not. Scanned from the QR code, it costs nothing to type; read
+# from the screen it is three short groups, and spoken, each character and "dash".
+PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+GROUPS, GROUP_LEN = 3, 4
 STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
@@ -100,7 +107,7 @@ PAGE_FAILED = "the Wi-Fi page could not start"
 # The status reason when the box has no Wi-Fi device: nothing a retry can change.
 NO_WIFI_DEVICE = N_("this box has no Wi-Fi device")
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
-# writes so the paper insert can carry the password. Unset: fresh digits per setup.
+# writes so the paper insert can carry the password. Unset: a fresh one per setup.
 PASSWORD = setting("WIFI_SETUP_PASSWORD", default="")
 SSID = setting("WIFI_SETUP_SSID", default="")
 
@@ -135,15 +142,18 @@ PASSWORD_SYMBOLS = frozenset("-_.@!#&* ")
 
 def setup_password(fixed: str = "") -> str:
     """The flash-time password if valid -- 8 to 63 characters (WPA2), every one an ASCII
-    letter, a digit or one of PASSWORD_SYMBOLS, so the voice can spell it -- else digits."""
+    letter, a digit or one of PASSWORD_SYMBOLS, so the voice can spell it -- else a fresh
+    one from the system's CSPRNG (secrets): GROUPS groups of GROUP_LEN characters of
+    PASSWORD_ALPHABET, joined by "-"."""
     fixed = fixed.strip()
     if fixed:
         if 8 <= len(fixed) <= 63 and all(
                 (c.isascii() and c.isalnum()) or c in PASSWORD_SYMBOLS for c in fixed):
             return fixed
         log("WIFI_SETUP_PASSWORD is not 8-63 letters, digits and - _ . @ ! # & * or space "
-            "— using random digits")
-    return "".join(secrets.choice("0123456789") for _ in range(PASSWORD_DIGITS))
+            "— using a random one")
+    return "-".join("".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(GROUP_LEN))
+                    for _ in range(GROUPS))
 
 
 # ------------------------------------------------------------------ status for the brain
@@ -318,6 +328,18 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
     if password and not 8 <= len(password) <= 63:
         return "", "", False, N_("Wi-Fi passwords are 8 to 63 characters.")
     return ssid, password, hidden, ""
+
+
+# The screen's line for the password: "Password  <it>" while that stays inside the panel's
+# width (about 21 characters of the avatar's 10 px font: "Network  teaport-ab12" is 111
+# of its 124 px), else "Pass  <it>" -- the default's 14 characters with "Password" would
+# scroll sideways, which a password must not.
+SCREEN_LINE_CHARS = 21
+
+
+def password_line(password: str) -> str:
+    line = f"Password  {password}"
+    return line if len(line) <= SCREEN_LINE_CHARS else f"Pass  {password}"
 
 
 # What the Wi-Fi join string escapes with a backslash: the backslash itself, ; , : and ".
@@ -650,7 +672,7 @@ class Setup:
             code = wifi_qr(ssid, password)
             code = code if self.screen and self.screen.fits_qr(code) else None
             name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
-            shown = self._show([f"Network  {name}", f"Password  {password}", url], qr=code)
+            shown = self._show([f"Network  {name}", password_line(password), url], qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
                             qr=shown and code is not None)
