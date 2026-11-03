@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:245-352#bb473189 -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:295-403#0561cc69 -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:245-352#bb473189 -->
+<!-- source: cli/teaport:295-403#0561cc69 -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -388,7 +388,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:245-352#bb473189 -->
+<!-- source: cli/teaport:295-403#0561cc69 -->
 
 **Fix**
 
@@ -571,7 +571,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:59-104#3b2dddca -->
+<!-- source: cli/teaport:59-108#608a80d2 -->
 
 ## teaport does not remember anything
 

@@ -413,6 +413,8 @@ class AgentSession:
             # the way the recording notice is (the two never meet: that one is a phone
             # call's, this one never is).
             await self.say_start_notice()
+            if self.on_hold:
+                return  # a phone call put it on hold while the notice played: no greeting
         # Without a model the cue goes in the same way: its request is the one the
         # no-model line answers (llm_error_speaker.py), so a greeting says it.
         self.context.add_message(
@@ -435,6 +437,14 @@ class AgentSession:
     start_notice = None
     # The mic path's wake gate (wake_gate.WakeGate), or None (build_agent_session sets it).
     wake_gate = None
+    # hold() has begun (set before its first await) and resume() has not run: with held,
+    # what a line that ends meanwhile must read (say_start_notice).
+    holding = False
+
+    @property
+    def on_hold(self) -> bool:
+        """On hold for a phone call, or being put on hold now."""
+        return self.held or self.holding
     # How long say_start_notice() waits for its line to play.
     START_NOTICE_MAX_SECS = 15.0
 
@@ -451,9 +461,9 @@ class AgentSession:
             played = await self._say_whole(line, self.START_NOTICE_MAX_SECS,
                                            name="the conversation-start notice")
         finally:
-            # Listening again -- unless a phone call put this conversation on hold
-            # meanwhile: a held session stays unheard until resume().
-            if self.input_mute is not None and not self.held:
+            # Listening again -- unless a phone call is putting this conversation on hold
+            # (holding: set before hold() awaits anything): it stays unheard until resume().
+            if self.input_mute is not None and not self.on_hold:
                 self.input_mute.muted = False
         if played:
             notice.told()
@@ -464,7 +474,7 @@ class AgentSession:
         greeting asked for -- queued from here, not pushed from inside the STT, which
         must not wait on a line that has to pass it."""
         await self.say_start_notice()
-        if self.held or getattr(self.task, "has_finished", lambda: False)():
+        if self.on_hold or getattr(self.task, "has_finished", lambda: False)():
             return  # on hold for a call, or over: no greeting into it
         await self.task.queue_frames([LLMRunFrame()])
 
@@ -579,6 +589,9 @@ class AgentSession:
         the model knows it stepped away), stop listening, and let the engine's STT
         session go. The pipeline, the client and the context stay; resume() brings it
         back. A wake's conversation-start notice still waiting to play is dropped."""
+        # First, before any await: a conversation-start notice playing now (greet()'s,
+        # or a wake's) reads this when it ends -- it must not listen again, nor greet.
+        self.holding = True
         if self.wake_gate is not None:
             self.wake_gate.cancel_start()
         if line:
@@ -596,6 +609,7 @@ class AgentSession:
         """Back from hold: take an engine session again, listen again, and say `line`
         (into the context). False when the STT cannot connect: the session says it cannot
         hear and ends, as greet() would have it."""
+        self.holding = False
         if self._keeper is not None:
             self._keeper.cancel()
             self._keeper = None

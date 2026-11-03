@@ -54,7 +54,8 @@ from teaport_brain.i18n import N_
 from teaport_brain.settings import setting, state_dir
 
 MARKER = "starter_key_sha256"
-# When each warning was last said, per key and state, so a restart does not say it again.
+# When each warning was last said, per key and state, so a restart does not say it again;
+# and what was left when the provider refused the key for its credit (refused_for_credit).
 NOTICES = "credit_notices.json"
 HALF_USED = setting("TEAPORT_STARTER_HALF_USED")
 LOW_USD = setting("TEAPORT_STARTER_LOW_USD")
@@ -212,6 +213,21 @@ class Monitor:
             self._fresh = False
             return
         state, numbers = judge(check.data)
+        refused_at = _load_notices().get(f"{mine[:16]}:refused")
+        if isinstance(refused_at, (int, float)):
+            # The provider refused this key for its credit (refused_for_credit): spent it
+            # stays -- OpenRouter refuses while a few cents still show (the max_tokens
+            # reservation, usage not yet counted) -- until the record shows a real top-up,
+            # LOW_USD more than it showed at the refusal. Else every question would go
+            # "run out", session ended, "ready now", refused again, round and round.
+            remaining = numbers.get("remaining")
+            if remaining is not None and remaining > refused_at + LOW_USD:
+                logger.info("credit: topped up since the refusal -- the trial credit counts again")
+                seen = _load_notices()
+                seen.pop(f"{mine[:16]}:refused", None)
+                _save_notices(seen)
+            else:
+                state = EMPTY
         if (state, mine) != (self._state, self._for):
             logger.info(f"credit: the trial credit is {state} "
                         f"({numbers.get('remaining')} of {numbers.get('limit')} left)")
@@ -233,13 +249,19 @@ class Monitor:
 
     def refused_for_credit(self) -> None:
         """The provider refused the starter key for its credit (402) mid-conversation: it
-        counts as spent now, so the next session is built without a model (make_llm),
-        until a read says otherwise (a top-up). Read soon."""
+        counts as spent now, so the next session is built without a model (make_llm), and
+        stays spent -- across restarts too -- until a read shows a real top-up (refresh).
+        Read soon."""
         key = ai_account.current_key()
         if on_starter(key):
             if self._state != EMPTY:
                 logger.info("credit: the provider refused the trial credit -- spent")
-            self._for, self._state, self._fresh = key_hash(key), EMPTY, False
+            mine = key_hash(key)
+            seen = _load_notices()
+            seen[f"{mine[:16]}:refused"] = float(self._numbers.get("remaining") or 0.0) \
+                if self._for == mine else 0.0
+            _save_notices(seen)
+            self._for, self._state, self._fresh = mine, EMPTY, False
         self.poke()
 
     def poke(self) -> None:

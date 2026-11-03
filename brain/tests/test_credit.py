@@ -527,6 +527,121 @@ def test_the_wake_notice_task_ends_with_the_session_and_a_hold():
     assert s.input_mute.muted is True and s.task.frames == []
 
 
+def _held_session(notice_playing: asyncio.Event, notice_done: asyncio.Event):
+    """A session whose start notice plays until notice_done, with the real hold()."""
+    from teaport_brain.agent_session import AgentSession
+
+    class Mute:
+        muted = False
+
+    class Gate:
+        def set_held(self, on):
+            pass
+
+    class STT:
+        stt_available, slot_busy = True, None
+
+        async def hold(self):
+            await asyncio.sleep(0)   # hold() awaits here, as the real STT does
+
+    s = AgentSession(task=FakeTask(), context=LLMContext([]), stt=STT(), tts=None, llm=None,
+                     ledger=None, followup_gate=Gate(), input_mute=Mute())
+    s.start_notice = Notice()
+
+    async def say_whole(line, max_secs, *, name, append_to_context=False):
+        s.input_mute.muted = True
+        notice_playing.set()
+        await notice_done.wait()     # cut by the hold's own line, or cancelled
+        return False
+
+    async def tell(message):
+        pass
+
+    s._say_whole = say_whole
+    s._tell_client = tell
+    s._keep_alive_on_hold = lambda: asyncio.sleep(0)
+    return s
+
+
+def test_a_hold_while_the_start_notice_plays_leaves_the_session_unheard_and_ungreeted():
+    """The real hold(), while the notice plays: on the wake path (its task cancelled) and
+    on greet()'s (a Talk connect, the room awake). Either way the held session stays
+    muted and no greeting goes in (#280 review)."""
+    async def wake_path(line):
+        playing, done = asyncio.Event(), asyncio.Event()
+        s = _held_session(playing, done)
+        gate = WakeGate(["hey box"], store=MicConversation(), greeting="(greet)")
+        gate.context = LLMContext([])
+        gate.notice_due = lambda: True
+        gate.start_with_notice = s.start_with_notice
+        s.wake_gate = gate
+
+        async def push(frame):
+            pass
+
+        await gate.wake(push, "hey box")
+        await playing.wait()
+        await s.hold(line, 1.0)
+        await asyncio.sleep(0.01)
+        return s
+
+    async def greet_path(line):
+        playing, done = asyncio.Event(), asyncio.Event()
+        s = _held_session(playing, done)
+        greeting = asyncio.ensure_future(s.greet())
+        await playing.wait()
+        hold = asyncio.ensure_future(s.hold(line, 1.0))
+        await asyncio.sleep(0)
+        done.set()                   # the hold's line cuts the notice
+        await hold
+        await greeting
+        return s
+
+    async def say_last_line(self, line, max_secs, *, append_to_context=False):
+        self.input_mute.muted = True
+        return True
+
+    from teaport_brain.agent_session import AgentSession
+    real = AgentSession.say_last_line
+    AgentSession.say_last_line = say_last_line
+    try:
+        for path in (wake_path, greet_path):
+            for line in (None, "I'll step away for a moment."):
+                s = _run(path(line))
+                assert s.held and s.input_mute.muted, (path.__name__, line)
+                assert not [f for f in s.task.frames if isinstance(f, LLMRunFrame)], path.__name__
+                assert s.start_notice.told_n == 0  # cut short: due again next time
+    finally:
+        AgentSession.say_last_line = real
+
+
+def test_a_refusal_keeps_the_credit_spent_until_a_real_top_up():
+    """OpenRouter can refuse (402) with a few cents still showing: the mark stays spent --
+    across a restart too -- through reads that show the same, and lifts only when one
+    shows LOW_USD more than at the refusal (#280 review)."""
+    _box()
+    m, fetch = _monitor({"limit": 5, "limit_remaining": 0.30, "usage": 4.70})
+    _run(m.refresh())
+    assert m.state() == credit.LOW
+    m.refused_for_credit()
+    assert m.spent()
+    for _ in range(3):                                # the flap: a read, "low" again
+        _run(m.refresh())
+        assert m.spent(), m.status()
+    restarted, fetch2 = _monitor({"limit": 5, "limit_remaining": 0.30, "usage": 4.70})
+    _run(restarted.refresh())
+    assert restarted.spent()                          # remembered across a restart
+    fetch2.record = {"limit": 5, "limit_remaining": 0.9, "usage": 4.1}
+    _run(restarted.refresh())
+    assert restarted.spent()                          # not a real top-up
+    fetch2.record = {"limit": 10, "limit_remaining": 5.3, "usage": 4.7}
+    _run(restarted.refresh())
+    assert restarted.state() == credit.OK             # topped up: counts again
+    fetch2.record = {"limit": 10, "limit_remaining": 5.2, "usage": 4.8}
+    _run(restarted.refresh())
+    assert restarted.state() == credit.OK             # and the mark is gone
+
+
 # ------------------------------------------------------------------ where it shows
 
 def test_health_status_doctor_and_the_settings_line():
