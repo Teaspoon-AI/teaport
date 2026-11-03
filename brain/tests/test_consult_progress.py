@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from teaport_brain import tools  # noqa: E402
+from teaport_brain import i18n  # noqa: E402
 
 ANSWER = "Upper Crust Bakery, Neon Belly, Russell's Bakery."
 
@@ -129,12 +130,13 @@ class _Recorder:
 
 async def test_the_progress_line_names_the_user_request():
     # The request's own opening phrase, so a late line still has a referent.
-    line = tools._progress_line("Find good pastry shops on Burnet Road in Austin", 0)
+    line = tools._progress_line("Find good pastry shops on Burnet Road in Austin",
+                                 0, i18n.get("en"))
     assert "pastry shops on Burnet Road" in line, line
     assert line.startswith("Still working on that"), line
     # An empty request falls back to the generic line rather than a dangling "that —".
-    assert tools._progress_line("", 0) == "Still working on it."
-    assert "—" not in tools._progress_line("   ", 0)
+    assert tools._progress_line("", 0, i18n.get("en")) == "Still working on it."
+    assert "—" not in tools._progress_line("   ", 0, i18n.get("en"))
 
 
 async def test_the_topic_echo_cuts_at_a_boundary_and_skips_non_prose():
@@ -150,7 +152,7 @@ async def test_the_topic_echo_cuts_at_a_boundary_and_skips_non_prose():
     assert T("summarize https://news.example.com/2026/09/02/a-really-long-slug-here") == ""
     long = "compare " + " ".join(["antidisestablishmentarianism"] * 6)
     assert 0 < len(T(long)) <= tools._PROGRESS_TOPIC_CHARS, T(long)
-    assert tools._progress_line('{"task": 1}', 0) == "Still working on it."
+    assert tools._progress_line('{"task": 1}', 0, i18n.get("en")) == "Still working on it."
 
 
 class _Timed(_Recorder):

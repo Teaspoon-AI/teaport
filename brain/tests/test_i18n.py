@@ -57,6 +57,10 @@ DYNAMIC = {
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
         "self.t._(ONLINE_NOW_TEXT)",
     },
+    "agent_session.py": {
+        "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
+        "t._(self._UNAVAILABLE_MESSAGE)",    # the same, at both push sites
+    },
 }
 
 

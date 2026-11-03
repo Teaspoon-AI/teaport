@@ -73,6 +73,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain.conversation_log import quoted
 from teaport_brain import consult_bridge
+from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
 from teaport_brain.owed import CANCELLED_NOTE
 from teaport_brain.agent_backend import HAS_AGENT
@@ -605,7 +606,7 @@ def _topic_phrase(request):
     return phrase if any(c.isalpha() for c in phrase) else ""
 
 
-def _progress_line(request, n):
+def _progress_line(request, n, t):
     """The nth (0-based) progress line, naming the topic when the request gives one.
     'that <topic>' keeps it tied to the request, so a status update heard a minute
     later still has a referent — the confusion was 'still working on it' landing
@@ -616,8 +617,10 @@ def _progress_line(request, n):
     # and "almost there on the find good pastry shops" is broken where
     # "almost there — find good pastry shops" reads fine spoken.
     if n == 0:
-        return f"Still working on that — {topic}." if topic else "Still working on it."
-    return f"Almost there — {topic}." if topic else "Almost there — hang tight."
+        return t._("Still working on that — {topic}.").format(topic=topic) if topic \
+            else t._("Still working on it.")
+    return t._("Almost there — {topic}.").format(topic=topic) if topic \
+        else t._("Almost there — hang tight.")
 
 
 async def _consult_progress(llm, request=None, gate=None):
@@ -647,6 +650,8 @@ async def _consult_progress(llm, request=None, gate=None):
     llm._teaport_progress_active = True
     try:
         t0 = time.monotonic()
+        # The session's language, read live (agent_session stashes the getter on the llm).
+        lang_fn = getattr(llm, "_teaport_lang_fn", None)
         for n, due in enumerate(_PROGRESS_SCHEDULE):
             await asyncio.sleep(max(0.0, t0 + due - time.monotonic()))
             # Fit it into a lull the way a person waits for a gap. wait_until_idle
@@ -664,8 +669,9 @@ async def _consult_progress(llm, request=None, gate=None):
             # reply — a barge-in then deleted or rewrote the filler line instead
             # of the reply. The flag also marks the TTS context as a filler for
             # TranscriptLedger (stamped onto its TTSStartedFrame by tts_service).
-            await llm.push_frame(TTSSpeakFrame(_progress_line(request, n),
-                                               append_to_context=False))
+            t = i18n.for_espeak(lang_fn() if lang_fn else None)
+            await llm.push_frame(TTSSpeakFrame(
+                _progress_line(request, n, t), append_to_context=False))
     except asyncio.CancelledError:
         pass
     finally:
@@ -1687,25 +1693,20 @@ def _args_summary(args: dict, cap: int = 60) -> str:
     return ""
 
 
-def _fallback_line(name: str, args: dict, lang: str) -> str | None:
-    """Deterministic-but-contextual 'working on it' line, per tool and language."""
+def _fallback_line(name: str, args: dict, t) -> str | None:
+    """Deterministic-but-contextual 'working on it' line, per tool; `t` is i18n.T."""
     if name == "web_search":
         q = _args_summary(args, cap=40)
-        return {"es": f"Buscando {q}.", "it": f"Cerco {q}.",
-                "cmn": f"我来查一下{q}。"}.get(lang, f"Looking up {q}.") if q else None
+        return t._("Looking up {q}.").format(q=q) if q else None
     if name == "web_fetch":
-        return {"es": "Abriendo la página.", "it": "Apro la pagina.",
-                "cmn": "我打开那个页面。"}.get(lang, "Opening that page.")
+        return t._("Opening that page.")
     if name == "openclaw_agent_consult":
         # Agent-first: every turn is a consult — a stock ack per turn would be
         # noise (ThinkingSound covers the wait) and would corrupt TURN-TIMING's
         # tts_first_audio, which must mark the ANSWER in this mode.
         if AGENT_FIRST:
             return None
-        return {"es": "Voy a trabajar en eso, un momento.",
-                "it": "Ci lavoro subito, un attimo.",
-                "cmn": "我来处理，请稍等。"}.get(
-                    lang, "I'll work on that — give me a moment.")
+        return t._("I'll work on that — give me a moment.")
     if name == "pair_device":
         # The code takes a few seconds to come up (pairing reads the device list first),
         # and the model mostly calls this without a word, leaving the room in silence.
@@ -1714,9 +1715,7 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
         # say what to do. A cancel is instant and says its own line.
         if _flag(args.get("cancel", False)):
             return None
-        return {"es": "Un momento, déjame prepararlo.",
-                "it": "Un attimo, lo preparo.",
-                "cmn": "稍等，我来准备一下。"}.get(lang, "One moment, let me set that up.")
+        return t._("One moment, let me set that up.")
     return None  # instant tools: speaking would take longer than the call
 
 
@@ -1771,7 +1770,7 @@ def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
             await _bubble(params.llm,
                           f"> 🔧 **{name}**" + (f" · `{summary}`" if summary else ""))
             if not getattr(params.llm, "_teaport_spoke", True):
-                line = _fallback_line(name, args, lang_fn())
+                line = _fallback_line(name, args, i18n.for_espeak(lang_fn()))
                 if line:
                     # append_to_context=False — same as the consult narrator's
                     # lines: audio-only, never an assistant message the heard

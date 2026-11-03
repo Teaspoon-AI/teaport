@@ -14,7 +14,7 @@ from pinned_pipecat import require_pinned  # noqa: E402
 
 require_pinned()
 
-from teaport_brain import agent_session, pairing, persona, tools  # noqa: E402
+from teaport_brain import agent_session, i18n, pairing, persona, tools  # noqa: E402
 from teaport_brain import pair_device as pd  # noqa: E402
 
 LINK = "https://box.example/p/abc123"
@@ -721,16 +721,17 @@ def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):
                        ("es", "Un momento, déjame prepararlo."),
                        ("it", "Un attimo, lo preparo."),
                        ("cmn", "稍等，我来准备一下。"),
-                       ("fr", "One moment, let me set that up.")):
-        line = tools._fallback_line("pair_device", {}, lang)
+                       ("fr", "Un instant, je prépare cela."),
+                       ("xx", "One moment, let me set that up.")):  # no catalog: English
+        line = tools._fallback_line("pair_device", {}, i18n.for_espeak(lang))
         assert line == want, (lang, line)
         # It promises nothing the outcome may contradict (no screen, unavailable,
         # stopped), and says nothing the tool's own note has the model say next.
         for word in ("code", "screen", "camera", "link", "QR", "código", "codice", "码"):
             assert word not in line, (lang, word)
     for cancel in (True, "true"):
-        assert tools._fallback_line("pair_device", {"cancel": cancel}, "en") is None
-    assert tools._fallback_line("pair_device", {"cancel": False}, "en")
+        assert tools._fallback_line("pair_device", {"cancel": cancel}, i18n.get("en")) is None
+    assert tools._fallback_line("pair_device", {"cancel": False}, i18n.get("en"))
 
 
 

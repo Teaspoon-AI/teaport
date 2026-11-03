@@ -1,6 +1,7 @@
 #
 # teaport — translations for what the brain says and shows on its own, without the LLM
-# (today: Wi-Fi setup, wifi_voice.py and wifi_setup.py). The LLM already answers in the
+# (the Wi-Fi setup flow, the session arbiter's and agent-session busy lines, consult
+# progress and tool-ack fillers, and the LLM-error notice). The LLM already answers in the
 # session's language; text the brain composes itself has to be translated here.
 #
 # Python's standard gettext — the machinery Django's _() wraps — over one catalog per

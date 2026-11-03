@@ -67,6 +67,8 @@ from teaport_brain.endpointing import (
 )
 from teaport_brain import call_recording, echo_guard
 from teaport_brain import endpoint_debug
+from teaport_brain import i18n
+from teaport_brain.i18n import N_
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard, mood_tag
 from teaport_brain import onnx_sessions
@@ -274,7 +276,7 @@ class AgentSession:
     # holds it, the second hears this). Unified wording for both front-ends: the
     # SIP side hangs the caller up after it plays, the OpenClaw side lets its own client
     # disconnect — so a neutral "busy, try again" reads right on a phone and in the app.
-    _BUSY_MESSAGE = (
+    _BUSY_MESSAGE = N_(
         "Sorry, the voice assistant is busy with another session right now — "
         "please try again in a moment."
     )
@@ -284,7 +286,7 @@ class AgentSession:
     # the line wins the slot" remedy for what is actually a down engine. The STT
     # service distinguishes them (stt.slot_busy) because a REJECTION is exactly what it
     # retries and an unreachable host is what it does not.
-    _UNAVAILABLE_MESSAGE = (
+    _UNAVAILABLE_MESSAGE = N_(
         "Sorry, I can't hear you right now — my speech recognition isn't available. "
         "Please hang up and reconnect in a moment."
     )
@@ -378,8 +380,9 @@ class AgentSession:
                 return
             # append_to_context=False: the pipeline talking, not the model -- never
             # an assistant message, and a marked filler for TranscriptLedger.
+            t = i18n.for_espeak(getattr(self.tts, "espeak_language", "en-us"))
             await self.task.queue_frames([TTSSpeakFrame(
-                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
+                t._(self._BUSY_MESSAGE) if busy else t._(self._UNAVAILABLE_MESSAGE),
                 append_to_context=False)])
             return
         if not hello:
@@ -559,9 +562,11 @@ class AgentSession:
                            "and ending this session")
             self.should_end = True
             self.end_reason = "busy" if self.stt.slot_busy is True else "unavailable"
+            t = i18n.for_espeak(getattr(self.tts, "espeak_language", "en-us"))
+            spoken = t._(self._BUSY_MESSAGE) if self.end_reason == "busy" \
+                else t._(self._UNAVAILABLE_MESSAGE)
             await self.task.queue_frames([TTSSpeakFrame(
-                self._BUSY_MESSAGE if self.end_reason == "busy" else self._UNAVAILABLE_MESSAGE,
-                append_to_context=False)])
+                spoken, append_to_context=False)])
             await self.followup_gate.wait_until_delivered()
             await self.task.cancel()
             return False
@@ -802,6 +807,11 @@ def build_agent_session(transport, *, voice: str | None = None,
                        "without one: speech recognition, Wi-Fi setup and fixed lines only")
         llm = None
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
+    # The tools' spoken fillers read the session's language through this (tools.py,
+    # the consult narrator); a lambda keeps it live across switch_voice. (No model, no
+    # tools to narrate: llm is None then.)
+    if llm is not None:
+        llm._teaport_lang_fn = lambda: getattr(tts, "espeak_language", "en-us")
 
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where

@@ -189,13 +189,13 @@ class _FakeTask:
             self.spoken.append(getattr(f, "text", None))
 
 
-def _session(available, slot_busy):
+def _session(available, slot_busy, tts=None):
     task = _FakeTask()
     # tts/llm are carried by AgentSession but untouched by greet(), which is all this
     # file drives; passed rather than defaulted so the constructor keeps saying that a
     # real session has all three services.
     return AgentSession(task=task, context=None, stt=_FakeStt(available, slot_busy),
-                        tts=None, llm=None, ledger=None, followup_gate=None), task
+                        tts=tts, llm=None, ledger=None, followup_gate=None), task
 
 
 async def test_a_held_slot_says_busy():
@@ -224,6 +224,19 @@ async def test_an_unresolved_tristate_is_not_reported_as_busy():
     assert session.should_end is True
     said = " ".join(t or "" for t in task.spoken)
     assert "busy with another session" not in said, said
+
+
+async def test_both_warnings_are_said_in_the_voices_language():
+    """The warnings are the pipeline's own lines, so they follow the TTS language."""
+    class _Voice:
+        espeak_language = "fr-fr"
+    for slot_busy, want in ((True, "occupé avec une autre session"),
+                            (False, "reconnaissance vocale")):
+        session, task = _session(False, slot_busy, tts=_Voice())
+        await session.greet()
+        said = " ".join(t or "" for t in task.spoken)
+        assert want in said, (slot_busy, said)
+        assert "Sorry" not in said, said
 
 
 def main():

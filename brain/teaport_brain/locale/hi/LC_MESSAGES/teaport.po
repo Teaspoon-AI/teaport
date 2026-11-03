@@ -345,3 +345,35 @@ msgstr "दोबारा कोशिश करने के लिए आप 
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "इंटरनेट चालू हो गया है, इसलिए मैंने सेट अप मोड बंद कर दिया है।"
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "क्षमा करें, वॉइस असिस्टेंट अभी दूसरे सेशन में व्यस्त है। थोड़ी देर बाद फिर से कोशिश करें।"
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please hang up and reconnect in a moment."
+msgstr "क्षमा करें, अभी आपकी आवाज़ नहीं सुनाई दे रही, स्पीच रिकग्निशन उपलब्ध नहीं है। कॉल काटकर थोड़ी देर बाद फिर जुड़ें।"
+
+msgid "Still working on that — {topic}."
+msgstr "यह काम अभी चल रहा है — {topic}।"
+
+msgid "Still working on it."
+msgstr "यह काम अभी चल रहा है।"
+
+msgid "Almost there — {topic}."
+msgstr "लगभग तैयार है — {topic}।"
+
+msgid "Almost there — hang tight."
+msgstr "लगभग तैयार है, थोड़ा धैर्य रखें।"
+
+msgid "Looking up {q}."
+msgstr "{q} खोज रहे हैं।"
+
+msgid "Opening that page."
+msgstr "वह पेज खोल रहे हैं।"
+
+msgid "I'll work on that — give me a moment."
+msgstr "इस पर काम शुरू करते हैं, एक पल दें।"
+
+msgid "One moment, let me set that up."
+msgstr "एक पल रुकिए, इसे तैयार किया जा रहा है।"
