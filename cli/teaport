@@ -50,12 +50,14 @@ sip_line() {  # the SIP front-end, as a status line
   printf '  %-28s %s\n' "SIP front-end (brain)" "$(c "$col" "$st")"
 }
 # What the brain's last requests for a reply met (/health "answers", issue #205), as
-# "<state>\t<text>": ok | untried | failing | account, or "unknown" when the brain does
-# not answer or predates it. Plain words: this is the owner's view of a refused key.
+# "<state>\t<text>": ok | untried | failing | account | unconfigured (no key or no
+# endpoint address at all, #277), or "unknown" when the brain does not answer or
+# predates it. Plain words: this is the owner's view of a refused key.
 brain_answers() {
   brain_health | python3 -c 'import json, sys, time
 a = json.load(sys.stdin).get("answers")
-if not isinstance(a, dict) or a.get("state") not in ("ok", "untried", "failing", "account"):
+if not isinstance(a, dict) or a.get("state") not in ("ok", "untried", "failing", "account",
+                                                     "unconfigured"):
     raise SystemExit(1)
 st = a["state"]
 def at(t):
@@ -63,13 +65,16 @@ def at(t):
     same_day = time.strftime("%Y-%m-%d", lt) == time.strftime("%Y-%m-%d")
     return time.strftime("%H:%M" if same_day else "%Y-%m-%d %H:%M", lt)
 why = (" (%s)" % a["reason"]) if a.get("reason") else ""
-when = ("" if st in ("ok", "untried") else
+when = ("" if st in ("ok", "untried", "unconfigured") else
         "since %s, last at %s, %d time(s)%s" % (at(a["since"]), at(a.get("last") or a["since"]),
                                                 a.get("count", 0), why))
 if st == "ok":
     text = "working"
 elif st == "untried":
     text = "none asked for since the brain started"
+elif st == "unconfigured":
+    text = ("not set up%s: no model is configured, so the box answers every question with"
+            " a fixed line — add the key and the endpoint on the settings page" % why)
 elif st == "account":
     text = ("refused %s: the account behind the answers needs attention, and it will"
             " not pass by itself — check the key and its account on the settings page;"
@@ -81,7 +86,7 @@ print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
 }
 answers_line() {  # the answers, as a status line
   local line st col; line="$(brain_answers)"; st="${line%%$'\t'*}"
-  case "$st" in ok) col="$GREEN" ;; account) col="$RED" ;; failing) col="$YEL" ;; *) col="0" ;; esac
+  case "$st" in ok) col="$GREEN" ;; account|unconfigured) col="$RED" ;; failing) col="$YEL" ;; *) col="0" ;; esac
   [ "$st" = unknown ] && line=$'unknown\tunknown (the brain does not say)'
   printf '  %-28s %s\n' "answers (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
@@ -208,7 +213,7 @@ answers_check() {
   case "$line" in
     ok$'\t'*|untried$'\t'*) ok "answers: ${line#*$'\t'}" ;;
     failing$'\t'*)          warnc "answers: ${line#*$'\t'}" ;;
-    account$'\t'*)          failc "answers: ${line#*$'\t'}" ;;
+    account$'\t'*|unconfigured$'\t'*) failc "answers: ${line#*$'\t'}" ;;
   esac
 }
 

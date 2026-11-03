@@ -20,7 +20,7 @@ Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no 
 
 <!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:353-355,524#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
 
-If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it.
+If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
 <!-- source: brain/teaport_brain/config_schema.toml:1713-1720#5be20f46 -->
 

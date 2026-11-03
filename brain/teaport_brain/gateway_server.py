@@ -63,11 +63,11 @@ from teaport_brain.gateway_serializer import (
 )
 from teaport_brain.captions import sends_every_final
 from teaport_brain.engine_tts import pacing_status
-from teaport_brain.llm_error_speaker import ANSWERS
 from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import freeze_startup_objects, turn_reclaim
-from teaport_brain.services import make_tts, prime_model_dns, warm_first_use_imports
+from teaport_brain.services import (answers_status, make_tts, prime_model_dns,
+                                    warm_first_use_imports)
 from teaport_brain.settings import setting
 
 LISTEN_PORT = setting("GATEWAY_PORT")
@@ -624,9 +624,11 @@ async def health():
     # and the config page shows it beside the setting.
     # "answers": what the last requests for a reply met (llm_error_speaker.AnswerHealth,
     # #205): ok, untried, failing (passes on its own) or account (a refused key or a
-    # spent account), with since/reason. `teaport status` and `teaport doctor` print it.
+    # spent account), with since/reason -- or unconfigured: no model can be made at all,
+    # no key or no endpoint address (services.answers_status, #277). `teaport status`
+    # and `teaport doctor` print it.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
-            "tts_pacing": pacing_status(), "answers": ANSWERS.status()}
+            "tts_pacing": pacing_status(), "answers": answers_status()}
 
 
 @app.get("/talk/status")

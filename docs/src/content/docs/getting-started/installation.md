@@ -173,7 +173,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:43,46,2751#2f2e05c5; cli/teaport:280#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:43,46,2751#2f2e05c5; cli/teaport:285#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -185,7 +185,7 @@ teaport has three optional components. The installer sets up none of them by def
 
    All three services show `active`, with the engine and brain ports and the memory use.
 
-   <!-- source: cli/teaport:5,120,1440#678e2a72 -->
+   <!-- source: cli/teaport:5,125,1445#678e2a72 -->
 
 2. Run the health check:
 
@@ -197,7 +197,7 @@ teaport has three optional components. The installer sets up none of them by def
    configuration, the services, and the ports. Every check prints `ok`, or a warning that
    says what to fix.
 
-   <!-- source: cli/teaport:6,235-265#903195ff -->
+   <!-- source: cli/teaport:6,240-270#903195ff -->
 
 3. Optional: to confirm that speech recognition uses the fast path, read the engine's first
    messages:

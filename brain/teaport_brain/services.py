@@ -69,17 +69,54 @@ def _llm_extra() -> dict:
     return extra
 
 
-def get_llm_api_key() -> str:
+class NoModel(RuntimeError):
+    """No model can be made for a session: no endpoint address, or no key (#277). The
+    session is then built without one (agent_session.build_agent_session) and says so
+    with a fixed line instead of answering. Not a model that fails: a provider that
+    refuses the key or cannot be reached is LLMErrorSpeaker's to say (#205)."""
+
+
+_NO_URL = ("LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
+           "point it at your OpenAI-compatible endpoint "
+           "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
+           "local server); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model")
+_NO_KEY = ("no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
+           "(see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model)")
+
+
+def _api_key() -> str | None:
     # LLM_API_KEY wins; else the installer-written key file. A local
     # OpenAI-compatible server that ignores auth still needs a placeholder —
     # set LLM_API_KEY=sk-local (or write it to the file).
-    key = setting("LLM_API_KEY") or secret_file("LLM_API_KEY")
+    return setting("LLM_API_KEY") or secret_file("LLM_API_KEY")
+
+
+def model_missing() -> str | None:
+    """Why no model can be made right now ("no endpoint address" or "no key"), or None
+    when one can. Read live, as make_llm reads them: the key file is read per session, so
+    a key written meanwhile counts at once."""
+    if not setting("LLM_BASE_URL"):
+        return "no endpoint address"
+    if not _api_key():
+        return "no key"
+    return None
+
+
+def get_llm_api_key() -> str:
+    key = _api_key()
     if key:
         return key
-    raise RuntimeError(
-        "no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
-        "(see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model)"
-    )
+    raise NoModel(_NO_KEY)
+
+
+def answers_status() -> dict:
+    """/health's "answers": ANSWERS.status() (#205), or "unconfigured" with the reason
+    while no model can be made at all (#277). No request is ever sent then, so the
+    record of the last ones would only say "untried"."""
+    missing = model_missing()
+    if missing is not None:
+        return {"state": "unconfigured", "reason": missing}
+    return ANSWERS.status()
 
 
 # Completion cap. Left unset, a credit-metered gateway reserves against the MODEL'S
@@ -889,15 +926,12 @@ def warm_first_use_imports() -> None:
 # key, LLM_MODEL at the served model. gpt-oss-120b is the reference model (clean
 # tool calls, no self-narration; llama-3.3-70b leaks "<function=...>" text —
 # avoid). Provider-specific routing rides LLM_EXTRA_BODY (see _llm_extra).
+#
+# NoModel when there is no endpoint or no key (model_missing says which).
 def make_llm():
     base_url = setting("LLM_BASE_URL")
     if not base_url:
-        raise RuntimeError(
-            "LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
-            "point it at your OpenAI-compatible endpoint "
-            "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
-            "local server); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model"
-        )
+        raise NoModel(_NO_URL)
     # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from
     # the request body entirely. Passing None would serialize an explicit null.

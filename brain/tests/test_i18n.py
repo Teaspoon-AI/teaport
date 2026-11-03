@@ -246,6 +246,25 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
     assert [s for s in talk if wifi_voice.heard("start", s, t)] == []
 
 
+# The quotation marks the catalogs put round a phrase to say, opening -> closing.
+_QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": "'", "「": "」"}
+
+
+@pytest.mark.parametrize("lang", i18n.catalogs())
+def test_the_phrase_the_no_model_line_quotes_starts_setup_in_its_language(lang):
+    """The no-model line (llm_error_speaker.NO_MODEL_WIFI_TEXT, #277) tells the user what
+    to say: those exact words, said back, must start setup mode in that language."""
+    from teaport_brain.llm_error_speaker import NO_MODEL_WIFI_TEXT
+    t = i18n.get(lang)
+    line = t._(NO_MODEL_WIFI_TEXT)
+    sentence = line.split(". ", 1)[-1] if lang == "en" else line
+    quoted = [m.group(2) for m in re.finditer(
+        "(" + "|".join(map(re.escape, _QUOTES)) + r")\s*(.+?)\s*(?:"
+        + "|".join(map(re.escape, set(_QUOTES.values()))) + ")", sentence)]
+    assert len(quoted) == 1, (lang, line, quoted)
+    assert wifi_voice.heard("start", quoted[0], t), (lang, quoted[0])
+
+
 def test_arabic_is_heard_with_or_without_its_diacritics():
     ar = i18n.get("ar")
     for vocalised in ("نَعَم", "نعم"):

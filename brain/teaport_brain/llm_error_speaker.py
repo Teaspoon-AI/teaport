@@ -65,6 +65,22 @@
 #
 # Disable with TEAPORT_LLM_ERROR_SPEECH=0 (the speech only; ANSWERS still records).
 #
+# NO MODEL AT ALL (#277). With no key or no endpoint address there is no LLM service to
+# fail: the session is built without one (agent_session.build_agent_session), and this
+# processor takes the LLM's place as well as its usual one. Every request for a reply
+# (an LLMContextFrame: the user's turn, the greeting, a wake word's greeting) is taken
+# here and answered with one fixed line, on the vague line's clock (once per window,
+# whatever is said in between) -- one processor and one clock for "there is no answer",
+# whatever the reason. Which line (_no_model_line):
+#   * on a phone call, a short neutral one: a caller is not the owner, and the call ends
+#     after it (AgentSession.greet);
+#   * where spoken Wi-Fi setup is on and the box is offline, how to get it online;
+#   * anywhere else, where the rest is done: the settings page.
+# A request that finds a model could be made now (a key written meanwhile: the key file
+# is read per session) gets "I'm ready now" once, and the session ends so that the next
+# one is built with it. Spoken whatever TEAPORT_LLM_ERROR_SPEECH says: it is not a
+# failure notice, and without it the box would say nothing at all.
+#
 import math
 import re
 import time
@@ -73,7 +89,7 @@ import httpx
 import openai
 from loguru import logger
 
-from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
+from pipecat.frames.frames import ErrorFrame, Frame, LLMContextFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
 from pipecat.utils.errors import ErrorCategory, classify_http_exception
@@ -103,6 +119,20 @@ ACCOUNT_TEXT = N_("Sorry, I can't answer right now: the account I use for my ans
 # The same, on every later failed turn inside the account window: short, because the
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
+
+# No model at all (#277; the module note). "Set up" as what the box is not yet, never
+# "setup mode", the state it goes into to join a network; the settings page, as the
+# account line names it, is where the rest is done.
+NO_MODEL_TEXT = N_("I can't answer questions until I'm set up. You can finish that on my "
+                   "settings page.")
+# The quoted words are the start phrase, in each catalog one its own "start" pattern
+# hears (tests/test_i18n.py checks): said back to the box, they start setup mode.
+NO_MODEL_WIFI_TEXT = N_("I can't answer questions until I'm set up. Say \"set up Wi-Fi\" "
+                        "to get me online.")
+# A caller on the phone: short and neutral, no instructions for the box's owner.
+NO_MODEL_CALL_TEXT = N_("Sorry, I can't take calls right now. Please try again later.")
+# A model can be made now: this session ends, and the next one has it.
+NO_MODEL_READY_TEXT = N_("I'm ready now. Please ask me again.")
 
 ACCOUNT_CATEGORIES = frozenset({ErrorCategory.AUTHENTICATION,
                                 ErrorCategory.AUTHORIZATION,
@@ -236,11 +266,26 @@ class LLMErrorSpeaker(FrameProcessor):
     """Speaks a short line when the LLM call fails; forwards the error untouched.
 
     lang_fn: the session's voice language (an espeak code, as EngineTTSService's
-    espeak_language), read at each notice so a voice switch is followed."""
+    espeak_language), read at each notice so a voice switch is followed.
 
-    def __init__(self, lang_fn=None):
+    no_model: the session has no LLM (#277; the module note): this processor answers
+    every request for a reply in its place. Then also `phone` (a phone call: the short
+    neutral line), `wifi` (the session's WifiSetupVoice, where spoken Wi-Fi setup is
+    on), `gate` (the session's FollowupGate: the request it took is not left claiming
+    the window), `model_back` (True once a model could be made) and `end` (an async
+    callable that ends the session), the last two set by the session builder."""
+
+    def __init__(self, lang_fn=None, *, no_model: bool = False, phone: bool = False,
+                 wifi=None, gate=None, model_back=None, end=None):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
+        self.no_model = no_model
+        self._phone = phone
+        self._wifi = wifi
+        self._gate = gate
+        self.model_back = model_back or (lambda: False)
+        self.end = end
+        self._ready_said = False
         # -inf, not 0.0: time.monotonic() is time since BOOT on Linux, so 0.0 is not a
         # "never spoken" sentinel — it is boot. On an appliance that starts the brain a
         # few seconds after boot, `now - 0.0` is smaller than the debounce window, and
@@ -266,8 +311,58 @@ class LLMErrorSpeaker(FrameProcessor):
         # "try again", which would contradict the account line.
         return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
 
+    # -- no model (#277)
+    async def _no_model_line(self) -> str | None:
+        """The line for a request with no model to answer it, or None (debounced); moves
+        the clock. Asked as the request comes, so a key written meanwhile is found."""
+        if self.model_back():
+            if self._ready_said:
+                return None
+            self._ready_said = True
+            return NO_MODEL_READY_TEXT
+        now = time.monotonic()
+        if now - self._said < _DEBOUNCE_SECS:
+            return None
+        self._said = now
+        if self._phone:
+            return NO_MODEL_CALL_TEXT
+        if self._wifi is not None and not await self._wifi.box_online():
+            return NO_MODEL_WIFI_TEXT
+        return NO_MODEL_TEXT
+
+    async def _answer_without_model(self) -> None:
+        text = await self._no_model_line()
+        if text is None:
+            logger.debug("no model: the line was said moments ago -- not again yet")
+            return
+        logger.info(f"no model: speaking {text[:40]!r}")
+        t = i18n.for_espeak(self._lang_fn())
+        line = t._(text)
+        if self._wifi is not None:
+            # Its start phrase is in the line: heard back, it is the box's own voice.
+            self._wifi.note_said(line)
+        await self.push_frame(TTSSpeakFrame(line, append_to_context=False),
+                              FrameDirection.DOWNSTREAM)
+        if text is NO_MODEL_READY_TEXT and self.end is not None:
+            logger.info("no model: one can be made now -- ending this session, so the "
+                        "next one is built with it")
+            await self.end()
+
+    def _spawn(self, coro):
+        return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if (self.no_model and isinstance(frame, LLMContextFrame)
+                and direction == FrameDirection.DOWNSTREAM):
+            # The request a model would render: taken here, as a model takes it -- the
+            # gate stops holding the window for a completion that will never start.
+            if self._gate is not None:
+                self._gate.request_rendered()
+                self._gate.release_claim()
+            # A task: the online check may take a few seconds, and nothing waits on it.
+            self._spawn(self._answer_without_model())
+            return
         if isinstance(frame, ErrorFrame) and isinstance(frame.processor, LLMService):
             text = self._notice(frame, time.monotonic())
             if text is not None:

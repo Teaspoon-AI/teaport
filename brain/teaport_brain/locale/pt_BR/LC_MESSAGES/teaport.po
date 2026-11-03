@@ -319,3 +319,16 @@ msgstr "Desculpe, não consegui uma resposta agora há pouco."
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "Esta ligação está sendo gravada."
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions until I'm set up. You can finish that on my settings page."
+msgstr "Não consigo responder perguntas até ser configurado. Dá para terminar isso na minha página de configurações."
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "Não consigo responder perguntas até ser configurado. Diga “configurar o wi-fi” para me colocar na internet."
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "Desculpe, não posso atender ligações agora. Tente de novo mais tarde."
+
+msgid "I'm ready now. Please ask me again."
+msgstr "Agora estou pronto. Pode perguntar de novo."

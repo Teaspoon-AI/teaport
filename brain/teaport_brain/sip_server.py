@@ -936,16 +936,18 @@ async def run_connection(sock, on_ready=None):
             await session.greet(resumed=resumed, notice=notice)
         if session.should_end:
             # STT is unavailable — the engine's single slot is held by another process
-            # (a standalone rig) or the engine is unreachable. greet() spoke the
-            # matching line instead of greeting; let it play out, then
+            # (a standalone rig) or the engine is unreachable — or there is no model to
+            # answer (#277: end_reason "no_model"). greet() had the matching line said
+            # instead of a greeting; let it play out, then
             # hang the caller up and tear the pipeline down so the line drops cleanly.
             # wait_until_delivered returns once the line has been spoken (or after a
             # short timeout if the engine can't even synthesize it — hang up either way).
-            logger.info(f"STT unavailable for call {call_id} — playing the warning, "
-                        "then hanging up")
+            why = ("no model to answer" if getattr(session, "end_reason", None) == "no_model"
+                   else "STT unavailable")
+            logger.info(f"{why} for call {call_id} — playing the warning, then hanging up")
             await session.followup_gate.wait_until_delivered()
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
-            await cancel_active_call("STT unavailable", call_id=call_id)
+            await cancel_active_call(why, call_id=call_id)
 
     @connection.event_handler("on_call_state")
     async def on_call_state(_connection, call_id, state, replay=False):
