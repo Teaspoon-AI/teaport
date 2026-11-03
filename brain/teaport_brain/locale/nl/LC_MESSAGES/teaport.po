@@ -319,3 +319,29 @@ msgstr "Sorry, ik kreeg net geen antwoord."
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "Dit gesprek wordt opgenomen."
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "Ik kan nog geen vragen beantwoorden, want het account dat ik voor mijn antwoorden gebruik is nog niet ingesteld."
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "Ik kan geen vragen beantwoorden tot ik ben ingesteld. Zeg ‘stel de wifi in’ om me online te krijgen."
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "Sorry, ik kan nu geen gesprekken aannemen. Probeer het later opnieuw."
+
+msgid "I'm ready now. Please ask me again."
+msgstr "Ik ben nu klaar. Stel je vraag nog een keer."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "Ik ben nu klaar. Begin een nieuw gesprek met me."
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "Hallo, ik ben Teaport. Laten we me online krijgen. Momentje, ik zoek naar netwerken."
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "Je kunt altijd ‘stel de wifi in’ zeggen om het opnieuw te proberen."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Ik ben nu online, dus ik heb de verbindingsmodus verlaten."

@@ -594,7 +594,9 @@ class ThinkingSound(FrameProcessor):
         if self._async and isinstance(frame, (OutputTransportMessageFrame,
                                               OutputTransportMessageUrgentFrame)):
             m = frame.message if isinstance(frame.message, dict) else {}
-            if m.get("type") == "working":
+            # "typing": false -- something under way with nothing to type through (Wi-Fi
+            # setup keeping the room's conversation awake, wifi_voice._keep_awake).
+            if m.get("type") == "working" and m.get("typing", True) is not False:
                 if m.get("done"):
                     self._consults.discard(m.get("call_id"))
                     if not self._consults:

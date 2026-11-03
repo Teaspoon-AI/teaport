@@ -40,6 +40,9 @@ DYNAMIC = {
     "llm_error_speaker.py": {
         "t._(text)",                         # its four notices: N_() there
     },
+    "sip_server.py": {
+        "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
+    },
     "wifi_setup.py": {
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here
@@ -51,6 +54,8 @@ DYNAMIC = {
         "t.p('spell', _SYMBOLS[c])",         # _SYMBOLS
         "t._(self._why)",                    # status.json's reason: N_() in wifi.py / wifi_setup.py
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
+        "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
+        "self.t._(ONLINE_NOW_TEXT)",
     },
 }
 
@@ -244,6 +249,32 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
     heard, talk = START[lang]
     assert [s for s in heard if not wifi_voice.heard("start", s, t)] == []
     assert [s for s in talk if wifi_voice.heard("start", s, t)] == []
+
+
+# The quotation marks the catalogs put round a phrase to say, opening -> closing.
+_QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": "'", "「": "」"}
+
+
+def _quoting_lines():
+    from teaport_brain.llm_error_speaker import NO_MODEL_WIFI_TEXT
+    return {"no model": NO_MODEL_WIFI_TEXT, "again": wifi_voice.AGAIN_TEXT}
+
+
+@pytest.mark.parametrize("which", ["no model", "again"])
+@pytest.mark.parametrize("lang", i18n.catalogs())
+def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
+    """The no-model line (llm_error_speaker.NO_MODEL_WIFI_TEXT, #277) and the first-boot
+    setup's last line (wifi_voice.AGAIN_TEXT, #278) tell the user what to say: those
+    exact words, said back, must start setup mode in that language."""
+    t = i18n.get(lang)
+    line = t._(_quoting_lines()[which])
+    # English: the apostrophes of "can't"/"I'm" before the quote are not quotes.
+    sentence = line[line.index('"'):] if lang == "en" else line
+    quoted = [m.group(2) for m in re.finditer(
+        "(" + "|".join(map(re.escape, _QUOTES)) + r")\s*(.+?)\s*(?:"
+        + "|".join(map(re.escape, set(_QUOTES.values()))) + ")", sentence)]
+    assert len(quoted) == 1, (lang, line, quoted)
+    assert wifi_voice.heard("start", quoted[0], t), (lang, quoted[0])
 
 
 def test_arabic_is_heard_with_or_without_its_diacritics():

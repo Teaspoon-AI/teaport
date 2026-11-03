@@ -319,3 +319,29 @@ msgstr "माफ़ कीजिए, अभी मुझे जवाब नह
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "यह कॉल रिकॉर्ड की जा रही है।"
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "अभी सवालों के जवाब नहीं दिए जा सकते, क्योंकि जवाबों के लिए इस्तेमाल होने वाला खाता अभी सेट अप नहीं है।"
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "जब तक मुझे सेट अप नहीं किया जाता, सवालों के जवाब नहीं दिए जा सकते। मुझे ऑनलाइन लाने के लिए “वाई-फ़ाई सेट अप करो” बोलिए।"
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "माफ़ कीजिए, अभी कॉल नहीं ली जा सकती। बाद में फिर से कोशिश कीजिए।"
+
+msgid "I'm ready now. Please ask me again."
+msgstr "अब मैं तैयार हूँ। कृपया फिर से पूछिए।"
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "अब मैं तैयार हूँ। कृपया मुझसे नई बातचीत शुरू कीजिए।"
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "नमस्ते, मैं Teaport हूँ। चलिए मुझे ऑनलाइन लाते हैं। ज़रा रुकिए, मैं आस-पास के नेटवर्क ढूँढ लूँ।"
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "दोबारा कोशिश करने के लिए आप कभी भी “वाई-फ़ाई सेट अप करो” बोल सकते हैं।"
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "इंटरनेट चालू हो गया है, इसलिए मैंने सेट अप मोड बंद कर दिया है।"

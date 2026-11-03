@@ -1610,6 +1610,14 @@ class Ungated(RuntimeError):
     """The brain did not say it gates the room (a brain older than wake words)."""
 
 
+def wake_note(m: dict) -> str:
+    """The log's words for the brain's {"type": "wake"}: the wake phrase heard, or why the
+    brain woke the session itself with none (a new box's setup, first_boot.py)."""
+    if m.get("phrase") is None and m.get("why"):
+        return f"woken for {m['why']}"
+    return f'wake word "{m.get("phrase")}" heard'
+
+
 class KeepAlive:
     """An awake wake-word conversation: over once nobody (user or bot) has spoken for
     KEEPALIVE_SECS."""
@@ -1815,12 +1823,12 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 if alive is None:
                     alive = KeepAlive()
                     face.woke()
-                    logger.info(f'wake word "{m.get("phrase")}" heard — '
+                    logger.info(wake_note(m) + " — "
                                 + ("continuing the conversation" if m.get("resumed")
                                    else "a new conversation"))
                 else:
                     alive.activity()
-                    logger.info(f'wake word "{m.get("phrase")}" heard again')
+                    logger.info(wake_note(m) + " again")
             elif kind == "client_tool":
                 result = client_tool(card, m, restart)
                 await ws.send(json.dumps({"type": "tool_result", "call_id": m.get("call_id"),

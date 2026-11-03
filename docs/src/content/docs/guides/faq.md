@@ -15,7 +15,7 @@ No. Speech recognition and speech synthesis run on the device: the brain uses th
 
 No. The speech models run on the Jetson, so nothing in the cloud needs a GPU. You supply the LLM: a cloud key from a provider such as Groq or OpenRouter, or a local OpenAI-compatible server. The two ways to set one are in [Set up the language model](/guides/configuration/#set-up-the-language-model).
 
-<!-- source: README.md:16,18#0cb1a833; brain/teaport_brain/config_schema.toml:222#6ff18580 -->
+<!-- source: README.md:16,18#0cb1a833; brain/teaport_brain/config_schema.toml:228#6ff18580 -->
 
 ## Which Jetson devices does teaport support?
 

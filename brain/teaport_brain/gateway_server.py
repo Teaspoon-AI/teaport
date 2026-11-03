@@ -49,7 +49,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
-from teaport_brain import conversation_log, host_context
+from teaport_brain import conversation_log, first_boot, host_context
 from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
@@ -63,11 +63,11 @@ from teaport_brain.gateway_serializer import (
 )
 from teaport_brain.captions import sends_every_final
 from teaport_brain.engine_tts import pacing_status
-from teaport_brain.llm_error_speaker import ANSWERS
 from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import freeze_startup_objects, turn_reclaim
-from teaport_brain.services import make_tts, prime_model_dns, warm_first_use_imports
+from teaport_brain.services import (answers_status, make_tts, prime_model_dns,
+                                    warm_first_use_imports)
 from teaport_brain.settings import setting
 
 LISTEN_PORT = setting("GATEWAY_PORT")
@@ -341,12 +341,7 @@ async def run_relay_bot(websocket: WebSocket):
     session_holder: dict = {}
 
     def asleep() -> bool:
-        if gate is not None:
-            return gate.asleep
-        if not room:
-            return False
-        s = session_holder.get("s")
-        return s is None or room_idle(s.followup_gate, keepalive)
+        return session_asleep(session_holder.get("s"), gate, room=room, keepalive=keepalive)
 
     # A call during this conversation asks it first (session_arbiter PROMPT, issue #111):
     # the session's CallPrompt puts the question and, on a yes, the hold. A session
@@ -370,7 +365,8 @@ async def run_relay_bot(websocket: WebSocket):
         gone=lambda: _client_gone(websocket, serializer),
         end=lambda why: _end_for(websocket, session_holder.get("s"), why, room=room,
                                  asleep=asleep()),
-        ask=ask, can_ask=lambda: prompt() is not None, hold=hold, resume=resume)
+        ask=ask, can_ask=lambda: session_can_be_asked(session_holder.get("s")), hold=hold,
+        resume=resume)
     # A sleeping wake-word room asked nothing; a dial without wake words is a voice in the
     # room, and is told.
     speak_refusal = not (gate is not None and gate.asleep)
@@ -496,6 +492,7 @@ async def run_relay_bot(websocket: WebSocket):
                 return
             await session.task.queue_frames(
                 [OutputTransportMessageUrgentFrame(message={"type": "ready"})])
+            _first_boot(session)
             return
         logger.info("OpenClaw relay client connected — greeting")
         greeted = session_holder["greeting"] = await _greet_as_response(websocket, session)
@@ -514,10 +511,20 @@ async def run_relay_bot(websocket: WebSocket):
         # The plugin sends notes only after this: the pipeline is running and the STT
         # works, so a note is answered at once and lands in a session that will last.
         await session.task.queue_frames([OutputTransportMessageUrgentFrame(message={"type": "ready"})])
+        _first_boot(session)
+
+    def _first_boot(session):
+        """The room's session: a new box offline at boot goes into setup mode by itself
+        (first_boot.py; the setting, the marker and this boot's try decide). A task: it
+        waits out the boot's grace period. Cancelled with the session."""
+        if room and first_boot.could_be_due():
+            session_holder["first_boot"] = asyncio.ensure_future(first_boot.run(session))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
         logger.info("OpenClaw relay client disconnected — stopping")
+        if (pending := session_holder.get("first_boot")) is not None:
+            pending.cancel()        # not tried: this boot's try is marked only when due
         if (greeting := session_holder.get("greeting")) is not None:
             greeting.cancel()       # nobody to tell the greeting is over; frees the session
         await session.task.cancel()
@@ -539,6 +546,39 @@ async def run_relay_bot(websocket: WebSocket):
         arb.ARBITER.release(claim)
         if gate is not None:
             gate.ended()  # the mic conversation, kept for the next wake (wake_gate.py)
+
+
+def in_setup(session) -> bool:
+    """The session's Wi-Fi setup asks or runs (wifi_voice.WifiSetupVoice.state)."""
+    return getattr(getattr(session, "wifi", None), "state", "idle") != "idle"
+
+
+def session_can_be_asked(session) -> bool:
+    """Can this conversation be asked whether to take a phone call (the claim's can_ask:
+    session_arbiter PROMPT)? Where it has a call prompt -- and not in setup mode: while
+    setup asks or runs it takes every word said (wifi_voice), so the question would
+    never get its answer, and its default would put the room on hold mid-setup, its
+    setup network up with nobody following it. Not askable, the caller hears busy."""
+    return getattr(session, "call_prompt", None) is not None and not in_setup(session)
+
+
+def session_asleep(session, gate, *, room: bool, keepalive: float) -> bool:
+    """Does this /talk session count as asleep for the session arbiter (the claim's
+    asleep): a wake-word room per its gate, a room without wake words while nobody uses
+    it (room_idle), a Talk session never.
+
+    A room in setup mode -- asked (the question lapses on its own, wifi_voice
+    CONFIRM_SECS) or begun, by voice or a new box by itself (first_boot) -- is live, not
+    a room nobody uses: a Talk client is refused as by any live conversation, and a
+    caller hears busy (session_can_be_asked). Asleep, the newcomer would end it without
+    a word, its setup network up with nobody following it."""
+    if room and in_setup(session):
+        return False
+    if gate is not None:
+        return gate.asleep
+    if not room:
+        return False
+    return session is None or room_idle(session.followup_gate, keepalive)
 
 
 def room_idle(followup_gate, keepalive: float) -> bool:
@@ -594,14 +634,18 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
 @asynccontextmanager
 async def _lifespan(_app):
     lamp = asyncio.create_task(_busy_lamp())
+    # While a new box has never been online: write the marker the first time it is
+    # (first_boot.watch; nothing without TEAPORT_SETUP_ON_FIRST_BOOT).
+    watcher = asyncio.create_task(first_boot.watch())
     try:
         yield
     finally:
-        lamp.cancel()
-        try:
-            await lamp
-        except asyncio.CancelledError:
-            pass
+        for t in (lamp, watcher):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -624,9 +668,11 @@ async def health():
     # and the config page shows it beside the setting.
     # "answers": what the last requests for a reply met (llm_error_speaker.AnswerHealth,
     # #205): ok, untried, failing (passes on its own) or account (a refused key or a
-    # spent account), with since/reason. `teaport status` and `teaport doctor` print it.
+    # spent account), with since/reason -- or unconfigured: no model can be made at all,
+    # no key or no endpoint address (services.answers_status, #277). `teaport status`
+    # and `teaport doctor` print it.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
-            "tts_pacing": pacing_status(), "answers": ANSWERS.status()}
+            "tts_pacing": pacing_status(), "answers": answers_status()}
 
 
 @app.get("/talk/status")

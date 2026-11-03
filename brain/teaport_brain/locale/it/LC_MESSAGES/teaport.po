@@ -327,3 +327,29 @@ msgstr "Scusa, non sono riuscito a ottenere una risposta proprio ora."
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "Questa chiamata viene registrata."
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "Non posso ancora rispondere alle domande, perché l'account che uso per le mie risposte non è configurato."
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "Non posso rispondere alle domande finché non vengo configurato. Di' «configura il Wi-Fi» per collegarmi a internet."
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "Scusa, in questo momento non posso rispondere alle chiamate. Riprova più tardi."
+
+msgid "I'm ready now. Please ask me again."
+msgstr "Ora sono pronto. Fammi di nuovo la domanda."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "Ora sono pronto. Inizia una nuova conversazione con me."
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "Ciao, sono Teaport. Collegami a internet. Un momento, cerco le reti disponibili."
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "Puoi dire «configura il Wi-Fi» in qualsiasi momento per riprovare."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Ora sono online, quindi ho chiuso la modalità di configurazione."

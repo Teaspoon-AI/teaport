@@ -319,3 +319,29 @@ msgstr "すみません、今は答えを得られませんでした。"
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
 msgstr "この通話は録音されています。"
+
+# No model at all (llm_error_speaker.py, #277).
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "回答に使うアカウントがまだ設定されていないため、まだ質問にはお答えできません。"
+
+msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
+msgstr "準備が終わるまで、質問にはお答えできません。オンラインにするには「ワイファイを設定して」と言ってください。"
+
+msgid "Sorry, I can't take calls right now. Please try again later."
+msgstr "すみません、今は電話に出られません。後でもう一度おかけください。"
+
+msgid "I'm ready now. Please ask me again."
+msgstr "準備ができました。もう一度聞いてください。"
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "準備ができました。新しい会話を始めてください。"
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "こんにちは、Teaport です。オンラインにしましょう。ネットワークを探しますので、少しお待ちください。"
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "もう一度試すときは、いつでも「ワイファイを設定して」と言ってください。"
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "オンラインになったので、セットアップモードを終了しました。"
