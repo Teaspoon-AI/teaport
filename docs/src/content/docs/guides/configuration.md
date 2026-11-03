@@ -190,11 +190,11 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
-<!-- source: brain/teaport_brain/credit.py:29-39#bd581a1c; brain/teaport_brain/credit.py:84-87#5b43489c -->
+<!-- source: brain/teaport_brain/credit.py:29-39#bd581a1c; brain/teaport_brain/credit.py:95-98#5b43489c -->
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:90-91#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:101-102#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
 
 ## What's next
 

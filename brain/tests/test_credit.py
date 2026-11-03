@@ -667,6 +667,28 @@ def test_a_refusal_with_credit_left_on_the_key_is_the_accounts_and_passes():
     assert fresh.state() == credit.OK
 
 
+def test_with_the_low_warning_off_a_refusal_at_a_cent_still_stays_spent():
+    """TEAPORT_STARTER_LOW_USD=0 turns the low warning off; the sticky cut-off and the
+    top-up margin still have a floor, STICKY_FLOOR_USD (#280 review)."""
+    _box()
+    real = credit.LOW_USD
+    credit.LOW_USD = 0.0
+    try:
+        m, fetch = _monitor({"limit": 5, "limit_remaining": 0.012, "usage": 4.988})
+        _run(m.refresh())
+        m.refused_for_credit()
+        for record in ({"limit": 5, "limit_remaining": 0.012, "usage": 4.988},
+                       {"limit": 5, "limit_remaining": 0.05, "usage": 4.95}):
+            fetch.record = record
+            _run(m.refresh())
+            assert m.spent(), record                  # no flap
+        fetch.record = {"limit": 10, "limit_remaining": 8.0, "usage": 2.0}
+        _run(m.refresh())
+        assert m.state() == credit.OK                 # a real top-up
+    finally:
+        credit.LOW_USD = real
+
+
 # ------------------------------------------------------------------ where it shows
 
 def test_health_status_doctor_and_the_settings_line():

@@ -67,6 +67,17 @@ MIN_READ_SECS = 60.0
 FIRST_READ_WAIT_SECS = 3.0
 # A warning is said again, while its state lasts, at most this often.
 REPEAT_SECS = 24 * 3600.0
+# A 402 counts as the trial credit running out (sticky: refused_for_credit) at or below
+# this many dollars left, and only a read this much above the refusal counts as a top-up:
+# LOW_USD, but never less than STICKY_FLOOR_USD -- with the low warning set to 0 (no
+# warning), a refusal at a cent left must still not flap.
+STICKY_FLOOR_USD = 0.10
+
+
+def sticky_margin() -> float:
+    return max(LOW_USD, STICKY_FLOOR_USD)
+
+
 # Below this many dollars the credit is spent (a request costs more than what is left).
 EMPTY_USD = 0.005
 
@@ -221,7 +232,7 @@ class Monitor:
             # LOW_USD more than it showed at the refusal. Else every question would go
             # "run out", session ended, "ready now", refused again, round and round.
             remaining = numbers.get("remaining")
-            if remaining is not None and remaining > refused_at + LOW_USD:
+            if remaining is not None and remaining > refused_at + sticky_margin():
                 logger.info("credit: topped up since the refusal -- the trial credit counts again")
                 seen = _load_notices()
                 seen.pop(f"{mine[:16]}:refused", None)
@@ -253,7 +264,8 @@ class Monitor:
         Read soon.
 
         Sticky -- across reads and restarts, until one shows a real top-up (refresh) --
-        only when the refusal came near empty: the last read left LOW_USD or less. A key's
+        only when the refusal came near empty: the last read left sticky_margin() or less
+        (LOW_USD, at least STICKY_FLOOR_USD). A key's
         limit is only a cap, the money is the account's: with plenty left on the key the
         refusal is the account's (the vendor's balance behind the starter keys ran dry),
         and a mark of "more than now plus LOW_USD", which a key's remaining never exceeds,
@@ -263,7 +275,7 @@ class Monitor:
         if on_starter(key):
             mine = key_hash(key)
             left = self._numbers.get("remaining") if self._for == mine else None
-            if left is not None and left <= LOW_USD:
+            if left is not None and left <= sticky_margin():
                 logger.info("credit: the provider refused the trial credit -- spent")
                 seen = _load_notices()
                 seen[f"{mine[:16]}:refused"] = float(left)
