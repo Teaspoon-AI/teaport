@@ -28,6 +28,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -112,9 +113,9 @@ class Rig:
 
 
 def _log_time(line: str) -> float:
-    """Seconds of the day of a loguru line ("2026-11-03 11:15:02.249 | ...")."""
-    hms = line.split(" | ", 1)[0].split()[1]
-    h, m, sec = hms.split(":")
+    """Seconds of the day of a loguru line ("2026-11-03 11:15:02.249 | ..."), colours
+    or not (loguru colours its lines on CI)."""
+    h, m, sec = re.search(r"(\d{2}):(\d{2}):(\d{2}\.\d+)", line).groups()
     return int(h) * 3600 + int(m) * 60 + float(sec)
 
 
