@@ -23,7 +23,7 @@ sudo systemctl disable --now teaport-local-audio
 
 A bridge you disabled stays off when the installer runs again without the flag.
 
-<!-- source: install.sh:46-47,2644-2647#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
+<!-- source: install.sh:52-53,2780-2783#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
 
 ## Talk to the agent
 
@@ -47,13 +47,13 @@ To send the bridge back to sleep when you are done, say "that's all", "goodnight
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1108-1119#d37a478f; brain/teaport_brain/config_schema.toml:1782-1794#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1239-1250#d37a478f; brain/teaport_brain/config_schema.toml:1782-1794#44d773d1 -->
 
 ## Echo
 
 The XVF3800 cancels echo in hardware. The bridge replaces the chip's automatic gain with a fixed gain, and sets the chip's echo suppression to remove the device's own voice from the microphone while still letting your voice through when you talk over it. `LOCAL_AUDIO_ECHO_CONTROL` and `LOCAL_AUDIO_MIC_GAIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2537-2544,2557-2567#208b84d6 -->
+<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2560-2567,2580-2590#208b84d6 -->
 
 ## What's next
 
