@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import urllib.error
 import urllib.request
 import uuid
@@ -302,10 +303,115 @@ def _not_voice(pid: int):
         pass  # not Linux, or the child has already exited
 
 
+# How long a CLI run that is being stopped gets for its own teardown (SIGTERM) before
+# what is left of it is SIGKILLed. openclaw.mjs's respawn bridge passes a SIGTERM on to
+# its child's tree after about 1 s and SIGKILLs that tree a second later; this is past it.
+_END_GRACE_S = 2.5
+# The ends still under way (_end_cli), held so the event loop keeps them until they run.
+_ENDING: set = set()
+
+
+def _proc_start(pid: int) -> int | None:
+    """Process `pid`'s start time (/proc/<pid>/stat field 22, clock ticks since boot),
+    which tells it from a later process given the same pid. None: no such process."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(") ", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _tree(pid: int) -> list[tuple[int, int]]:
+    """Process `pid` and every descendant, as (pid, start time), parents first."""
+    children: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []            # no /proc (not Linux)
+    for d in entries:
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat") as f:
+                ppid = int(f.read().rsplit(") ", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(d))
+    out, todo = [], [pid]
+    while todo:
+        p = todo.pop(0)
+        start = _proc_start(p)
+        if start is not None:
+            out.append((p, start))
+            todo.extend(children.get(p, ()))
+    return out
+
+
+def _signal_tree(tree: list[tuple[int, int]], sig: int) -> None:
+    """`sig` to each process of `tree` still the one walked (same start time), and to
+    the process group each leads -- the CLI's own (it is a session leader:
+    _run_openclaw's start_new_session) and any its children set up -- so what joined a
+    group after the walk is reached too."""
+    for pid, start in tree:
+        if _proc_start(pid) != start:
+            continue  # gone, or the pid is another process's now
+        try:
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, sig)
+            else:
+                os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _end_cli(proc) -> None:
+    """Stop a CLI run that timed out or was cancelled, all of it (#246). Not
+    proc.kill(): the direct child is often not the process doing the work. A host
+    install's openclaw.mjs respawns itself on Linux (to add --disable-warning), and
+    off a terminal it starts that child in a session of its own (detachForProcessTree),
+    so neither a SIGKILL of the parent nor of its process group reaches it: the
+    respawned CLI ran on -- a cold Node OpenClaw, a few hundred MB, until it finished.
+
+    So the whole tree, walked from /proc (_tree) while the launcher still holds it --
+    it waits on its child, so the tree stands until it is signalled: SIGTERM (what the
+    respawn bridge itself passes on, and what lets Node shut down), then, after
+    _END_GRACE_S, SIGKILL to whatever of it is left. All of it in the background, the
+    walk too, off the event loop (it reads every process's stat): the consult's
+    timeout or a barge-in returns at once, and the voice pipeline is not held up at
+    the moment it has to cut the reply and listen."""
+    if proc.returncode is not None:
+        return  # exited and reaped already: its pid may be another process's now
+
+    async def end():
+        if proc.returncode is not None:
+            return  # reaped meanwhile (the child watcher's thread reaps before it tells)
+        tree = await asyncio.to_thread(_tree, proc.pid)
+        if not tree:
+            if proc.returncode is None:
+                try:
+                    proc.kill()  # no /proc to walk (not Linux): the child, as before
+                except ProcessLookupError:
+                    pass
+            return
+        _signal_tree(tree, signal.SIGTERM)
+        await asyncio.sleep(_END_GRACE_S)
+        _signal_tree(tree, signal.SIGKILL)
+
+    t = asyncio.get_running_loop().create_task(end())
+    _ENDING.add(t)
+    t.add_done_callback(_ENDING.discard)
+
+
 async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tuple[int, bytes, bytes]:
     """Run the `openclaw` CLI as a subprocess, returning (returncode, stdout, stderr).
-    Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — kills the child
-    on CancelledError so a barge-in can abort an in-flight consult. Raises on spawn/timeout.
+    Every openclaw CLI run in the brain comes through here (the cold consult, the memory
+    reindex, pairing's device and setup-code calls).
+    Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — on
+    CancelledError, as on the timeout, it stops the CLI's whole process tree, the
+    respawned CLI with it, so a barge-in can abort an in-flight consult (_end_cli).
+    Raises on spawn/timeout. A deployment shim that runs the CLI inside a sandbox (the
+    NemoClaw exec wrapper) is stopped the same way; what the sandbox's own exec leaves
+    running inside it is the shim's to end.
     OPENCLAW_GATEWAY_URL is left out of the child's environment: here it is the brain's
     own setting (the HTTP lane, brain.env), but the CLI reads the same name as a gateway
     override and then refuses its configured credentials ("gateway url override requires
@@ -318,12 +424,13 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tu
         stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        start_new_session=True,  # its own process group (_signal_tree)
     )
     _not_voice(proc.pid)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):
-        proc.kill()
+        _end_cli(proc)
         raise
     return proc.returncode, (out or b""), (err or b"")
 
