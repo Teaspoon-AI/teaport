@@ -18,11 +18,20 @@ If the device has no internet connection, put it in setup mode: it opens a tempo
 
 Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no internet, either phrase starts setup mode without the agent: the device asks whether to go into setup mode, and after you say yes, it opens its setup network and says that it is in setup mode.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:368-370,539#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
+<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:383-385,597#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
+
+With `TEAPORT_SETUP_ON_FIRST_BOOT` on, a new device does this by itself. When it has never
+been online and still has no internet a minute after it starts, it goes into setup mode
+without a wake word or a question, and it introduces itself first.
+If you cancel, or nothing connects in time, it tells you to say "set up Wi-Fi" to
+try again, and it starts by itself again only at the next start-up. The first time the
+device is online, it stops doing this for good.
+
+<!-- source: brain/teaport_brain/wifi_voice.py:105-109#3b3a158c; brain/teaport_brain/first_boot.py:138-159#6a1d2e75 -->
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1713-1720#389fa64a; brain/teaport_brain/wifi_voice.py:631-635#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1696-1703#389fa64a; brain/teaport_brain/wifi_voice.py:694-698#e2d218b7 -->
 
 ## Join the setup network
 
@@ -34,7 +43,7 @@ A device with a screen shows, under the title "Setup mode", the setup network's 
 
 Say "repeat" to hear the network's name, the password, and the address read out. A device without a screen reads them out straight away. Some phones open the page on their own after they join the setup network; if yours does not, use the address.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:240-275#a7a905c9; brain/teaport_brain/wifi_voice.py:664#d902fb7c; brain/teaport_brain/wifi_setup.py:466-477#3f154da2; brain/teaport_brain/wifi_setup.py:583-594#0e1e6742; brain/teaport_brain/wifi_setup.py:85#bf4c222f; brain/teaport_brain/wifi_setup.py:15-19#a67a8952 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:251-286#a7a905c9; brain/teaport_brain/wifi_voice.py:727#d902fb7c; brain/teaport_brain/wifi_setup.py:466-477#3f154da2; brain/teaport_brain/wifi_setup.py:583-594#0e1e6742; brain/teaport_brain/wifi_setup.py:85#bf4c222f; brain/teaport_brain/wifi_setup.py:15-19#a67a8952 -->
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes fresh random digits for each run, shown on the screen, or read out when the device has no screen or you say "repeat".
 
@@ -44,7 +53,7 @@ The setup network uses WPA2. Its password is the one printed on the paper insert
 
 The page tells you that the device is joining your network, so switch your phone back to it. The device leaves setup mode and says that it is connected to your network and online again; a screen shows "Connected to" and the network's name under the title "Wi-Fi" for a few seconds.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:257-266#99955446; brain/teaport_brain/wifi_voice.py:551-552#d7938890; brain/teaport_brain/wifi_setup.py:615-616#bd5d3568; brain/teaport_brain/wifi_setup.py:87#296b6e77 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:257-266#99955446; brain/teaport_brain/wifi_voice.py:613-614#d7938890; brain/teaport_brain/wifi_setup.py:615-616#bd5d3568; brain/teaport_brain/wifi_setup.py:87#296b6e77 -->
 
 ## If the join fails
 

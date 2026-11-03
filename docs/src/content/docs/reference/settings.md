@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2675#65fe35d6 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2686#67fa5217 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -213,10 +213,11 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 
 These settings name the Wi-Fi setup network and set its password.
 
-In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box shows the network, the password and the page's address on its screen, or reads them out if it has none. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert.
+Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box shows the network, the password and the page's address on its screen, or reads them out if it has none. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert.
 
 | Setting | Default | Description |
 |---|---|---|
+| `TEAPORT_SETUP_ON_FIRST_BOOT` | **off** | A new box that is offline a minute after boot goes into setup mode by itself and greets the room without a wake word ("Let's get me online."), then gives the usual setup-mode instructions. New means it has never been online: the first time it is (Ethernet, a remembered network, or a setup that connects), the brain writes ~/.local/state/teaport/setup-done and this never happens again. It tries once per boot: after a cancel or a timeout it says how to start setup by voice and waits for the next boot. Needs the room mic (the local audio bridge), spoken Wi-Fi setup (TEAPORT_TOOL_WIFI_SETUP and teaport-wifi-setup) and NetworkManager's connectivity check; without them it does nothing. Off in the open install; appliance provisioning turns it on. An image that ships must not carry setup-done. |
 | `WIFI_SETUP_PASSWORD` | — | The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud. *Set by the installer.* |
 | `WIFI_SETUP_SSID` | — | The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. A name made only of hex digits (0-9, a-f) is ignored with a warning, and the MAC-based name used: some phones' QR scanners read such a name as raw bytes. *Set by the installer.* |
 

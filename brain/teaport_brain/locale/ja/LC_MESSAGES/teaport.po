@@ -335,3 +335,10 @@ msgstr "準備ができました。もう一度聞いてください。"
 
 msgid "I'm ready now. Please start a new conversation with me."
 msgstr "準備ができました。新しい会話を始めてください。"
+
+# The first-boot setup (wifi_voice.py, first_boot.py, #278).
+msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
+msgstr "こんにちは、Teaport です。オンラインにしましょう。ネットワークを探しますので、少しお待ちください。"
+
+msgid "You can say \"set up Wi-Fi\" any time to try again."
+msgstr "もう一度試すときは、いつでも「ワイファイを設定して」と言ってください。"

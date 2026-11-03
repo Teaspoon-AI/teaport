@@ -49,7 +49,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
-from teaport_brain import conversation_log, host_context
+from teaport_brain import conversation_log, first_boot, host_context
 from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
@@ -496,6 +496,7 @@ async def run_relay_bot(websocket: WebSocket):
                 return
             await session.task.queue_frames(
                 [OutputTransportMessageUrgentFrame(message={"type": "ready"})])
+            _first_boot(session)
             return
         logger.info("OpenClaw relay client connected — greeting")
         greeted = session_holder["greeting"] = await _greet_as_response(websocket, session)
@@ -514,10 +515,20 @@ async def run_relay_bot(websocket: WebSocket):
         # The plugin sends notes only after this: the pipeline is running and the STT
         # works, so a note is answered at once and lands in a session that will last.
         await session.task.queue_frames([OutputTransportMessageUrgentFrame(message={"type": "ready"})])
+        _first_boot(session)
+
+    def _first_boot(session):
+        """The room's session: a new box offline at boot goes into setup mode by itself
+        (first_boot.py; the setting, the marker and this boot's try decide). A task: it
+        waits out the boot's grace period. Cancelled with the session."""
+        if room and first_boot.could_be_due():
+            session_holder["first_boot"] = asyncio.ensure_future(first_boot.run(session))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):
         logger.info("OpenClaw relay client disconnected — stopping")
+        if (pending := session_holder.get("first_boot")) is not None:
+            pending.cancel()        # not tried: this boot's try is marked only when due
         if (greeting := session_holder.get("greeting")) is not None:
             greeting.cancel()       # nobody to tell the greeting is over; frees the session
         await session.task.cancel()
@@ -594,14 +605,18 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
 @asynccontextmanager
 async def _lifespan(_app):
     lamp = asyncio.create_task(_busy_lamp())
+    # While a new box has never been online: write the marker the first time it is
+    # (first_boot.watch; nothing without TEAPORT_SETUP_ON_FIRST_BOOT).
+    watcher = asyncio.create_task(first_boot.watch())
     try:
         yield
     finally:
-        lamp.cancel()
-        try:
-            await lamp
-        except asyncio.CancelledError:
-            pass
+        for t in (lamp, watcher):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=_lifespan)

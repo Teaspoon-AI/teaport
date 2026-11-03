@@ -1718,6 +1718,17 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet, or has no model set up at all) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
+
+[[settings]]
+name = "TEAPORT_SETUP_ON_FIRST_BOOT"
+store = "brain_env"
+group = "wifi_setup"
+type = "flag"
+default = false
+read = "startup"
+tier = "setup"
+help = "A new box that is offline a minute after boot goes into setup mode by itself and greets the room without a wake word (\"Let's get me online.\"), then gives the usual setup-mode instructions. New means it has never been online: the first time it is (Ethernet, a remembered network, or a setup that connects), the brain writes ~/.local/state/teaport/setup-done and this never happens again. It tries once per boot: after a cancel or a timeout it says how to start setup by voice and waits for the next boot. Needs the room mic (the local audio bridge), spoken Wi-Fi setup (TEAPORT_TOOL_WIFI_SETUP and teaport-wifi-setup) and NetworkManager's connectivity check; without them it does nothing."
+note = "Off in the open install; appliance provisioning turns it on. An image that ships must not carry setup-done."
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"

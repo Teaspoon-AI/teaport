@@ -218,7 +218,8 @@ Answered(c) ==
                    heldFor, rel, epc, ewhy, hpc, hfor, hres, rpc, clobber, engineRefused,
                    silentEnd>>
 
-\* The room wakes (a wake word; someone speaks) or falls asleep (keep-alive).
+\* The room wakes (a wake word; someone speaks; a new box going into setup mode by itself,
+\* first_boot.py) or falls asleep (keep-alive).
 RoomFlip ==
     /\ "room" \in Convs /\ st["room"] \in {"acq", "run"} /\ ~heldF["room"]
     /\ asleep' = ~asleep
