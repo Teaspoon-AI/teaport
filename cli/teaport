@@ -125,10 +125,18 @@ license_line() {  # the key, as a status line
       *'check off'*) text="not checked ${line#*check off }"; col="$YEL" ;;
       'License key: re-check: '*) text="valid: ${line#License key: re-check: }"; col="$GREEN" ;;
       'License key: '*) text="valid: ${line#License key: }"; col="$GREEN" ;;
-      *) text="not reported by the running engine" ;;
+      *) text="not in the journal $(id -un) can read — teaport doctor" ;;
     esac
   fi
   printf '  %-28s %s\n' "license key (engine)" "$(c "$col" "$text")"
+}
+# unit_env_value <env file> <KEY> — KEY as the unit's EnvironmentFile gives it to the engine:
+# the last assignment wins, and one pair of surrounding quotes is removed (envval takes the
+# first, as written).
+unit_env_value() {
+  local v; v="$(sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 || true)"
+  if [ ${#v} -ge 2 ]; then case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac; fi
+  printf '%s' "$v"
 }
 # license_check — doctor's look at the key the engine reads (engine.env's VOX_LICENSE_FILE,
 # else the engine's default), checked by the engine itself as this user. Uses doctor's
@@ -136,18 +144,18 @@ license_line() {  # the key, as a status line
 license_check() {
   [ -x "$PREFIX/bin/voxtral" ] || return 0
   engine_has --license-status || { ok "engine license key: not used by this engine release"; return 0; }
-  if engine_refused; then
-    failc "the engine refused to start for want of a valid license key (exit 78); once one is installed: sudo systemctl restart teaport-engine"
-  fi
   local f mode out rc=0 envs=() user result enf dev
-  f="$(envval "$ETC/engine.env" VOX_LICENSE_FILE)"; f="${f:-/etc/teaport/license.json}"
-  mode="$(envval "$ETC/engine.env" VOX_LICENSE_MODE)"
+  f="$(unit_env_value "$ETC/engine.env" VOX_LICENSE_FILE)"; f="${f:-/etc/teaport/license.json}"
+  mode="$(unit_env_value "$ETC/engine.env" VOX_LICENSE_MODE)"
   if [ -n "$mode" ]; then envs=("VOX_LICENSE_MODE=$mode"); fi
-  out="$(env "${envs[@]}" "$PREFIX/bin/voxtral" --license-status --license-file "$f" 2>&1)" || rc=$?
+  # The unit's view, not this shell's: its own exports must not reach the engine.
+  out="$(env -u VOX_LICENSE_MODE -u VOX_LICENSE_FILE "${envs[@]}" "$PREFIX/bin/voxtral" --license-status --license-file "$f" 2>&1)" || rc=$?
   result="$(sed -n 's/^Result:[[:space:]]*//p' <<< "$out")"
   enf="$(sed -n 's/^Enforcement:[[:space:]]*//p' <<< "$out")"
   dev="$(sed -n 's/^This device:[[:space:]]*//p' <<< "$out")"
-  if [ "$rc" = 0 ]; then
+  if engine_refused; then
+    failc "the engine refused to start for want of a valid license key (exit 78): ${result:-no status} (device id: ${dev:-unknown}); once a valid key is installed: sudo systemctl restart teaport-engine"
+  elif [ "$rc" = 0 ]; then
     ok "engine license key: $(sed -n 's/^License id:[[:space:]]*//p' <<< "$out") ($(sed -n 's/^Tier:[[:space:]]*//p' <<< "$out")), expires $(sed -n 's/^Expires:[[:space:]]*//p' <<< "$out")"
   else
     case "$enf" in
@@ -205,7 +213,7 @@ cmd_status() {
   # A capped or revoked key passes every other line here: the units run, the ports
   # listen, and only real turns find out (#205).
   answers_line
-  installed teaport-engine && license_line
+  if installed teaport-engine && [ -x "$PREFIX/bin/voxtral" ] && engine_has --license-status; then license_line; fi
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"

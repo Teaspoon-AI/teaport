@@ -77,7 +77,7 @@ SUDO() {
 }
 '''
 
-FNS = ("mget", "mget_lines", "engine_has", "as_run_user", "status_field",
+FNS = ("mget", "mget_lines", "engine_has", "as_run_user", "license_src_check", "env_value", "status_field",
        "eula_matches_engine", "install_license", "license_report")
 
 
@@ -211,6 +211,32 @@ def test_no_key_under_the_operators_on_stops_before_any_restart():
     assert rc == 1, out
     assert "DIE no valid engine license key on this device" in out and "it would refuse to start" in out, out
     assert "Nothing was restarted" in out
+
+
+def test_a_quoted_mode_reads_as_systemd_gives_it_to_the_engine():
+    box = _box()
+    (box[0] / "etc" / "engine.env").write_text('VOX_LICENSE_MODE=on\nVOX_LICENSE_MODE="warn"\n')
+    rc, out = _run(box, "install_license")
+    assert rc == 0 and "WARN no valid engine license key" in out and "enforcement: warn" in out, out
+
+
+def test_the_installers_own_shell_exports_do_not_reach_the_check():
+    box = _box()
+    rc, out = _run(box, "export VOX_LICENSE_MODE=on VOX_LICENSE_FILE=/nonexistent; install_license")
+    assert rc == 0 and "enforcement: warn" in out and "DIE" not in out, out
+
+
+def test_a_missing_license_file_stops_the_run_before_anything_else():
+    box = _box()
+    rc, out = _run(box, "license_src_check", license_src=str(box[0] / "no-such.json"))
+    assert rc == 1 and "DIE --license-file: no such file" in out, out
+    key = _key(box)
+    rel = os.path.relpath(key, os.getcwd())
+    rc, out = _run(box, 'license_src_check; echo "SRC=$LICENSE_SRC"', license_src=rel)
+    assert rc == 0 and f"SRC={key}" in out, out
+    main = _fn("main")
+    order = [ln.strip() for ln in main.splitlines()]
+    assert order.index("license_src_check") < order.index("fetch_manifest"), order
 
 
 def test_an_engine_without_license_keys_is_left_alone():

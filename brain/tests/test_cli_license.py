@@ -45,7 +45,7 @@ systemctl() { [ "$1" = show ] && cat "$T/unit.$3" 2>/dev/null || true; }
 journalctl() { printf '%s\n' "$*" >> "$T/journal.calls"; tac "$T/journal" 2>/dev/null || true; }
 '''
 
-FNS = ("envval", "engine_prop", "engine_refused", "engine_has", "engine_license_line",
+FNS = ("envval", "unit_env_value", "engine_prop", "engine_refused", "engine_has", "engine_license_line",
        "license_line", "license_check")
 
 
@@ -126,8 +126,9 @@ def test_status_shows_a_refused_start():
 
 
 def test_status_of_an_engine_that_says_nothing():
-    assert _status(["Listening on :8000"]) == "[0]not reported by the running engine"
-    assert _status(props={"InvocationID": ""}) == "[0]not reported by the running engine"
+    who = getpass.getuser()
+    assert _status(["Listening on :8000"]) == f"[0]not in the journal {who} can read — teaport doctor"
+    assert _status(props={"InvocationID": ""}) == f"[0]not in the journal {who} can read — teaport doctor"
 
 
 def test_status_reads_only_this_invocation_of_the_unit():
@@ -172,9 +173,26 @@ def test_doctor_checks_the_file_engine_env_names():
     assert "OK engine license key: TS-2026-0042" in out, out
 
 
-def test_doctor_names_a_refused_start():
-    out = _run(_box(props={"Result": "exit-code", "ExecMainStatus": "78"}), "license_check")
-    assert "FAILC the engine refused to start for want of a valid license key (exit 78)" in out, out
+def test_doctor_names_a_refused_start_once_with_its_reason():
+    out = _run(_box(props={"Result": "exit-code", "ExecMainStatus": "78"},
+                    engine_env="VOX_LICENSE_MODE=on\n"), "license_check")
+    assert "FAILC the engine refused to start for want of a valid license key (exit 78): INVALID: no license file" in out, out
+    assert "tpdev2-0123456789abcdef0123456789abcdef" in out
+    assert out.count("FAILC") == 1, out
+
+
+def test_doctor_reads_engine_env_as_the_unit_does():
+    # quoted, and set twice: systemd strips the quotes and the last one wins
+    out = _run(_box(engine_env='VOX_LICENSE_MODE=on\nVOX_LICENSE_MODE="warn"\n'), "license_check")
+    assert "WARNC no valid engine license key" in out and "enforcement: warn" in out, out
+    assert "FAILC" not in out
+
+
+def test_doctor_ignores_the_shells_own_exports():
+    t = _box()
+    body = 'export VOX_LICENSE_MODE=on VOX_LICENSE_FILE=/nonexistent; license_check'
+    out = _run(t, body)
+    assert "enforcement: warn" in out and "FAILC" not in out, out
 
 
 def test_doctor_says_when_it_checked_as_someone_else():
@@ -191,7 +209,7 @@ def test_doctor_on_an_engine_without_license_keys():
 def test_status_and_doctor_call_the_license_checks():
     status = _fn("cmd_status")
     doctor = _fn("cmd_doctor")
-    assert "installed teaport-engine && license_line" in status
+    assert "engine_has --license-status; then license_line; fi" in status
     assert "\n  license_check\n" in doctor
 
 

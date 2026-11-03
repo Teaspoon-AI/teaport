@@ -275,6 +275,21 @@ engine_has() {
 # as_run_user <cmd...> — as the engine's user: the device id comes from the GPU it can open,
 # and the key must be readable by the user the unit runs as, not by whoever runs this.
 as_run_user() { if [ "$(id -un)" = "$RUN_USER" ]; then "$@"; else sudo -u "$RUN_USER" -- "$@"; fi; }
+# license_src_check — --license-file names a file, made absolute: it is first read after
+# the engine download, and a typo should not cost the ~15GB before it.
+license_src_check() {
+  [ -n "$LICENSE_SRC" ] || return 0
+  [ -f "$LICENSE_SRC" ] || die "--license-file: no such file: $LICENSE_SRC"
+  LICENSE_SRC="$(cd "$(dirname "$LICENSE_SRC")" && pwd)/$(basename "$LICENSE_SRC")"
+}
+# env_value <env file> <KEY> — KEY's value as systemd's EnvironmentFile reads it: the last
+# assignment wins, and one pair of surrounding quotes is removed. "" when unset or unreadable.
+env_value() {
+  local v=""
+  if [ -e "$1" ]; then v="$(read_env_file "$1" --lenient | sed -n "s/^$2=//p" | tail -1)"; fi
+  if [ ${#v} -ge 2 ]; then case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac; fi
+  printf '%s' "$v"
+}
 # status_field <--license-status output> <label> — one "Label:   value" line's value.
 status_field() { sed -n "s/^$2:[[:space:]]*//p" <<< "$1" | sed -n 1p; }
 
@@ -335,12 +350,12 @@ $out"
 # VOX_LICENSE_MODE from engine.env if they set one. Advisory except under enforcement "on",
 # where an engine restarted without a valid key would refuse to start.
 license_report() {
-  local bin="$PREFIX/bin/voxtral" mode="" out rc=0 dev
-  if [ -e "$ETC/engine.env" ]; then
-    mode="$(read_env_file "$ETC/engine.env" --lenient | sed -n 's/^VOX_LICENSE_MODE=//p' | tail -1)"
-  fi
+  local bin="$PREFIX/bin/voxtral" mode out rc=0 dev
+  mode="$(env_value "$ETC/engine.env" VOX_LICENSE_MODE)"
+  # Only what the unit gives the engine: run directly (RUN_USER is the invoker), the shell's
+  # own exports would otherwise reach it, which sudo -u would have dropped.
   local envs=(); if [ -n "$mode" ]; then envs=("VOX_LICENSE_MODE=$mode"); fi
-  out="$(as_run_user env "${envs[@]}" "$bin" --license-status --license-file "$LICENSE_FILE" 2>&1)" || rc=$?
+  out="$(as_run_user env -u VOX_LICENSE_MODE -u VOX_LICENSE_FILE "${envs[@]}" "$bin" --license-status --license-file "$LICENSE_FILE" 2>&1)" || rc=$?
   dev="$(status_field "$out" 'This device')"
   if [ "$rc" = 0 ]; then
     log "engine license key: $(status_field "$out" 'License id'), $(status_field "$out" Tier), $(status_field "$out" Licensee); expires $(status_field "$out" Expires)"
@@ -3035,6 +3050,7 @@ main() {
   log "teaport installer  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
   # The manifest pins the license version/text, so fetch it first; the gate
   # still runs before any phase touches the system.
+  license_src_check
   fetch_manifest
   eula_gate
   phase_preflight
