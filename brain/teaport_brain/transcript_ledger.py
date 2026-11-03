@@ -66,6 +66,7 @@ from loguru import logger
 
 from teaport_brain.conversation_log import quoted
 from teaport_brain.barge_pause import PlayoutPauseFrame
+from teaport_brain.endpointing import NO_STOP, SegmentDoneFrame, SegmentResetFrame
 from teaport_brain.settings import setting
 from teaport_brain.tts_text import CAPTION_LEAD_SECS, fold_unspeakable, has_speech, unsaid_markers
 
@@ -84,8 +85,10 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
     TTSTextFrame,
     VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed, FrameProcessed
+from pipecat.services.stt_service import STTService
 
 # LEDGER_TRACE=1 logs the real per-frame sequence (deduped) for diagnosis.
 _TRACE = setting("LEDGER_TRACE")
@@ -124,6 +127,9 @@ _MAX_FILLER_CTXS = 512
 _MAX_CLOSED_CTXS = 64
 _MAX_FIFO = 4096
 _MAX_SEEN = 8192
+# Open speech segments kept (TranscriptLedger._starts): far more than can be open; a
+# bound only for a pipeline whose STT never closes one (no stamps to close them by).
+_MAX_STARTS = 64
 
 _EPS = 1e-6
 # How far before a chunk's modelled end a stop-frame BotStopped may arrive and still
@@ -292,7 +298,17 @@ class TranscriptLedger(BaseObserver):
         self._turn_seq = 0
         self._tts = tts
         self._output = output
-        self._user_start: Optional[float] = None
+        # The user's speech segments not yet closed, oldest first: [n, t] per VAD start,
+        # n the VAD stops counted before it (so its segment is the one stop n+1 ends) and
+        # t its time. A line is dated from its own segment's start (_segment_start), not
+        # from the first start since the last line: a segment that closes with no words
+        # (a cough, echo, every turn the wake gate sleeps through) logs no line, and its
+        # start must not date the next one (#288).
+        self._starts: deque = deque(maxlen=_MAX_STARTS)
+        # VADUserStoppedSpeakingFrames as they reach the STT: the count a close's stop_n
+        # is stamped against (FinalTranscriptionFrame in stt.py), counted where the STT
+        # counts them, so the same frames, whatever drops audio upstream of it.
+        self._vad_stops = 0
         # The response streaming now (an entry, see _new_entry), None between.
         self._gen: Optional[dict] = None
         self._seq = 0
@@ -378,9 +394,12 @@ class TranscriptLedger(BaseObserver):
                 self._traced.clear()
 
         # --- user side ---
-        if isinstance(f, VADUserStartedSpeakingFrame):
-            if self._user_start is None:
-                self._user_start = t
+        if isinstance(f, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            if proc is None or isinstance(proc, STTService):
+                if isinstance(f, VADUserStoppedSpeakingFrame):
+                    self._vad_stops += 1
+                else:
+                    self._starts.append([self._vad_stops, t])
             return
 
         # --- interruption: every open bot turn ends as cut-off ---
@@ -411,9 +430,22 @@ class TranscriptLedger(BaseObserver):
         if isinstance(f, TranscriptionFrame):
             if not (f.text or "").strip():
                 return
-            self._add(Utterance("user", f.text.strip(),
-                                self._user_start if self._user_start is not None else t, t))
-            self._user_start = None
+            if hasattr(f, "stop_n") and f.stop_n is None:
+                # Our STT's final with no stamp: words handed back after they were
+                # taken (taken_turn.handed_back). Their segment closed when the ledger
+                # first saw them, at the processor below the STT, before Wi-Fi setup
+                # or run control gave them back: they close none, and move nothing.
+                start = min(self._starts[0][1], t) if self._starts else t
+            else:
+                start = self._segment_start(getattr(f, "stop_n", None), t)
+            self._add(Utterance("user", f.text.strip(), start, t))
+
+        elif isinstance(f, SegmentDoneFrame):
+            self._segment_start(f.stop_n, t)        # closed with no words: no line
+
+        elif isinstance(f, SegmentResetFrame):
+            # Dropped without a close: none will come for the stops it had seen.
+            self._close_through(f.stop_n)
 
         elif isinstance(f, TTSStartedFrame):
             fctx = getattr(f, "context_id", None)
@@ -1113,6 +1145,58 @@ class TranscriptLedger(BaseObserver):
                 self.on_utterance(u)
             except Exception as e:  # noqa: BLE001 -- an observer must never raise
                 logger.warning(f"LEDGER: the utterance feed raised {e!r}")
+
+    def _segment_start(self, stop_n: Optional[int], t: float) -> float:
+        """A segment close at `t` (a final, or a SegmentDoneFrame with no words), with the
+        stamp the STT put on it: the start of the speech it closes. Never earlier than
+        that speech: where a close cannot say which segment it is, it errs late.
+
+        Stamped (stop_n = k >= 1, the VAD stops the STT had counted when it committed):
+        it answers the segments ended by stop k or earlier -- a commit can cover two
+        (the caller paused and went on before it went out), and the line takes the
+        first one's start -- and those are closed. A segment that started after stop k
+        (the caller speaking again inside the engine's finish) keeps its own start.
+        With none of those open, the close is on segment k itself, whose stop has not
+        come: a backstop's commit (stt.py, the stranded backstop), or the wordless
+        tail the engine pairs with the last commit. The line takes that segment's
+        start, and the rest of its words are dated from this close. With only later
+        segments open, its own are closed already, and the line is dated at `t`.
+
+        NO_STOP (the engine's own cut, which names no stop: mid-utterance, or words the
+        wake gate or the echo guard emptied, or late words after a slice turn closed):
+        it closes nothing -- the stop's own stamped close will -- and the line takes
+        the oldest open start. Not knowing which segment it cut, it moves every open
+        start up to itself: whatever is still open comes after this cut. That errs late
+        where the cut was not theirs (the barge-in judge's second close for words
+        already charted; late words of a slice turn already closed).
+
+        None (another STT, with no stamps at all): the oldest open segment, and every
+        segment its stops have ended is closed."""
+        if not self._starts:
+            return t
+        head = self._starts[0]
+        start = head[1]
+        if stop_n is None:
+            self._close_through(self._vad_stops)
+            if self._starts and self._starts[0] is head:
+                head[1] = t                       # still under way: the rest is later
+            return start
+        if stop_n == NO_STOP:
+            for s in self._starts:
+                s[1] = max(s[1], t)
+            return start
+        if head[0] < stop_n:
+            self._close_through(stop_n)
+            return start
+        if head[0] == stop_n:
+            head[1] = t                           # on segment k itself: the rest is later
+            return start
+        return t                                  # its segments are closed already
+
+    def _close_through(self, stop_n: int) -> None:
+        """No segment ended by VAD stop `stop_n` or earlier is open any more."""
+        while self._starts and self._starts[0][0] < stop_n:
+            self._starts.popleft()
 
     def _log(self, u: Utterance):
         if u.cut_short:

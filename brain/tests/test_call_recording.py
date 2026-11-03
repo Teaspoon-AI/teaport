@@ -168,6 +168,35 @@ def test_the_transcript_is_the_ledgers_lines():
         assert not os.path.exists(rec.wav_path)
 
 
+async def test_a_caller_line_after_a_wordless_segment_carries_its_own_time():
+    # #288: a cough the STT closes with no words, then a question. The recording's
+    # Caller line is stamped from the question's own VAD start, not the cough's.
+    from types import SimpleNamespace
+
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+
+    from teaport_brain.endpointing import SegmentDoneFrame
+    from teaport_brain.stt import FinalTranscriptionFrame
+
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c288", mode="transcript", directory=d)
+        ledger = TranscriptLedger()
+        rec.attach(ledger)
+        rec.begin()
+        for f, t in [
+            (VADUserStartedSpeakingFrame(), 4.0), (VADUserStoppedSpeakingFrame(), 4.3),
+            (SegmentDoneFrame(stop_n=1), 4.9),
+            (VADUserStartedSpeakingFrame(), 12.5), (VADUserStoppedSpeakingFrame(), 14.0),
+            (FinalTranscriptionFrame("can I book a table", "caller", "", None,
+                                     finalized=True, stop_n=2), 14.6),
+        ]:
+            await ledger.on_process_frame(SimpleNamespace(frame=f, timestamp=int(t * 1e9),
+                                                          processor=None))
+        rec.close()
+        lines = open(rec.txt_path, encoding="utf-8").read().splitlines()[2:]
+        assert lines == ["[00:12.5] Caller: can I book a table"], lines
+
+
 def _words(ctx, *words):
     return [TTSTextFrame(text=w, aggregated_by="word", context_id=ctx) for w in words]
 
