@@ -24,8 +24,11 @@ TLA_TOOLS=/path/to/tla2tools.jar ./check.sh
 `check.sh` runs every row and **gates**: it exits nonzero if any row misses the
 expectation in its last column — an `expected: holds` design that is violated, an
 `expected: FAILS <Prop>` design that holds or that fails on a *different* invariant
-than the one it names, or a row with no verdict at all. Run a single row by hand with,
-for example:
+than the one it names, or a row with no verdict at all. Each row has a time limit
+(`TLC_ROW_TIMEOUT`, default 600 s; `TLC_FULL_ROW_TIMEOUT` for `--full`'s rows, default
+3600 s), and a row past it fails as `TIMED OUT`. Each run keeps TLC's state pools and
+extracted standard modules in its own temp dir, removed when the run ends however it
+ends, so runs can go side by side (#189). Run a single row by hand with, for example:
 
 ```sh
 java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
