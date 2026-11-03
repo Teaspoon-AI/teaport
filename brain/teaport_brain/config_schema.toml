@@ -2410,7 +2410,17 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged)."
+help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: a fixed mic gain instead of the chip's automatic gain, and echo suppression set to take out the bot's own voice but let yours through. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged)."
+
+[[settings]]
+name = "LOCAL_AUDIO_ECHO_MARGIN_DB"
+docs = false
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+read = "startup"
+tier = "diag"
+help = "Retired 2026-11-02: the bridge no longer measures the echo to decide the chip's echo suppression; it holds one setting that lets your voice through (LOCAL_AUDIO_ECHO_CONTROL). If it is still set, the bridge ignores it and logs a warning saying so."
 
 [[settings]]
 name = "LOCAL_AUDIO_MIC_GAIN_DB"
@@ -2424,19 +2434,6 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "The fixed gain the XVF3800 applies to the mic in place of its automatic gain (which also boosted the bot's echo). Raise it if the speech engine misses quiet speech, lower it if loud speech clips."
-
-[[settings]]
-name = "LOCAL_AUDIO_ECHO_MARGIN_DB"
-store = "local_audio_env"
-group = "local_audio"
-type = "float"
-default = 15.0
-min = 0.0
-max = 40.0
-unit = "dB"
-read = "startup"
-tier = "tuning"
-help = "How far your voice must stay above the bot's echo, as the bridge measures them at the mic, for the chip's echo suppressor to stay off. Closer than that, the bot's words start leaking in as yours and the suppressor comes on (it also muffles you while the bot talks)."
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
