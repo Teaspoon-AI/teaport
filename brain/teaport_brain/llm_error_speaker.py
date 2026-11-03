@@ -72,14 +72,18 @@
 # here and answered with one fixed line, on the vague line's clock (once per window,
 # whatever is said in between) -- one processor and one clock for "there is no answer",
 # whatever the reason. Which line (_no_model_line):
-#   * on a phone call, a short neutral one: a caller is not the owner, and the call ends
-#     after it (AgentSession.greet);
 #   * where spoken Wi-Fi setup is on and the box is offline, how to get it online;
-#   * anywhere else, where the rest is done: the settings page.
+#   * anywhere else, that the account for its answers is not set up -- and no more: no
+#     way to set it up is within an owner's reach by voice yet (#279 brings one).
+# A phone call never asks: sip_server says NO_MODEL_CALL_TEXT through say_last_line,
+# heard in full, and hangs up.
 # A request that finds a model could be made now (a key written meanwhile: the key file
 # is read per session) gets "I'm ready now" once, and the session ends so that the next
-# one is built with it. Spoken whatever TEAPORT_LLM_ERROR_SPEECH says: it is not a
-# failure notice, and without it the box would say nothing at all.
+# one is built with it: through the client's own restart where it has one (the room's
+# bridge opens the next session awake, so "ask me again" is heard), else as any session
+# ends, with the line that says to start a new conversation (a Talk client). Spoken
+# whatever TEAPORT_LLM_ERROR_SPEECH says: it is not a failure notice, and without it the
+# box would say nothing at all.
 #
 import math
 import re
@@ -89,7 +93,13 @@ import httpx
 import openai
 from loguru import logger
 
-from pipecat.frames.frames import ErrorFrame, Frame, LLMContextFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    ErrorFrame,
+    Frame,
+    LLMContextFrame,
+    OutputTransportMessageUrgentFrame,
+    TTSSpeakFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
 from pipecat.utils.errors import ErrorCategory, classify_http_exception
@@ -120,19 +130,26 @@ ACCOUNT_TEXT = N_("Sorry, I can't answer right now: the account I use for my ans
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
 
-# No model at all (#277; the module note). "Set up" as what the box is not yet, never
-# "setup mode", the state it goes into to join a network; the settings page, as the
-# account line names it, is where the rest is done.
-NO_MODEL_TEXT = N_("I can't answer questions until I'm set up. You can finish that on my "
-                   "settings page.")
+# No model at all (#277; the module note). The account, as the account line names it;
+# no "settings page": nothing tells a first-run owner where that is yet.
+NO_MODEL_TEXT = N_("I can't answer questions yet, because the account I use for my "
+                   "answers isn't set up.")
 # The quoted words are the start phrase, in each catalog one its own "start" pattern
 # hears (tests/test_i18n.py checks): said back to the box, they start setup mode.
 NO_MODEL_WIFI_TEXT = N_("I can't answer questions until I'm set up. Say \"set up Wi-Fi\" "
                         "to get me online.")
-# A caller on the phone: short and neutral, no instructions for the box's owner.
+# A caller on the phone: short and neutral, no instructions for the box's owner
+# (sip_server says it, heard in full, then hangs up).
 NO_MODEL_CALL_TEXT = N_("Sorry, I can't take calls right now. Please try again later.")
-# A model can be made now: this session ends, and the next one has it.
+# A model can be made now: this session ends, and the next one has it. Restarted by the
+# client (the room's bridge opens the next one awake, listening): ask again.
 NO_MODEL_READY_TEXT = N_("I'm ready now. Please ask me again.")
+# Ended, and a new one is the client's to open (a Talk client).
+NO_MODEL_READY_NEW_TEXT = N_("I'm ready now. Please start a new conversation with me.")
+# How the session asks its client to restart it: the restart_session client tool's own
+# message (tools.py, THE TOOL CONTRACT), as the model's call would send it.
+RESTART_CALL = {"type": "client_tool", "call_id": "teaport-client-ready",
+                "name": "restart_session", "args": {}}
 
 ACCOUNT_CATEGORIES = frozenset({ErrorCategory.AUTHENTICATION,
                                 ErrorCategory.AUTHORIZATION,
@@ -269,18 +286,19 @@ class LLMErrorSpeaker(FrameProcessor):
     espeak_language), read at each notice so a voice switch is followed.
 
     no_model: the session has no LLM (#277; the module note): this processor answers
-    every request for a reply in its place. Then also `phone` (a phone call: the short
-    neutral line), `wifi` (the session's WifiSetupVoice, where spoken Wi-Fi setup is
-    on), `gate` (the session's FollowupGate: the request it took is not left claiming
-    the window), `model_back` (True once a model could be made) and `end` (an async
-    callable that ends the session), the last two set by the session builder."""
+    every request for a reply in its place. Then also `wifi` (the session's
+    WifiSetupVoice, where spoken Wi-Fi setup is on), `gate` (the session's FollowupGate:
+    the request it took is not left claiming the window), `model_back` (True once a
+    model could be made), `restarts` (the client restarts a session itself: the
+    restart_session client tool) and `end` (an async callable that ends the session,
+    set by the session builder)."""
 
-    def __init__(self, lang_fn=None, *, no_model: bool = False, phone: bool = False,
-                 wifi=None, gate=None, model_back=None, end=None):
+    def __init__(self, lang_fn=None, *, no_model: bool = False, wifi=None, gate=None,
+                 model_back=None, end=None, restarts: bool = False):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
         self.no_model = no_model
-        self._phone = phone
+        self._restarts = restarts
         self._wifi = wifi
         self._gate = gate
         self.model_back = model_back or (lambda: False)
@@ -319,13 +337,11 @@ class LLMErrorSpeaker(FrameProcessor):
             if self._ready_said:
                 return None
             self._ready_said = True
-            return NO_MODEL_READY_TEXT
+            return NO_MODEL_READY_TEXT if self._restarts else NO_MODEL_READY_NEW_TEXT
         now = time.monotonic()
         if now - self._said < _DEBOUNCE_SECS:
             return None
         self._said = now
-        if self._phone:
-            return NO_MODEL_CALL_TEXT
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
         return NO_MODEL_TEXT
@@ -336,6 +352,13 @@ class LLMErrorSpeaker(FrameProcessor):
             logger.debug("no model: the line was said moments ago -- not again yet")
             return
         logger.info(f"no model: speaking {text[:40]!r}")
+        if text is NO_MODEL_READY_TEXT:
+            # Before the line: the client ends the session once the line after its
+            # restart has played, and opens the next one at once, awake.
+            logger.info("no model: one can be made now -- the client restarts this "
+                        "session, so the next one is built with it")
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=dict(RESTART_CALL)),
+                                  FrameDirection.DOWNSTREAM)
         t = i18n.for_espeak(self._lang_fn())
         line = t._(text)
         if self._wifi is not None:
@@ -343,7 +366,7 @@ class LLMErrorSpeaker(FrameProcessor):
             self._wifi.note_said(line)
         await self.push_frame(TTSSpeakFrame(line, append_to_context=False),
                               FrameDirection.DOWNSTREAM)
-        if text is NO_MODEL_READY_TEXT and self.end is not None:
+        if text is NO_MODEL_READY_NEW_TEXT and self.end is not None:
             logger.info("no model: one can be made now -- ending this session, so the "
                         "next one is built with it")
             await self.end()

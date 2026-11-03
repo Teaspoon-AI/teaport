@@ -165,6 +165,7 @@ class _FakeSession:
     notices = {}        # call id -> the notice greet() was asked to say first, if any
     build_kw = {}       # call id -> what build_agent_session was given (recording=, ...)
     PREPARED = "Hello there."
+    llm = object()       # a model to answer with (none: sip_server's no-model line, #277)
 
     def __init__(self, call_id):
         self.call_id = call_id

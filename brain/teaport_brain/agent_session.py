@@ -290,16 +290,15 @@ class AgentSession:
     )
 
     def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate,
-                 client_notes=None, input_mute=None, ends_without_model: bool = False):
+                 client_notes=None, input_mute=None):
         self.task = task
         self.context = context
         self.stt = stt
         self.tts = tts
         # None: no model could be made (#277). The session runs on without one: its
-        # requests for a reply get a fixed line (llm_error_speaker.py, NO MODEL AT ALL),
-        # and `ends_without_model` (a phone call) ends it after its first.
+        # requests for a reply get a fixed line (llm_error_speaker.py, NO MODEL AT ALL);
+        # a phone call is told so and hung up instead (sip_server).
         self.llm = llm
-        self.ends_without_model = ends_without_model
         self.ledger = ledger
         self.followup_gate = followup_gate
         # Takes the Talk client's context notes into the LLM context (client_notes.py);
@@ -312,8 +311,7 @@ class AgentSession:
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
         self.should_end = False
-        # Why it should end: "busy" (the engine's slot is held), "unavailable", or
-        # "no_model" (a phone call with no model to answer it, #277).
+        # Why it should end: "busy" (the engine's slot is held) or "unavailable".
         self.end_reason: str | None = None
         # On hold for a phone call (hold / resume), and what keeps it alive meanwhile.
         self.held = False
@@ -384,13 +382,6 @@ class AgentSession:
                 self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
                 append_to_context=False)])
             return
-        if self.llm is None and self.ends_without_model:
-            # No model (#277), on a phone call: the greeting's request gets the short
-            # can't-answer line (llm_error_speaker.py), and then the call ends, as the
-            # busy one does.
-            logger.warning("no model for this call — saying so, then ending it")
-            self.should_end = True
-            self.end_reason = "no_model"
         if not hello:
             return
         # A recorded call is armed here, never on a call that cannot be heard (above):
@@ -886,6 +877,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     if wake_gate is not None:
         wake_gate.context = context
         wake_gate.greeting = AgentSession._GREETING
+        # With no model the room conversation is not this session's to keep or continue
+        # (#277): turns nobody answered, restored into the next session that has a model,
+        # would be answered there out of nowhere, its greeting skipped.
+        wake_gate.remembers = llm is not None
     if wake_gate is not None and host is None and agent_backend.HAS_AGENT:
         # A room session opened while the gateway could not answer (starting or
         # restarting: teaport-brain is not ordered after it) was built from the persona
@@ -1136,8 +1131,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     followup_trigger = FollowupTrigger() if context_notes else None
     # Client context notes (teaport.talk.context; /talk only). Removals go through the
     # corrector so its positional window survives them.
+    # With no model, notes go in as context only: a reaction would be a request for a
+    # reply nobody asked for, and its answer the not-set-up line.
     client_notes = (ClientNotes(context, followup_gate, followup_trigger,
-                                drop_messages=heard_corrector.drop_messages)
+                                drop_messages=heard_corrector.drop_messages,
+                                reactions=llm is not None)
                     if context_notes else None)
     if wifi is not None:
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
@@ -1160,13 +1158,15 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Says something when a completion fails, in the voice's language (read live, as
     # WifiSetupVoice reads it). With no model it is always there: it answers every
     # request for a reply in the LLM's place (llm_error_speaker.py, NO MODEL AT ALL) --
-    # a phone caller with a short neutral line, the room with how to get online where
-    # spoken Wi-Fi setup is on -- and ends the session (`end`, set below) once it finds
-    # a model could be made.
+    # the room with how to get online where spoken Wi-Fi setup is on -- and ends the
+    # session (`end`, set below) once it finds a model could be made: through the
+    # client's restart where it has one (the room's bridge then opens the next session
+    # awake), else as any session ends. (A phone call never gets this far: sip_server
+    # says its line and hangs up.)
     error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
-                                     no_model=llm is None, phone=front_end == "sip",
-                                     wifi=wifi, gate=followup_gate,
-                                     model_back=lambda: model_missing() is None)
+                                     no_model=llm is None, wifi=wifi, gate=followup_gate,
+                                     model_back=lambda: model_missing() is None,
+                                     restarts="restart" in client_features)
                      if llm_error_speaker.ENABLED or llm is None else None)
 
     input_mute = InputMute()
@@ -1383,7 +1383,6 @@ def build_agent_session(transport, *, voice: str | None = None,
         followup_gate=followup_gate,
         client_notes=client_notes,
         input_mute=input_mute,
-        ends_without_model=front_end == "sip",
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.owed = owed    # what the caller is still owed (owed.py)

@@ -329,8 +329,8 @@ msgid "This call is being recorded."
 msgstr "Этот звонок записывается."
 
 # No model at all (llm_error_speaker.py, #277).
-msgid "I can't answer questions until I'm set up. You can finish that on my settings page."
-msgstr "Я не могу отвечать на вопросы, пока меня не настроят. Закончить это можно на моей странице настроек."
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "Я пока не могу отвечать на вопросы: аккаунт, который я использую для ответов, ещё не настроен."
 
 msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
 msgstr "Я не могу отвечать на вопросы, пока меня не настроят. Скажите «настрой вай-фай», чтобы подключить меня к интернету."
@@ -340,3 +340,6 @@ msgstr "Извините, я сейчас не могу принимать зв�
 
 msgid "I'm ready now. Please ask me again."
 msgstr "Теперь я готов. Спросите меня ещё раз."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "Теперь я готов. Начните, пожалуйста, новый разговор со мной."

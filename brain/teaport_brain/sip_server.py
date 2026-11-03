@@ -103,6 +103,8 @@ from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import host_context
 from teaport_brain.settings import setting
+from teaport_brain import i18n
+from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
@@ -189,6 +191,8 @@ ANSWER_AFTER_SECS = setting("SIP_ANSWER_AFTER_SECS")
 # Past ANSWER_AFTER_SECS, how much longer the call may ring for the greeting to be ready;
 # then it is answered anyway and the greeting asked for the usual way.
 _ANSWER_GRACE_SECS = 3.0
+# How long the no-model line (#277) may take to play before the call is hung up anyway.
+NO_MODEL_LINE_MAX_SECS = 6.0
 # From call.answer to `confirmed`: a gateway that has not confirmed by then never will.
 _CONFIRM_SECS = 10.0
 
@@ -923,6 +927,21 @@ async def run_connection(sock, on_ready=None):
                 return
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
+        if session.llm is None:
+            # No model to answer with (#277): the caller hears the short line, heard in
+            # full -- their own "hello?" at pickup does not cut it (say_last_line, the
+            # same heard-in-full path as the recording notice: _say_whole) -- and the
+            # call ends. Before the notice: there is no conversation to record (the
+            # recording is armed only by greet(), so this call records nothing). A key
+            # written while it rang counts from the next call: this one was built
+            # without it.
+            logger.warning(f"call {call_id}: no model to answer with — saying so, then "
+                           "hanging up")
+            t = i18n.for_espeak(getattr(session.tts, "espeak_language", None))
+            await session.say_last_line(t._(NO_MODEL_CALL_TEXT), NO_MODEL_LINE_MAX_SECS)
+            await transport.send_control({"type": "call.hangup", "call_id": call_id})
+            await cancel_active_call("no model to answer", call_id=call_id)
+            return
         # A recorded call starts with the notice, in the call's language, before the
         # greeting -- a resumed one too: the brain that was cut off may not have
         # finished saying it.
@@ -936,18 +955,16 @@ async def run_connection(sock, on_ready=None):
             await session.greet(resumed=resumed, notice=notice)
         if session.should_end:
             # STT is unavailable — the engine's single slot is held by another process
-            # (a standalone rig) or the engine is unreachable — or there is no model to
-            # answer (#277: end_reason "no_model"). greet() had the matching line said
-            # instead of a greeting; let it play out, then
+            # (a standalone rig) or the engine is unreachable. greet() spoke the
+            # matching line instead of greeting; let it play out, then
             # hang the caller up and tear the pipeline down so the line drops cleanly.
             # wait_until_delivered returns once the line has been spoken (or after a
             # short timeout if the engine can't even synthesize it — hang up either way).
-            why = ("no model to answer" if getattr(session, "end_reason", None) == "no_model"
-                   else "STT unavailable")
-            logger.info(f"{why} for call {call_id} — playing the warning, then hanging up")
+            logger.info(f"STT unavailable for call {call_id} — playing the warning, "
+                        "then hanging up")
             await session.followup_gate.wait_until_delivered()
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
-            await cancel_active_call(why, call_id=call_id)
+            await cancel_active_call("STT unavailable", call_id=call_id)
 
     @connection.event_handler("on_call_state")
     async def on_call_state(_connection, call_id, state, replay=False):

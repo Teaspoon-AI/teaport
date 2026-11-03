@@ -13,6 +13,7 @@
 import asyncio
 import contextvars
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Sequence
@@ -37,7 +38,7 @@ from teaport_brain import owed as owed_mod
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.llm_error_speaker import ANSWERS, redact
-from teaport_brain.settings import secret_file, setting
+from teaport_brain.settings import ROWS, canonical, read_name, secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 from teaport_brain.tts_text import has_speech
 
@@ -92,10 +93,19 @@ def _api_key() -> str | None:
 
 
 def model_missing() -> str | None:
-    """Why no model can be made right now ("no endpoint address" or "no key"), or None
-    when one can. Read live, as make_llm reads them: the key file is read per session, so
-    a key written meanwhile counts at once."""
-    if not setting("LLM_BASE_URL"):
+    """Why no model can be made right now ("no endpoint address", "the endpoint address
+    isn't valid" or "no key"), or None when one can. Read live, as make_llm reads them:
+    the key file is read per session, so a key written meanwhile counts at once.
+
+    Asked on every /health and every request a session without a model takes, so the
+    endpoint is judged the way setting() reads it (settings.canonical: the schema's
+    parse) but without setting()'s warning, which make_llm's own read already logs once
+    a session."""
+    env = os.environ
+    text, problem = canonical(ROWS["LLM_BASE_URL"], env.get(read_name("LLM_BASE_URL", env)))
+    if problem is not None:
+        return "the endpoint address isn't valid"
+    if not text:
         return "no endpoint address"
     if not _api_key():
         return "no key"

@@ -6,11 +6,15 @@
 #
 #   * the room, with spoken Wi-Fi setup on and the box offline: how to get it online --
 #     and "set up Wi-Fi" starts setup mode, end to end, online or not;
-#   * anywhere else: where the rest is done (the settings page);
-#   * a phone call: a short neutral line, then the call ends (never setup instructions);
-#   * a key written meanwhile: "I'm ready now", and the session ends, so the next one has
-#     the model.
-#   /health's "answers" says "unconfigured", and the CLI says so.
+#   * anywhere else: that the account for its answers is not set up;
+#   * a phone call: a short neutral line heard in full, even over the caller's "hello?",
+#     then the call ends (never setup instructions);
+#   * a key written meanwhile: "I'm ready now", and the session ends -- through the
+#     client's restart where it has one (the room opens the next one awake) -- so the next
+#     one has the model.
+#   No reaction to a client note, no room conversation kept from a session without a
+#   model; /health's "answers" says "unconfigured" (or that the address isn't valid,
+#   quietly), and the CLI says so.
 #
 # In process: the session's own pipeline from the Wi-Fi processor (or the user
 # aggregator) down, the engine's synthesis stubbed. End to end: the real brain against the
@@ -130,12 +134,29 @@ def test_what_is_missing_is_said_and_make_llm_refuses_with_it():
         _no_model()
 
 
+def test_an_address_that_is_not_one_is_said_so_and_quietly():
+    """A malformed LLM_BASE_URL (ftp://...) is not "no address", and asking about it --
+    every /health, every request a session without a model takes -- logs nothing."""
+    from loguru import logger
+    seen = []
+    sink = logger.add(lambda m: seen.append(m.record["message"]), level="WARNING")
+    os.environ["LLM_BASE_URL"] = "ftp://synthetic.invalid/v1"
+    try:
+        for _ in range(3):
+            assert services.model_missing() == "the endpoint address isn't valid"
+            assert services.answers_status()["reason"] == "the endpoint address isn't valid"
+    finally:
+        logger.remove(sink)
+        _no_model()
+    assert not [m for m in seen if "LLM_BASE_URL" in m], seen
+
+
 # ---- the session is built, without the LLM stage ------------------------------------------
 
 def test_a_session_builds_without_a_model_and_nothing_that_needs_one():
     _no_model()
     session = build_agent_session(TalkTransport(), front_end="talk", context_notes=True)
-    assert session.llm is None and not session.ends_without_model
+    assert session.llm is None
     procs = _processors(session)
     assert not any(isinstance(p, LLMService) for p in procs), "an LLM in a no-model session"
     speakers = [p for p in procs if isinstance(p, LLMErrorSpeaker)]
@@ -143,8 +164,41 @@ def test_a_session_builds_without_a_model_and_nothing_that_needs_one():
     assert speakers[0].end is not None, "nothing ends the session once a model can be made"
     assert session.call_prompt is None, "a call prompt with no model to ask it"
     assert session.owed.judge is None and session.owed.gist is None
-    sip = build_agent_session(TalkTransport(), front_end="sip")
-    assert sip.ends_without_model
+
+
+def test_a_client_note_gets_no_reaction_without_a_model():
+    """respond:true would queue a run, answered by the not-set-up line out of nowhere:
+    with no model every note goes in as context only."""
+    _no_model()
+    session = build_agent_session(TalkTransport(), front_end="talk", context_notes=True)
+    notes = session.client_notes
+    notes.add_notice("Synthetic notice.", respond=True)
+    assert notes._pending and notes._pending[-1].respond is False
+
+
+def test_a_room_conversation_without_a_model_is_neither_kept_nor_continued():
+    """Its turns went unanswered: saved, the next session with a model would answer them
+    out of nowhere and skip its greeting. And one kept from before is left for that one."""
+    from teaport_brain.wake_gate import MicConversation, WakeGate
+    _no_model()
+    store = MicConversation()
+    store.save([{"role": "user", "content": "synthetic words from a session with a model"}])
+    gate = WakeGate(["hey teaport"], asleep=True, store=store)
+    session = build_agent_session(TalkTransport(), front_end="room", wake_gate=gate,
+                                  client_features=frozenset({"local"}))
+    assert gate.remembers is False
+
+    async def run():
+        async def push(_frame):
+            pass
+        await gate.final("hey teaport what time is it", push)
+    asyncio.run(run())
+    users = [m["content"] for m in session.context.get_messages() if m["role"] == "user"]
+    assert "synthetic words from a session with a model" not in users, users
+    session.context.add_message({"role": "user", "content": "synthetic unanswered turn"})
+    gate.ended()
+    assert store.take(3600) == [{"role": "user",
+                                 "content": "synthetic words from a session with a model"}]
 
 
 def _processors(session):
@@ -225,7 +279,7 @@ async def _says(rig, line, timeout=STEP_S):
     await until(lambda: _words(line) in rig.heard(), timeout)
 
 
-async def test_ordinary_speech_gets_the_settings_line_once_per_window():
+async def test_ordinary_speech_gets_the_line_once_per_window():
     _no_model()
     session = build_agent_session(TalkTransport(), front_end="talk")
     async with Rig(session, LLMUserAggregator) as rig:
@@ -336,7 +390,7 @@ async def test_the_room_offline_is_told_how_to_get_online_and_its_echo_is_not_a_
         assert wifi.state == "idle" and unit.calls == []
 
 
-async def test_the_room_online_is_pointed_to_the_settings_page():
+async def test_the_room_online_is_told_the_account_is_not_set_up():
     _no_model()
     session, _wifi = _room_with_wifi(_Unit(online=True))
     async with Rig(session, LLMUserAggregator) as rig:
@@ -352,7 +406,8 @@ async def test_a_key_written_meanwhile_is_found_and_the_session_ends_for_the_nex
         _key_file("sk-synthetic-test")
         try:
             await rig.say("are you there")
-            await _says(rig, les.NO_MODEL_READY_TEXT)
+            # A Talk client opens the next session itself: it is told to.
+            await _says(rig, les.NO_MODEL_READY_NEW_TEXT)
             await asyncio.wait_for(rig._run, STEP_S)   # ended: the next session has it
             assert _words(les.NO_MODEL_TEXT) not in rig.heard()
         finally:
@@ -378,22 +433,14 @@ class _Task:
         self.queued.extend(frames)
 
 
-async def _greeted(ends):
+async def test_a_greeting_asks_for_the_line_and_no_greeting_is_prepared():
     from pipecat.processors.aggregators.llm_context import LLMContext
     stt = type("STT", (), {"stt_available": True, "slot_busy": False})()
     s = AgentSession(task=_Task(), context=LLMContext([]), stt=stt, tts=None, llm=None,
-                     ledger=None, followup_gate=None, ends_without_model=ends)
+                     ledger=None, followup_gate=None)
     await s.greet()
-    return s
-
-
-async def test_a_greeting_asks_for_the_line_and_a_call_ends_after_it():
-    talk = await _greeted(ends=False)
-    assert [type(f) for f in talk.task.queued] == [LLMRunFrame] and not talk.should_end
-    call = await _greeted(ends=True)
-    assert [type(f) for f in call.task.queued] == [LLMRunFrame]
-    assert call.should_end and call.end_reason == "no_model"
-    assert await call.prepare_greeting() is None
+    assert [type(f) for f in s.task.queued] == [LLMRunFrame] and not s.should_end
+    assert await s.prepare_greeting() is None
 
 
 # ---- the speaker on its own ----------------------------------------------------------------
@@ -412,9 +459,10 @@ class _Gate:
 class _Speaker(LLMErrorSpeaker):
     def __init__(self, **kw):
         super().__init__(no_model=True, **kw)
-        self.said = []
+        self.said, self.pushed = [], []
 
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        self.pushed.append(frame)
         if isinstance(frame, TTSSpeakFrame):
             self.said.append(frame.text)
 
@@ -430,33 +478,61 @@ async def _ask(speaker):
     await asyncio.sleep(0.05)
 
 
-async def test_a_caller_hears_the_short_neutral_line_never_setup_instructions():
+async def test_a_request_releases_the_window_as_a_model_would():
     gate = _Gate()
-    speaker = _Speaker(phone=True, gate=gate, lang_fn=lambda: "en-us")
+    speaker = _Speaker(gate=gate, lang_fn=lambda: "en-us")
     await _ask(speaker)
-    assert speaker.said == [les.NO_MODEL_CALL_TEXT], speaker.said
+    assert speaker.said == [les.NO_MODEL_TEXT], speaker.said
     assert gate.calls == ["rendered", "released"], "the window left claimed"
+
+
+def test_the_callers_line_holds_no_setup_instructions():
     for lang in i18n.catalogs():
         line = i18n.get(lang)._(les.NO_MODEL_CALL_TEXT)
         assert "Wi-Fi" not in line and "wifi" not in line.lower(), (lang, line)
 
 
-async def test_the_ready_line_is_said_once_and_ends_the_session():
-    ended = []
+async def test_the_ready_line_restarts_through_a_client_that_can_and_ends_otherwise():
+    """The room's bridge restarts a session itself (restart_session): told before the
+    line, it ends the session once the line has played and opens the next one awake,
+    listening -- "ask me again" is true. A Talk client cannot: the session ends, and the
+    line says to start a new conversation."""
+    from pipecat.frames.frames import OutputTransportMessageUrgentFrame
+    for restarts in (True, False):
+        ended = []
 
-    async def end():
-        ended.append(True)
-    speaker = _Speaker(model_back=lambda: True, end=end)
-    await _ask(speaker)
-    await _ask(speaker)
-    assert speaker.said == [les.NO_MODEL_READY_TEXT] and ended == [True], (speaker.said, ended)
+        async def end():
+            ended.append(True)
+        speaker = _Speaker(model_back=lambda: True, end=end, restarts=restarts)
+        await _ask(speaker)
+        await _ask(speaker)
+        if restarts:
+            assert speaker.said == [les.NO_MODEL_READY_TEXT] and ended == [], speaker.said
+            first = speaker.pushed[0]
+            assert isinstance(first, OutputTransportMessageUrgentFrame)
+            assert first.message["type"] == "client_tool"
+            assert first.message["name"] == "restart_session", first.message
+        else:
+            assert speaker.said == [les.NO_MODEL_READY_NEW_TEXT] and ended == [True]
+            assert not any(isinstance(f, OutputTransportMessageUrgentFrame)
+                           for f in speaker.pushed)
+
+
+def test_the_room_session_asks_its_bridge_to_restart_and_talk_does_not():
+    _no_model()
+    room = build_agent_session(TalkTransport(), front_end="room",
+                               client_features=frozenset({"local", "restart"}))
+    talk = build_agent_session(TalkTransport(), front_end="talk")
+    speaker = lambda s: next(p for p in _processors(s) if isinstance(p, LLMErrorSpeaker))  # noqa: E731
+    assert speaker(room)._restarts and not speaker(talk)._restarts
 
 
 def test_no_spoken_line_names_the_machinery():
     import re
     for text in (les.NO_MODEL_TEXT, les.NO_MODEL_WIFI_TEXT, les.NO_MODEL_CALL_TEXT,
-                 les.NO_MODEL_READY_TEXT):
-        assert not re.search(r"\b(LLM|API|model|key|endpoint|\d{3})\b", text, re.I), text
+                 les.NO_MODEL_READY_TEXT, les.NO_MODEL_READY_NEW_TEXT):
+        assert not re.search(r"\b(LLM|API|model|key|endpoint|settings|\d{3})\b", text,
+                             re.I), text
 
 
 # ---- /health and the CLI -------------------------------------------------------------------
@@ -469,7 +545,8 @@ async def test_health_says_no_model_is_configured_and_the_cli_shows_it():
     from test_llm_account_error import _doctor_answers, _status_answers
     served = {"ok": True, "answers": answers}
     shown = _status_answers(served)
-    assert shown.startswith("not set up (no endpoint address)") and "settings page" in shown, shown
+    assert shown.startswith("not set up (no endpoint address)"), shown
+    assert "/etc/teaport/brain.env" in shown and "llm_key" in shown, shown
     doctor = _doctor_answers(served)
     assert len(doctor) == 1 and doctor[0].startswith("FAIL answers: not set up"), doctor
 
@@ -485,22 +562,33 @@ def _brain_env(engine):
 async def test_end_to_end_a_caller_hears_the_short_line_and_is_hung_up():
     from fake_sip_gateway import run_call
     from test_sip_fake_gateway import Rig as SipRig
-    rig = SipRig()
-    async with rig:
-        rig.engine.env_for = (lambda env=_brain_env(rig.engine): env)
-        brain = rig.start_brain()
-        try:
-            connected = await rig.gw.wait_brain(60)
-            summary = await run_call(rig.gw, hangup="brain", hangup_after=40) if connected else {}
-        finally:
-            # The brain first, while the gateway still reads: its reader then ends on the
-            # brain's EOF.
-            brain.kill()
-            await asyncio.to_thread(brain.wait, 15)
-    assert connected, "teaport-brain never connected to the gateway"
-    assert summary.get("ended_by") == "brain", f"the brain did not hang up: {summary}"
-    assert " ".join(rig.engine.tts_texts) == les.NO_MODEL_CALL_TEXT, rig.engine.tts_texts
-    assert rig.engine.llm_requests == []
+    from test_sip_fake_gateway import QUESTION_WAV
+    from fake_engine import _WORD_S
+    # Its whole length at the fake engine's pace: what the caller must hear before the
+    # hangup (less a frame or two of slack).
+    full = sum(len(s.split()) * _WORD_S for s in les.NO_MODEL_CALL_TEXT.split(". "))
+    # A caller who waits, and one who talks from the moment the call is answered ("hello?
+    # hello?"): the line must play out in full over them, not be cut and hung up on.
+    for wav in (None, QUESTION_WAV):
+        rig = SipRig()
+        async with rig:
+            rig.engine.env_for = (lambda env=_brain_env(rig.engine): env)
+            brain = rig.start_brain()
+            try:
+                connected = await rig.gw.wait_brain(60)
+                summary = (await run_call(rig.gw, wav=wav, wait_greeting=False,
+                                          hangup="brain", hangup_after=40)
+                           if connected else {})
+            finally:
+                # The brain first, while the gateway still reads: its reader then ends on
+                # the brain's EOF.
+                brain.kill()
+                await asyncio.to_thread(brain.wait, 15)
+        assert connected, "teaport-brain never connected to the gateway"
+        assert summary.get("ended_by") == "brain", f"the brain did not hang up: {summary}"
+        assert " ".join(rig.engine.tts_texts) == les.NO_MODEL_CALL_TEXT, rig.engine.tts_texts
+        assert summary["bot_speech_s"] >= full - 0.1, (wav, summary["bot_speech_s"], full)
+        assert rig.engine.llm_requests == []
 
 
 async def test_end_to_end_a_talk_client_is_greeted_with_the_line_and_health_says_why():

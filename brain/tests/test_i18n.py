@@ -40,6 +40,9 @@ DYNAMIC = {
     "llm_error_speaker.py": {
         "t._(text)",                         # its four notices: N_() there
     },
+    "sip_server.py": {
+        "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
+    },
     "wifi_setup.py": {
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here

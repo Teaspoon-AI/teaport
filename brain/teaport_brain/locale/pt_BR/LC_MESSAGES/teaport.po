@@ -321,8 +321,8 @@ msgid "This call is being recorded."
 msgstr "Esta ligação está sendo gravada."
 
 # No model at all (llm_error_speaker.py, #277).
-msgid "I can't answer questions until I'm set up. You can finish that on my settings page."
-msgstr "Não consigo responder perguntas até ser configurado. Dá para terminar isso na minha página de configurações."
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "Ainda não consigo responder perguntas, porque a conta que uso para as minhas respostas não está configurada."
 
 msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
 msgstr "Não consigo responder perguntas até ser configurado. Diga “configurar o wi-fi” para me colocar na internet."
@@ -332,3 +332,6 @@ msgstr "Desculpe, não posso atender ligações agora. Tente de novo mais tarde.
 
 msgid "I'm ready now. Please ask me again."
 msgstr "Agora estou pronto. Pode perguntar de novo."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "Agora estou pronto. Comece uma nova conversa comigo."

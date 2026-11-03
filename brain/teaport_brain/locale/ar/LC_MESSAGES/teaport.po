@@ -332,8 +332,8 @@ msgid "This call is being recorded."
 msgstr "يتم تسجيل هذه المكالمة."
 
 # No model at all (llm_error_speaker.py, #277).
-msgid "I can't answer questions until I'm set up. You can finish that on my settings page."
-msgstr "لا أستطيع الإجابة عن الأسئلة قبل أن تكتمل تهيئتي. يمكنك إكمال ذلك من صفحة الإعدادات الخاصة بي."
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
+msgstr "لا أستطيع الإجابة عن الأسئلة بعد، لأن الحساب الذي أستخدمه لإجاباتي لم تتم تهيئته."
 
 msgid "I can't answer questions until I'm set up. Say \"set up Wi-Fi\" to get me online."
 msgstr "لا أستطيع الإجابة عن الأسئلة قبل أن تكتمل تهيئتي. قل «إعداد الواي فاي» لتوصيلي بالإنترنت."
@@ -343,3 +343,6 @@ msgstr "عذرًا، لا أستطيع استقبال المكالمات الآ�
 
 msgid "I'm ready now. Please ask me again."
 msgstr "أنا جاهز الآن. اسألني مرة أخرى من فضلك."
+
+msgid "I'm ready now. Please start a new conversation with me."
+msgstr "أنا جاهز الآن. ابدأ محادثة جديدة معي من فضلك."

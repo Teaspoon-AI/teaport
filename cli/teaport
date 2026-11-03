@@ -74,7 +74,9 @@ elif st == "untried":
     text = "none asked for since the brain started"
 elif st == "unconfigured":
     text = ("not set up%s: no model is configured, so the box answers every question with"
-            " a fixed line — add the key and the endpoint on the settings page" % why)
+            " a fixed line — set LLM_BASE_URL in /etc/teaport/brain.env (then restart the brain)"
+            " and write the key to ~/.config/teaport/llm_key, or set both on the"
+            " configuration page at :7861/config" % why)
 elif st == "account":
     text = ("refused %s: the account behind the answers needs attention, and it will"
             " not pass by itself — check the key and its account on the settings page;"
