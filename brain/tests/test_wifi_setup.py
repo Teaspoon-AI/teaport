@@ -37,12 +37,12 @@ def test_an_all_hex_override_is_refused_with_a_warning(override, capsys):
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Cafe-1") == "Cafe-1"   # not all hex: kept
 
 
-DEFAULT = re.compile(r"[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}-[a-hj-km-np-z2-9]{4}")
+DEFAULT = re.compile(r"[a-hj-km-npr-z2-9]{4}-[a-hj-km-npr-z2-9]{4}-[a-hj-km-npr-z2-9]{4}")
 
 
 def is_default(pw: str) -> bool:
     """The default password's form: three groups of four, no 0/o/1/l/i."""
-    return bool(DEFAULT.fullmatch(pw)) and not set(pw) & set("0o1li")
+    return bool(DEFAULT.fullmatch(pw)) and not set(pw) & set("0o1liq")
 
 
 def test_the_flash_time_password_wins_when_valid():
@@ -54,8 +54,8 @@ def test_the_flash_time_password_wins_when_valid():
 
 
 def test_the_default_password_is_three_groups_from_the_csprng_and_fresh_each_run(monkeypatch):
-    assert set(ws.PASSWORD_ALPHABET) == set("abcdefghjkmnpqrstuvwxyz23456789")
-    assert not set(ws.PASSWORD_ALPHABET) & set("0o1li")
+    assert set(ws.PASSWORD_ALPHABET) == set("abcdefghjkmnprstuvwxyz23456789")
+    assert not set(ws.PASSWORD_ALPHABET) & set("0o1liq")  # look-alikes, and q (ja: 9)
     many = [ws.setup_password("") for _ in range(500)]
     assert all(is_default(pw) and len(pw) == 14 for pw in many)
     assert len(set(many)) == len(many)              # fresh every run

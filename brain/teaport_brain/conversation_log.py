@@ -29,6 +29,7 @@
 #
 import re
 import sys
+import threading
 import time
 
 from loguru import logger
@@ -74,7 +75,11 @@ _PIPECAT_TEXT = (
 
 # Text no record may carry (never_log): (until, pattern), each dropped once its code has
 # expired -- a code's life is minutes, and nothing is kept past it.
-_NEVER: list = []
+_NEVER: tuple = ()
+# never_log and the patcher run on any thread (loguru logs from all of them): the tuple is
+# replaced whole, under this lock, so an entry added while another thread drops the
+# expired ones is never lost.
+_NEVER_LOCK = threading.Lock()
 NEVER_MARK = "<code>"
 # A clause of a spelled code is blanked from this many of its items in a row: fewer is
 # too common to be the code ("two, three" is anyone's words).
@@ -95,15 +100,20 @@ def never_log(text: str, sep: str | None = None, secs: float = 600.0) -> None:
             for i in range(len(items))
             for j in range(i + min(NEVER_MIN_ITEMS, len(items)), len(items) + 1)}
     pattern = re.compile(r"(?<!\w)(?:" + "|".join(sorted(runs, key=len, reverse=True)) + r")(?!\w)")
-    _NEVER.append((time.monotonic() + secs, pattern))
+    global _NEVER
+    with _NEVER_LOCK:
+        _NEVER = _NEVER + ((time.monotonic() + secs, pattern),)
 
 
 def redact(record: dict) -> None:
     """A loguru patcher: blanks never_log()'s text in every record, and the text in
     pipecat's conversation-carrying lines (unless TEAPORT_LOG_CONVERSATIONS)."""
+    global _NEVER
     if _NEVER:
         now = time.monotonic()
-        _NEVER[:] = [(until, p) for until, p in _NEVER if until > now]
+        if any(until <= now for until, _ in _NEVER):
+            with _NEVER_LOCK:
+                _NEVER = tuple(e for e in _NEVER if e[0] > now)
         for _, pattern in _NEVER:
             record["message"] = pattern.sub(NEVER_MARK, record["message"])
     if LOG_WORDS or not (record.get("name") or "").startswith("pipecat"):

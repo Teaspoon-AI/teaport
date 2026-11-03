@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "auf diesem Gerät ist kein KI-Dienst eingerichtet"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:teaport|ok|okay|also|hey|und|bitte|na|so)\\W+){0,3}(?:(?:öffne|öffnet|oeffne|offne|zeig|zeige|zeigt|ruf|rufe|geh|gehe)(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich|zu|in))*\\s+(?:(?:die|deine|meine|ihre|der|den|teaports?)\\s+)?einstellung(?:en|sseite)(?:\\s+(?:auf|an))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal|seite)\\b)|mach(?:e|t)?(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich))*\\s+(?:(?:die|deine|meine|ihre|teaports?)\\s+)?einstellung(?:en|sseite)\\s+auf(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal)\\b)|(?:bitte\\s+)?(?:(?:die|deine|meine)\\s+)?einstellung(?:en|sseite)\\s+(?:bitte\\s+)?(?:öffnen|oeffnen|offnen|aufmachen|zeigen|anzeigen|aufrufen)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt)\\b))"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so)\\W+){0,3}(?:(?:öffne|öffnet|oeffne|offne|zeig|zeige|zeigt|ruf|rufe|geh|gehe)(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich|zu|in))*\\s+(?:(?:die|deine|meine|ihre|der|den|teaports?)\\s+)?einstellung(?:en|sseite)(?:\\s+(?:auf|an))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal|seite)\\b)|mach(?:e|t)?(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich))*\\s+(?:(?:die|deine|meine|ihre|teaports?)\\s+)?einstellung(?:en|sseite)\\s+auf(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal)\\b)|(?:bitte\\s+)?(?:(?:die|deine|meine)\\s+)?einstellung(?:en|sseite)\\s+(?:bitte\\s+)?(?:öffnen|oeffnen|offnen|aufmachen|zeigen|anzeigen|aufrufen)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt)\\b))"
 
 msgctxt "spell"
 msgid "slash"
@@ -506,3 +506,7 @@ msgstr "dieses Konto hat kein Guthaben mehr"
 
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "der Schlüssel dieses Geräts wird bei der Installation festgelegt und kann hier nicht geändert werden"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "Ich konnte den Schlüssel für das KI-Konto, den du eingegeben hast, nicht verwenden, deshalb habe ich ihn nicht gespeichert."

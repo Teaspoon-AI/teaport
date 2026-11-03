@@ -704,14 +704,40 @@ def test_the_setup_page_takes_the_key_and_adopts_it_once_online():
         os.environ.pop("LLM_API_KEY")
 
 
+def test_the_phrase_is_pointed_at_only_where_it_works():
+    """One test, settings_access.usable, for every line that says "open my settings": the
+    phrase heard in that session (not a bridge, not a phone call) and the Settings site
+    set up (#279 review). The CLI asks the same of brain.env."""
+    _setup()
+    phrase = settings_access.SettingsPhrase()
+    assert settings_access.usable([phrase])
+    assert not settings_access.usable([None]) and not settings_access.usable([])  # a bridge
+    _setup(port=None)
+    assert not settings_access.usable([phrase])                                   # no site
+    from test_llm_account_error import _cli
+    answers = {"state": "unconfigured", "reason": "no key"}
+    site = "TEAPORT_FRONTDOOR_HOST=teaport-9e35.local\nTEAPORT_SETTINGS_PORT=8443\n"
+    for env, says in ((site, True), ("TEAPORT_FRONTDOOR_HOST=teaport-9e35.local\n", False)):
+        status = [ln for ln in _cli("cmd_status", {"ok": True, "answers": answers}, env).splitlines()
+                  if "answers (brain)" in ln][0]
+        assert ("open my settings" in status) == says, status
+        doctor = [ln for ln in _cli("cmd_doctor", {"ok": True}, env).splitlines()
+                  if "no LLM key" in ln][0]
+        assert ("open my settings" in doctor) == says, doctor
+
+
 def test_the_voice_says_how_the_key_went():
     async def run():
         en = i18n.get("en")
-        for account, line in (({"result": "saved", "reason": "", "ours": True}, wifi_voice.ACCOUNT_SAVED_TEXT),
-                              ({"result": "refused", "reason": "User not found", "ours": False},
-                               wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
-                              (None, None)):
-            v = wifi_voice.WifiSetupVoice(run=lambda *a: None, status_path=os.path.join(tempdir(), "s.json"))
+        _setup()
+        refused = {"result": "refused", "reason": "User not found", "ours": False}
+        for account, line, phrases in (
+                ({"result": "saved", "reason": "", "ours": True}, wifi_voice.ACCOUNT_SAVED_TEXT, ()),
+                (refused, wifi_voice.ACCOUNT_NOT_SAVED_TEXT, [settings_access.SettingsPhrase()]),
+                (refused, wifi_voice.ACCOUNT_NOT_SAVED_PLAIN_TEXT, ()),  # the phrase not heard
+                (None, None, ())):
+            v = wifi_voice.WifiSetupVoice(run=lambda *a: None, phrases=phrases,
+                                          status_path=os.path.join(tempdir(), "s.json"))
             said = []
 
             async def push(frame, direction=FrameDirection.DOWNSTREAM):

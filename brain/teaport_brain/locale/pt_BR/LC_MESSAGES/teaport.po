@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "nenhum serviço de IA está configurado neste aparelho"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:teaport|ok|okay|ei|ent[aã]o|e|por favor|beleza)\\W+){0,3}(?:abr(?:e|a|ir)(?:-?(?:me|nos))?|me abr(?:e|a)|mostr(?:a|e|ar)(?:-?(?:me|nos))?|me mostr(?:a|e)|v(?:ai|[aá]|ou)|ir|entr(?:a|e|ar)|(?:me )?lev(?:a|e)(?:-?me)?)(?: (?:pras?|pros|para|n?as|n?os|n?a|n?o|em|[aà]s|aos))? (?:(?:as|os|suas|seus|minhas|meus|tuas|teus|a|o|sua|minha|tua|nas|nos) )?(?:(?:p[aá]gina|tela|menu) (?:de|das|dos|do|da) (?:(?:minhas|suas|tuas) )?)?(?:configura[cç](?:[oõ]es|[aã]o)|ajustes|prefer[eê]ncias)(?= *(?:[.,!?;:…]|$)| (?:por favor|agora|j[aá]|a[ií]|do teaport)\\b)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:hã|hum|ahn|eh|é|teaport|ok|okay|ei|ent[aã]o|e|por favor|beleza)\\W+){0,3}(?:abr(?:e|a|ir)(?:-?(?:me|nos))?|me abr(?:e|a)|mostr(?:a|e|ar)(?:-?(?:me|nos))?|me mostr(?:a|e)|v(?:ai|[aá]|ou)|ir|entr(?:a|e|ar)|(?:me )?lev(?:a|e)(?:-?me)?)(?: (?:pras?|pros|para|n?as|n?os|n?a|n?o|em|[aà]s|aos))? (?:(?:as|os|suas|seus|minhas|meus|tuas|teus|a|o|sua|minha|tua|nas|nos) )?(?:(?:p[aá]gina|tela|menu) (?:de|das|dos|do|da) (?:(?:minhas|suas|tuas) )?)?(?:configura[cç](?:[oõ]es|[aã]o)|ajustes|prefer[eê]ncias)(?= *(?:[.,!?;:…]|$)| (?:por favor|agora|j[aá]|a[ií]|do teaport)\\b)"
 
 msgctxt "spell"
 msgid "slash"
@@ -506,3 +506,7 @@ msgstr "esta conta está sem crédito"
 
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "a chave deste aparelho é definida por quem o instalou, então não dá para mudá-la aqui"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "Não consegui usar a chave da conta de IA que você digitou, então não a salvei."

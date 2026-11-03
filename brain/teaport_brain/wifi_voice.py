@@ -115,6 +115,9 @@ AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
 ACCOUNT_SAVED_TEXT = N_("Your AI account is connected.")
 ACCOUNT_NOT_SAVED_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
                             "save it. Say \"open my settings\" to try again.")
+# The same where "open my settings" is not usable (settings_access.usable).
+ACCOUNT_NOT_SAVED_PLAIN_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
+                                  "save it.")
 # The first-boot setup, left because the box came online by another way (_leave_online).
 ONLINE_NOW_TEXT = N_("I'm online now, so I've left setup mode.")
 # While setup runs, the client hears it is under way (_keep_awake): the call id it is
@@ -152,7 +155,7 @@ PATTERNS = {
     # is not it, and the phrase ends the sentence (or "page", "please", "now" follow it).
     # How short and that it is no question is the phrase's own rule
     # (settings_access.PHRASE_MAX_WORDS). Every catalog's pattern is anchored the same way.
-    "settings": r"^\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
+    "settings": r"^\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
                 r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
                 r"(?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\b)",
 }
@@ -384,6 +387,13 @@ class PhraseVoice(FrameProcessor):
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
+
+    @property
+    def settings_usable(self) -> bool:
+        """Is "open my settings" usable here (settings_access.usable): a line may tell the
+        user to say it."""
+        from teaport_brain import settings_access
+        return settings_access.usable(self.phrases)
 
     # -- hearing
     def idle(self) -> bool:
@@ -766,7 +776,8 @@ class WifiSetupVoice(PhraseVoice):
             _first_boot().reached_online("Wi-Fi setup connected")
             line = t._("I'm connected to {network}, and I'm online again.").format(network=network)
             if account:
-                line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT)
+                line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT
+                                  if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
             await self.say(line)
         elif phase == "timeout":
             self.state = "idle"

@@ -66,7 +66,7 @@ DYNAMIC = {
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
         "self.t._(ONLINE_NOW_TEXT)",
-        "t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT)",  # N_() there (#279)
+        "t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)",  # N_() there (#279)
     },
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
@@ -270,29 +270,29 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
 # is not a request -- the phone's, Wi-Fi, network, Bluetooth or app settings among it -- heard as SettingsPhrase hears it (no question, at most
 # PHRASE_MAX_WORDS words).
 SETTINGS = {
-    "es": (["abre los ajustes", "Teaport, abre tus ajustes", "por favor, abre la configuración", "muéstrame mis ajustes"],
+    "es": (["eh, abre los ajustes", "abre los ajustes", "Teaport, abre tus ajustes", "por favor, abre la configuración", "muéstrame mis ajustes"],
            ["abre los ajustes del teléfono", "abre los ajustes de wifi", "abre la configuración de red", "abre los ajustes de bluetooth", "en el móvil, abre los ajustes", "abre los ajustes de la app", "me gustan tus ajustes", "los ajustes están bien así"]),
-    "pt_BR": (["abrir as configurações", "Teaport, abre as suas configurações", "por favor, abre as configurações", "me mostra minhas configurações"],
+    "pt_BR": (["hum, abre as configurações", "abrir as configurações", "Teaport, abre as suas configurações", "por favor, abre as configurações", "me mostra minhas configurações"],
            ["abre as configurações do celular", "abre as configurações do wi-fi", "abre as configurações de rede", "abre as configurações do bluetooth", "no celular, abre as configurações", "abre as configurações do aplicativo", "gostei das configurações", "as configurações estão boas"]),
-    "fr": (["ouvre les réglages", "Teaport, ouvre tes réglages", "svp, affiche les paramètres", "ouvre mes réglages maintenant"],
+    "fr": (["euh, ouvre les réglages", "ouvre les réglages", "Teaport, ouvre tes réglages", "svp, affiche les paramètres", "ouvre mes réglages maintenant"],
            ["ouvre les réglages du téléphone", "ouvre les réglages Wi-Fi", "ouvre les paramètres réseau", "ouvre les réglages Bluetooth", "sur mon téléphone, ouvre les réglages", "ouvre les réglages de l'appli", "j'aime bien tes réglages", "les réglages sont bons comme ça"]),
-    "it": (["apri le impostazioni", "Teaport, apri le tue impostazioni", "per favore, mostrami le impostazioni", "apri le mie impostazioni"],
+    "it": (["ehm, apri le impostazioni", "apri le impostazioni", "Teaport, apri le tue impostazioni", "per favore, mostrami le impostazioni", "apri le mie impostazioni"],
            ["apri le impostazioni del telefono", "apri le impostazioni wifi", "apri le impostazioni di rete", "apri le impostazioni bluetooth", "sul telefono, apri le impostazioni", "apri le impostazioni dell'app", "le impostazioni vanno bene", "ho cambiato le impostazioni"]),
-    "de": (["Öffne die Einstellungen", "Teaport, öffne deine Einstellungen", "Bitte zeig mir die Einstellungen", "Öffne meine Einstellungen"],
+    "de": (["Äh, öffne die Einstellungen", "Öffne die Einstellungen", "Teaport, öffne deine Einstellungen", "Bitte zeig mir die Einstellungen", "Öffne meine Einstellungen"],
            ["Öffne die Handy-Einstellungen", "Öffne die WLAN-Einstellungen", "Öffne die Netzwerkeinstellungen", "Öffne die Bluetooth Einstellungen", "Auf dem Handy öffne die Einstellungen", "Öffne die Einstellungen der App", "Die Einstellungen passen so", "Ich mag deine Einstellungen"]),
-    "nl": (["Open de instellingen", "Teaport, open je instellingen", "Alsjeblieft, toon de instellingen", "Open mijn instellingen"],
+    "nl": (["eh, open de instellingen", "Open de instellingen", "Teaport, open je instellingen", "Alsjeblieft, toon de instellingen", "Open mijn instellingen"],
            ["Open de telefooninstellingen", "Open de wifi-instellingen", "Open de netwerkinstellingen", "Open de bluetooth instellingen", "Op mijn telefoon, open de instellingen", "Open de instellingen van de app", "De instellingen zijn prima", "Ik vind je instellingen mooi"]),
-    "ru": (["Открой настройки", "Teaport, открой свои настройки", "Пожалуйста, покажи мне настройки", "Открой мои настройки"],
+    "ru": (["э, открой настройки", "Открой настройки", "Teaport, открой свои настройки", "Пожалуйста, покажи мне настройки", "Открой мои настройки"],
            ["Открой настройки телефона", "Открой настройки Wi-Fi", "Открой сетевые настройки", "Открой настройки блютуза", "На телефоне открой настройки", "Открой настройки приложения", "Настройки и так хорошие", "Мне нравятся твои настройки"]),
-    "ar": (["افتح الإعدادات", "يا Teaport، افتح إعداداتك", "من فضلك اعرض الإعدادات", "افتح لي الإعدادات الآن"],
+    "ar": (["اه، افتح الإعدادات", "افتح الإعدادات", "يا Teaport، افتح إعداداتك", "من فضلك اعرض الإعدادات", "افتح لي الإعدادات الآن"],
            ["افتح إعدادات الهاتف", "افتح إعدادات الواي فاي", "افتح إعدادات الشبكة", "افتح إعدادات البلوتوث", "في الهاتف افتح الإعدادات", "افتح إعدادات التطبيق", "الإعدادات جيدة الآن", "أحب إعداداتك"]),
-    "hi": (["सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "Teaport की सेटिंग्स खोलो", "ज़रा अपनी सेटिंग्स दिखाओ"],
+    "hi": (["उम, सेटिंग्स खोलो", "सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "Teaport की सेटिंग्स खोलो", "ज़रा अपनी सेटिंग्स दिखाओ"],
            ["फ़ोन की सेटिंग्स खोलो", "अपने फ़ोन की सेटिंग्स खोलो", "वाई-फ़ाई की सेटिंग्स खोलो", "नेटवर्क सेटिंग्स खोलो", "ब्लूटूथ सेटिंग्स खोलो", "ऐप की सेटिंग्स खोलो", "खोलो फ़ोन की सेटिंग्स", "सेटिंग्स ठीक हैं", "मुझे सेटिंग्स पसंद हैं"]),
-    "zh": (["好的，打开设置", "打开设置", "Teaport，打开你的设置", "请帮我打开设置页面", "把设置打开"],
+    "zh": (["呃，打开设置", "好的，打开设置", "打开设置", "Teaport，打开你的设置", "请帮我打开设置页面", "把设置打开"],
            ["打开手机设置", "打开 Wi-Fi 设置", "打开网络设置", "打开蓝牙设置", "手机，打开设置", "打开应用的设置", "设置这样就好", "我喜欢你的设置"]),
-    "ja": (["設定を開いて", "ティーポート、設定を開いて", "あなたの設定を見せてください", "ちょっと設定画面を開いて"],
+    "ja": (["えっと、設定を開いて", "設定を開いて", "ティーポート、設定を開いて", "あなたの設定を見せてください", "ちょっと設定画面を開いて"],
            ["スマホの設定を開いて", "Wi-Fi 設定を開いて", "ネットワーク 設定を開いて", "Bluetooth の設定を開いて", "スマホ、設定を開いて", "アプリの設定を開いて", "設定はこれでいい", "設定が好きです"]),
-    "ko": (["설정 열어 줘", "티포트야, 설정 열어 줘", "내 설정 보여 줘", "그럼 설정 페이지 열어 주세요"],
+    "ko": (["음, 설정 열어 줘", "설정 열어 줘", "티포트야, 설정 열어 줘", "내 설정 보여 줘", "그럼 설정 페이지 열어 주세요"],
            ["휴대폰 설정 열어 줘", "와이파이 설정 열어 줘", "네트워크 설정 열어 줘", "블루투스 설정 열어 줘", "내 휴대폰 설정 열어 줘", "앱 설정 열어 줘", "설정은 이대로 좋아", "설정이 마음에 들어"]),
 }
 
@@ -310,6 +310,8 @@ def test_the_settings_pattern_hears_requests_not_talk(lang):
     assert [s for s in asks if not _settings_heard(s, t)] == []
     assert [s for s in talk if _settings_heard(s, t)] == []
     assert _settings_heard("open my settings", t)                # English works too
+    for filler in ("Um, open my settings", "uh open the settings", "er, show me your settings"):
+        assert _settings_heard(filler, t), filler                 # a filler before it
     # Some other thing's settings are never the box's (#279 review).
     for other in ("open the phone settings", "open wifi settings", "open my phone's settings",
                   "open the network settings", "open bluetooth settings",
@@ -387,6 +389,27 @@ def test_the_compiled_catalogs_are_current_and_read_like_gnu_msgfmt():
         assert {k: v for k, v in mo._catalog.items() if k} == po, lang
 
 
+def _sound(word: str) -> str:
+    """A spoken item as it sounds, near enough: case folded, katakana as hiragana, long
+    vowels as the vowel they lengthen (キュー and きゅう, Q and 9 in Japanese, alike)."""
+    import unicodedata
+    word = unicodedata.normalize("NFKC", word).casefold()
+    word = "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in word)
+    out = []
+    for c in word:
+        if c == "ー" and out:
+            prev = unicodedata.name(out[-1], "")
+            last = prev.split()[-1] if prev else ""
+            c = {"A": "あ", "I": "い", "U": "う", "E": "い", "O": "う"}.get(last[-1:], "")
+        out.append(c)
+    return "".join(out)
+
+
+def test_sound_alikes_are_folded():
+    assert _sound("キュー") == _sound("きゅう")      # Q and 9, Japanese: why q is not used
+    assert _sound("ケー") != _sound("きゅう")
+
+
 @pytest.mark.parametrize("lang", sorted(i18n.catalogs()))
 def test_the_default_password_is_spoken_character_by_character(lang):
     """The default setup password (wifi_setup.setup_password: three groups of four) read
@@ -397,7 +420,7 @@ def test_the_default_password_is_spoken_character_by_character(lang):
     said = {c: wifi_voice.spell(c, t).strip() for c in wifi_setup.PASSWORD_ALPHABET + "-"}
     clash = {}
     for c, word in said.items():
-        clash.setdefault(word.casefold(), []).append(c)
+        clash.setdefault(_sound(word), []).append(c)
     assert not [v for v in clash.values() if len(v) > 1], (lang, clash)
     assert said["-"] == t.p("spell", "dash")
     pw = wifi_setup.setup_password("")

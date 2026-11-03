@@ -48,11 +48,11 @@ On a device with a front door, the owner can reach the same page from a phone wi
 
 The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session nothing on that port opens, whether or not `GATEWAY_TOKEN` is set. The token keeps working on `http://DEVICE_IP:7861/config`.
 
-<!-- source: brain/teaport_brain/settings_access.py:75#2e08b20b; brain/teaport_brain/settings_access.py:263-268#251d20e7; brain/teaport_brain/settings_access.py:198-207#f38a8411 -->
+<!-- source: brain/teaport_brain/settings_access.py:75#2e08b20b; brain/teaport_brain/settings_access.py:271-276#251d20e7; brain/teaport_brain/settings_access.py:206-215#f38a8411 -->
 
 Until the phone trusts the device's certificate, the browser warns that the connection is not private. The pages link to the steps that install the device's certificate on each kind of phone and computer.
 
-<!-- source: brain/teaport_brain/settings_access.py:344-353#35429dc2 -->
+<!-- source: brain/teaport_brain/settings_access.py:352-361#35429dc2 -->
 
 If the device is on no network at all and spoken Wi-Fi setup is on, the device asks you to get it online first: a phone cannot reach it yet. A home network without internet is enough. In setup mode the setup page takes the key too, as [Connect the device to Wi-Fi](/guides/wifi-setup/#connect-your-ai-account) shows.
 

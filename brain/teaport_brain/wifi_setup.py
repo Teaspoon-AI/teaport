@@ -85,11 +85,12 @@ ADDRESS_WAIT_SECS = 5.0
 SSID_PREFIX = "teaport-"
 MINUTES = 10
 # The default password (setup_password): GROUPS groups of GROUP_LEN characters joined by
-# "-", from lowercase letters and digits a reader cannot confuse (no 0/o, no 1/l/i).
-# 31^12, about 2^59: out of reach of an offline guess at a captured WPA2 handshake, which
+# "-", from lowercase letters and digits a reader cannot confuse (no 0/o, no 1/l/i) nor a
+# listener (no q: in Japanese it is キュー, which sounds as 9, きゅう). 30^12, about
+# 2^58.9: out of reach of an offline guess at a captured WPA2 handshake, which
 # eight digits (10^8) were not. Scanned from the QR code, it costs nothing to type; read
 # from the screen it is three short groups, and spoken, each character and "dash".
-PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+PASSWORD_ALPHABET = "abcdefghjkmnprstuvwxyz23456789"
 GROUPS, GROUP_LEN = 3, 4
 STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with

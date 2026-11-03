@@ -106,6 +106,14 @@ def heard_here() -> bool:
     return bool(pairing.FRONTDOOR_HOST)
 
 
+def usable(phrases) -> bool:
+    """Is "open my settings" usable where `phrases` (a session's fixed phrases) are heard:
+    the phrase is among them -- the room and Talk, not a bridge, never a phone call -- and
+    the Settings site is set up (available). The one test for any line that tells someone
+    to say it (the no-model line, the setup-mode key line, the trial credit's)."""
+    return available() and any(isinstance(p, SettingsPhrase) for p in (phrases or ()))
+
+
 def available() -> bool:
     """Whether Settings can be offered: the front door's name is known, and its Settings
     site is set up -- TEAPORT_SETTINGS_PORT, which only the full installer writes, as it

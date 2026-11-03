@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "er is geen AI-dienst ingesteld op dit apparaat"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou)\\W+){0,3}(?:(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)|laat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)|(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b))"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:eh|ehm|uh|uhm|hm+|teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou)\\W+){0,3}(?:(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)|laat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)|(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b))"
 
 msgctxt "spell"
 msgid "slash"
@@ -506,3 +506,7 @@ msgstr "dit account heeft geen tegoed meer"
 
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "de sleutel van dit apparaat is door de installateur ingesteld, dus hij kan hier niet worden gewijzigd"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "Ik kon de sleutel voor het AI-account die je hebt ingevoerd niet gebruiken, dus ik heb hem niet opgeslagen."

@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "この機器には AI サービスが設定されていません"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^[\\s、。,.!！]*(?:(?:ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|ほしい|欲しい)?\\s*(?:ね|よ)?\\s*(?:[。.!！、,…]|$)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|ほしい|欲しい)?\\s*(?:ね|よ)?\\s*(?:[。.!！、,…]|$)"
 
 msgctxt "spell"
 msgid "slash"
@@ -611,3 +611,7 @@ msgstr "ワイ"
 msgctxt "letter"
 msgid "Z"
 msgstr "ゼット"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "入力された AI アカウントのキーが使えなかったため、保存しませんでした。"

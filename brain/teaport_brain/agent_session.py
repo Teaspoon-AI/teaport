@@ -1192,7 +1192,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # says its line and hangs up.)
     error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
                                      no_model=llm is None, wifi=wifi, phrases=phrases,
-                                     settings=settings_access.available(),
+                                     settings=settings_access.usable([settings_phrase]),
                                      gate=followup_gate,
                                      model_back=lambda: model_missing() is None,
                                      restarts="restart" in client_features)
