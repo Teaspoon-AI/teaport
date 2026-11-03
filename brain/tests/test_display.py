@@ -121,14 +121,14 @@ def test_the_event_reaches_a_listening_socket():
         s.bind(path)
         s.settimeout(2)
         screen = display.Screen("wifi-setup", path=path)
-        assert not screen.show("Wi-Fi setup", ["Network  x"], secs=5)   # not advertised yet
+        assert not screen.show("Setup mode", ["Network  x"], secs=5)   # not advertised yet
         _features(path, json.dumps({"screen": 1}))
-        assert screen.show("Wi-Fi setup", ["Network  x"], secs=5)
+        assert screen.show("Setup mode", ["Network  x"], secs=5)
         ev = json.loads(s.recv(4096))
         s.setblocking(False)
         with pytest.raises(BlockingIOError):
             s.recv(4096)                                       # the first one was never sent
-    assert ev == {"screen": {"id": "wifi-setup", "title": "Wi-Fi setup",
+    assert ev == {"screen": {"id": "wifi-setup", "title": "Setup mode",
                              "lines": ["Network  x"], "ttl": 5}}
 
 

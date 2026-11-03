@@ -30,8 +30,8 @@
 # ASCII, which its built-in font draws (network names folded into it); the voice and
 # the page speak the user's language.
 #
-# The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
-# address, and follows status.json in the unit's RuntimeDirectory (phase: scanning,
+# The brain (wifi_voice.py) starts this unit, points at the screen (or, without one,
+# speaks the network, the password and the address), and follows status.json in the unit's RuntimeDirectory (phase: scanning,
 # ap_up, joining, connected, failed, timeout, error) to say what happened — the phone
 # has left the page by then. Each run has its own run id, so a stale file is never read
 # as this run's news.
@@ -82,8 +82,14 @@ STATUS_FILE = "status.json"
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
 # The display's lines: what wifi_voice says aloud, for reading off the box.
-SCREEN_TITLE = "Wi-Fi setup"
+SCREEN_TITLE = "Setup mode"
+# After it: the box has left setup mode and is on the user's network.
+CONNECTED_TITLE = "Wi-Fi"
 CONNECTED_SCREEN_SECS = 10
+# How long avahi-publish must stay up before its .local name is shown.
+PUBLISH_SETTLE_SECS = 0.2
+# The status reason when the page's server cannot start; English only (see _run).
+PAGE_FAILED = "the Wi-Fi page could not start"
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = setting("WIFI_SETUP_PASSWORD", default="")
@@ -211,7 +217,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
     return PAGE.format(
         lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
         picker=render_picker(t), lang_q=t.lang,
-        title=html.escape(t._("Teaport Wi-Fi setup")),
+        title=html.escape(t._("Connect Teaport to Wi-Fi")),
         heading=html.escape(t._("Connect to Wi-Fi")),
         intro=html.escape(t._("Pick your network and type its password. Teaport will leave "
                               "this setup network and join yours, and say out loud whether "
@@ -355,6 +361,7 @@ class Setup:
         self.wake = threading.Event()
         self.server: ThreadingHTTPServer | None = None
         self.avahi: subprocess.Popen | None = None
+        self.avahi_name = ""  # the name avahi-publish was started for
 
     # -- the web side (server threads)
     def handler(self):
@@ -433,6 +440,9 @@ class Setup:
 
     # -- the network side (main thread)
     def publish(self, name: str) -> None:
+        """Announce name.local for the page, best effort. Whether it is being announced
+        is asked live each time the address is shown (page_url)."""
+        self.avahi_name = name
         exe = shutil.which("avahi-publish")
         if not exe:
             log("avahi-publish not installed — only the captive page and 10.42.0.1 work")
@@ -442,6 +452,29 @@ class Setup:
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
+            return
+        # Without avahi-daemon it exits within milliseconds -- after page_url's poll()
+        # would already have counted it as running. A short wait catches that; past it,
+        # the live poll() takes over (avahi dying later).
+        try:
+            rc = self.avahi.wait(timeout=PUBLISH_SETTLE_SECS)
+        except subprocess.TimeoutExpired:
+            return
+        log(f"avahi-publish exited at once ({rc}) — only the captive page and 10.42.0.1 work")
+        self.avahi = None
+
+    def page_url(self, ssid: str) -> str:
+        """The page's address, the one the screen shows, the status carries and the voice
+        reads -- decided here only, each time it is shown, so the three never disagree.
+        http://teaport-ab12.local while avahi-publish is running for exactly that name
+        and the screen's font draws it as it is (an ASCII teaport-... name); otherwise
+        the bare address, which always works (avahi missing or gone, a folded or custom
+        name)."""
+        published = (self.avahi is not None and self.avahi.poll() is None
+                     and self.avahi_name == ssid)
+        if published and ssid.startswith(SSID_PREFIX) and display.fold_ascii(ssid) == ssid:
+            return f"http://{ssid}.local"
+        return f"http://{self.address}"
 
     def unpublish(self) -> None:
         if self.avahi and self.avahi.poll() is None:
@@ -487,8 +520,9 @@ class Setup:
             self.server.shutdown()
         self.nm.ap_delete()
 
-    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
-        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
+    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None,
+              title: str = SCREEN_TITLE) -> bool:
+        return bool(self.screen and self.screen.show(title, lines, secs, qr=qr))
 
     def _address_arrives(self, dev: str) -> bool:
         deadline = time.monotonic() + ADDRESS_WAIT_SECS
@@ -519,9 +553,7 @@ class Setup:
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
-        url = f"http://{ssid}.local"
-        # The display's font draws ASCII only: a name outside it is folded, and the
-        # address shown is then the one that needs no name.
+        # The display's font draws ASCII only: a name outside it is folded.
         shown_ssid = display.fold_ascii(ssid)
         while True:
             ok, err = self.nm.ap_up(dev, ssid, password)
@@ -542,11 +574,14 @@ class Setup:
                 try:
                     self.serve()
                 except OSError as e:
-                    log(f"the setup page could not start: {e}")
-                    self.status.set("error", reason=N_("the setup page could not start"))
+                    log(f"the Wi-Fi page could not start: {e}")
+                    # Not spoken (the voice says it could not go into setup mode and
+                    # to try again): the reason is for the log and the model's notice.
+                    self.status.set("error", reason=PAGE_FAILED)
                     self._put_back()
                     return 1
             self.publish(ssid)
+            url = self.page_url(ssid)  # asked again at every (re-)show: avahi can die
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
             # name, whatever the font can draw -- and is sent only to an avatar that
@@ -556,9 +591,7 @@ class Setup:
             code = wifi_qr(ssid, password)
             code = code if self.screen and self.screen.fits_qr(code) else None
             name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
-            shown = self._show([f"Network  {name}", f"Password  {password}",
-                                url if shown_ssid == ssid else f"http://{self.address}"],
-                               qr=code)
+            shown = self._show([f"Network  {name}", f"Password  {password}", url], qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
                             qr=shown and code is not None)
@@ -579,7 +612,8 @@ class Setup:
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
                 self.status.set("connected", target=target)
-                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS)
+                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS,
+                           title=CONNECTED_TITLE)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")

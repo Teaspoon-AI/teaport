@@ -37,6 +37,9 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
+    "llm_error_speaker.py": {
+        "t._(text)",                         # its four notices: N_() there
+    },
     "wifi_setup.py": {
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here
@@ -283,8 +286,10 @@ def test_the_session_language_picks_the_catalog():
         assert sep.join(t.p("digit", d) for d in "47190352") in text, (code, text)
         assert t.p("spell", "dash") in text
         for extra in ({"screen": True}, {"screen": True, "qr": True}):
-            screen = wifi_voice.instructions(dict(st, **extra), t)[len(text):]
-            assert screen.strip() and (lang == "en" or "screen" not in screen), (code, screen)
+            screen = wifi_voice.instructions(dict(st, **extra), t)
+            assert screen.strip() and screen != text, (code, screen)
+            assert lang == "en" or "screen" not in screen, (code, screen)   # translated
+            assert wifi_voice.instructions(dict(st, **extra), t, spelled=True) == text
     assert i18n.for_espeak("xx").lang == "en"
     # TTS_LANGUAGE / ?language= give plain and regional codes too, in any case.
     for code, lang in (("fr", "fr"), ("es-MX", "es"), ("ja_JP", "ja"), ("pt", "pt_BR"),

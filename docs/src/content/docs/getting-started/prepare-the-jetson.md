@@ -24,7 +24,7 @@ cat /etc/nv_tegra_release
 
 The release appears in the output as `R38` or `R39`. If the output shows a different release, flash JetPack 7.2 before you continue. The installer stops on unsupported releases.
 
-<!-- source: install.sh:231-246#fe7128e6 -->
+<!-- source: install.sh:231-247#a1515929 -->
 
 ## Trim the desktop
 

@@ -36,11 +36,20 @@
 # WORDS_PER_SLIP after; and a first word clipped to a fragment ("ny pistachio"). Only a
 # run long enough not to be a coincidence is taken, counting matched words only
 # (MIN_RUN_CHARS letters or MIN_RUN_WORDS words): "is it a" is not the bot's because the
-# bot just said it. A single word is the bot's only if it is the whole transcript, long,
-# and not a stop word ("wait" stops the bot, whatever the bot said).
+# bot just said it. A single word is the bot's only if it is the whole transcript and
+# long. Stop words are the exception the other way: a transcript that is ALL stop words
+# ("Wait.", "Hold on.") cuts the reply at any length, paused or not (#216,
+# barge_pause.STOP_WORDS), so when it is wholly a run of the bot's own words it is the
+# bot's, however short -- and its interim is held like any other echo-like one.
 #
 # What it gets wrong: the user repeating the bot's last words straight back while it is
-# still talking. That costs those words, not the turn.
+# still talking. That costs those words, not the turn -- and a "wait" the user says
+# within LOOKBACK_SECS of the bot saying "wait" is taken as its echo: they say it again,
+# or more than it. The bridge's echo meter (xvf_echo.EchoMeter: how far the user's voice
+# stands above the echo) would tell the two apart, but it lives in the bridge, not in
+# this process. And after a barge-in pause longer than about half a second the resumed
+# reply's echo can pass (the "played" stamps run on through the pause, #255): one such
+# "wait" now cuts the reply.
 #
 import collections
 import time
@@ -50,8 +59,8 @@ from loguru import logger
 from pipecat.frames.frames import Frame, TTSTextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.barge_pause import fold_shh, is_stop_utterance
 from teaport_brain.conversation_log import quoted
-from teaport_brain.barge_pause import is_stop_utterance
 from teaport_brain.settings import setting
 from teaport_brain.wake_words import normalize
 
@@ -82,7 +91,7 @@ class BotWords:
 
     def played(self, text: str) -> None:
         now = self.clock()
-        for w in normalize(text)[0].split():
+        for w in _match_words(normalize(text)[0]):
             self._words.append((now, w))
         while self._words and now - self._words[0][0] > KEEP_SECS:
             self._words.popleft()
@@ -95,6 +104,12 @@ class BotWords:
             return []
         start = since - LOOKBACK_SECS
         return [(t, w) for t, w in self._words if t >= start]
+
+
+def _match_words(norm: str) -> list[str]:
+    """Normalized words as both sides of the match see them: any "shh" spelling folded
+    the way the stop words fold it (barge_pause.fold_shh)."""
+    return [fold_shh(w) for w in norm.split()]
 
 
 def echo_run(words: list[str], bot: list[str], starts,
@@ -136,9 +151,12 @@ def echo_run(words: list[str], bot: list[str], starts,
 
 
 def _taken(matched: list[str], whole: bool) -> bool:
+    if whole and is_stop_utterance(" ".join(matched)):
+        # All stop words, all the bot's: an echo that would cut the reply on its own.
+        return True
     if len(matched) == 1:
-        # One word: the bot's only when it is the whole transcript, long, and not a stop.
-        return whole and len(matched[0]) >= 5 and not is_stop_utterance(matched[0])
+        # One word: the bot's only when it is the whole transcript and long.
+        return whole and len(matched[0]) >= 5
     return len(matched) >= MIN_RUN_WORDS or sum(len(w) for w in matched) >= MIN_RUN_CHARS
 
 
@@ -155,8 +173,8 @@ class EchoGuard:
 
         An interim that so far follows the bot word for word is "" however short: it is
         the start of an echo or of the user's words, and the next interim tells which --
-        pushed now, its first two words would already be a barge-in. A stop word never
-        waits."""
+        pushed now, its first two words would already be a barge-in -- its first stop
+        word too (#216)."""
         since = self.bot.clock() if since is None else since
         heard = self.bot.since(since)
         norm, idx = normalize(text)
@@ -166,8 +184,11 @@ class EchoGuard:
         bot = [w for _, w in heard]
         starts = [j for j, (t, _) in enumerate(heard) if t <= since - MIN_LAG_SECS]
         # An interim is held on less: one word after a fragment may still become a run.
-        k, matched = echo_run(words, bot, starts, behind_fragment=2 if final else 1)
-        if not final and k and k == len(words) and not is_stop_utterance(text):
+        # Matched on the folded words ("shhh" as said, "shh" as played); `words` keeps
+        # the normalized ones, whose lengths place the cut in `text` below.
+        k, matched = echo_run(_match_words(norm), bot, starts,
+                              behind_fragment=2 if final else 1)
+        if not final and k and k == len(words):
             return ""
         if k == 0 or not _taken(matched, whole=k == len(words)):
             return text

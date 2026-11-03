@@ -147,7 +147,7 @@ blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRA
 id = "wifi_setup"
 title = "Wi-Fi setup"
 summary = "These settings name the Wi-Fi setup network and set its password."
-blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
+blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box shows the network, the password and the page's address on its screen, or reads them out if it has none. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
 id = "talk_client"
@@ -341,7 +341,7 @@ min = 0
 default = 30
 read = "startup"
 tier = "tuning"
-help = "Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn."
+help = "Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help."
 
 [[settings]]
 name = "TEAPORT_RAW_LLM_CAPTURE"
@@ -786,7 +786,7 @@ min = 1
 default = 2
 read = "startup"
 tier = "setup"
-help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. While the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
+help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. An utterance made only of TEAPORT_STOP_WORDS interrupts at any length, paused or not; while the barge-in pause has the bot paused, once the paused reply would have finished anyway one word is enough."
 
 [[settings]]
 name = "SIP_ENDPOINT_STOP_SECS"
@@ -1061,7 +1061,7 @@ default = false
 read = "startup"
 tier = "tuning"
 services = ["teaport-brain"]
-help = "The same barge-in pause on Talk (the app, the dashboard, Discord, the box's mic), with TEAPORT_BARGE_PAUSE on. The voice stops after what the client already holds (on the box's speaker, up to two 40 ms blocks and the bridge's 120 ms lead: about 0.2 s). Off until the timing of words across a pause is done (#255): while paused, captions run ahead of the voice, and in the room the echo guard can miss a resumed reply's echo after a pause longer than about half a second."
+help = "The same barge-in pause on Talk (the app, the dashboard, Discord, the box's mic), with TEAPORT_BARGE_PAUSE on. The voice stops after what the client already holds (on the box's speaker, up to two 40 ms blocks and the bridge's 120 ms lead: about 0.2 s). Off until the timing of words across a pause is done (#255): while paused, captions run ahead of the voice, and in the room the echo guard can miss a resumed reply's echo after a pause longer than about half a second -- and a single echoed stop word (TEAPORT_STOP_WORDS) that slips past it cuts the reply."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_RESUME_S"
@@ -1107,7 +1107,7 @@ type = "string"
 default = "stop,wait,hold on,hold,pause,enough,quiet,shh,shush"
 read = "startup"
 tier = "tuning"
-help = "Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
+help = "Comma-separated words or phrases that end a reply on their own, whether or not it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS (or SIP_INTERRUPT_MIN_WORDS) says -- an interim counts too, so \"Wait, really?\" cuts on its \"Wait\" before the rest arrives, by design. On the room mic (when TEAPORT_ECHO_GUARD is on) the bot's own stop word heard back is dropped by the guard, except after a barge-in pause longer than about half a second with TEAPORT_BARGE_PAUSE_TALK on (#255), where one that slips past cuts the reply; on other lines the line's echo cancelling has to keep it out. Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
 
 [[settings]]
 name = "TEAPORT_ECHO_GUARD"
@@ -1348,7 +1348,7 @@ min = 0.2
 default = 1.5
 read = "startup"
 tier = "tuning"
-help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
+help = "Talk only: no ack within this means no native runner, so fall back fast instead of burning the full window. A live relay acks within moments. Sessions without a relay (room, phone, Discord) never wait on it."
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -1397,7 +1397,7 @@ min = 5
 default = 130
 read = "startup"
 tier = "tuning"
-help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
+help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI lane of sessions without a relay (room, phone, Discord). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"

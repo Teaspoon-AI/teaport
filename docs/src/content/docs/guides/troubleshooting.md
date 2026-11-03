@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:176-279#f2b6cc27 -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:228-332#0535c9ab -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -50,7 +50,7 @@ pronunciation dictionary. See
 **Cause** You are not on a Jetson, or the Jetson image carries no
 `/etc/nv_tegra_release`. The installer works only on Jetson devices.
 
-<!-- source: install.sh:250#6bef2c33 -->
+<!-- source: install.sh:236,251#582f6f18 -->
 
 **Fix**
 
@@ -62,7 +62,7 @@ pronunciation dictionary. See
 **Cause** The device runs a JetPack that the engine does not support. The engine
 ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-<!-- source: install.sh:231-245#a6431d65 -->
+<!-- source: install.sh:231-246#94c76064 -->
 
 **Fix**
 
@@ -83,7 +83,7 @@ ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 **Cause** The engine links against `libopenblas.so.0`. JetPack does not include
 it.
 
-<!-- source: install.sh:277-286#99af061f -->
+<!-- source: install.sh:278-287#99af061f -->
 
 **Fix**
 
@@ -99,7 +99,7 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:451-461#fc133eae -->
+<!-- source: install.sh:452-462#fc133eae -->
 
 **Fix**
 
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:176-279#f2b6cc27 -->
+<!-- source: cli/teaport:228-332#0535c9ab -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1577#2ca3ef5a; install.sh:1883-1941#52b36989 -->
+<!-- source: install.sh:1645#2ca3ef5a; install.sh:1951-2009#52b36989 -->
 
 ## The page opens but nothing happens
 
@@ -201,7 +201,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:1452-1465#c562c839 -->
+<!-- source: install.sh:1520-1533#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -232,7 +232,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:1471-1475#bf1269bd -->
+<!-- source: install.sh:1539-1543#bf1269bd -->
 
 **Fix**
 
@@ -263,7 +263,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1303-1315#a65c0a82 -->
+<!-- source: install.sh:1371-1383#a65c0a82 -->
 
 **Fix**
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1883-1941#52b36989; install.sh:1755-1800#cd323bfa -->
+<!-- source: install.sh:1951-2009#52b36989; install.sh:1823-1868#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:1956-1962#4326c857; install.sh:2023-2025#1153cfec -->
+<!-- source: install.sh:2024-2030#4326c857; install.sh:2091-2093#1153cfec -->
 
 ## Phone calls go unanswered
 
@@ -388,7 +388,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:176-279#f2b6cc27 -->
+<!-- source: cli/teaport:228-332#0535c9ab -->
 
 **Fix**
 
@@ -408,7 +408,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:276#649012b4; install.sh:441-442#12d8444d -->
+<!-- source: install.sh:277#649012b4; install.sh:442-443#12d8444d -->
 
 **Fix**
 
@@ -506,7 +506,35 @@ miss the endpoint or the key.
 The installer offers `gpt-oss-120b` as the default value. That default is wrong
 for OpenRouter.
 
-<!-- source: install.sh:1554#2e67295a; install.sh:1567-1570#cefd034b -->
+<!-- source: install.sh:1622#2e67295a; install.sh:1635-1638#cefd034b -->
+
+## teaport says the account it uses for answers needs attention
+
+**Cause** The model provider refused the key, or the account behind the key has
+no credit or allowance left. For example, a key that reached its spending limit.
+Every request fails until you change the key or the account, so asking again
+does not help. teaport says this once, and on later failed turns it says that
+it still can't answer. For other failures, such as a provider that is busy or slow,
+teaport says "Sorry, I couldn't get an answer just then" instead, and those
+failures usually pass.
+
+<!-- source: brain/teaport_brain/llm_error_speaker.py:90-109#a900570e -->
+
+**Fix**
+
+1. Run `teaport status`. The `answers (brain)` line shows when the refusals
+   started, when the last one happened, and the provider's reason, for example
+   `refused since 02:56, last at 03:10, 4 time(s) (Key limit exceeded (total
+   limit))`. `teaport doctor` reports the same line as a failure. The line stays
+   until the provider accepts a request, even after you fix the key.
+2. Check the account on the provider's site: its credit, and the limit of the
+   key.
+3. If the key changed, enter the new key in `LLM_API_KEY` on the configuration
+   page, or write it to `~/.config/teaport/llm_key`.
+4. Ask teaport something. The `answers (brain)` line reads `working` after the
+   provider accepts a request.
+
+<!-- source: cli/teaport:55-87#9f442c04 -->
 
 ## teaport does not remember anything
 
@@ -514,7 +542,7 @@ for OpenRouter.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:148#d3cc622a; install.sh:1452-1465#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:148#d3cc622a; install.sh:1520-1533#c562c839 -->
 
 **Fix**
 

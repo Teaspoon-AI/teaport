@@ -19,26 +19,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: ko\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "와이파이를 설정하시겠어요? 휴대폰으로 설정하시는 동안 저는 몇 분 정도 오프라인 상태가 돼요. 네 또는 아니요로 대답해 주세요."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "와이파이를 설정하시겠어요? 연결 모드로 바뀌고, 휴대폰으로 진행하시는 동안 저는 몇 분 정도 오프라인 상태가 돼요. 네 또는 아니요로 대답해 주세요."
 
-msgid "Wi-Fi setup is already running."
-msgstr "와이파이 설정이 이미 진행 중이에요."
+msgid "I'm already in setup mode."
+msgstr "이미 연결 모드예요."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "알겠어요. 네트워크를 찾아볼게요. 잠시만 기다려 주세요."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "죄송해요, 이 기기에서 와이파이 설정을 시작하지 못했어요."
+msgid "I'm in setup mode."
+msgstr "연결 모드로 바뀌었어요."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "알겠어요. 와이파이 설정을 취소하고 원래대로 되돌려 놓았어요."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "죄송해요, 연결 모드로 바꾸지 못했어요."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "와이파이 설정이 시작되지 않았어요. 잠시 후에 다시 시도해 주세요."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "알겠어요. 연결 모드를 끝내고 원래대로 되돌려 놓았어요."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "아직 설정 페이지에서 입력하시기를 기다리고 있어요."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "알겠어요. 취소했어요. 모두 원래대로예요."
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "연결 모드가 꺼졌어요. 모두 원래대로예요."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "잠시만요, 연결 모드를 준비하고 있어요. 멈추시려면 '취소'라고 말해 주세요."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "아직 멈추지 못했어요. 잠시 후에 다시 '취소'라고 말해 주세요."
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "연결 모드로 바꾸지 못했어요. 잠시 후에 다시 시도해 주세요."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "아직 연결 모드에서 기다리고 있어요."
 
 msgid "That didn't work: {reason}."
 msgstr "잘 안 됐어요. {reason}."
@@ -49,11 +64,14 @@ msgstr "알겠어요. {network}에 연결할게요. 휴대폰도 다시 그 네�
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "{network}에 연결됐어요. 다시 온라인 상태예요."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "와이파이 설정 시간이 초과돼서 원래대로 되돌려 놓았어요."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "제시간에 연결되지 않아서 연결 모드를 끝내고 원래대로 되돌려 놓았어요."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "와이파이 설정이 중단됐어요. {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "연결 모드를 끝냈어요. {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "죄송해요, 연결 모드로 바꾸지 못했어요. {reason}."
 
 msgid "your network"
 msgstr "선택한 네트워크"
@@ -64,20 +82,20 @@ msgstr "문제가 생겼어요"
 msgid "Okay, never mind."
 msgstr "알겠어요. 그럼 설정하지 않을게요."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "와이파이 설정을 시작하려면 네, 원하지 않으시면 아니요라고 말해 주세요."
+msgid "Say yes to go into setup mode, or no."
+msgstr "연결 모드로 바꾸시려면 네, 아니면 아니요라고 말해 주세요."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "지금 와이파이 설정 중이에요. 안내를 다시 들으시려면 '다시 말해 줘', 설정을 멈추시려면 '취소'라고 말해 주세요."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "지금 연결 모드예요. 안내를 들으시려면 '다시 말해 줘', 연결 모드를 끝내시려면 '취소'라고 말해 주세요."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "휴대폰에서 다음 와이파이 네트워크에 연결해 주세요. {ssid}. 비밀번호는 다음과 같아요. {password}. 설정 페이지가 자동으로 열릴 거예요. 열리지 않으면 브라우저에서 {url}에 접속해 주세요."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "휴대폰에서 다음 와이파이 네트워크에 연결해 주세요. {ssid}. 비밀번호는 다음과 같아요. {password}. 그다음 브라우저를 열고 {url}에 접속해 와이파이를 골라 주세요."
 
-msgid "You can also read these details on my screen."
-msgstr "같은 내용이 제 화면에도 나와 있어요."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "휴대폰에서 제 화면에 나온 와이파이 네트워크에, 화면에 나온 비밀번호로 연결해 주세요. 그다음 휴대폰 브라우저에서 제 화면에 있는 주소로 접속해 와이파이를 골라 주세요. 정보를 읽어 드리길 원하시면 '다시 말해 줘'라고 말해 주세요."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "제 화면의 코드를 스캔해서 연결하거나, 같은 내용을 화면에서 확인할 수도 있어요."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "휴대폰 카메라로 제 화면의 코드를 스캔해서 제 연결용 네트워크에 접속해 주세요. 그다음 휴대폰 브라우저에서 제 화면에 있는 주소로 접속해 와이파이를 골라 주세요. 정보를 읽어 드리길 원하시면 '다시 말해 줘'라고 말해 주세요."
 
 msgid "the saved settings for it did not work"
 msgstr "저장된 설정으로는 연결하지 못했어요"
@@ -98,22 +116,19 @@ msgid "this box has no Wi-Fi device"
 msgstr "이 기기에는 와이파이 기능이 없어요"
 
 msgid "the setup network would not start"
-msgstr "설정용 네트워크를 시작하지 못했어요"
-
-msgid "the setup page could not start"
-msgstr "설정 페이지를 열지 못했어요"
+msgstr "연결용 네트워크를 시작하지 못했어요"
 
 msgid "open"
 msgstr "비밀번호 없음"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Teaport Wi-Fi 설정"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Teaport를 Wi-Fi에 연결"
 
 msgid "Connect to Wi-Fi"
 msgstr "Wi-Fi에 연결"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "네트워크를 선택하고 비밀번호를 입력해 주세요. Teaport가 이 설정용 네트워크 연결을 끊고 선택한 네트워크에 연결한 뒤, 연결 결과를 음성으로 알려 드려요."
+msgstr "네트워크를 선택하고 비밀번호를 입력해 주세요. Teaport가 이 연결용 네트워크를 끄고 선택한 네트워크에 연결한 뒤, 연결 결과를 음성으로 알려 드려요."
 
 msgid "No networks found — use Other."
 msgstr "검색된 네트워크가 없어요. '기타'에서 직접 입력해 주세요."
@@ -140,7 +155,7 @@ msgid "Joining {network}…"
 msgstr "{network}에 연결 중…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport가 지금 이 설정용 네트워크 연결을 끊어요. 휴대폰을 다시 {network}에 연결해 주세요. 연결 결과는 Teaport가 음성으로 알려 드려요. 연결에 실패하면 설정용 네트워크가 다시 나타나요. 그때 다시 시도해 주세요."
+msgstr "Teaport가 지금 이 연결용 네트워크를 꺼요. 휴대폰을 다시 {network}에 연결해 주세요. 연결 결과는 Teaport가 음성으로 알려 드려요. 연결에 실패하면 연결용 네트워크가 다시 나타나요. 그때 다시 시도해 주세요."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "{network}에 연결하지 못했어요. {reason}. 다시 시도해 주세요."
@@ -397,6 +412,18 @@ msgstr "전화 받고 올게요 — 금방 돌아올게요."
 
 msgid "Sorry about that — where were we?"
 msgstr "기다리게 해서 미안해요 — 우리 어디까지 얘기했죠?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "죄송해요, 방금은 답을 받지 못했어요. 다시 시도해 주시겠어요?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 계정에 확인이 필요하고, 다시 시도해도 해결되지 않아요. 제 설정 페이지에서 고칠 수 있어요."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "계정 문제가 해결될 때까지는 아직 답할 수 없어요."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "죄송해요, 방금은 답을 받지 못했어요."
 
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."

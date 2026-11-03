@@ -2652,8 +2652,8 @@ Barge-in waits for a transcript, and the STT returns none for speech over the bo
 the caller stops, so the bot talks on through the caller's whole interjection —
 typically most of a second.
 `BargeInPauser` (`barge_pause.py`) pauses playout at the transport on the caller's
-speech; their words cancel the reply as before (`TEAPORT_INTERRUPT_MIN_WORDS`, or while
-paused an utterance of stop words), no words resume it. A pause holds back the reply's
+speech; their words cancel the reply as before (`TEAPORT_INTERRUPT_MIN_WORDS`, or an
+utterance of stop words, paused or not, pause on or off — #216), no words resume it. A pause holds back the reply's
 own end with its audio, so the bot counts as speaking until the resume — which is where
 the review's must-fix came from.
 
@@ -2673,14 +2673,16 @@ caller's VAD stop) and `StopWord` — both through the same `StartTurn` as `Inte
 The monitors observe outcomes, not the design's own branch: `answerLost` compares what
 the strategy did with a one-word final (the design: does it know a tail, `tailKnown`, and
 has it elapsed) against the ground truth (`wouldEnd`); a missed stop is the bot
-*resuming* after the caller said stop to it while paused, however that came about.
+*resuming* after the caller said stop to it while paused, however that came about, or
+talking on over a "Stop." it never paused for.
 
 | PAUSE | | `NoLostAnswer` | `NoMissedBargeIn` | `NoStuckPause` |
 |---|---|---|---|---|
 | `asWritten` | #86 as first written: pauses anywhere; a paused bot is a speaking bot | ✗ | ✓ | ✓ |
 | `aOnly` | only the near-end rule (no pause in the last 0.5 s) | ✗ | ✓ | ✓ |
 | `tailAtPause` | round 1: plus the would-have-ended rule, tail known only if synthesized at the pause | ✗ | ✓ | ✓ |
-| `noStopWord` | the shipped pause without the stop word | ✓ | ✗ | ✓ |
+| `noStopWord` | the shipped pause without the stop word over a paused reply | ✓ | ✗ | ✓ |
+| `pausedStopOnly` | before #216: the stop word only over a paused reply | ✓ | ✗ | ✓ |
 | `keepOnInterrupt` | a transport that keeps its pause through the interruption | ✓ | ✓ | ✗ |
 | `shipped` | near-end rule + would-have-ended rule + the tail re-announced during the pause | ✓ | ✓ | ✓ |
 
@@ -2714,6 +2716,10 @@ that would have ended is reachable).
 - `NoMissedBargeIn` (extended): **told stop while paused, the bot does not resume.**
   `noStopWord`, 10 states: a reply plays, the caller starts (paused), says "Stop." — one
   word, under the guard, dropped — and the pause resumes the reply.
+  `pausedStopOnly` (before #216), 9 states: a reply plays, and "Stop." lands with nothing
+  paused (the onset test and the VAD missed a short unvoiced word) — under the guard,
+  dropped, and the bot talks on. As shipped a stop utterance starts the turn paused or
+  not; `noStopWord` now removes only its paused half.
 - `NoStuckPause`: **playout is paused only in the middle of a reply.**
   `keepOnInterrupt`, 9 states: paused, then the caller's words cancel the reply — and a
   transport that kept its pause would block the next reply's first write until its 8 s

@@ -63,6 +63,7 @@ from teaport_brain.gateway_serializer import (
 )
 from teaport_brain.captions import sends_every_final
 from teaport_brain.engine_tts import pacing_status
+from teaport_brain.llm_error_speaker import ANSWERS
 from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import freeze_startup_objects, turn_reclaim
@@ -620,8 +621,11 @@ async def health():
     # pacing ("invalid") or this pipecat lacks what "lead" needs ("missing"; issue
     # #138); engine_tts.pacing_status has the fields. `teaport doctor` warns on that,
     # and the config page shows it beside the setting.
+    # "answers": what the last requests for a reply met (llm_error_speaker.AnswerHealth,
+    # #205): ok, untried, failing (passes on its own) or account (a refused key or a
+    # spent account), with since/reason. `teaport status` and `teaport doctor` print it.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
-            "tts_pacing": pacing_status()}
+            "tts_pacing": pacing_status(), "answers": ANSWERS.status()}
 
 
 @app.get("/talk/status")

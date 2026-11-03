@@ -30,14 +30,14 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		Check the JetPack release and trim the desktop before you run the
 		installer. See [Prepare the Jetson](/getting-started/prepare-the-jetson/).
 
-		{/* source: install.sh:231-246#fe7128e6 */}
+		{/* source: install.sh:231-247#a1515929 */}
 	</Card>
 	<Card title="Configure teaport" icon="setting">
 		Point the brain at its large language model. Change settings in the
 		configuration page. A restart applies the change; nothing hot-reloads.
 		See [Configure teaport](/guides/configuration/).
 
-		{/* source: install.sh:1554-1555#a7961754; brain/teaport_brain/gateway_server.py:27#8b91144b; brain/teaport_brain/config_ui.py:27-28#433b1e87 */}
+		{/* source: install.sh:1622-1623#a7961754; brain/teaport_brain/gateway_server.py:27#8b91144b; brain/teaport_brain/config_ui.py:27-28#433b1e87 */}
 	</Card>
 	<Card title="Set up phone calls" icon="phone">
 		Answer phone calls on the device over a SIP trunk. `teaport sip configure`
@@ -46,7 +46,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		{/* source: systemd/teaport-sip.service.in:3-7#0d07b370; cli/teaport:9#3a503be3 */}
 	</Card>
 	<Card title="Connect the device to Wi-Fi" icon="wifi">
-		If the device has no internet connection, its Wi-Fi setup opens a
+		If the device has no internet connection, setup mode opens a
 		temporary setup network. Join it from a phone, pick your Wi-Fi network,
 		and type the password. See
 		[Connect the device to Wi-Fi](/guides/wifi-setup/).

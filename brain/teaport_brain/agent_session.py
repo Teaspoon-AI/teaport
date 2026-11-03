@@ -914,9 +914,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # [VAD, Transcription] start — VAD-start would interrupt on any
                 # sound, defeating the guard.
                 #
-                # PauseAware: the same rule, plus a single stop word while playout is
-                # paused by the barge-in pauser below (barge_pause.py); without a
-                # pause it is MinWordsUserTurnStartStrategy exactly.
+                # PauseAware: the same rule, plus an utterance of stop words at any
+                # length, paused or not (#216), and the paused-reply rules of the
+                # barge-in pauser below (barge_pause.py).
                 start=[start_strategy],
                 # The closer FIRST: it ends the turn before the brain's strategy could
                 # speculate on the turn's earlier words; that one still sees the frame.
@@ -1164,7 +1164,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
         # single LLM error and only ever caught the TTS's, which it then blamed on the
         # model.
-        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
+        # In the voice's language, read live as WifiSetupVoice reads it.
+        (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
+         if llm_error_speaker.ENABLED else None),
         llm,
         # Retires ClientNotes' reaction order the moment the model starts answering from
         # it. HERE and nowhere else: LLMTextFrame is consumed by the TTS

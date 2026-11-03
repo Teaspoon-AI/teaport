@@ -42,6 +42,10 @@
 # openclaw_agent_control (the Talk client runs it). The handler sends the call as a
 # {"type": "tool_call"} the plugin hands to the relay (onToolCall), and the result comes
 # back the way a client tool's does: a tool_result for the call's id (_ask_client).
+# Only the plugin's session has a relay to run the consult (ToolContext.relay: it
+# announced ?features=relay, or the run-control protocol only the plugin speaks); every
+# other session's consult goes straight to the gateway/CLI lane, with no call sent and no
+# ack waited for (#78).
 #
 
 import asyncio
@@ -488,10 +492,11 @@ async def _search_memory(params: FunctionCallParams):
 # answer improves (and the slow tail is usually an impossible query making the
 # agent churn), so we cut it with an honest "taking too long" rather than dead air.
 _NATIVE_CONSULT_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_TIMEOUT")
-# 1.5s, not 5: a live relay acks a native consult within moments, while the
-# Discord bridge (a plain /talk client) never acks at all — so on that path the
-# old 5s was pure dead time added to EVERY delegated action before the CLI
-# fallback even started.
+# 1.5s, not 5: a live relay acks a native consult within moments. Only a session with
+# a relay (ToolContext.relay) waits at all: the phone, the room and the Discord bridge
+# have none and never acked, so they used to spend this whole wait on every consult
+# before the CLI fallback started (#78). Now it covers only a Talk relay that does not
+# take the call.
 _NATIVE_CONSULT_ACK_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT")
 # The pipecat function-call timeout for openclaw_agent_consult MUST exceed the handler's own
 # worst case (ACK 5s + native 45s = 50s) or pipecat abandons the call and drops the
@@ -685,7 +690,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     `owed` (the session's owed.Owed): the placeholder tool result is rewritten to it,
     and it is owed to the caller until they hear it. Runs as a session-lifecycle
     task (params.llm.create_task) — a barge-in or the user moving on to another topic
-    does NOT cancel the in-flight consult."""
+    does NOT cancel the in-flight consult. `fut` is the relay's answer (consult_bridge),
+    None when the session has no relay: then the consult goes straight to the agent."""
     from teaport_brain import consult_bridge
 
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
@@ -729,31 +735,35 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
+
+    async def direct(why: str) -> None:
+        # The gateway/CLI lane (oc.agent_consult: the gateway's warm lane first, the CLI
+        # after), still async w.r.t. the turn, which already ended. Logged on both sides:
+        # this branch once returned in silence, and a consult that took it left no trace
+        # at all. Live 2026-09-10: two consults produced zero openclaw_agent_consult(async)
+        # lines while the caller heard "I haven't heard back yet", and the real cause --
+        # DuckDuckGo serving a bot-detection challenge to the box, so every web_search
+        # 500'd and the consult burned its budget retrying -- took a dig through the
+        # gateway journal to find. One line here would have pointed straight at it.
+        logger.info(f"openclaw_agent_consult(async): {why}; asking the agent directly")
+        outcome = await oc.agent_consult(message or request, timeout=deadline - loop.time())
+        (logger.info if outcome.text else logger.warning)(
+            f"openclaw_agent_consult(async): direct consult {_describe(outcome)}")
+        await deliver(outcome)
+
     try:
+        if fut is None:
+            # No relay on this session (ToolContext.relay): nothing was sent, so nothing
+            # can ack. Straight to the agent, with the whole budget (#78).
+            await direct("no relay on this session")
+            return
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
                                             timeout=_NATIVE_CONSULT_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
-                # Never acked — the relay didn't take it; run the CLI agent instead
-                # (still async w.r.t. the turn, which already ended).
-                #
-                # Logged on both sides because this branch used to return in silence. Every
-                # other outcome below says what happened; a consult that took THIS one left
-                # no trace at all. Live 2026-09-10: two consults produced zero
-                # openclaw_agent_consult(async) lines while the caller heard "I haven't
-                # heard back yet", and the real cause — DuckDuckGo serving a bot-detection
-                # challenge to the box, so every web_search 500'd and the consult burned its
-                # budget retrying — took a dig through the gateway journal to find. One line
-                # here would have pointed straight at it.
-                logger.info(
-                    f"openclaw_agent_consult(async): relay never acked in "
-                    f"{_NATIVE_CONSULT_ACK_TIMEOUT:.0f}s; falling back to the CLI agent")
-                outcome = await oc.agent_consult(message or request,
-                                                 timeout=deadline - loop.time())
-                (logger.info if outcome.text else logger.warning)(
-                    f"openclaw_agent_consult(async): CLI consult {_describe(outcome)}")
-                await deliver(outcome)
+                # Never acked -- the relay didn't take it.
+                await direct(f"relay never acked in {_NATIVE_CONSULT_ACK_TIMEOUT:.1f}s")
                 return
             result = await asyncio.wait_for(fut, timeout=deadline - loop.time())
         outcome = _consult_outcome(result)
@@ -826,7 +836,11 @@ def _consult_message(args: dict) -> str:
     ) if part)
 
 
-async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=None):
+async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=None,
+                                  relay=False):
+    """`relay`: the session has a relay that runs the consult (ToolContext.relay). Without
+    one no tool_call is sent and no ack is waited for: the consult goes straight to the
+    gateway/CLI lane (#78)."""
     import uuid
 
     from teaport_brain import consult_bridge
@@ -855,10 +869,12 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         return
 
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
-    fut = consult_bridge.create(call_id)
-    # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by its
-    # own name, with the arguments as OpenClaw reads them.
-    await _send_call(params.llm, "tool_call", call_id, OPENCLAW_AGENT_CONSULT.name, args)
+    fut = None
+    if relay:
+        fut = consult_bridge.create(call_id)
+        # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by
+        # its own name, with the arguments as OpenClaw reads them.
+        await _send_call(params.llm, "tool_call", call_id, OPENCLAW_AGENT_CONSULT.name, args)
 
     # ASYNC path (the session's owed records are wired: every session but agent-first).
     # A full agent turn can take 30-60s+, which can't block a voice turn (that was the
@@ -887,24 +903,33 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         return
 
     # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,
-    # CLI fallback only if the consult is never acked. Counted as running for as long as
-    # the turn waits on it (_count_consult), so the relay's spoken run control on a final
-    # said meanwhile -- one that did not start a turn, held by the barge-in judge or with
-    # no interim before it -- is asked about and not answered twice.
+    # CLI fallback if the consult is never acked, and straight to it with no relay.
+    # Counted as running for as long as the turn waits on it (_count_consult), so the
+    # relay's spoken run control on a final said meanwhile -- one that did not start a
+    # turn, held by the barge-in judge or with no interim before it -- is asked about and
+    # not answered twice.
+    async def direct(why: str, log) -> None:
+        # The gateway/CLI lane (oc.agent_consult), on the turn.
+        log(f"openclaw_agent_consult: {why}; asking the agent directly")
+        outcome = await oc.agent_consult(_consult_message(args))
+        await params.result_callback(
+            {"answer": outcome.text} if outcome.text
+            else {"error": "the desktop agent did not answer in time"
+                  if outcome.failure == "timeout"
+                  else "the desktop agent returned no answer"})
+
     _count_consult(gate, 1)
     try:
+        if fut is None:
+            await direct("no relay on this session", logger.info)
+            return
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
                                             timeout=_NATIVE_CONSULT_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
-                logger.warning("openclaw_agent_consult: native consult not acked; using CLI")
-                outcome = await oc.agent_consult(_consult_message(args))
-                await params.result_callback(
-                    {"answer": outcome.text} if outcome.text
-                    else {"error": "the desktop agent did not answer in time"
-                          if outcome.failure == "timeout"
-                          else "the desktop agent returned no answer"})
+                await direct(f"relay never acked in {_NATIVE_CONSULT_ACK_TIMEOUT:.1f}s",
+                             logger.warning)
                 return
             try:
                 result = await asyncio.wait_for(fut, timeout=_NATIVE_CONSULT_TIMEOUT)
@@ -1268,6 +1293,23 @@ class ToolContext:
     # The session's SessionPairing (pair_device.py), which the pair_device tool hands to.
     pairing: object = None
 
+    @property
+    def relay(self) -> bool:
+        """The client hands openclaw_agent_consult's calls to a relay that runs them and
+        acks them: the teaport plugin on OpenClaw's Talk relay, which says so with
+        ?features=relay. Opt-in, so a client that cannot -- the room's bridge, the phone,
+        the Discord bridge, any future one -- never gets a call it would leave unanswered,
+        and its consults skip the ack wait (#78). The one place this is decided.
+
+        Or run_control: only the plugin announces it (gateway_server), every plugin since
+        #236 does, and it hands the relay the consult's calls as it hands it the control's.
+        A box deploy can update the brain without the plugin (install.sh --only brain); an
+        older plugin keeps its relay that way, and openclaw_agent_control (offered on
+        run_control) is never offered against a consult the relay does not run.
+        `or self.run_control` is that compatibility shim: drop it once no supported
+        plugin predates features=relay."""
+        return "relay" in self.client_features or self.run_control
+
 
 @dataclass(frozen=True)
 class Tool:
@@ -1414,9 +1456,11 @@ async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None)
 def _bind_openclaw_agent_consult(ctx: ToolContext):
     # ASYNC consult (its outcome lands later, owed.py) when the session gave us its
     # owed records; agent-first passes none and consults synchronously on the turn.
+    # Through the relay only on a session that has one (ToolContext.relay).
     if ctx.owed is not None:
-        return functools.partial(_openclaw_agent_consult, owed=ctx.owed, gate=ctx.gate)
-    return functools.partial(_openclaw_agent_consult, gate=ctx.gate)
+        return functools.partial(_openclaw_agent_consult, owed=ctx.owed, gate=ctx.gate,
+                                 relay=ctx.relay)
+    return functools.partial(_openclaw_agent_consult, gate=ctx.gate, relay=ctx.relay)
 
 
 # In the order the model is offered them.
@@ -1522,9 +1566,11 @@ if AGENT_FIRST and not TOOLS_BY_NAME["openclaw_agent_consult"].enabled:
 # OLED face), so the session's TTS sends each word's timed phonemes with the audio;
 # "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py);
 # and "typing": the client types along to the thinking sound, so it is sent the typing's
-# start, end and key presses (thinking_sound.py).
+# start, end and key presses (thinking_sound.py); "relay": the client hands
+# openclaw_agent_consult's calls to a relay that runs them (ToolContext.relay, #78).
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
-                            if n.startswith("client:")) | {"phonemes", "mood", "typing"}
+                            if n.startswith("client:")) | {"phonemes", "mood", "typing",
+                                                           "relay"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:

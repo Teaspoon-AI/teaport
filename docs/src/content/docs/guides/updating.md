@@ -5,14 +5,14 @@ description: Check an installed device against its release manifest, update the 
 
 The installer applies every update. The `teaport update` command compares the device with the release manifest and names the parts that differ; it changes nothing. The brain also has a narrower path: `install.sh --only brain` rebuilds the brain alone, and `install.sh --rollback brain` puts the previous brain back.
 
-<!-- source: cli/teaport:281-309#60118f99; install.sh:9-11#ae7c9be6 -->
+<!-- source: cli/teaport:334-362#60118f99; install.sh:9-11#ae7c9be6 -->
 
 ## Before you begin
 
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: cli/teaport:17,283-284#81a89efd; install.sh:499#7b0e6e59 -->
+<!-- source: cli/teaport:17,336-337#81a89efd; install.sh:500#7b0e6e59 -->
 
 ## Check for updates
 
@@ -27,7 +27,7 @@ To see which parts of the installation differ from the release manifest:
 
    The command fetches a fresh copy of the release manifest, compares it with the stored one, and prints a line for the version and for each tracked part: the engine release, the brain tag, and the plugin version. `->` marks a part that differs; `==` marks one that matches. The check ends with `up to date.` when nothing differs, or with a `changed:` list. It changes nothing on the device.
 
-<!-- source: cli/teaport:281-304#c24b4811 -->
+<!-- source: cli/teaport:334-357#c24b4811 -->
 
 ## Apply an update
 
@@ -39,7 +39,7 @@ teaport update
 
 The command prints the same comparison and, when a part differs, names the run to make: `install.sh --only brain` for the brain, a full `install.sh` run for the rest. The installer does the update; the command does not.
 
-<!-- source: cli/teaport:303,305-309#c47eb35a -->
+<!-- source: cli/teaport:356,358-362#c47eb35a -->
 
 ### Update only the brain
 
@@ -63,11 +63,11 @@ The run builds a new Python environment from `brain/uv.lock` beside the live one
 
 The swap restarts the local audio bridge with the brain when the `teaport-local-audio` service is active; the brain's health alone decides whether the swap stays.
 
-<!-- source: install.sh:817-819,835-837#ab020d70 -->
+<!-- source: install.sh:818-820,836-838#ab020d70 -->
 
 A Talk session in progress ends at the restart. A phone call stays connected at the gateway, and the brain rejoins it with a short notice that it lost the connection.
 
-<!-- source: install.sh:895#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
+<!-- source: install.sh:896#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
 
 Nothing else changes: no engine download, no license prompt, no systemd unit or `/etc/teaport` edit. A brain change that needs a new unit or a new setting there ships in a full run instead.
 
@@ -87,7 +87,7 @@ Run the installer with no component flag:
 
 The full run repeats the installation and downloads only the artifacts that differ. It builds the brain the way the brain-only run does, and after every unit and env file is written, it points the `venv` link at the new release, restarts the engine and the brain in one step, and checks that they come back. A full run has no automatic rollback; roll the brain back by hand afterward.
 
-<!-- source: install.sh:5,27-31#a295df7b; cli/teaport:309#9ea494d2 -->
+<!-- source: install.sh:5,27-31#a295df7b; cli/teaport:362#9ea494d2 -->
 
 ## Roll back the brain
 
@@ -101,7 +101,7 @@ To put the previous environment back, run the rollback on its own:
 
 The run makes `venv.previous`, the environment the last brain update replaced, the live environment again: it points `venv` at that release, restarts the brain, and checks it comes back. The `teaport` command and the configuration helper come with it, because each environment carries the ones built in it.
 
-<!-- source: install.sh:11,18-19,546-551,906-910#8bcd3541 -->
+<!-- source: install.sh:11,18-19,547-552,907-911#8bcd3541 -->
 
 The rollback exists for the brain: the installer accepts no other component, and `--only` and `--rollback` do not combine in one run.
 
@@ -123,17 +123,17 @@ Both the installer and `teaport update` read the URL or local path in `TEAPORT_M
 TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 ```
 
-<!-- source: install.sh:36,65#0f9477e2; cli/teaport:20,73#d418858c -->
+<!-- source: install.sh:36,65#0f9477e2; cli/teaport:20,109#d418858c -->
 
 No command takes a channel option: the installer parses `--dry-run`, `--accept-eula`, `--only`, `--rollback`, and `--help`, and `teaport update` parses `--check`. The variable is how you choose.
 
-<!-- source: install.sh:85-95#d34c715a; cli/teaport:281-282#07b8ea70 -->
+<!-- source: install.sh:85-95#d34c715a; cli/teaport:334-335#07b8ea70 -->
 
 ## Retained releases
 
 Every brain build lands in a new environment under `venvs/` in the install root. The `venv` symlink names the live one; `venv.previous`, the one before it, is the rollback target. The installer keeps the newest three releases, plus the live release and the rollback target, and prunes the rest before each build.
 
-<!-- source: install.sh:32-33,546-551,959-966#bb84da25 -->
+<!-- source: install.sh:32-33,547-552,960-967#bb84da25 -->
 
 ## What's next
 

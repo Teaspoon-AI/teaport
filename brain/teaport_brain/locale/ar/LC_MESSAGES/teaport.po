@@ -21,26 +21,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: ar\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "هل نبدأ إعداد الواي فاي؟ سينقطع اتصالي بالإنترنت لبضع دقائق أثناء الإعداد من هاتفك. يُرجى الإجابة بنعم أو لا."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "هل نبدأ إعداد الواي فاي؟ سأدخل وضع التوصيل، وسينقطع اتصالي بالإنترنت لبضع دقائق أثناء التوصيل من هاتفك. يُرجى الإجابة بنعم أو لا."
 
-msgid "Wi-Fi setup is already running."
-msgstr "إعداد الواي فاي جارٍ بالفعل."
+msgid "I'm already in setup mode."
+msgstr "أنا في وضع التوصيل بالفعل."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "حسنًا. لحظة واحدة، سأبحث عن الشبكات المتاحة."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "عذرًا، تعذّر بدء إعداد الواي فاي على هذا الجهاز."
+msgid "I'm in setup mode."
+msgstr "أنا الآن في وضع التوصيل."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "حسنًا، أوقفتُ إعداد الواي فاي وأعدتُ كل شيء كما كان."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "لم يبدأ إعداد الواي فاي. يُرجى المحاولة مرة أخرى بعد قليل."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "حسنًا، خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "ما زلتُ في انتظارك على صفحة الإعداد."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "حسنًا، ألغيتُ ذلك. كل شيء كما كان."
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "تم إيقاف وضع التوصيل. كل شيء كما كان."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "لحظة من فضلك، أُجهّز وضع التوصيل. يُرجى قول «إلغاء» للإيقاف."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "لم أتمكن من الإيقاف بعد. يُرجى قول «إلغاء» مرة أخرى بعد قليل."
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "تعذّر الدخول إلى وضع التوصيل. يُرجى المحاولة مرة أخرى بعد قليل."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "ما زلتُ في وضع التوصيل بانتظارك."
 
 msgid "That didn't work: {reason}."
 msgstr "لم ينجح ذلك: {reason}."
@@ -51,11 +66,14 @@ msgstr "فهمت. أنضمّ الآن إلى {network}. يُرجى إعادة ت
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "انضممتُ إلى {network}، وعاد اتصالي بالإنترنت."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "انتهت مهلة إعداد الواي فاي، لذا أعدتُ كل شيء كما كان."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "لم يتم الاتصال في الوقت المحدد، لذا خرجتُ من وضع التوصيل وأعدتُ كل شيء كما كان."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "توقف إعداد الواي فاي: {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "خرجتُ من وضع التوصيل: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "عذرًا، تعذّر الدخول إلى وضع التوصيل: {reason}."
 
 msgid "your network"
 msgstr "شبكتك"
@@ -66,20 +84,20 @@ msgstr "حدث خطأ ما"
 msgid "Okay, never mind."
 msgstr "حسنًا، لا بأس."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "يُرجى قول «نعم» لبدء إعداد الواي فاي، أو «لا» للإلغاء."
+msgid "Say yes to go into setup mode, or no."
+msgstr "يُرجى قول «نعم» للدخول إلى وضع التوصيل، أو «لا» للإلغاء."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "أنا الآن في وضع إعداد الواي فاي. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» لإيقاف الإعداد."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "أنا الآن في وضع التوصيل. يُرجى قول «كرّر» لسماع التفاصيل، أو «إلغاء» للخروج من وضع التوصيل."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. يُفترض أن تُفتح صفحة الإعداد تلقائيًا، وإن لم تُفتح، فعنوانها {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ثم يُرجى فتح المتصفح والانتقال إلى {url} واختيار شبكة الواي فاي الخاصة بك."
 
-msgid "You can also read these details on my screen."
-msgstr "يمكنك أيضًا قراءة هذه التفاصيل على شاشتي."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي الظاهرة على شاشتي، باستخدام كلمة المرور الظاهرة هناك. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "يمكنك أيضًا مسح الرمز على شاشتي للانضمام، أو قراءة هذه التفاصيل عليها."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "يُرجى مسح الرمز الظاهر على شاشتي بكاميرا هاتفك للانضمام إلى شبكة التوصيل الخاصة بي. ثم يُرجى فتح العنوان الظاهر على شاشتي في متصفح هاتفك واختيار شبكة الواي فاي الخاصة بك. يُرجى قول «كرّر» إن أردت أن أقرأ التفاصيل."
 
 msgid "the saved settings for it did not work"
 msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"
@@ -100,22 +118,19 @@ msgid "this box has no Wi-Fi device"
 msgstr "لا يحتوي هذا الجهاز على وحدة واي فاي"
 
 msgid "the setup network would not start"
-msgstr "تعذّر تشغيل شبكة الإعداد"
-
-msgid "the setup page could not start"
-msgstr "تعذّر تشغيل صفحة الإعداد"
+msgstr "تعذّر تشغيل شبكة التوصيل"
 
 msgid "open"
 msgstr "مفتوحة"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "إعداد Wi-Fi في Teaport"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "توصيل Teaport بشبكة Wi-Fi"
 
 msgid "Connect to Wi-Fi"
 msgstr "الاتصال بشبكة Wi-Fi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "اختر شبكتك وأدخل كلمة مرورها. سيقطع Teaport اتصاله بشبكة الإعداد هذه ويتصل بشبكتك، ثم يُعلن بصوت مسموع ما إذا نجح الاتصال."
+msgstr "اختر شبكتك وأدخل كلمة مرورها. سيقطع Teaport اتصاله بشبكة التوصيل هذه ويتصل بشبكتك، ثم يُعلن بصوت مسموع ما إذا نجح الاتصال."
 
 msgid "No networks found — use Other."
 msgstr "لم يُعثر على أي شبكة — اختر «شبكة أخرى»."
@@ -145,7 +160,7 @@ msgid "Joining {network}…"
 msgstr "جارٍ الانضمام إلى شبكة ⁨{network}⁩…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "يقطع Teaport الآن اتصاله بشبكة الإعداد هذه. أعِد توصيل هاتفك بشبكة ⁨{network}⁩. سيُعلن Teaport بصوت مسموع ما إذا نجح الاتصال؛ وإن لم ينجح، فستعود شبكة الإعداد ويمكنك المحاولة مرة أخرى."
+msgstr "يقطع Teaport الآن اتصاله بشبكة التوصيل هذه. أعِد توصيل هاتفك بشبكة ⁨{network}⁩. سيُعلن Teaport بصوت مسموع ما إذا نجح الاتصال؛ وإن لم ينجح، فستعود شبكة التوصيل ويمكنك المحاولة مرة أخرى."
 
 # Page only: {network} (a network name, often Latin) is wrapped in invisible Unicode
 # isolates U+2068 … U+2069 so a name like "Guest 5G!" or "(Home) 2.4" keeps its
@@ -299,6 +314,18 @@ msgstr "سأرد على المكالمة — سأعود بعد لحظة."
 
 msgid "Sorry about that — where were we?"
 msgstr "عذرًا على المقاطعة — أين كنا؟"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن. هل يمكنك المحاولة مرة أخرى؟"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب الذي أستخدمه لإجاباتي يحتاج إلى مراجعة، ولن تفيد إعادة المحاولة. يمكن إصلاحه من صفحة الإعدادات الخاصة بي."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية مشكلة حسابي."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن."
 
 # The call recording notice (call_recording.py, #114).
 msgid "This call is being recorded."
