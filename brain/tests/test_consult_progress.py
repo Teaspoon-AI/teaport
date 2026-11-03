@@ -153,10 +153,10 @@ async def test_the_narrator_speaks_the_voices_language_live():
     saved = tools._PROGRESS_SCHEDULE
     tools._PROGRESS_SCHEDULE = (0.0, 0.0)
     try:
-        await tools._consult_progress(llm, request="anything", gate=None, tts=voice)
+        await tools._consult_progress(llm, request=None, gate=None, tts=voice)
         voice.espeak_language = "es"        # a switch_voice between lines
         llm._teaport_progress_active = False
-        await tools._consult_progress(llm, request="anything", gate=None, tts=voice)
+        await tools._consult_progress(llm, request=None, gate=None, tts=voice)
     finally:
         tools._PROGRESS_SCHEDULE = saved
     assert llm.said[0] == "Still working on it.", llm.said
