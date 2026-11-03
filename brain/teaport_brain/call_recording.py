@@ -116,8 +116,9 @@ def start_frame() -> AudioBufferStartRecordingFrame:
 
 
 def _clock(secs: float) -> str:
-    m, s = divmod(max(secs, 0.0), 60)
-    return f"{int(m):02d}:{s:04.1f}"
+    """mm:ss.s, rounded to the tenth before it is split (59.96 s is 01:00.0)."""
+    m, tenths = divmod(round(max(secs, 0.0) * 10), 600)
+    return f"{m:02d}:{tenths // 10:02d}.{tenths % 10}"
 
 
 def _resumed_stem(directory: str, safe: str) -> str | None:

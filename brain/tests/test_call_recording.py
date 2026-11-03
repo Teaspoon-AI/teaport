@@ -123,6 +123,15 @@ def test_a_resumed_call_continues_its_recording_as_one_group():
 
 # ---------------------------------------------------------------- transcript
 
+def test_line_times_carry_into_the_minute():
+    clock = call_recording._clock
+    assert clock(0) == "00:00.0"
+    assert clock(5.34) == "00:05.3"
+    assert clock(59.96) == "01:00.0", "never 00:60.0"
+    assert clock(119.99) == "02:00.0"
+    assert clock(754.2) == "12:34.2"
+
+
 def test_nothing_is_written_before_the_start():
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("abc@host", "+15550100", mode="both",
