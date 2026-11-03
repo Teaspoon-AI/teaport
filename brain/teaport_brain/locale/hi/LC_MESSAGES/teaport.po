@@ -615,3 +615,28 @@ msgstr "ज़ेड"
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "आपकी डाली हुई AI खाते की कुंजी इस्तेमाल नहीं हो पाई, इसलिए उसे सेव नहीं किया गया।"
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "एक छोटी-सी बात: मेरे ट्रायल क्रेडिट का आधा हिस्सा इस्तेमाल हो चुका है। जब आपके पास एक मिनट हो, तो अपना खाता जोड़ने के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "एक छोटी-सी बात: मेरा ट्रायल क्रेडिट लगभग ख़त्म हो चुका है। जब आपके पास एक मिनट हो, तो अपना खाता जोड़ने के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "मेरा ट्रायल क्रेडिट ख़त्म हो गया है, इसलिए जब तक आप अपना खाता नहीं जोड़ते, सवालों के जवाब नहीं दिए जा सकते। इसके लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "मेरा ट्रायल क्रेडिट ख़त्म हो गया है, इसलिए जब तक आपका अपना खाता नहीं जुड़ता, सवालों के जवाब नहीं दिए जा सकते।"
+
+msgid "Teaport is using its included trial credit."
+msgstr "Teaport साथ में मिले ट्रायल क्रेडिट का इस्तेमाल कर रहा है।"
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "ट्रायल क्रेडिट का आधा हिस्सा इस्तेमाल हो चुका है। Teaport जवाब देता रहे, इसके लिए अपना खाता जोड़ें।"
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "ट्रायल क्रेडिट लगभग ख़त्म हो गया है: करीब {amount} बचे हैं। Teaport जवाब देता रहे, इसके लिए अपना खाता जोड़ें।"
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "ट्रायल क्रेडिट ख़त्म हो गया है। Teaport फिर से जवाब दे सके, इसके लिए अपना खाता जोड़ें।"

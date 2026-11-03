@@ -226,6 +226,13 @@ def secret_file(name: str) -> str | None:
         return None
 
 
+def state_dir() -> str:
+    """The run user's state directory for the brain's markers: the XDG state directory's
+    default place (the units set no XDG_STATE_HOME), ~/.local/state/teaport. First boot's
+    markers (first_boot.py) and the starter key's (credit.py, #280) live there."""
+    return os.path.join(os.path.expanduser("~/.local/state"), "teaport")
+
+
 def write_secret(path: str, value: str) -> None:
     """Write a secret file the way the brain reads one (secret_file): one line, mode 600,
     replaced atomically, its directory made 700 if missing. The config page's secrets

@@ -526,7 +526,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 - A phone caller hears a short line that teaport can't take calls now, and then the
   call ends. A caller never hears setup instructions.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:135-148#aeaad70d -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:137-150#aeaad70d -->
 
 **Fix**
 
@@ -543,7 +543,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:82-89#336ee9d4 -->
+<!-- source: cli/teaport:86-93#e700be54 -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -555,7 +555,7 @@ it still can't answer. For other failures, such as a provider that is busy or sl
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:118-133#9051cca4 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:120-135#9051cca4 -->
 
 **Fix**
 

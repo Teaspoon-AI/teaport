@@ -77,6 +77,8 @@
 #   * where "open my settings" is heard (settings_access.py, #279), that the account is
 #     not set up and how to set it up: that phrase;
 #   * anywhere else, that the account for its answers is not set up.
+#   * Whatever the place, when the box's own trial credit is spent (credit.py, #280):
+#     that it has run out, and (where it is heard) to say "open my settings".
 # A phone call never asks: sip_server says NO_MODEL_CALL_TEXT through say_last_line,
 # heard in full, and hangs up.
 # A request that finds a model could be made now (a key written meanwhile: the key file
@@ -105,7 +107,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
 from pipecat.utils.errors import ErrorCategory, classify_http_exception
 
-from teaport_brain import i18n
+from teaport_brain import credit, i18n
 from teaport_brain.ai_account import clean_reason, redact  # noqa: F401 (redact: services)
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
@@ -232,6 +234,10 @@ class AnswerHealth:
             self._since = now
         self._last, self._count = now, self._count + 1
         self._category, self._reason = category, failure_reason(frame.exception)
+        if category in ACCOUNT_CATEGORIES:
+            # On the trial credit this is most likely the credit running out: read it
+            # again now, not at the next poll (credit.py, #280).
+            credit.MONITOR.poke()
         if category in ACCOUNT_CATEGORIES and not was_account:
             logger.error(f"answers: the provider refused this account ({category.value}): "
                          f"{self._reason} -- every request will fail until the key or "
@@ -271,7 +277,8 @@ class LLMErrorSpeaker(FrameProcessor):
     every request for a reply in its place. Then also `wifi` (the session's
     WifiSetupVoice, where spoken Wi-Fi setup is on), `phrases` (the session's fixed
     phrases, wifi_voice.PhraseVoice: told what was said, which quotes a phrase),
-    `settings` ("open my settings" is heard here), `gate` (the session's FollowupGate:
+    `settings` ("open my settings" is heard here), `why` (why no model can be made:
+    services.model_missing, read as the request comes), `gate` (the session's FollowupGate:
     the request it took is not left claiming the window), `model_back` (True once a
     model could be made), `restarts` (the client restarts a session itself: the
     restart_session client tool) and `end` (an async callable that ends the session,
@@ -279,7 +286,7 @@ class LLMErrorSpeaker(FrameProcessor):
 
     def __init__(self, lang_fn=None, *, no_model: bool = False, wifi=None, gate=None,
                  model_back=None, end=None, restarts: bool = False, phrases=None,
-                 settings: bool = False):
+                 settings: bool = False, why=None):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
         self.no_model = no_model
@@ -287,6 +294,7 @@ class LLMErrorSpeaker(FrameProcessor):
         self._wifi = wifi
         self._phrases = phrases if phrases is not None else wifi
         self._settings = settings
+        self._why = why or (lambda: None)
         self._gate = gate
         self.model_back = model_back or (lambda: False)
         self.end = end
@@ -307,6 +315,10 @@ class LLMErrorSpeaker(FrameProcessor):
             if in_account_window:
                 return ACCOUNT_STILL_TEXT
             self._said_account = now
+            # On the box's trial credit with little or nothing left, the refusal is the
+            # credit running out: say that, and how to connect an own account (#280).
+            if credit.MONITOR.state() in (credit.LOW, credit.EMPTY):
+                return self._spent_text()
             return ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
             return None
@@ -315,6 +327,10 @@ class LLMErrorSpeaker(FrameProcessor):
         # may have been topped up meanwhile, with the clock still running), but not
         # "try again", which would contradict the account line.
         return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
+
+    def _spent_text(self) -> str:
+        """The trial credit is spent (#280): with "open my settings" where it is heard."""
+        return credit.EMPTY_TEXT if self._settings else credit.EMPTY_PLAIN_TEXT
 
     # -- no model (#277)
     async def _no_model_line(self) -> str | None:
@@ -331,6 +347,8 @@ class LLMErrorSpeaker(FrameProcessor):
         self._said = now
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
+        if self._why() == credit.SPENT_REASON:
+            return self._spent_text()
         return NO_MODEL_SETTINGS_TEXT if self._settings else NO_MODEL_TEXT
 
     async def _answer_without_model(self) -> None:

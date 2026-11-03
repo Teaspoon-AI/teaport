@@ -1750,6 +1750,44 @@ help = "A new box that is offline a minute after boot goes into setup mode by it
 note = "Off in the open install; appliance provisioning turns it on. An image that ships must not carry setup-done."
 
 [[settings]]
+name = "TEAPORT_STARTER_HALF_USED"
+store = "brain_env"
+group = "first_run"
+type = "float"
+min = 0.05
+max = 0.95
+default = 0.5
+read = "startup"
+tier = "tuning"
+help = "While the box runs on its included trial credit (the provisioned starter key, marked by its SHA-256 in ~/.local/state/teaport/starter_key_sha256), the share of the key's limit used at which the box says, once at the start of a room or Talk conversation, that half of it is gone and how to connect an own account (\"open my settings\"); again at most once a day while that lasts. Shown on the configuration page (the owner's Settings), in /health's credit and by teaport status too. The credit is read from OpenRouter's GET /api/v1/key every TEAPORT_STARTER_POLL_SECS and after each conversation. Any other key saved later is the owner's, and the warnings stop."
+
+[[settings]]
+name = "TEAPORT_STARTER_LOW_USD"
+store = "brain_env"
+group = "first_run"
+type = "float"
+unit = "USD"
+min = 0
+max = 100
+default = 1.0
+read = "startup"
+tier = "tuning"
+help = "While on the trial credit: how many dollars left count as almost used up, said once at the start of a conversation as for TEAPORT_STARTER_HALF_USED. With nothing left the box stops answering (never switching to another model) and says to connect an own account; fixed phrases, \"open my settings\" and setup mode still work."
+
+[[settings]]
+name = "TEAPORT_STARTER_POLL_SECS"
+store = "brain_env"
+group = "first_run"
+type = "float"
+unit = "s"
+min = 60
+max = 86400
+default = 1800
+read = "startup"
+tier = "tuning"
+help = "While on the trial credit: how often the brain reads the starter key's record from OpenRouter (one free request), besides after each conversation. Never in a turn; a read that fails changes nothing."
+
+[[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"
 group = "talk_client"

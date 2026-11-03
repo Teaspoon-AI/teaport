@@ -39,7 +39,7 @@
 import time
 
 from loguru import logger
-from pipecat.frames.frames import LLMRunFrame, OutputTransportMessageUrgentFrame
+from pipecat.frames.frames import LLMRunFrame, OutputTransportMessageUrgentFrame, TTSSpeakFrame
 
 from teaport_brain.wake_words import carry_tail, find_wake, join_carry, normalize, parse_phrases  # noqa: F401
 
@@ -118,6 +118,9 @@ class WakeGate:
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
         self.owed = None      # the session's owed records (owed.Owed), likewise
+        # The conversation-start notice (build_agent_session, #280): a callable giving one
+        # fixed line to say when a wake starts a new conversation, or None.
+        self.notice = None
         # Awaited once, at the wake: a session built without OpenClaw's voice context
         # (the gateway could not answer when it opened) asks for it again
         # (build_agent_session's refresh_host). None: nothing to ask.
@@ -185,6 +188,10 @@ class WakeGate:
         message = {"type": "wake", "greeted": greet, "resumed": bool(restored)}
         message.update({"phrase": phrase} if phrase is not None else {"why": why})
         await push(OutputTransportMessageUrgentFrame(message=message))
+        line = self.notice() if self.notice is not None and not restored else None
+        if line:
+            # Said first, out of the context: the pipeline talking, not the model.
+            await push(TTSSpeakFrame(line, append_to_context=False))
         if greet and self.greeting and self.context is not None:
             self.context.add_message({"role": "user", "content": self.greeting})
             if run_greeting:

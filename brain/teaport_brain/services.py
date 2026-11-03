@@ -33,12 +33,12 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain import barge_pause, llm_http2
+from teaport_brain import ai_account, barge_pause, credit, llm_http2
 from teaport_brain import owed as owed_mod
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.llm_error_speaker import ANSWERS, redact
-from teaport_brain.settings import ROWS, canonical, read_name, secret_file, setting
+from teaport_brain.settings import ROWS, canonical, read_name, setting
 from teaport_brain.stt import TeaportSTTService
 from teaport_brain.tts_text import has_speech
 
@@ -86,10 +86,10 @@ _NO_KEY = ("no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_ke
 
 
 def _api_key() -> str | None:
-    # LLM_API_KEY wins; else the installer-written key file. A local
-    # OpenAI-compatible server that ignores auth still needs a placeholder —
+    # LLM_API_KEY wins; else the installer-written key file (ai_account.current_key). A
+    # local OpenAI-compatible server that ignores auth still needs a placeholder —
     # set LLM_API_KEY=sk-local (or write it to the file).
-    return setting("LLM_API_KEY") or secret_file("LLM_API_KEY")
+    return ai_account.current_key()
 
 
 def model_missing() -> str | None:
@@ -109,6 +109,11 @@ def model_missing() -> str | None:
         return "no endpoint address"
     if not _api_key():
         return "no key"
+    if credit.MONITOR.spent():
+        # The box's own trial credit is used up and no account of the owner's replaced it
+        # (credit.py, #280): it stops, as with no key, and the line says why. Never a
+        # silent switch to another model.
+        return credit.SPENT_REASON
     return None
 
 

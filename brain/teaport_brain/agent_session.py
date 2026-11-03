@@ -65,7 +65,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
-from teaport_brain import call_recording, echo_guard
+from teaport_brain import call_recording, credit, echo_guard, i18n
 from teaport_brain import endpoint_debug
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
@@ -408,6 +408,11 @@ class AgentSession:
                                    "not recorded")
         elif rec is not None:
             rec.arm("any")
+        # The conversation-start notice (build_agent_session's start_notice, #280): one
+        # fixed line ahead of the greeting, out of the context.
+        line = self.start_notice() if self.start_notice is not None and not resumed else None
+        if line:
+            await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=False)])
         # Without a model the cue goes in the same way: its request is the one the
         # no-model line answers (llm_error_speaker.py), so a greeting says it.
         self.context.add_message(
@@ -424,6 +429,9 @@ class AgentSession:
     NOTICE_MAX_SECS = 8.0
     # The owner's recording of this call (call_recording.CallRecording); None off a call.
     recording = None
+    # The conversation-start notice (build_agent_session): a callable giving the line to
+    # say first, or None for none; None where there is no such notice (a phone call).
+    start_notice = None
 
     async def _say_notice(self, notice: str) -> bool:
         """Play `notice` heard in full (_say_whole: the pipeline talking, not the model),
@@ -891,8 +899,24 @@ def build_agent_session(transport, *, voice: str | None = None,
                                       tools=session_tools,
                                       recorded=recording.prompt_line if recording else None)
     context = LLMContext(initial, tools=build_tools_schema(tool_ctx))
+    # The conversation-start notice (#280): one fixed line, said first when a conversation
+    # starts on the room or Talk -- a Talk connect, the room's first greeting, a wake that
+    # starts a new conversation (greet(), WakeGate.wake) -- never on a phone call, and
+    # not without a model (whose line says it all). Today: the trial credit's warnings
+    # (credit.MONITOR.notice, which says each at most once a day).
+    def start_notice() -> str | None:
+        msgid = credit.MONITOR.notice(settings=settings_phrase is not None)
+        if msgid is None:
+            return None
+        line = i18n.for_espeak(voice_lang())._(msgid)
+        if phrases is not None:
+            phrases.note_said(line)  # it quotes "open my settings": heard back, it is ours
+        return line
+
+    start_notice = start_notice if front_end in ("talk", "room") and llm is not None else None
     if wake_gate is not None:
         wake_gate.context = context
+        wake_gate.notice = start_notice
         wake_gate.greeting = AgentSession._GREETING
         # With no model the room conversation is not this session's to keep or continue
         # (#277): turns nobody answered, restored into the next session that has a model,
@@ -1193,7 +1217,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
                                      no_model=llm is None, wifi=wifi, phrases=phrases,
                                      settings=settings_access.usable([settings_phrase]),
-                                     gate=followup_gate,
+                                     why=model_missing, gate=followup_gate,
                                      model_back=lambda: model_missing() is None,
                                      restarts="restart" in client_features)
                      if llm_error_speaker.ENABLED or llm is None else None)
@@ -1417,6 +1441,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
     session.phrases = phrases  # the fixed phrases (Wi-Fi setup's, or the settings phrase's)
+    session.start_notice = start_notice  # the conversation-start notice, or None
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)

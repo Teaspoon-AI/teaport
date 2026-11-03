@@ -47,6 +47,7 @@ import time
 from loguru import logger
 
 from teaport_brain import wifi_voice
+from teaport_brain import settings
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_SETUP_ON_FIRST_BOOT")
@@ -66,9 +67,7 @@ _UPTIME = "/proc/uptime"
 
 
 def state_dir() -> str:
-    # The XDG state directory's default place (the unit sets no XDG_STATE_HOME).
-    base = os.path.expanduser("~/.local/state")
-    return os.path.join(base, "teaport")
+    return settings.state_dir()  # ~/.local/state/teaport
 
 
 def _path(name: str) -> str:

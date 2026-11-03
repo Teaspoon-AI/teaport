@@ -615,3 +615,28 @@ msgstr "ゼット"
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "入力された AI アカウントのキーが使えなかったため、保存しませんでした。"
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "お知らせです。お試し用クレジットを半分使いました。お時間のあるときに「設定を開いて」と言って、ご自分のアカウントを接続してください。"
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "お知らせです。お試し用クレジットがもうすぐなくなります。お時間のあるときに「設定を開いて」と言って、ご自分のアカウントを接続してください。"
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "お試し用クレジットを使い切ったため、ご自分のアカウントを接続していただくまで、質問にはお答えできません。接続するには「設定を開いて」と言ってください。"
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "お試し用クレジットを使い切ったため、ご自分のアカウントが接続されるまで、質問にはお答えできません。"
+
+msgid "Teaport is using its included trial credit."
+msgstr "Teaport は付属のお試し用クレジットを使っています。"
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "お試し用クレジットの半分を使いました。Teaport が引き続きお答えできるように、ご自分のアカウントを接続してください。"
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "お試し用クレジットがもうすぐなくなります（残り約 {amount}）。Teaport が引き続きお答えできるように、ご自分のアカウントを接続してください。"
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "お試し用クレジットを使い切りました。Teaport がまたお答えできるように、ご自分のアカウントを接続してください。"

@@ -518,3 +518,28 @@ msgstr "ключ этого устройства задан при устано�
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Не получилось использовать введённый вами ключ аккаунта ИИ, поэтому он не сохранён."
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Небольшое напоминание: половина моего пробного баланса уже израсходована. Когда будет минутка, скажите «открой настройки», чтобы подключить свой аккаунт."
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Небольшое напоминание: мой пробный баланс почти закончился. Когда будет минутка, скажите «открой настройки», чтобы подключить свой аккаунт."
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "Мой пробный баланс закончился, поэтому я не могу отвечать на вопросы, пока вы не подключите свой аккаунт. Для этого скажите «открой настройки»."
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "Мой пробный баланс закончился, поэтому я не могу отвечать на вопросы, пока не будет подключён ваш собственный аккаунт."
+
+msgid "Teaport is using its included trial credit."
+msgstr "Teaport использует входящий в комплект пробный баланс."
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "Половина пробного баланса израсходована. Подключите свой аккаунт, чтобы Teaport продолжал отвечать."
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "Пробный баланс почти закончился: осталось около {amount}. Подключите свой аккаунт, чтобы Teaport продолжал отвечать."
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "Пробный баланс закончился. Подключите свой аккаунт, чтобы Teaport снова мог отвечать."

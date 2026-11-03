@@ -515,3 +515,28 @@ msgstr "la clé de cet appareil est définie par son installateur, elle ne peut 
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Je n’ai pas pu utiliser la clé de compte IA que vous avez saisie, je ne l’ai donc pas enregistrée."
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Petite info : la moitié de mon crédit offert est déjà utilisée. Quand vous aurez une minute, dites « ouvre les réglages » pour connecter votre propre compte."
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Petite info : mon crédit offert est presque épuisé. Quand vous aurez une minute, dites « ouvre les réglages » pour connecter votre propre compte."
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "Mon crédit offert est épuisé : je ne peux plus répondre aux questions tant que vous ne connectez pas votre propre compte. Dites « ouvre les réglages » pour le faire."
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "Mon crédit offert est épuisé, je ne peux donc plus répondre aux questions tant que votre propre compte n'est pas connecté."
+
+msgid "Teaport is using its included trial credit."
+msgstr "Teaport utilise son crédit offert."
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "La moitié du crédit offert est utilisée. Connectez votre propre compte pour que Teaport continue de répondre."
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "Le crédit offert est presque épuisé : il reste environ {amount}. Connectez votre propre compte pour que Teaport continue de répondre."
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "Le crédit offert est épuisé. Connectez votre propre compte pour que Teaport puisse de nouveau répondre."

@@ -550,7 +550,12 @@
       document.documentElement.dir = a.dir || 'ltr';
     }
     if (!a.offered) { sec.hidden = true; $('#advtoggle').hidden = true; document.body.classList.add('show-adv'); return; }
-    const state = h('p', { class: 'group-blurb' }, a.key_set ? T.connected : T.none);
+    // On the box's trial credit (#280) its line stands in for "connected": a warning
+    // from half used on, an error once it has run out.
+    const credit = a.credit || {};
+    const state = credit.line
+      ? h('div', { class: 'banner' + ({ half: ' warn', low: ' warn', empty: ' err' }[credit.state] || '') }, h('p', {}, credit.line))
+      : h('p', { class: 'group-blurb' }, a.key_set ? T.connected : T.none);
     const key = h('input', { type: 'password', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.key, placeholder: T.key });
     const out = h('p', { class: 'acct-msg', 'aria-live': 'polite' });
     const saveBtn = h('button', { class: 'btn-primary', type: 'submit' }, T.save);
@@ -564,7 +569,7 @@
         const res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store: 'brain_env', values: { LLM_API_KEY: value }, force_key: force }) });
         if (res.status === 200) {
           key.value = ''; out.className = 'acct-msg ok'; out.textContent = T.works;
-          state.textContent = T.connected;
+          state.replaceWith(h('p', { class: 'group-blurb' }, T.connected));
         } else if (res.body.key_check) {
           const kc = res.body.key_check;
           out.className = 'acct-msg err';
