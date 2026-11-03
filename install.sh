@@ -10,6 +10,7 @@
 #   ./install.sh --only brain      update just the brain from brain/uv.lock (see below)
 #   ./install.sh --rollback brain  put the previous brain venv back
 #   ./install.sh --dry-run         print what would happen; touch nothing
+#   ./install.sh --license-file PATH   also install this engine license key (see below)
 #   ./install.sh --help
 #
 # --only brain is how a brain change reaches an appliance that is already installed:
@@ -39,6 +40,11 @@
 #   TEAPORT_BRAIN_SRC      install the brain from this local dir instead of cloning
 #   TEAPORT_PLUGIN_SRC     install the plugin from this local dir instead of npm
 #   TEAPORT_ACCEPT_EULA=1  accept the engine EULA non-interactively
+#   TEAPORT_LICENSE_FILE   same as --license-file: an engine license key (license.json, signed
+#                          for this device's id) to check and install as $TEAPORT_ETC/license.json.
+#                          Without one, an existing key is kept and the run only reports the
+#                          box's license state; an engine with no valid key runs anyway while
+#                          the engine's enforcement is "warn" (its default).
 #   TEAPORT_ALLOW_NON_JETSON=1   skip the Jetson/L4T gate (dev only; no real install)
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
@@ -65,6 +71,7 @@ STATE="${TEAPORT_STATE:-/var/lib/teaport}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
 RUN_USER="${TEAPORT_USER:-$(id -un)}"
 ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-0}"
+LICENSE_SRC="${TEAPORT_LICENSE_FILE:-}"
 ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_SRC="${TEAPORT_BRAIN_SRC:-}"
 PLUGIN_SRC="${TEAPORT_PLUGIN_SRC:-}"
@@ -81,6 +88,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --accept-eula) ACCEPT_EULA=1 ;;
+    --license-file)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_err "--license-file needs a path"
+      LICENSE_SRC="$2"; shift ;;
+    --license-file=*) LICENSE_SRC="${1#*=}"; [ -n "$LICENSE_SRC" ] || usage_err "--license-file needs a path" ;;
     --only|--rollback)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a component (brain)"
       if [ "$1" = --only ]; then ONLY="$2"; else ROLLBACK="$2"; fi; shift ;;
@@ -95,6 +106,8 @@ done
 case "$ONLY" in ''|brain) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain)" ;; esac
 case "$ROLLBACK" in ''|brain) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain)" ;; esac
 [ -z "$ONLY" ] || [ -z "$ROLLBACK" ] || usage_err "--only and --rollback are separate runs"
+# The key goes in beside the engine, which --only brain and --rollback leave alone.
+[ -z "$LICENSE_SRC" ] || { [ -z "$ONLY" ] && [ -z "$ROLLBACK" ]; } || usage_err "--license-file is for a full install or repair run"
 
 # --- output helpers ----------------------------------------------------------
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -141,6 +154,18 @@ d = json.load(open(sys.argv[1]))
 for k in sys.argv[2].split("."):
     d = d[k]
 print(d)
+PY
+}
+# mget_lines <dotted.key.path> — a list of strings out of the manifest, one per line. Fails
+# when the key is missing or is not a list of one-line strings.
+mget_lines() { python3 - "$MF" "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    d = d[k]
+if not isinstance(d, list) or not all(isinstance(x, str) and "\n" not in x for x in d):
+    sys.exit(1)
+print("\n".join(d))
 PY
 }
 
@@ -203,9 +228,16 @@ eula_gate() {
     method="env"
   else
     [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula"
-    printf '\n  Teaport Engine License v%s — summary (the full text below governs):\n' "$ver"
-    printf '    - personal use by individuals: free\n'
-    printf '    - any organizational or commercial use: requires a written license (hello@teaspoon.tech)\n\n'
+    # The summary is the manifest's (engine.eula.summary, a list of lines), published with
+    # the text it summarizes: a new license version brings its own, and nothing here
+    # restates a version's terms. A manifest without one shows the full text alone.
+    local summary; summary="$(mget_lines engine.eula.summary 2>/dev/null || true)"
+    printf '\n  Teaport Engine License v%s' "$ver"
+    if [ -n "$summary" ]; then
+      printf ' — summary (the full text below governs):\n'
+      printf '    - %s\n' "${summary//$'\n'/$'\n'    - }"
+    else printf ' (the full text follows):\n'; fi
+    printf '\n'
     read -r -p '  Press Enter to read the license... ' _ || true
     if have less; then less "$txt"; elif have more; then more "$txt"; else cat "$txt"; fi
     printf '\n'
@@ -220,6 +252,105 @@ eula_gate() {
   printf '{"version":"%s","sha256":"%s","date":"%s","user":"%s","method":"%s"}\n' \
     "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" > "$receipt"
   log "engine license v$ver accepted (recorded in $receipt)"
+}
+
+# --- engine license key ------------------------------------------------------
+# From engine 1.7 (teagram-engine#107) the engine carries its license text (--license) and
+# checks a signed, device-bound license key at start (--license-status, --device-id; its
+# docs/LICENSE_KEYS.md). The key lives at $LICENSE_FILE, which engine.env names to the
+# engine (VOX_LICENSE_FILE); /etc/teaport/license.json is also the engine's own default.
+# Under the engine's default enforcement ("warn") a box without a valid key runs anyway
+# and says so in its journal; under "on" it exits 78, which the unit does not restart
+# (RestartPreventExitStatus). An older engine has none of this, and every step below is
+# skipped for it.
+LICENSE_FILE="$ETC/license.json"
+
+# engine_has <flag> — the installed engine's --help lists <flag> (an option line starting
+# with it). An engine without license keys rejects unknown flags with exit 1, before any
+# model load, but asking --help keeps "too old" apart from "failed".
+engine_has() {
+  local h; h="$("$PREFIX/bin/voxtral" --help 2>&1 || true)"
+  grep -qE -- "^[[:space:]]+$1([[:space:]]|\$)" <<< "$h"
+}
+# as_run_user <cmd...> — as the engine's user: the device id comes from the GPU it can open,
+# and the key must be readable by the user the unit runs as, not by whoever runs this.
+as_run_user() { if [ "$(id -un)" = "$RUN_USER" ]; then "$@"; else sudo -u "$RUN_USER" -- "$@"; fi; }
+# status_field <--license-status output> <label> — one "Label:   value" line's value.
+status_field() { sed -n "s/^$2:[[:space:]]*//p" <<< "$1" | sed -n 1p; }
+
+# The text the user accepted (eula_gate, from the manifest) must be the text this engine
+# carries. A mismatch is a release error, so stop before any unit is restarted onto it.
+eula_matches_engine() {
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] check the engine'"'"'s own license text against the accepted one\n'; return; fi
+  engine_has --license || return 0
+  local want got
+  want="$(mget engine.eula.sha256 2>/dev/null || true)"
+  [ -n "$want" ] && [ "$want" != TODO ] || return 0
+  got="$("$PREFIX/bin/voxtral" --license | sha256sum | cut -d' ' -f1)" \
+    || die "the engine cannot print its license text ($PREFIX/bin/voxtral --license)"
+  [ "$got" = "$want" ] || die "the engine's license text (sha256 $got) is not the one accepted (engine.eula, sha256 $want) — the release is inconsistent; report it"
+  log "engine license text matches the accepted one"
+}
+
+# install_license — install --license-file's key, if given, after checking it on this device
+# with this engine; then report the box's key. Owner root, group the run user's primary group,
+# mode 0640: the engine reads it, nobody else needs to, and it names the licensee. A key is
+# never removed, and a different one replacing it is kept beside it. Runs before any unit is
+# restarted, so a key that does not check out stops the run with the box as it was.
+install_license() {
+  local bin="$PREFIX/bin/voxtral"
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -n "$LICENSE_SRC" ]; then printf '  [dry-run] check %s on this device, install it as %s\n' "$LICENSE_SRC" "$LICENSE_FILE"; fi
+    printf '  [dry-run] report the engine license key state (voxtral --license-status as %s)\n' "$RUN_USER"
+    return
+  fi
+  if ! engine_has --license-status; then
+    [ -z "$LICENSE_SRC" ] || die "--license-file: this engine release does not read license keys"
+    return
+  fi
+  if [ -n "$LICENSE_SRC" ]; then
+    local group mode=0640 staged="$LICENSE_FILE.new" out rc=0
+    group="$(id -gn "$RUN_USER")"
+    if [ "$RUN_USER" = root ]; then mode=0600; fi
+    SUDO install -d -m 0755 "$ETC"
+    SUDO install -o root -g "$group" -m "$mode" "$LICENSE_SRC" "$staged"
+    out="$(as_run_user "$bin" --license-status --license-file "$staged" 2>&1)" || rc=$?
+    if [ "$rc" != 0 ]; then
+      SUDO rm -f "$staged"
+      die "the license key $LICENSE_SRC is not valid on this device ($(status_field "$out" Result)); nothing was installed:
+$out"
+    fi
+    if [ -f "$LICENSE_FILE" ] && ! SUDO cmp -s "$staged" "$LICENSE_FILE"; then
+      local kept; kept="$LICENSE_FILE.replaced-$(date +%Y%m%d-%H%M%S)"
+      SUDO mv "$LICENSE_FILE" "$kept"
+      log "the license key it replaces is kept as $kept"
+    fi
+    SUDO mv "$staged" "$LICENSE_FILE"
+    log "license key installed: $LICENSE_FILE"
+  fi
+  license_report
+}
+
+# license_report — the key's state as the engine will see it: this file, and the operator's
+# VOX_LICENSE_MODE from engine.env if they set one. Advisory except under enforcement "on",
+# where an engine restarted without a valid key would refuse to start.
+license_report() {
+  local bin="$PREFIX/bin/voxtral" mode="" out rc=0 dev
+  if [ -e "$ETC/engine.env" ]; then
+    mode="$(read_env_file "$ETC/engine.env" --lenient | sed -n 's/^VOX_LICENSE_MODE=//p' | tail -1)"
+  fi
+  local envs=(); if [ -n "$mode" ]; then envs=("VOX_LICENSE_MODE=$mode"); fi
+  out="$(as_run_user env "${envs[@]}" "$bin" --license-status --license-file "$LICENSE_FILE" 2>&1)" || rc=$?
+  dev="$(status_field "$out" 'This device')"
+  if [ "$rc" = 0 ]; then
+    log "engine license key: $(status_field "$out" 'License id'), $(status_field "$out" Tier), $(status_field "$out" Licensee); expires $(status_field "$out" Expires)"
+    return
+  fi
+  local result enf; result="$(status_field "$out" Result)"; enf="$(status_field "$out" Enforcement)"
+  case "$enf" in
+    on*) die "no valid engine license key on this device (${result:-no status}), and the engine enforces license keys (${enf}): it would refuse to start. Nothing was restarted. This device's id: ${dev:-unknown}; install a key with --license-file PATH" ;;
+    *) warn "no valid engine license key on this device (${result:-no status}); the engine runs anyway (enforcement: ${enf:-unknown}) and says so in its journal. This device's id, which a key is issued for: ${dev:-unknown}. Install one with --license-file PATH." ;;
+  esac
 }
 
 # --- phases ------------------------------------------------------------------
@@ -2059,9 +2190,14 @@ phase_services() {
   # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
   # validated at (its batched decode is bit-identical to the unbatched one only there;
   # at 240 it scored a point worse, and --reprime's measurements are all at 480).
+  # VOX_LICENSE_FILE: where the engine reads its license key (install_license); the engine's
+  # own default is /etc/teaport/license.json, so this matters with TEAPORT_ETC, and says
+  # where the key is to anyone reading this file. Engines before 1.7 ignore it.
+  # VOX_LICENSE_MODE is not written: the engine's build default (warn) applies unless an
+  # operator sets it here, and a repair carries their setting forward.
   write_env "$ETC/engine.env" \
     "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192" \
-    "VOX_REQUIRE_DICT_G2P=1"
+    "VOX_REQUIRE_DICT_G2P=1" "VOX_LICENSE_FILE=$LICENSE_FILE"
   # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
   # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and takes
   # OpenClaw's voice context (identity and profile); voice-only it advertises the local
@@ -2912,6 +3048,8 @@ main() {
   elif [ -n "$TLS_CERT" ]; then warn "TEAPORT_TLS_CERT is ignored: a voice-only install has no front door"; fi
   phase_sysdeps
   phase_engine
+  eula_matches_engine
+  install_license
   phase_brain
   install_busy_lamp
   install_dns_resilience

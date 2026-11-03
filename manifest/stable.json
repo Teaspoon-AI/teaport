@@ -7,7 +7,11 @@
     "eula": {
       "version": "1.0",
       "url": "https://get.teaspoon.tech/eula/teaport-engine-license-1.0.txt",
-      "sha256": "33334d85d3f087da738131fcfe5ee6f862859c8130c4bbdd0aad441aff34effb"
+      "sha256": "33334d85d3f087da738131fcfe5ee6f862859c8130c4bbdd0aad441aff34effb",
+      "summary": [
+        "personal use by individuals: free",
+        "any organizational or commercial use: requires a written license (stefano@teaspoon.tech)"
+      ]
     },
     "assets": {
       "l4t38-cu13": {

@@ -20,6 +20,11 @@ EnvironmentFile=@ETC@/engine.env
 ExecStart=@PREFIX@/bin/voxtral -d @PREFIX@/models/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY} --tts-ctx ${TTS_CTX} --tts-model @PREFIX@/models/kokoro/Kokoro_espeak_F16.gguf --vad --vad-mode 1 --vad-commit hard --reprime 1500
 Restart=on-failure
 RestartSec=5
+# Exit 78: the engine refused to start for want of a valid license key, which only happens
+# when its enforcement is "on" (engine 1.7+, teagram-engine docs/LICENSE_KEYS.md). Retrying
+# every 5 s cannot fix that; stopped, `systemctl status` and `teaport doctor` say why.
+# The license key: @ETC@/license.json, named by VOX_LICENSE_FILE in engine.env.
+RestartPreventExitStatus=78
 # Under memory pressure the kernel kills the process with the highest OOM score, and the
 # engine's GPU buffers (~4.3 GB, unswappable) make it the biggest process on an 8 GB box:
 # unadjusted it scores close to the OpenClaw gateway, so a growing agent could get the
