@@ -38,7 +38,7 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
     "agent_session.py": {
-        "i18n.for_espeak(voice_lang())._(msgid)",  # credit.MONITOR.notice: N_() in credit.py (#280)
+        "i18n.for_espeak(voice_lang())._(self.msgid)",  # credit.MONITOR.notice: N_() in credit.py (#280)
     },
     "credit.py": {
         "t._(msgid)",                        # PAGE_LINES: N_() there (#280)

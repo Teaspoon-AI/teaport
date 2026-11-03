@@ -41,6 +41,9 @@ import appliance  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 from teaport_brain import ai_account, credit, i18n, llm_error_speaker, services  # noqa: E402
 from teaport_brain.wake_gate import MicConversation, WakeGate  # noqa: E402
+# The in-process session harness (it sets its own defaults, which _box() replaces).
+from test_post_tool_under_speech import TalkTransport  # noqa: E402
+from teaport_brain.agent_session import build_agent_session  # noqa: E402
 
 STARTER = "sk-or-v1-starter-0000000000000000000000000000000000000000000000000000"
 OWN = "sk-or-v1-owners-1111111111111111111111111111111111111111111111111111111"
@@ -147,13 +150,15 @@ def test_a_failed_read_keeps_what_was_known():
 
 # ------------------------------------------------------------------ telling the owner
 
-def test_each_warning_is_said_once_then_at_most_daily_and_survives_a_restart():
+def test_each_warning_is_said_once_heard_then_at_most_daily_and_survives_a_restart():
     _box()
     clock = Clock()
     m, fetch = _monitor({"limit": 5, "limit_remaining": 2.5, "usage": 2.5}, clock)
     _run(m.refresh())
     assert m.notice(settings=False) is None          # its line names a phrase not heard here
     assert m.notice() == credit.HALF_TEXT
+    assert m.notice() == credit.HALF_TEXT            # not heard yet (cut short): still due
+    m.told(credit.HALF_TEXT)
     assert m.notice() is None
     clock.now += 3600
     restarted, _ = _monitor({"limit": 5, "limit_remaining": 2.5, "usage": 2.5}, clock)
@@ -171,47 +176,117 @@ def test_each_warning_is_said_once_then_at_most_daily_and_survives_a_restart():
     assert m.notice() is None and m.state() == credit.OWN
 
 
-def test_spent_stops_the_box_until_an_own_key_is_saved():
+def test_a_told_time_in_the_future_is_reset_not_taken_as_expired():
+    """A box that booted with a wrong clock (no RTC battery, before NTP): told "tomorrow"
+    is now, and quiet."""
+    _box()
+    clock = Clock()
+    m, _ = _monitor({"limit": 5, "limit_remaining": 2.5, "usage": 2.5}, clock)
+    _run(m.refresh())
+    m.told(credit.HALF_TEXT)
+    clock.now -= 30 * 24 * 3600                      # the clock jumps back a month
+    assert m.notice() is None
+    clock.now += 3600                                # an hour later on the new clock
+    assert m.notice() is None
+    clock.now += credit.REPEAT_SECS
+    assert m.notice() == credit.HALF_TEXT
+
+
+def test_the_marker_takes_the_documented_recipe_and_a_hashed_key_file():
+    for text in (STARTER, STARTER + "\n"):
+        home = _box(marker=False)
+        os.makedirs(os.path.join(home, ".local", "state", "teaport"), exist_ok=True)
+        with open(os.path.join(home, ".local", "state", "teaport", credit.MARKER), "w") as f:
+            f.write(hashlib.sha256(text.encode()).hexdigest() + "\n")
+        assert credit.on_starter(STARTER), repr(text)
+    assert not credit.on_starter(OWN)
+
+
+def test_pokes_are_one_read_a_minute():
+    _box()
+
+    async def run():
+        m, fetch = _monitor({"limit": 5, "limit_remaining": 4.0, "usage": 1.0})
+        real = credit.MIN_READ_SECS
+        credit.MIN_READ_SECS = 1.0
+        task = asyncio.ensure_future(m.run())
+        try:
+            await asyncio.sleep(0.05)
+            assert fetch.calls == 1                  # the first read, at once
+            for _ in range(20):                      # a burst of reconnects
+                m.poke()
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.2)
+            assert fetch.calls == 1                  # still inside the minute
+            await asyncio.sleep(0.8)
+            assert fetch.calls == 2                  # then one read for the whole burst
+        finally:
+            credit.MIN_READ_SECS = real
+            task.cancel()
+    _run(run())
+
+
+def test_spent_makes_no_model_on_any_surface_until_an_own_key_is_saved():
     _box()
     m, fetch = _monitor({"data": {"limit": 5, "limit_remaining": 0.001, "usage": 4.999}})
     real = credit.MONITOR
     credit.MONITOR = m
     try:
         _run(m.refresh())
+        try:
+            services.make_llm()
+            raise AssertionError("make_llm built a model on a spent trial credit")
+        except services.NoModel as e:
+            assert str(e) == credit.SPENT_REASON
         assert services.model_missing() == credit.SPENT_REASON
         assert services.answers_status() == {"state": "unconfigured", "reason": credit.SPENT_REASON}
-        speaker = llm_error_speaker.LLMErrorSpeaker(no_model=True, settings=True,
-                                                    why=services.model_missing)
-        assert _run(speaker._no_model_line()) == credit.EMPTY_TEXT
-        plain = llm_error_speaker.LLMErrorSpeaker(no_model=True, why=services.model_missing)
+        # Sessions are built with no model -- the phone's too, which then says its
+        # no-model line and hangs up (sip_server, test_no_model_session).
+        for front_end in ("sip", "talk", "room"):
+            assert build_agent_session(TalkTransport(), front_end=front_end).llm is None, front_end
+        # The owner hears why; anyone else the usual no-model line.
+        owner = llm_error_speaker.LLMErrorSpeaker(no_model=True, settings=True, owner=True,
+                                                  why=services.model_missing)
+        assert _run(owner._no_model_line()) == credit.EMPTY_TEXT
+        plain = llm_error_speaker.LLMErrorSpeaker(no_model=True, owner=True, why=services.model_missing)
         assert _run(plain._no_model_line()) == credit.EMPTY_PLAIN_TEXT
+        bridge = llm_error_speaker.LLMErrorSpeaker(no_model=True, why=services.model_missing)
+        assert _run(bridge._no_model_line()) == llm_error_speaker.NO_MODEL_TEXT
         # The owner's key: a model again (the session's "I'm ready now" path), and quiet.
         ai_account.store_key(OWN)
         assert services.model_missing() is None and m.state() == credit.OWN
-        assert speaker.model_back is not None
+        assert services.make_llm() is not None
     finally:
         credit.MONITOR = real
 
 
-def test_a_refusal_on_little_credit_says_the_trial_credit_ran_out():
+def test_the_trial_credit_line_names_the_right_cause_and_only_to_the_owner():
     _box()
-    m, _ = _monitor({"limit": 5, "limit_remaining": 0.3, "usage": 4.7})
+    m, fetch = _monitor({"limit": 5, "limit_remaining": 0.9, "usage": 4.1})
     real = credit.MONITOR
     credit.MONITOR = m
     try:
         _run(m.refresh())
+        quota = ErrorFrame(error="x", exception=None, category=ErrorCategory.QUOTA)
+        refused = ErrorFrame(error="x", exception=None, category=ErrorCategory.AUTHORIZATION)
+        owner = lambda: llm_error_speaker.LLMErrorSpeaker(settings=True, owner=True)  # noqa: E731
+        assert owner()._notice(quota, 1000.0) == credit.EMPTY_TEXT       # the provider says so
+        # $0.90 left and a revoked key or a policy 403: not "the trial credit ran out".
+        assert owner()._notice(refused, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
+        # The phone and a bridge never hear about the owner's trial credit.
+        assert llm_error_speaker.LLMErrorSpeaker()._notice(quota, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
+        fetch.record = {"limit": 5, "limit_remaining": 0, "usage": 5}
+        _run(m.refresh())
+        assert owner()._notice(refused, 1000.0) == credit.EMPTY_TEXT     # nothing left
+        ai_account.store_key(OWN)  # the owner's own account refused: the usual line
+        assert owner()._notice(quota, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
+        # An account refusal reads the credit again (soon: pokes are spaced).
         poked = []
         m.poke = lambda: poked.append(1)
-        frame = ErrorFrame(error="x", exception=None, category=ErrorCategory.QUOTA)
-        speaker = llm_error_speaker.LLMErrorSpeaker(settings=True)
-        assert speaker._notice(frame, 1000.0) == credit.EMPTY_TEXT
-        ai_account.store_key(OWN)  # the owner's own account refused: the usual line
-        assert llm_error_speaker.LLMErrorSpeaker()._notice(frame, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
-        # An account refusal reads the credit again at once.
         import httpx
-        frame.exception = httpx.HTTPStatusError("402", request=httpx.Request("POST", BASE),
+        quota.exception = httpx.HTTPStatusError("402", request=httpx.Request("POST", BASE),
                                                 response=httpx.Response(402))
-        llm_error_speaker.AnswerHealth().failed(frame)
+        llm_error_speaker.AnswerHealth().failed(quota)
         assert poked
     finally:
         credit.MONITOR = real
@@ -227,41 +302,62 @@ class FakeTask:
         self.frames += list(frames)
 
 
-def test_the_notice_is_said_before_the_greeting_and_at_a_new_conversation_only():
+class Notice:
+    def __init__(self):
+        self.told_n = 0
+
+    def line(self):
+        return "Quick note: a made-up notice."
+
+    def told(self):
+        self.told_n += 1
+
+
+def test_the_notice_is_heard_in_full_before_the_greeting_and_counted_only_once_played():
     from teaport_brain.agent_session import AgentSession
 
     class STT:
         stt_available, slot_busy = True, None
 
-    said = []
-    s = AgentSession(task=FakeTask(), context=LLMContext([]), stt=STT(), tts=None, llm=None,
-                     ledger=None, followup_gate=None)
-    s.start_notice = lambda: said.append(1) or "Quick note: a made-up notice."
-    _run(s.greet())
-    frames = s.task.frames
-    assert isinstance(frames[0], TTSSpeakFrame) and frames[0].text == "Quick note: a made-up notice."
-    assert frames[0].append_to_context is False and isinstance(frames[1], LLMRunFrame)
-    # A wake that starts a new conversation says it first; one that continues does not.
-    pushed = []
+    for played in (True, False):
+        s = AgentSession(task=FakeTask(), context=LLMContext([]), stt=STT(), tts=None, llm=None,
+                         ledger=None, followup_gate=None)
+        s.start_notice = notice = Notice()
+        said = []
+
+        async def say_whole(line, max_secs, *, name, append_to_context=False, s=s, played=played):
+            said.append((line, len(s.task.frames)))  # before the greeting is queued
+            return played
+
+        s._say_whole = say_whole
+        _run(s.greet())
+        assert said == [("Quick note: a made-up notice.", 0)]
+        assert isinstance(s.task.frames[-1], LLMRunFrame)
+        assert notice.told_n == (1 if played else 0)   # cut short: said again next time
+    # A wake that starts a new conversation says it first, from a task, then greets.
+    pushed, started = [], []
 
     async def push(frame):
         pushed.append(frame)
 
-    gate = WakeGate(["hey box"], store=MicConversation(), greeting="(greet)")
-    gate.context = LLMContext([])
-    gate.notice = lambda: "Quick note: a made-up notice."
-    _run(gate.wake(push, "hey box"))
-    speak = [f for f in pushed if isinstance(f, TTSSpeakFrame)]
-    assert speak and speak[0].text == "Quick note: a made-up notice."
-    assert pushed.index(speak[0]) < next(i for i, f in enumerate(pushed) if isinstance(f, LLMRunFrame))
+    async def start_with_notice():
+        started.append(1)
+
+    async def wake(store):
+        gate = WakeGate(["hey box"], store=store, greeting="(greet)")
+        gate.context = LLMContext([])
+        gate.notice_due = lambda: True
+        gate.start_with_notice = start_with_notice
+        await gate.wake(push, "hey box")
+        await asyncio.sleep(0.01)
+
+    _run(wake(MicConversation()))
+    assert started == [1] and not [f for f in pushed if isinstance(f, LLMRunFrame)]
     store = MicConversation()
     store.save([{"role": "user", "content": "made-up earlier turn"}], [])
-    pushed.clear()
-    gate = WakeGate(["hey box"], store=store, greeting="(greet)")
-    gate.context = LLMContext([])
-    gate.notice = lambda: "Quick note: a made-up notice."
-    _run(gate.wake(push, "hey box"))
-    assert not [f for f in pushed if isinstance(f, TTSSpeakFrame)]
+    started.clear()
+    _run(wake(store))                                 # a conversation continued: no notice
+    assert started == []
 
 
 # ------------------------------------------------------------------ where it shows

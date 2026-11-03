@@ -5,7 +5,10 @@
 # Appliances ship with a provisioned OpenRouter key capped at a few dollars. Which key that
 # is, provisioning records as a marker (MARKER): the SHA-256 of the key, in hex, alone on
 # one line, in the run user's state directory -- ~/.local/state/teaport/starter_key_sha256
-# (settings.state_dir; teaport-appliance#3 writes it). Only the hash: the marker says which
+# (settings.state_dir; teaport-appliance#3 writes it). The recipe:
+#     printf %s "$KEY" | sha256sum | cut -d' ' -f1 > ~/.local/state/teaport/starter_key_sha256
+# (the key without a newline). `sha256sum llm_key` of a key file ending in one newline is
+# accepted too, so the easy mistake still matches. Only the hash: the marker says which
 # key is the starter, never what it is. While the key in use (ai_account.current_key) has
 # that hash, the box is "on its trial credit"; any other key saved later is the owner's,
 # and everything here goes quiet.
@@ -24,10 +27,11 @@
 #   - low: LOW_USD or less is left (TEAPORT_STARTER_LOW_USD, default $1);
 #   - empty: nothing is left.
 # Each is said once, at the start of a conversation on the room or Talk (never a phone
-# call: notice()), in plain words, and again at most once a day while it lasts; the
+# call nor a bridge: notice(), heard in full, counted once it played: told()), in plain
+# words, and again at most once a day while it lasts; the
 # Settings page shows it as a line (page_line). Empty is not a notice but a stop: with no
-# other key, the session is built without a model (services.model_missing gives
-# SPENT_REASON, #277's path), so every request for an answer gets the trial-credit line
+# other key, no model is made (services.make_llm raises NoModel with SPENT_REASON, and
+# model_missing says the same: #277's path), so every request for an answer gets the trial-credit line
 # (llm_error_speaker.py), "open my settings" and setup mode still work by voice, and the
 # next session after the owner saves a key has a model again. It never switches to another
 # model on its own.
@@ -55,6 +59,9 @@ NOTICES = "credit_notices.json"
 HALF_USED = setting("TEAPORT_STARTER_HALF_USED")
 LOW_USD = setting("TEAPORT_STARTER_LOW_USD")
 POLL_SECS = setting("TEAPORT_STARTER_POLL_SECS")
+# Reads at most this often: a poke (a conversation ending, a refusal) sooner waits for it,
+# so a burst of reconnects or failures is one read, not one each.
+MIN_READ_SECS = 60.0
 # A warning is said again, while its state lasts, at most this often.
 REPEAT_SECS = 24 * 3600.0
 # Below this many dollars the credit is spent (a request costs more than what is left).
@@ -108,9 +115,14 @@ def starter_hash() -> str | None:
 
 
 def on_starter(key: str | None) -> bool:
-    """Is `key` the provisioned starter key?"""
+    """Is `key` the provisioned starter key? Its marker is the hash of the key, or of the
+    key and one newline (`sha256sum` of its key file)."""
     want = starter_hash()
-    return bool(key and want) and key_hash(key) == want
+    if not (key and want):
+        return False
+    stripped = key.strip()
+    return want in (key_hash(stripped),
+                    hashlib.sha256((stripped + "\n").encode()).hexdigest())
 
 
 def _number(value) -> float | None:
@@ -151,6 +163,7 @@ class Monitor:
         self._checked = None      # wall clock of the last answer
         self._fresh = False       # the last request was answered
         self._wake: asyncio.Event | None = None
+        self._mono = time.monotonic  # the read spacing's clock (MIN_READ_SECS)
 
     # -- reading
     def status(self) -> dict:
@@ -212,6 +225,7 @@ class Monitor:
         POLL_SECS or when poked. A failed read is logged and waited out."""
         self._wake = asyncio.Event()
         while True:
+            read_at = self._mono()
             try:
                 await self.refresh()
             except Exception as e:  # noqa: BLE001 -- the loop must outlive a bad read
@@ -220,27 +234,47 @@ class Monitor:
                 await asyncio.wait_for(self._wake.wait(), POLL_SECS)
             except asyncio.TimeoutError:
                 pass
+            # Poked soon after a read: wait out MIN_READ_SECS, every poke meanwhile one.
+            await asyncio.sleep(max(0.0, MIN_READ_SECS - (self._mono() - read_at)))
             self._wake.clear()
 
     # -- telling the owner
     def notice(self, settings: bool = True) -> str | None:
-        """The line (a msgid) to say at the start of a conversation on the room or Talk, or
+        """The line (a msgid) due at the start of a conversation on the room or Talk, or
         None: HALF_TEXT or LOW_TEXT the first time the credit is in that state, and again
-        at most once a day while it stays there. Nothing where "open my settings" is not
-        heard (`settings` False: the lines tell the owner to say it). Empty is not a
-        notice: the box stops (services.model_missing)."""
+        at most once a day while it stays there -- counted from told(), which the caller
+        calls once the line has played (a line cut short is said again next time).
+        Nothing where "open my settings" is not heard (`settings` False: the lines tell
+        the owner to say it). Empty is not a notice: the box stops (services.make_llm).
+
+        A told time in the future (a box that booted with a wrong clock, before NTP set
+        it) is rewritten to now, and the line is not said: a clock jump never repeats one."""
         state = self.state()
         if state not in (HALF, LOW) or not settings:
             return None
         seen = _load_notices()
-        key, now = f"{self._for[:16]}:{state}", self._clock()
+        key, now = self._notice_key(state), self._clock()
         last = seen.get(key)
-        if isinstance(last, (int, float)) and 0 <= now - last < REPEAT_SECS:
+        if isinstance(last, (int, float)) and last > now:
+            seen[key] = now
+            _save_notices(seen)
             return None
-        seen[key] = now
-        _save_notices(seen)
-        logger.info(f"credit: telling the owner the trial credit is {state}")
+        if isinstance(last, (int, float)) and now - last < REPEAT_SECS:
+            return None
         return HALF_TEXT if state == HALF else LOW_TEXT
+
+    def told(self, msgid: str) -> None:
+        """`msgid` (a notice()) was heard to its end: not again for REPEAT_SECS."""
+        state = HALF if msgid == HALF_TEXT else LOW if msgid == LOW_TEXT else None
+        if state is None or self._for is None:
+            return
+        seen = _load_notices()
+        seen[self._notice_key(state)] = self._clock()
+        _save_notices(seen)
+        logger.info(f"credit: the owner was told the trial credit is {state}")
+
+    def _notice_key(self, state: str) -> str:
+        return f"{self._for[:16]}:{state}"
 
     def page_line(self, t) -> str | None:
         """The Settings page's line about the trial credit, in t's language, or None when

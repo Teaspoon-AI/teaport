@@ -286,7 +286,7 @@ class LLMErrorSpeaker(FrameProcessor):
 
     def __init__(self, lang_fn=None, *, no_model: bool = False, wifi=None, gate=None,
                  model_back=None, end=None, restarts: bool = False, phrases=None,
-                 settings: bool = False, why=None):
+                 settings: bool = False, why=None, owner: bool = False):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
         self.no_model = no_model
@@ -295,6 +295,9 @@ class LLMErrorSpeaker(FrameProcessor):
         self._phrases = phrases if phrases is not None else wifi
         self._settings = settings
         self._why = why or (lambda: None)
+        # The owner's own surface (the room, Talk; not a bridge, not a phone call): only
+        # there is the box's trial credit anyone's business (#280).
+        self._owner = owner
         self._gate = gate
         self.model_back = model_back or (lambda: False)
         self.end = end
@@ -315,9 +318,12 @@ class LLMErrorSpeaker(FrameProcessor):
             if in_account_window:
                 return ACCOUNT_STILL_TEXT
             self._said_account = now
-            # On the box's trial credit with little or nothing left, the refusal is the
-            # credit running out: say that, and how to connect an own account (#280).
-            if credit.MONITOR.state() in (credit.LOW, credit.EMPTY):
+            # On the owner's surface, a refusal that is the trial credit running out -- the
+            # provider said so (402, QUOTA), or nothing is left -- says so (#280). A
+            # revoked key or a policy 403 with credit left is the usual account line.
+            state = credit.MONITOR.state()
+            if self._owner and state not in (credit.NONE, credit.OWN) and (
+                    category_of(frame) is ErrorCategory.QUOTA or state == credit.EMPTY):
                 return self._spent_text()
             return ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
@@ -347,7 +353,7 @@ class LLMErrorSpeaker(FrameProcessor):
         self._said = now
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
-        if self._why() == credit.SPENT_REASON:
+        if self._why() == credit.SPENT_REASON and self._owner:
             return self._spent_text()
         return NO_MODEL_SETTINGS_TEXT if self._settings else NO_MODEL_TEXT
 

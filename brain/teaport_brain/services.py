@@ -947,6 +947,11 @@ def make_llm():
     base_url = setting("LLM_BASE_URL")
     if not base_url:
         raise NoModel(_NO_URL)
+    if credit.MONITOR.spent():
+        # The trial credit is used up and no key of the owner's replaced it (credit.py,
+        # #280): no model, #277's path -- every request gets the trial-credit line, never
+        # a 402 per turn, never another model. The one decision; model_missing reads it.
+        raise NoModel(credit.SPENT_REASON)
     # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from
     # the request body entirely. Passing None would serialize an explicit null.

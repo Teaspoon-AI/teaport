@@ -36,10 +36,11 @@
 # with no note). A consult still running when the session ends cannot report back: its
 # placeholder becomes its failure record first (owed.Owed.close_session).
 #
+import asyncio
 import time
 
 from loguru import logger
-from pipecat.frames.frames import LLMRunFrame, OutputTransportMessageUrgentFrame, TTSSpeakFrame
+from pipecat.frames.frames import LLMRunFrame, OutputTransportMessageUrgentFrame
 
 from teaport_brain.wake_words import carry_tail, find_wake, join_carry, normalize, parse_phrases  # noqa: F401
 
@@ -118,9 +119,12 @@ class WakeGate:
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
         self.owed = None      # the session's owed records (owed.Owed), likewise
-        # The conversation-start notice (build_agent_session, #280): a callable giving one
-        # fixed line to say when a wake starts a new conversation, or None.
-        self.notice = None
+        # The conversation-start notice (build_agent_session, #280): notice_due() says
+        # whether one is due, and start_with_notice() says it, heard in full, then asks
+        # for the greeting (AgentSession.start_with_notice). None: there is none.
+        self.notice_due = None
+        self.start_with_notice = None
+        self._starting: set = set()  # its task, held while it runs
         # Awaited once, at the wake: a session built without OpenClaw's voice context
         # (the gateway could not answer when it opened) asks for it again
         # (build_agent_session's refresh_host). None: nothing to ask.
@@ -188,13 +192,17 @@ class WakeGate:
         message = {"type": "wake", "greeted": greet, "resumed": bool(restored)}
         message.update({"phrase": phrase} if phrase is not None else {"why": why})
         await push(OutputTransportMessageUrgentFrame(message=message))
-        line = self.notice() if self.notice is not None and not restored else None
-        if line:
-            # Said first, out of the context: the pipeline talking, not the model.
-            await push(TTSSpeakFrame(line, append_to_context=False))
         if greet and self.greeting and self.context is not None:
             self.context.add_message({"role": "user", "content": self.greeting})
-            if run_greeting:
+            if run_greeting and self.notice_due is not None and self.notice_due():
+                # A new conversation with a notice due (#280): it plays first, heard in
+                # full, then the greeting -- from a task, as the line has to pass this
+                # STT. Not when words followed the wake phrase: they are the turn, and
+                # the notice waits for the next conversation.
+                task = asyncio.ensure_future(self.start_with_notice())
+                self._starting.add(task)
+                task.add_done_callback(self._starting.discard)
+            elif run_greeting:
                 await push(LLMRunFrame())
 
     def ended(self) -> None:
