@@ -5,6 +5,7 @@ details digit by digit, following status.json, repeat and cancel). No radio need
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -378,19 +379,39 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _no_avahi(setup):
-    """No real avahi-publish from a test: it would announce a .local name on this machine."""
-    setup.publish = lambda name: None
+def _no_avahi(setup, avahi=None):
+    """No real avahi-publish from a test: it would announce a .local name on this machine.
+    `avahi`: a FakeAvahi standing in for it (None: not installed)."""
+    setup.publish = (lambda name: None) if avahi is None else (lambda name: avahi.start(setup, name))
     setup.unpublish = lambda: None
 
 
-def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
+class FakeAvahi:
+    """avahi-publish as a real, live process (a sleep) that a test can kill, so page_url's
+    poll() sees it as on the box: running until killed."""
+
+    def __init__(self):
+        self.procs = []
+
+    def start(self, setup, name):
+        proc = subprocess.Popen(["sleep", "30"])
+        self.procs.append(proc)
+        setup.avahi, setup.avahi_name = proc, name
+        return proc
+
+    def kill(self):
+        for proc in self.procs:
+            proc.kill()
+            proc.wait()
+
+
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one."""
     status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
-    _no_avahi(setup)
+    _no_avahi(setup, avahi)
     result = {}
 
     def run():
@@ -422,7 +443,7 @@ def test_a_good_join_ends_connected():
     rc, seen = _run_setup(nm, post=[{"ssid": "home", "password": "homepass1"}])
     assert rc == 0
     assert [s["phase"] for s in seen] == ["scanning", "ap_up", "joining", "connected"]
-    assert seen[1]["password"] == "47190352" and seen[1]["url"] == "http://teaport-9e35.local"
+    assert seen[1]["password"] == "47190352" and seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
     assert ("join", "home", "homepass1", False) in nm.events and nm.events[-1] == ("ap_delete",)
 
 
@@ -509,11 +530,12 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
     assert shown[0]["qr"] == "WIFI:T:WPA;S:teaport-9e35;P:47190352;;"   # a phone joins
     assert all("qr" not in s for s in shown[1:])                         # only then
     assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
-                                 "http://teaport-9e35.local"]
-    assert shown[0]["title"] == "Wi-Fi setup" and shown[0]["ttl"] == display.HOLD_TTL_SECS
+                                 f"http://{wifi.AP_ADDRESS}"]
+    assert shown[0]["title"] == "Setup mode" and shown[0]["ttl"] == display.HOLD_TTL_SECS
     assert shown[1]["lines"] == ["Joining", "home"]
     # The last word: up for its seconds after the unit has exited, not taken down.
     assert sent[-1]["lines"] == ["Connected to", "home"]
+    assert sent[-1]["title"] == ws.CONNECTED_TITLE == "Wi-Fi"   # setup mode is over
     assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
     assert "homepass1" not in json.dumps(sent)       # the user's own password: never
 
@@ -567,7 +589,7 @@ def test_a_failed_join_is_shown_until_the_setup_network_is_back():
                                                 {"ssid": "home", "password": "homepass1"}])
     assert rc == 0
     shown = [(s["lines"], s["ttl"]) for s in sent if s.get("lines")]
-    details = ["Network  teaport-9e35", "Password  47190352", "http://teaport-9e35.local"]
+    details = ["Network  teaport-9e35", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
     hold = display.HOLD_TTL_SECS
     # Refreshes aside, in order: each screen replaces the one before, nothing in between.
     order = [x for i, x in enumerate(shown) if i == 0 or x != shown[i - 1]]
@@ -595,7 +617,6 @@ def test_network_names_reach_the_display_in_ascii():
     assert rc == 0 and seen[1]["ssid"] == "東京-box"     # the voice and page keep the name
     shown = [s["lines"] for s in sent if s.get("lines")]
     # The name folded would read wrong ("-box"): the code beside it carries the real one.
-    # The .local name cannot be shown in ASCII: the address that needs none instead.
     assert shown[0] == ["Network  (scan the code)", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
     assert ["Joining", "Cafe"] in shown and shown[-1] == ["Connected to", "Cafe"]
 
@@ -605,6 +626,75 @@ def test_a_folded_name_without_a_code_is_shown_folded():
     _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid="東京-box")
     assert seen[1]["qr"] is False
     assert sent[0]["lines"][0] == "Network  -box" and "qr" not in sent[0]
+    # The address the screen shows is the one the status carries for the voice.
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+
+
+LOCAL_SAID = "go to teaport dash nine E three five dot local, and pick your Wi-Fi."
+BARE_SAID = "go to one zero dot four two dot zero dot one, and pick your Wi-Fi."
+
+
+def test_with_avahi_up_the_local_name_is_everywhere():
+    screen, sent = _screen()
+    avahi = FakeAvahi()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, avahi=avahi)
+    avahi.kill()
+    assert sent[0]["lines"][2] == seen[1]["url"] == "http://teaport-9e35.local"
+    assert wv.instructions(seen[1], EN, spelled=True).endswith(LOCAL_SAID)
+
+
+def test_without_avahi_the_bare_address_is_everywhere():
+    screen, sent = _screen()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)        # not installed
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+    said = wv.instructions(seen[1], EN, spelled=True)
+    assert said.endswith(BARE_SAID) and "local" not in said
+
+
+def test_avahi_dying_mid_setup_switches_the_next_show_to_the_bare_address():
+    """The address is asked at every show: avahi gone between the first one and the
+    re-up after a failed join, the screen, the status and the voice all move to the IP."""
+    screen, sent = _screen()
+    avahi = FakeAvahi()
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    join = nm.join
+
+    def join_and_lose_avahi(*a):
+        avahi.kill()                       # the one running now dies...
+        avahi.start = lambda setup, name: (setattr(setup, "avahi", None),
+                                           setattr(setup, "avahi_name", name))  # ...for good
+        return join(*a)
+    nm.join = join_and_lose_avahi
+    rc, seen = _run_setup(nm, screen=screen, avahi=avahi,
+                          post=[{"ssid": "home", "password": "wrongpass"},
+                                {"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    ups = [s for s in seen if s["phase"] == "ap_up"]
+    shown = [s["lines"][2] for s in sent if s.get("lines", [""])[0].startswith("Network")]
+    assert ups[0]["url"] == shown[0] == "http://teaport-9e35.local"
+    assert ups[1]["url"] == shown[-1] == f"http://{wifi.AP_ADDRESS}"
+    assert wv.instructions(ups[0], EN, spelled=True).endswith(LOCAL_SAID)
+    assert wv.instructions(ups[1], EN, spelled=True).endswith(BARE_SAID)
+
+
+def test_an_avahi_publish_that_exits_at_once_is_not_shown(monkeypatch):
+    """No avahi-daemon: avahi-publish exits within milliseconds, after Popen returns.
+    A real process here (/bin/false), so the race is the real one."""
+    setup = ws.Setup(FakeNM([]), _Recorded(tempdir()), port=0)
+    monkeypatch.setattr(ws.shutil, "which", lambda name: "/bin/false")
+    setup.publish("teaport-9e35")
+    assert setup.page_url("teaport-9e35") == f"http://{wifi.AP_ADDRESS}"
+    assert setup.avahi is None
+
+
+@pytest.mark.parametrize("ssid", ["東京-box", "mybox"])
+def test_a_folded_or_custom_name_gets_the_bare_address_even_with_avahi(ssid):
+    screen, sent = _screen()
+    avahi = FakeAvahi()
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid, avahi=avahi)
+    avahi.kill()
+    assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
+    assert wv.instructions(seen[1], EN, spelled=True).endswith(BARE_SAID)
 
 
 @pytest.mark.parametrize("qr_max", [0, 37])
@@ -723,17 +813,45 @@ def test_the_details_are_spelled_for_the_voice():
     assert wv.spell("47190352", EN) == "four, seven, one, nine, zero, three, five, two"
     assert wv.spell("Tito2017", EN) == "capital T, I, T, O, two, zero, one, seven"
     text = wv.instructions({"ssid": "teaport-9e35", "password": "47190352"}, EN)
-    assert "teaport, dash, nine, E, three, five" in text and "teaport dash nine E three five dot local" in text
+    assert "teaport, dash, nine, E, three, five" in text
+    assert "one zero dot four two dot zero dot one" in text
     assert "screen" not in text                      # no display: not mentioned
 
 
-def test_the_voice_points_at_the_screen_only_when_it_got_there():
+SPELLED = ("On your phone, join the Wi-Fi network teaport, dash, nine, E, three, five. "
+           "The password is four, seven, one, nine, zero, three, five, two. Then open your "
+           "browser, go to one zero dot four two dot zero dot one, and pick your Wi-Fi.")
+
+
+def test_the_voice_follows_what_the_user_does_screen_first():
+    """In the order the user acts: the code (or the screen's network and password), then
+    the screen's address in the browser, then their network. The screen always shows the
+    address (http://10.42.0.1), so "the address on my screen" holds in both screen
+    branches. Nothing counts on the page opening by itself."""
     st = {"ssid": "teaport-9e35", "password": "47190352"}
-    assert wv.instructions(dict(st, screen=True), EN).endswith(
-        " You can also read these details on my screen.")
-    assert "screen" not in wv.instructions(dict(st, screen=False), EN)
-    assert wv.instructions(dict(st, screen=True, qr=True), EN).endswith(
-        " You can also scan the code on my screen to join, or read these details there.")
+    qr = wv.instructions(dict(st, screen=True, qr=True), EN)
+    assert qr == ("Scan the code on my screen with your phone's camera to join my setup "
+                  "network. Then, in your phone's browser, go to the address on my screen "
+                  "and pick your Wi-Fi. Say repeat if you'd like me to read the details.")
+    text = wv.instructions(dict(st, screen=True), EN)
+    assert text == ("On your phone, join the Wi-Fi network shown on my screen, using the "
+                    "password shown there. Then, in your phone's browser, go to the address "
+                    "on my screen and pick your Wi-Fi. Say repeat if you'd like me to read "
+                    "the details.")
+    # No screen, or a repeat: spelled, network, password, address.
+    assert wv.instructions(dict(st, screen=False), EN) == SPELLED
+    for extra in ({"screen": True}, {"screen": True, "qr": True}):
+        assert wv.instructions(dict(st, **extra), EN, spelled=True) == SPELLED
+    assert all("by itself" not in s and "should open" not in s for s in (qr, text, SPELLED))
+
+
+def test_a_name_the_screen_folds_is_spelled_without_a_code():
+    """Without a code the screen shows the name as the font folds it (Cafe for Café),
+    which would join nothing: the voice spells the real one."""
+    st = {"ssid": "Café-box", "password": "47190352", "screen": True}
+    assert wv.instructions(st, EN).startswith("On your phone, join the Wi-Fi network capital C, A, F, é")
+    assert "on my screen" not in wv.instructions(st, EN)
+    assert "Scan the code" in wv.instructions(dict(st, qr=True), EN)   # the code has it
 
 
 @pytest.mark.parametrize("text,hit", [
@@ -801,7 +919,11 @@ def test_the_voice_flow_confirms_starts_speaks_and_finishes(monkeypatch):
     said = asyncio.run(run())
     assert said[0].startswith("Do you want to set up Wi-Fi?")
     assert sum("four, seven, one, nine" in s for s in said) == 2   # spoken, then repeated
-    assert any("I'm in Wi-Fi setup" in s for s in said)
+    # The first time names the state the box is in; a repeat is the details alone.
+    spoken = [s for s in said if "four, seven, one, nine" in s]
+    assert spoken[0].startswith("I'm in setup mode. On your phone, join")
+    assert spoken[1].startswith("On your phone, join")
+    assert any("I'm in setup mode. Say repeat" in s for s in said)
     assert any("joining home" in s for s in said) and "online again" in said[-1]
 
 
@@ -823,7 +945,8 @@ def test_no_and_cancel_and_mumbling(monkeypatch):
 
     calls, said = asyncio.run(run())
     assert calls == [("restart", wv.UNIT), ("stop", wv.UNIT)]
-    assert "never mind" in said[1] and "stopped Wi-Fi setup" in said[-1]
+    # Cancelled before the setup network was up: never in setup mode, so not "left".
+    assert "never mind" in said[1] and said[-1] == "Okay, I've cancelled that. Everything is as it was."
 
 
 def test_a_unit_that_will_not_start_is_said_not_hidden():
@@ -834,7 +957,7 @@ def test_a_unit_that_will_not_start_is_said_not_hidden():
         return v.state, v.said[-1]
 
     state, last = asyncio.run(run())
-    assert state == "idle" and "couldn't start" in last
+    assert state == "idle" and "couldn't go into setup mode" in last
 
 
 if __name__ == "__main__":

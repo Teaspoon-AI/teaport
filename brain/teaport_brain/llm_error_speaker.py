@@ -94,7 +94,8 @@ GLITCH_NO_RETRY_TEXT = N_("Sorry, I couldn't get an answer just then.")
 
 # The account class. Says it will not pass by itself and where it is fixed: the config
 # page, which describes itself as "Settings for this Teaport box" and holds the key
-# (LLM_API_KEY). Not "setup page": that is the Wi-Fi setup page (wifi_setup.py). Worded
+# (LLM_API_KEY). Not "setup": setup mode is the state the box is in while it joins a
+# Wi-Fi network (wifi_voice.py), and its phone page is named for that action. Worded
 # so it also serves a caller on the phone who does not own the box.
 ACCOUNT_TEXT = N_("Sorry, I can't answer right now: the account I use for my answers "
                   "needs attention, and trying again won't help. It can be fixed on my "

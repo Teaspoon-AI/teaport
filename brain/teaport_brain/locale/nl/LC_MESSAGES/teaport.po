@@ -16,26 +16,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: nl\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Wil je de wifi instellen? Ik ben dan een paar minuten offline, terwijl jij het op je telefoon doet. Zeg ja of nee."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Wil je de wifi instellen? Ik ga dan in de verbindingsmodus en ben een paar minuten offline, terwijl jij het op je telefoon doet. Zeg ja of nee."
 
-msgid "Wi-Fi setup is already running."
-msgstr "Ik ben de wifi al aan het instellen."
+msgid "I'm already in setup mode."
+msgstr "Ik sta al in de verbindingsmodus."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "Oké. Momentje, ik zoek naar netwerken."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "Sorry, ik kon het instellen van de wifi op dit apparaat niet starten."
+msgid "I'm in setup mode."
+msgstr "Ik sta nu in de verbindingsmodus."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "Oké, ik ben gestopt met het instellen van de wifi en heb alles teruggezet zoals het was."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "Sorry, ik kon niet naar de verbindingsmodus gaan."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "Het instellen van de wifi is niet gestart. Probeer het zo nog een keer."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "Oké, ik heb de verbindingsmodus verlaten en alles teruggezet zoals het was."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "Ik wacht nog tot je klaar bent op de instelpagina."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Oké, ik heb het geannuleerd. Alles is zoals het was."
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "De verbindingsmodus is uitgezet. Alles is zoals het was."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Even geduld, ik maak de verbindingsmodus klaar. Zeg annuleer om te stoppen."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ik kon nog niet stoppen. Zeg zo nog een keer annuleer."
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "Ik kon niet naar de verbindingsmodus gaan. Probeer het zo nog een keer."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "Ik sta nog in de verbindingsmodus en wacht op je."
 
 msgid "That didn't work: {reason}."
 msgstr "Dat is niet gelukt: {reason}."
@@ -46,11 +61,14 @@ msgstr "Begrepen. Ik maak nu verbinding met {network}. Zet je telefoon ook weer 
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Ik ben verbonden met {network} en weer online."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "Het instellen van de wifi duurde te lang, dus ik heb alles teruggezet zoals het was."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "Er kwam op tijd geen verbinding, dus ik heb de verbindingsmodus verlaten en alles teruggezet zoals het was."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "Het instellen van de wifi is gestopt: {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "Ik heb de verbindingsmodus verlaten: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Sorry, ik kon niet naar de verbindingsmodus gaan: {reason}."
 
 msgid "your network"
 msgstr "je netwerk"
@@ -61,20 +79,20 @@ msgstr "er ging iets mis"
 msgid "Okay, never mind."
 msgstr "Oké, dan niet."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "Zeg ja om de wifi in te stellen, of nee."
+msgid "Say yes to go into setup mode, or no."
+msgstr "Zeg ja om naar de verbindingsmodus te gaan, of nee."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "Ik ben de wifi aan het instellen. Zeg herhaal om de gegevens nog een keer te horen, of annuleer om te stoppen."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Ik sta in de verbindingsmodus. Zeg herhaal om de gegevens te horen, of annuleer om de verbindingsmodus te verlaten."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {password}. Er zou vanzelf een instelpagina moeten verschijnen. Zo niet, ga dan naar {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {password}. Open daarna je browser, ga naar {url} en kies je wifi."
 
-msgid "You can also read these details on my screen."
-msgstr "Je kunt deze gegevens ook op mijn scherm lezen."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Verbind je telefoon met het wifinetwerk op mijn scherm, met het wachtwoord dat daar staat. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "Je kunt ook de code op mijn scherm scannen om verbinding te maken, of deze gegevens daar lezen."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Scan de code op mijn scherm met de camera van je telefoon om met mijn verbindingsnetwerk te verbinden. Ga daarna in de browser van je telefoon naar het adres op mijn scherm en kies je wifi. Zeg herhaal als ik de gegevens moet voorlezen."
 
 msgid "the saved settings for it did not work"
 msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"
@@ -95,22 +113,19 @@ msgid "this box has no Wi-Fi device"
 msgstr "dit apparaat heeft geen wifi"
 
 msgid "the setup network would not start"
-msgstr "het instelnetwerk startte niet"
-
-msgid "the setup page could not start"
-msgstr "de instelpagina kon niet starten"
+msgstr "het verbindingsnetwerk startte niet"
 
 msgid "open"
 msgstr "open"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Teaport: wifi instellen"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Teaport met wifi verbinden"
 
 msgid "Connect to Wi-Fi"
 msgstr "Verbinden met wifi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "Kies je netwerk en typ het wachtwoord. Teaport verlaat dan dit instelnetwerk, maakt verbinding met het jouwe en zegt hardop of dat gelukt is."
+msgstr "Kies je netwerk en typ het wachtwoord. Teaport verlaat dan dit verbindingsnetwerk, maakt verbinding met het jouwe en zegt hardop of dat gelukt is."
 
 msgid "No networks found — use Other."
 msgstr "Geen netwerken gevonden – kies ‘Ander’."
@@ -137,7 +152,7 @@ msgid "Joining {network}…"
 msgstr "Verbinden met {network}…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaport verlaat nu dit instelnetwerk. Zet je telefoon weer op {network}. Teaport zegt hardop of de verbinding gelukt is; zo niet, dan komt het instelnetwerk terug en kun je het opnieuw proberen."
+msgstr "Teaport verlaat nu dit verbindingsnetwerk. Zet je telefoon weer op {network}. Teaport zegt hardop of de verbinding gelukt is; zo niet, dan komt het verbindingsnetwerk terug en kun je het opnieuw proberen."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "Kan geen verbinding maken met {network}: {reason}. Probeer het opnieuw."

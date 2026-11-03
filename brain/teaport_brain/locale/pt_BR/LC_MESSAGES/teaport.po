@@ -16,26 +16,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: pt_BR\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Quer configurar o wi-fi? Vou ficar sem internet por alguns minutos enquanto você faz isso pelo celular. Diga sim ou não."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Quer configurar o wi-fi? Vou entrar no modo de conexão e ficar sem internet por alguns minutos enquanto você faz isso pelo celular. Diga sim ou não."
 
-msgid "Wi-Fi setup is already running."
-msgstr "A configuração do wi-fi já está em andamento."
+msgid "I'm already in setup mode."
+msgstr "Já estou no modo de conexão."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "Certo. Só um momento, vou procurar as redes."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "Desculpe, não consegui iniciar a configuração do wi-fi neste aparelho."
+msgid "I'm in setup mode."
+msgstr "Estou no modo de conexão."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "Tudo bem. Parei a configuração do wi-fi e deixei tudo como estava."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "Desculpe, não consegui entrar no modo de conexão."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "A configuração do wi-fi não foi iniciada. Tente de novo daqui a pouco."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "Tudo bem. Saí do modo de conexão e deixei tudo como estava."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "Ainda estou esperando você na página de configuração."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Tudo bem, cancelei. Está tudo como estava."
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "O modo de conexão foi desligado. Está tudo como estava."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Só um momento, estou preparando o modo de conexão. Diga cancelar para parar."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ainda não consegui parar. Diga cancelar de novo daqui a pouco."
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "Não consegui entrar no modo de conexão. Tente de novo daqui a pouco."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "Ainda estou no modo de conexão, esperando por você."
 
 msgid "That didn't work: {reason}."
 msgstr "Não deu certo: {reason}."
@@ -46,11 +61,14 @@ msgstr "Entendi. Estou me conectando a {network}. Volte a conectar o seu celular
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Pronto, me conectei a {network} e voltei a ter internet."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "O tempo para configurar o wi-fi acabou, então deixei tudo como estava."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "Nada se conectou a tempo, então saí do modo de conexão e deixei tudo como estava."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "A configuração do wi-fi parou: {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "Saí do modo de conexão: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Desculpe, não consegui entrar no modo de conexão: {reason}."
 
 msgid "your network"
 msgstr "sua rede"
@@ -61,20 +79,20 @@ msgstr "algo deu errado"
 msgid "Okay, never mind."
 msgstr "Tudo bem, deixa pra lá."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "Para configurar o wi-fi, diga sim. Se não quiser, diga não."
+msgid "Say yes to go into setup mode, or no."
+msgstr "Diga sim para entrar no modo de conexão, ou não."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "Estou configurando o wi-fi. Diga repetir para ouvir os dados de novo, ou cancelar para sair."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Estou no modo de conexão. Diga repetir para ouvir os dados, ou cancelar para sair do modo de conexão."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "No seu celular, conecte-se à rede wi-fi {ssid}. A senha é {password}. Uma página de configuração deve abrir sozinha. Se não abrir, acesse {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "No seu celular, conecte-se à rede wi-fi {ssid}. A senha é {password}. Depois, abra o navegador, acesse {url} e escolha o seu wi-fi."
 
-msgid "You can also read these details on my screen."
-msgstr "Você também pode ver esses dados na minha tela."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "No seu celular, conecte-se à rede wi-fi mostrada na minha tela, usando a senha mostrada ali. Depois, no navegador do celular, acesse o endereço da minha tela e escolha o seu wi-fi. Diga repetir se quiser que eu leia os dados."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "Você também pode escanear o código na minha tela para se conectar, ou ver esses dados lá."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Escaneie o código na minha tela com a câmera do celular para entrar na minha rede de conexão. Depois, no navegador do celular, acesse o endereço da minha tela e escolha o seu wi-fi. Diga repetir se quiser que eu leia os dados."
 
 msgid "the saved settings for it did not work"
 msgstr "os dados salvos dessa rede não funcionaram"
@@ -95,22 +113,19 @@ msgid "this box has no Wi-Fi device"
 msgstr "este aparelho não tem wi-fi"
 
 msgid "the setup network would not start"
-msgstr "não foi possível criar a rede de configuração"
-
-msgid "the setup page could not start"
-msgstr "não foi possível iniciar a página de configuração"
+msgstr "não foi possível criar a rede de conexão"
 
 msgid "open"
 msgstr "aberta"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Configuração de Wi-Fi do Teaport"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Conectar o Teaport ao Wi-Fi"
 
 msgid "Connect to Wi-Fi"
 msgstr "Conectar ao Wi-Fi"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "Escolha sua rede e digite a senha. O Teaport vai sair desta rede de configuração, se conectar à sua e avisar em voz alta se deu certo."
+msgstr "Escolha sua rede e digite a senha. O Teaport vai sair desta rede de conexão, se conectar à sua e avisar em voz alta se deu certo."
 
 msgid "No networks found — use Other."
 msgstr "Nenhuma rede encontrada. Use “Outra rede”."
@@ -137,7 +152,7 @@ msgid "Joining {network}…"
 msgstr "Conectando a {network}…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "O Teaport está saindo desta rede de configuração agora. Volte a conectar o seu celular a {network}. O Teaport vai avisar em voz alta se conseguiu se conectar; se não conseguir, a rede de configuração volta e você pode tentar de novo."
+msgstr "O Teaport está saindo desta rede de conexão agora. Volte a conectar o seu celular a {network}. O Teaport vai avisar em voz alta se conseguiu se conectar; se não conseguir, a rede de conexão volta e você pode tentar de novo."
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "Não foi possível conectar a {network}: {reason}. Tente de novo."

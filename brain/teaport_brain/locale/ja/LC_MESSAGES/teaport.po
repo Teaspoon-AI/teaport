@@ -16,26 +16,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: ja\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "ワイファイを設定しますか？スマートフォンで設定しているあいだ、数分ほどオフラインになります。「はい」か「いいえ」で答えてください。"
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "ワイファイを設定しますか？セットアップモードに切り替わり、スマートフォンで設定しているあいだ、数分ほどオフラインになります。「はい」か「いいえ」で答えてください。"
 
-msgid "Wi-Fi setup is already running."
-msgstr "ワイファイの設定は、もう始まっています。"
+msgid "I'm already in setup mode."
+msgstr "すでにセットアップモードになっています。"
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "わかりました。ネットワークを探しますので、少しお待ちください。"
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "すみません、この端末ではワイファイの設定を始められませんでした。"
+msgid "I'm in setup mode."
+msgstr "セットアップモードになりました。"
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "わかりました。ワイファイの設定を中止して、元の状態に戻しました。"
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "すみません、セットアップモードに切り替えられませんでした。"
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "ワイファイの設定を始められませんでした。しばらくしてから、もう一度お試しください。"
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "わかりました。セットアップモードを終了して、元の状態に戻しました。"
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "設定ページでの操作を、引き続きお待ちしています。"
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "わかりました。キャンセルしました。元の状態のままです。"
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "セットアップモードはオフになりました。元の状態のままです。"
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "少々お待ちください。セットアップモードの準備をしています。やめるには「キャンセル」と言ってください。"
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "まだ中止できませんでした。少ししてから、もう一度「キャンセル」と言ってください。"
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "セットアップモードに切り替えられませんでした。少し待ってから、もう一度お試しください。"
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "まだセットアップモードのまま、お待ちしています。"
 
 msgid "That didn't work: {reason}."
 msgstr "うまくいきませんでした。{reason}。"
@@ -46,11 +61,14 @@ msgstr "わかりました。{network}に接続します。スマートフォン
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "{network}に接続しました。オンラインに戻りました。"
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "ワイファイの設定が時間切れになったので、元の状態に戻しました。"
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "時間内に接続されなかったため、セットアップモードを終了して、元の状態に戻しました。"
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "ワイファイの設定が中断されました。{reason}。"
+msgid "I've left setup mode: {reason}."
+msgstr "セットアップモードを終了しました。{reason}。"
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "すみません、セットアップモードに切り替えられませんでした。{reason}。"
 
 msgid "your network"
 msgstr "選んだネットワーク"
@@ -61,20 +79,20 @@ msgstr "問題が発生しました"
 msgid "Okay, never mind."
 msgstr "わかりました。設定はやめておきますね。"
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "ワイファイの設定を始めるなら「はい」、やめるなら「いいえ」と言ってください。"
+msgid "Say yes to go into setup mode, or no."
+msgstr "セットアップモードにするなら「はい」、しないなら「いいえ」と言ってください。"
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "今、ワイファイの設定中です。案内をもう一度聞くには「もう一度」、やめるには「キャンセル」と言ってください。"
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "今、セットアップモードです。詳しい情報を聞くには「もう一度」、セットアップモードを終了するには「キャンセル」と言ってください。"
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "スマートフォンで、次のワイファイのネットワークに接続してください。ネットワーク名は、{ssid}です。パスワードは、{password}です。設定ページが自動で開くはずです。開かない場合は、ブラウザで{url}を開いてください。"
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "スマートフォンで、次のワイファイのネットワークに接続してください。ネットワーク名は、{ssid}です。パスワードは、{password}です。次に、ブラウザを開いて{url}にアクセスし、お使いのワイファイを選んでください。"
 
-msgid "You can also read these details on my screen."
-msgstr "同じ情報は、本体の画面にも表示されています。"
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "スマートフォンで、画面に表示されているワイファイのネットワークに、そこに表示されているパスワードで接続してください。次に、スマートフォンのブラウザで画面に表示されているアドレスを開き、お使いのワイファイを選んでください。詳しい情報を読み上げてほしい場合は「もう一度」と言ってください。"
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "本体の画面のコードを読み取って接続することも、画面で同じ情報を確認することもできます。"
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "スマートフォンのカメラで画面のコードを読み取って、設定用のネットワークに接続してください。次に、スマートフォンのブラウザで画面に表示されているアドレスを開き、お使いのワイファイを選んでください。詳しい情報を読み上げてほしい場合は「もう一度」と言ってください。"
 
 msgid "the saved settings for it did not work"
 msgstr "保存されていた設定では接続できませんでした"
@@ -97,14 +115,11 @@ msgstr "この端末にはワイファイ機能がありません"
 msgid "the setup network would not start"
 msgstr "設定用のネットワークを起動できませんでした"
 
-msgid "the setup page could not start"
-msgstr "設定ページを起動できませんでした"
-
 msgid "open"
 msgstr "パスワードなし"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Teaport Wi-Fi設定"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "TeaportをWi-Fiに接続"
 
 msgid "Connect to Wi-Fi"
 msgstr "Wi-Fiに接続"
