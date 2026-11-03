@@ -869,6 +869,7 @@ async def run_connection(sock, on_ready=None):
         # The owner's recording of the call (TEAPORT_CALL_RECORDING, off by default).
         recording = (call_recording.CallRecording(call_id, ring.caller, resumed=resumed)
                      if call_recording.ENABLED else None)
+        await credit.MONITOR.settled()  # the trial credit's first read (credit.py, #280)
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,

@@ -205,8 +205,16 @@ class WakeGate:
             elif run_greeting:
                 await push(LLMRunFrame())
 
+    def cancel_start(self) -> None:
+        """Drop a conversation-start notice still running (start_with_notice): the
+        session ended, or went on hold for a phone call."""
+        for task in list(self._starting):
+            task.cancel()
+        self._starting.clear()
+
     def ended(self) -> None:
         """The session is over: what it said is the mic conversation, to be continued."""
+        self.cancel_start()
         if self.woke and self.remembers and self.context is not None:
             records = []
             if self.owed is not None:

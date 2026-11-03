@@ -673,6 +673,7 @@ async def account(request: Request):
     credit stands (credit.py, #280), and the step's words. The key itself is never
     returned."""
     _authorize(request)
+    credit.MONITOR.poke()  # the owner looks at the account: read the credit again, soon
     t = _reader(request)
     rows = _rows()
     text = await asyncio.to_thread(_read_text, _store_path("brain_env"))

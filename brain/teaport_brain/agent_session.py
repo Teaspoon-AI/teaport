@@ -433,6 +433,8 @@ class AgentSession:
     # gives the line due (or None) and told() records it as heard; None where there is
     # no such notice (a phone call, a bridge, no model).
     start_notice = None
+    # The mic path's wake gate (wake_gate.WakeGate), or None (build_agent_session sets it).
+    wake_gate = None
     # How long say_start_notice() waits for its line to play.
     START_NOTICE_MAX_SECS = 15.0
 
@@ -449,7 +451,9 @@ class AgentSession:
             played = await self._say_whole(line, self.START_NOTICE_MAX_SECS,
                                            name="the conversation-start notice")
         finally:
-            if self.input_mute is not None:
+            # Listening again -- unless a phone call put this conversation on hold
+            # meanwhile: a held session stays unheard until resume().
+            if self.input_mute is not None and not self.held:
                 self.input_mute.muted = False
         if played:
             notice.told()
@@ -460,6 +464,8 @@ class AgentSession:
         greeting asked for -- queued from here, not pushed from inside the STT, which
         must not wait on a line that has to pass it."""
         await self.say_start_notice()
+        if self.held or getattr(self.task, "has_finished", lambda: False)():
+            return  # on hold for a call, or over: no greeting into it
         await self.task.queue_frames([LLMRunFrame()])
 
     async def _say_notice(self, notice: str) -> bool:
@@ -572,7 +578,9 @@ class AgentSession:
         """Put this conversation on hold: say `line` (heard in full, and into the context:
         the model knows it stepped away), stop listening, and let the engine's STT
         session go. The pipeline, the client and the context stay; resume() brings it
-        back."""
+        back. A wake's conversation-start notice still waiting to play is dropped."""
+        if self.wake_gate is not None:
+            self.wake_gate.cancel_start()
         if line:
             await self.say_last_line(line, max_secs, append_to_context=True)
         elif self.input_mute is not None:
@@ -1418,9 +1426,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     _end_session_when_unusable(transport_output, "reach the user", task)
     if client_notes is not None:
         client_notes.task = task  # a reaction is an LLMRunFrame queued on it
-    if llm is None:
-        # A model can be made now: after its "I'm ready now" the session ends (drained,
-        # so the line plays), and the front-end's next one is built with the model.
+    if error_speaker is not None:
+        # After "I'm ready now" (no model, #277) or the trial credit running out (#280)
+        # the session ends (drained, so the line plays), and the front-end's next one is
+        # built anew: with the model, or without it.
         error_speaker.end = task.stop_when_done
 
     @task.event_handler("on_setup_timeout")

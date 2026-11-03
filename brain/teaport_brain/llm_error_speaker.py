@@ -309,6 +309,9 @@ class LLMErrorSpeaker(FrameProcessor):
         # a duplicate of an utterance that never happened.
         self._said = -math.inf          # the vague line
         self._said_account = -math.inf  # the full account line
+        # The last line was the trial credit running out on a refusal (#280): the
+        # session ends after it, so the next is built without a model.
+        self._end_after = False
 
     def _notice(self, frame: ErrorFrame, now: float) -> str | None:
         """The line for this failure, or None for none; moves the clocks."""
@@ -324,6 +327,7 @@ class LLMErrorSpeaker(FrameProcessor):
             state = credit.MONITOR.state()
             if self._owner and state not in (credit.NONE, credit.OWN) and (
                     category_of(frame) is ErrorCategory.QUOTA or state == credit.EMPTY):
+                self._end_after = True
                 return self._spent_text()
             return ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
@@ -353,8 +357,12 @@ class LLMErrorSpeaker(FrameProcessor):
         self._said = now
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
-        if self._why() == credit.SPENT_REASON and self._owner:
-            return self._spent_text()
+        if self._why() == credit.SPENT_REASON:
+            # Asked for an answer while it is spent: read again (spaced: MIN_READ_SECS),
+            # so a top-up is found within a minute, not at the next poll (#280).
+            credit.MONITOR.poke()
+            if self._owner:
+                return self._spent_text()
         return NO_MODEL_SETTINGS_TEXT if self._settings else NO_MODEL_TEXT
 
     async def _answer_without_model(self) -> None:
@@ -370,16 +378,26 @@ class LLMErrorSpeaker(FrameProcessor):
                         "session, so the next one is built with it")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=dict(RESTART_CALL)),
                                   FrameDirection.DOWNSTREAM)
+        await self._say(text)
+        if text is NO_MODEL_READY_NEW_TEXT:
+            await self._end_for_the_next("no model: one can be made now")
+
+    async def _say(self, text: str) -> None:
+        """`text` (a msgid) in the session's language, the pipeline talking: out of the
+        context, noted as the box's own voice (a phrase may be in it)."""
         t = i18n.for_espeak(self._lang_fn())
         line = t._(text)
         if self._phrases is not None:
-            # A phrase is in the line: heard back, it is the box's own voice.
             self._phrases.note_said(line)
         await self.push_frame(TTSSpeakFrame(line, append_to_context=False),
                               FrameDirection.DOWNSTREAM)
-        if text is NO_MODEL_READY_NEW_TEXT and self.end is not None:
-            logger.info("no model: one can be made now -- ending this session, so the "
-                        "next one is built with it")
+
+    async def _end_for_the_next(self, why: str) -> None:
+        """End this session after the line just pushed (drained, so it plays), so the next
+        one is built afresh: with a model once one can be made (#277), without one once
+        the trial credit has run out (#280)."""
+        if self.end is not None:
+            logger.info(f"{why} -- ending this session, so the next one is built anew")
             await self.end()
 
     def _spawn(self, coro):
@@ -404,11 +422,15 @@ class LLMErrorSpeaker(FrameProcessor):
                 logger.warning(
                     f"LLMErrorSpeaker: speaking {text[:40]!r} ({category_of(frame).value}:"
                     f" {failure_reason(frame.exception) or 'no exception'})")
-                t = i18n.for_espeak(self._lang_fn())
                 # DOWNSTREAM: the TTS is below this processor, and the error itself
                 # still continues upstream to the task on the push below.
-                await self.push_frame(TTSSpeakFrame(t._(text), append_to_context=False),
-                                      FrameDirection.DOWNSTREAM)
+                await self._say(text)
+                if self._end_after:
+                    # The trial credit ran out mid-conversation (#280): it counts as
+                    # spent now, and this session ends, so the next has no model.
+                    self._end_after = False
+                    credit.MONITOR.refused_for_credit()
+                    await self._end_for_the_next("the trial credit ran out")
             else:
                 logger.debug("LLMErrorSpeaker: notice debounced")
         await self.push_frame(frame, direction)

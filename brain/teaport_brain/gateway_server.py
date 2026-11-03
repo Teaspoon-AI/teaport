@@ -435,6 +435,9 @@ async def run_relay_bot(websocket: WebSocket):
         input_procs = [audio_dump.CallerAudioTap(
             "talk-" + time.strftime("%Y%m%d%H%M%S", time.gmtime()) + f"{time.time() % 1:.6f}"[2:],
             sample_rate=PIPELINE_SAMPLE_RATE)]
+    # A box just started on its trial credit: its first read decides whether this
+    # session gets a model (credit.py, #280; at most a few seconds, once).
+    await credit.MONITOR.settled()
     session = build_agent_session(
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),

@@ -176,20 +176,133 @@ def test_each_warning_is_said_once_heard_then_at_most_daily_and_survives_a_resta
     assert m.notice() is None and m.state() == credit.OWN
 
 
-def test_a_told_time_in_the_future_is_reset_not_taken_as_expired():
-    """A box that booted with a wrong clock (no RTC battery, before NTP): told "tomorrow"
-    is now, and quiet."""
+def test_a_box_without_an_rtc_does_not_repeat_the_warning_after_ntp():
+    """No RTC battery: the box boots at its last saved time, behind the real one, and NTP
+    sets the clock later. A told time ahead of the clock is kept and not due; the day
+    counts from when it was really said (#280 review)."""
     _box()
     clock = Clock()
     m, _ = _monitor({"limit": 5, "limit_remaining": 2.5, "usage": 2.5}, clock)
     _run(m.refresh())
+    told_at = clock.now
     m.told(credit.HALF_TEXT)
-    clock.now -= 30 * 24 * 3600                      # the clock jumps back a month
+    clock.now = told_at - 3 * 3600                   # reboot: the clock three hours behind
     assert m.notice() is None
-    clock.now += 3600                                # an hour later on the new clock
+    assert credit._load_notices()[m._notice_key(credit.HALF)] == told_at  # kept as it was
+    clock.now = told_at + 3600                       # NTP: the real time, an hour after
     assert m.notice() is None
-    clock.now += credit.REPEAT_SECS
+    clock.now = told_at + credit.REPEAT_SECS + 1     # a real day later: due again
     assert m.notice() == credit.HALF_TEXT
+    # A time written by a clock that ran far ahead is put right, quietly.
+    m.told(credit.HALF_TEXT)
+    clock.now -= 30 * 24 * 3600
+    assert m.notice() is None
+    assert credit._load_notices()[m._notice_key(credit.HALF)] == clock.now
+
+
+def test_a_session_built_at_boot_waits_briefly_for_the_first_read():
+    """A box that boots with its trial credit spent: the first session waits (bounded)
+    for the first read and is built with no model (#280 review)."""
+    _box()
+
+    async def run(delay, timeout):
+        m, fetch = _monitor({"limit": 5, "limit_remaining": 0, "usage": 5})
+        real_fetch = fetch.__call__
+
+        def slow(key, base_url, timeout=None):
+            import time as tm
+            tm.sleep(delay)
+            return real_fetch(key, base_url)
+
+        m._fetch = slow
+        real = credit.MONITOR
+        credit.MONITOR = m
+        task = asyncio.ensure_future(m.run())
+        try:
+            await asyncio.sleep(0)
+            t0 = asyncio.get_running_loop().time()
+            await m.settled(timeout)
+            waited = asyncio.get_running_loop().time() - t0
+            return m.spent(), waited
+        finally:
+            credit.MONITOR = real
+            task.cancel()
+
+    spent, waited = _run(run(0.2, 3.0))
+    assert spent and waited < 2.0
+    spent, waited = _run(run(2.0, 0.3))              # a stalled read: going on without it
+    assert not spent and waited < 1.0
+    # Off the starter key nothing is waited for.
+    ai_account.store_key(OWN)
+    _, waited = _run(run(2.0, 3.0))
+    assert waited < 0.1
+
+
+def test_the_credit_running_out_mid_conversation_ends_the_session_for_a_model_less_next():
+    """A 402 on the starter key in the owner's conversation: the trial-credit line, the
+    credit counted as spent, and the session ended the way #277's "I'm ready now" ends
+    one -- so the next is built with no model (#280 review)."""
+    from test_llm_account_error import ACCOUNT_CASES, _llm, _raise_through, _spoken
+    _box()
+    m, _ = _monitor({"limit": 5, "limit_remaining": 0.9, "usage": 4.1})
+    real = credit.MONITOR
+    credit.MONITOR = m
+
+    async def run():
+        await m.refresh()
+        llm, pushed = _llm()
+        frame = await _raise_through(llm, pushed, ACCOUNT_CASES["402 no credit"]())
+        speaker = llm_error_speaker.LLMErrorSpeaker(settings=True, owner=True)
+        ended = []
+
+        async def end():
+            ended.append(1)
+
+        speaker.end = end
+        said = await _spoken(speaker, frame)
+        return said, ended
+
+    try:
+        said, ended = _run(run())
+        assert said == [credit.EMPTY_TEXT] and ended == [1], (said, ended)
+        assert m.spent()
+        try:
+            services.make_llm()
+            raise AssertionError("a model after the trial credit ran out")
+        except services.NoModel:
+            pass
+    finally:
+        credit.MONITOR = real
+
+
+def test_asking_while_spent_reads_again_and_so_does_opening_settings():
+    _box()
+    m, _ = _monitor({"limit": 5, "limit_remaining": 0, "usage": 5})
+    real = credit.MONITOR
+    credit.MONITOR = m
+    poked = []
+    m.poke = lambda: poked.append(1)
+    try:
+        _run(m.refresh())
+        speaker = llm_error_speaker.LLMErrorSpeaker(no_model=True, owner=True,
+                                                    why=services.model_missing)
+        assert _run(speaker._no_model_line()) == credit.EMPTY_PLAIN_TEXT and poked == [1]
+        from teaport_brain import pairing, settings_access
+
+        class Voice:
+            t, said = i18n.get("en"), []
+
+            async def say(self, text):
+                self.said.append(text)
+
+        host, pairing.FRONTDOOR_HOST = pairing.FRONTDOOR_HOST, ""
+        try:
+            _run(settings_access.SettingsPhrase().open(Voice()))
+        finally:
+            pairing.FRONTDOOR_HOST = host
+        assert poked == [1, 1]  # "open my settings": the owner is at the account
+    finally:
+        credit.MONITOR = real
 
 
 def test_the_marker_takes_the_documented_recipe_and_a_hashed_key_file():
@@ -358,6 +471,60 @@ def test_the_notice_is_heard_in_full_before_the_greeting_and_counted_only_once_p
     started.clear()
     _run(wake(store))                                 # a conversation continued: no notice
     assert started == []
+
+
+def test_the_wake_notice_task_ends_with_the_session_and_a_hold():
+    """The notice a wake starts is cancelled when the session ends or a call puts it on
+    hold; a held session is not unmuted by it, nor greeted (#280 review)."""
+    from teaport_brain.agent_session import AgentSession
+
+    async def run(how):
+        gate = WakeGate(["hey box"], store=MicConversation(), greeting="(greet)")
+        gate.context = LLMContext([])
+        playing = asyncio.Event()
+
+        async def start_with_notice():
+            playing.set()
+            await asyncio.sleep(30)               # the line playing
+
+        gate.notice_due = lambda: True
+        gate.start_with_notice = start_with_notice
+
+        async def push(frame):
+            pass
+
+        await gate.wake(push, "hey box")
+        await playing.wait()
+        (task,) = gate._starting
+        if how == "ended":
+            gate.ended()
+        else:
+            s = AgentSession(task=FakeTask(), context=LLMContext([]), stt=None, tts=None,
+                             llm=None, ledger=None, followup_gate=None)
+            s.wake_gate = gate
+            gate.cancel_start()  # what hold() does first
+        await asyncio.sleep(0)
+        return task.cancelled() or task.done(), gate._starting
+
+    for how in ("ended", "hold"):
+        done, left = _run(run(how))
+        assert done and not left, how
+
+    # A call that holds the session while the notice plays: no unmute, no greeting.
+    class Mute:
+        muted = True
+
+    s = AgentSession(task=FakeTask(), context=LLMContext([]), stt=None, tts=None, llm=None,
+                     ledger=None, followup_gate=None, input_mute=Mute())
+    s.start_notice = Notice()
+
+    async def say_whole(line, max_secs, *, name, append_to_context=False):
+        s.held = True                              # the call came while it played
+        return False
+
+    s._say_whole = say_whole
+    _run(s.start_with_notice())
+    assert s.input_mute.muted is True and s.task.frames == []
 
 
 # ------------------------------------------------------------------ where it shows

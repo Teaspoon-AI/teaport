@@ -62,6 +62,8 @@ POLL_SECS = setting("TEAPORT_STARTER_POLL_SECS")
 # Reads at most this often: a poke (a conversation ending, a refusal) sooner waits for it,
 # so a burst of reconnects or failures is one read, not one each.
 MIN_READ_SECS = 60.0
+# How long a session being built waits for the first read on a box that just started.
+FIRST_READ_WAIT_SECS = 3.0
 # A warning is said again, while its state lasts, at most this often.
 REPEAT_SECS = 24 * 3600.0
 # Below this many dollars the credit is spent (a request costs more than what is left).
@@ -164,6 +166,7 @@ class Monitor:
         self._fresh = False       # the last request was answered
         self._wake: asyncio.Event | None = None
         self._mono = time.monotonic  # the read spacing's clock (MIN_READ_SECS)
+        self._attempted: asyncio.Event | None = None  # set after each read attempt (run)
 
     # -- reading
     def status(self) -> dict:
@@ -215,6 +218,30 @@ class Monitor:
         self._for, self._state, self._numbers = mine, state, numbers
         self._checked, self._fresh = self._clock(), True
 
+    async def settled(self, timeout: float = FIRST_READ_WAIT_SECS) -> None:
+        """Before a session is built: on the starter key with nothing read of it yet (the
+        brain just started), wait -- at most `timeout` -- for the first read, so a box that
+        boots with its trial credit spent starts with no model rather than one that
+        refuses every turn. Nothing to wait for otherwise, or with no reader running."""
+        key = ai_account.current_key()
+        if self._attempted is None or not on_starter(key) or self._for == key_hash(key):
+            return
+        try:
+            await asyncio.wait_for(self._attempted.wait(), timeout)
+        except asyncio.TimeoutError:
+            logger.info("credit: the trial credit is not read yet -- going on without it")
+
+    def refused_for_credit(self) -> None:
+        """The provider refused the starter key for its credit (402) mid-conversation: it
+        counts as spent now, so the next session is built without a model (make_llm),
+        until a read says otherwise (a top-up). Read soon."""
+        key = ai_account.current_key()
+        if on_starter(key):
+            if self._state != EMPTY:
+                logger.info("credit: the provider refused the trial credit -- spent")
+            self._for, self._state, self._fresh = key_hash(key), EMPTY, False
+        self.poke()
+
     def poke(self) -> None:
         """Read again soon: a conversation ended, or the provider refused the account."""
         if self._wake is not None:
@@ -224,12 +251,14 @@ class Monitor:
         """The brain's loop (gateway_server's lifespan): a read now, then every
         POLL_SECS or when poked. A failed read is logged and waited out."""
         self._wake = asyncio.Event()
+        self._attempted = asyncio.Event()
         while True:
             read_at = self._mono()
             try:
                 await self.refresh()
             except Exception as e:  # noqa: BLE001 -- the loop must outlive a bad read
                 logger.warning(f"credit: the read failed: {e!r}")
+            self._attempted.set()
             try:
                 await asyncio.wait_for(self._wake.wait(), POLL_SECS)
             except asyncio.TimeoutError:
@@ -247,8 +276,10 @@ class Monitor:
         Nothing where "open my settings" is not heard (`settings` False: the lines tell
         the owner to say it). Empty is not a notice: the box stops (services.make_llm).
 
-        A told time in the future (a box that booted with a wrong clock, before NTP set
-        it) is rewritten to now, and the line is not said: a clock jump never repeats one."""
+        A told time ahead of now is a clock that is behind (a box with no RTC battery
+        boots at its last saved time, before NTP sets it): not due, and kept, so the day
+        counts from when it was really said. Only one more than REPEAT_SECS ahead -- a
+        time written by a clock that was wrong the other way -- is rewritten to now."""
         state = self.state()
         if state not in (HALF, LOW) or not settings:
             return None
@@ -256,8 +287,9 @@ class Monitor:
         key, now = self._notice_key(state), self._clock()
         last = seen.get(key)
         if isinstance(last, (int, float)) and last > now:
-            seen[key] = now
-            _save_notices(seen)
+            if last - now > REPEAT_SECS:
+                seen[key] = now
+                _save_notices(seen)
             return None
         if isinstance(last, (int, float)) and now - last < REPEAT_SECS:
             return None
