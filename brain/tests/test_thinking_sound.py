@@ -18,7 +18,6 @@ import os
 import struct
 import subprocess
 import sys
-import time
 import wave
 
 BRAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -154,6 +153,68 @@ def test_nothing_the_brain_starts_with_imports_numpy_random():
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout
 
 
+class _Jump:
+    """The selector of a _VirtualTime loop: never waits out a timer, jumps to it, once
+    nothing else can run (no callback ready, no I/O, no render out on a thread)."""
+
+    def __init__(self, real, loop):
+        self._real, self._loop = real, loop
+
+    def select(self, timeout=None):
+        if timeout == 0:
+            return self._real.select(0)
+        if self._loop.rendering or timeout is None:
+            # A render on a thread (its end wakes the loop), or nothing scheduled at all:
+            # wait for real, the virtual clock standing still meanwhile.
+            return self._real.select(None)
+        events = self._real.select(0)
+        if not events:
+            self._loop.now += timeout
+        return events
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class _VirtualTime(asyncio.SelectorEventLoop):
+    """An event loop on virtual time, for what the bed does at its own pace: a sleep
+    takes no real time, and a render on a worker thread (asyncio.to_thread) takes no
+    virtual time, so a window holds what it would on an idle machine however loaded the
+    runner (#265, #285). A test makes a render slow with advance()."""
+
+    def __init__(self):
+        super().__init__()
+        self.now = 1000.0
+        self.rendering = 0
+        self._selector = _Jump(self._selector, self)
+
+    def time(self):
+        return self.now
+
+    def advance(self, secs):
+        self.now += secs
+
+    def run_in_executor(self, executor, func, *args):
+        fut = super().run_in_executor(executor, func, *args)
+        self.rendering += 1
+
+        def back(_):
+            self.rendering -= 1
+        fut.add_done_callback(back)
+        return fut
+
+    async def shutdown_default_executor(self, timeout=None):
+        # Its join, on a thread, is waited for for real (not jumped past by its timeout).
+        self.rendering += 1
+        try:
+            await super().shutdown_default_executor(timeout)
+        finally:
+            self.rendering -= 1
+
+
+_loop = None   # the running async test's _VirtualTime
+
+
 def _bed(consults_async=True, keys=True, gate=None):
     """A ThinkingSound with what it pushes recorded as (when, frame) and its tasks run on
     the test loop (there is no pipeline TaskManager here)."""
@@ -161,7 +222,7 @@ def _bed(consults_async=True, keys=True, gate=None):
     out = []
 
     async def push(frame, direction=FrameDirection.DOWNSTREAM):
-        out.append((time.monotonic(), frame))
+        out.append((ts._now(), frame))
 
     async def cancel(task, *a, **k):
         task.cancel()
@@ -177,18 +238,30 @@ def _bed(consults_async=True, keys=True, gate=None):
 
 
 def _with(grace=0.1, max_s=None, chunk=None):
-    """Run an async test with TEAPORT_THINKING_GRACE_S (and _MAX_S, the typist's chunk)
-    set for it."""
+    """Run an async test on virtual time (_VirtualTime) with TEAPORT_THINKING_GRACE_S
+    (and _MAX_S, the typist's chunk, made fresh by `chunk()` each run) set for it, and
+    the typist seeded: the same typing, so the same key presses in each window, every
+    run."""
     def wrap(fn):
         def run():
-            saved = ts._GRACE_S, ts._MAX_S, ts._Typist.chunk
+            global _loop
+            saved = ts._GRACE_S, ts._MAX_S, ts._Typist
+
+            class Seeded(ts._Typist):
+                def __init__(self, keyboard, seed=5):
+                    super().__init__(keyboard, seed)
+            if chunk:
+                Seeded.chunk = chunk()          # (fresh each run: it counts)
             ts._GRACE_S = grace
             ts._MAX_S = ts._MAX_S if max_s is None else max_s
-            ts._Typist.chunk = chunk or ts._Typist.chunk
+            ts._Typist = Seeded
+            _loop = _VirtualTime()
             try:
-                asyncio.run(fn())
+                with asyncio.Runner(loop_factory=lambda: _loop) as runner:
+                    runner.run(fn())
             finally:
-                ts._GRACE_S, ts._MAX_S, ts._Typist.chunk = saved
+                ts._GRACE_S, ts._MAX_S, ts._Typist = saved
+                _loop = None
         run.__name__ = fn.__name__
         return run
     return wrap
@@ -216,11 +289,10 @@ def _said(out, kind):
 
 async def _soon(check, within=1.5):
     """Whether check() comes true within `within` seconds. For what the bed does at its
-    own pace: the typist pauses between words (up to ~0.7 s without a keystroke), and a
-    slow machine renders fewer chunks in a fixed window."""
-    end = time.monotonic() + within
+    own pace: the typist pauses between words (up to ~0.7 s without a keystroke)."""
+    end = ts._now() + within
     while not check():
-        if time.monotonic() > end:
+        if ts._now() > end:
             return False
         await asyncio.sleep(0.02)
     return True
@@ -368,19 +440,21 @@ async def test_a_line_that_starts_during_a_render_gets_no_typing_behind_it():
     bed, out = _bed(keys=False)
     real, calls, line = ts._Typist.chunk, [], {}
 
+    def begin():
+        bed._track_line(TTSStartedFrame())
+        line["t"] = ts._now()
+
     def chunk(self, heard=True):
         calls.append(None)
         if len(calls) == 5:                                  # a progress line begins mid-render
-            bed._track_line(TTSStartedFrame())
-            line["t"] = time.monotonic()
+            loop.call_soon_threadsafe(begin)                 # (its frame, on the loop)
         return real(self, heard)
 
+    loop = asyncio.get_running_loop()
     ts._Typist.chunk = chunk
     try:
         await _send(bed, _working("c1"))
-        give_up = time.monotonic() + 5                       # (however slow the runner)
-        while len(calls) < 5 and time.monotonic() < give_up:
-            await asyncio.sleep(0.01)
+        assert await _soon(lambda: len(calls) >= 5)
         await asyncio.sleep(0.1)                             # (within the line's grace)
         await _send(bed, _working("c1", done=True))
     finally:
@@ -448,11 +522,12 @@ async def test_no_typing_is_heard_while_a_control_call_waits():
     saved = ts._CONTROL_MAX_S
     ts._CONTROL_MAX_S = 0.2
     try:
-        mark, t0 = len(out), time.monotonic()
+        mark, t0 = len(out), ts._now()
         await _send(bed, FunctionCallsStartedFrame(function_calls=[SimpleNamespace(
             function_name="openclaw_agent_control", tool_call_id="k2")]))
         assert await _soon(lambda: _audio(out[mark:]))
-        assert ts._CONTROL_MAX_S <= _audio(out[mark:])[0] - t0 < ts._CONTROL_MAX_S + 0.4
+        late = _audio(out[mark:])[0] - t0
+        assert ts._CONTROL_MAX_S <= late <= ts._CONTROL_MAX_S + ts._CHUNK_MS / 1000, late
     finally:
         ts._CONTROL_MAX_S = saved
     await _send(bed, _working("c1", done=True))
@@ -509,7 +584,7 @@ def _counting_chunk():
     return chunk
 
 
-@_with(grace=0.0, max_s=0.1, chunk=_counting_chunk())
+@_with(grace=0.0, max_s=0.1, chunk=_counting_chunk)
 async def test_with_nothing_to_play_and_no_face_nothing_is_typed():
     """Past MAX_S (or while the line is busy), a client that does not type along has
     nothing to render: the typist waits."""
@@ -537,12 +612,12 @@ def _stalling_chunk():
     def chunk(self, heard=True):
         renders.append(None)
         if len(renders) == 10:
-            time.sleep(0.2)                                  # a render stalls 200 ms
+            _loop.advance(0.2)                               # a render stalls 200 ms
         return real(self, heard)
     return chunk
 
 
-@_with(grace=0.0, chunk=_stalling_chunk())
+@_with(grace=0.0, chunk=_stalling_chunk)
 async def test_the_typing_keeps_time_and_catches_up_one_chunk_after_a_stall():
     """Paced on the clock: a chunk every 40 ms however long each takes to render, and
     after a stall one chunk at once, no more (a longer catch-up would queue ahead of the
@@ -553,7 +628,7 @@ async def test_the_typing_keeps_time_and_catches_up_one_chunk_after_a_stall():
     await _send(bed, _working("c1", done=True))
     gaps = np.diff(_audio(out))
     stall = int(np.argmax(gaps))
-    assert 0.18 < gaps[stall] < 1.0, gaps[stall]          # (a loaded runner may stretch it)
+    assert abs(gaps[stall] - 0.24) < 1e-6, gaps[stall]    # the stall and its own 40 ms
     caught_up = 0
     for g in gaps[stall + 1:]:                      # back to back right after it, then 40 ms
         if g >= 0.02:
