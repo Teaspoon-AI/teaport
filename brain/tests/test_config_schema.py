@@ -62,7 +62,8 @@ FORMS = {
         (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "keeps keyvalue"):   # read by confval/confvals, for the conf's key=value form
         (r'\bconfvals?[ \t]+"[^"\n]*"[ \t]+{name}\b',),
-    ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
+    # envval as written; unit_env_value as the unit's EnvironmentFile gives it (cli/teaport)
+    ("shell", "uses"): (r'\b(?:envval|unit_env_value)[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
     ("js", "uses"): (r"""\bprocess\.env\.{name}\b|(?<![.\w$])setting\(\s*(["']){name}\1""",),
     ("python", "uses"): (SETDEFAULT,),
