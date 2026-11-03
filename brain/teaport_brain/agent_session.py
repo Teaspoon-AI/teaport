@@ -833,7 +833,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # and Talk, not a bridge relaying someone far away, never a phone call -- and only
     # where the front door is known. With or without a model.
     settings_phrase = (SettingsPhrase() if front_end in ("talk", "room") and via is None
-                       and settings_access.available() else None)
+                       and settings_access.heard_here() else None)
     voice_lang = lambda: getattr(tts, "espeak_language", "en-us")  # noqa: E731
     wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None,
                            phrases=[settings_phrase] if settings_phrase else ())
@@ -1192,7 +1192,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # says its line and hangs up.)
     error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
                                      no_model=llm is None, wifi=wifi, phrases=phrases,
-                                     settings=settings_phrase is not None,
+                                     settings=settings_access.available(),
                                      gate=followup_gate,
                                      model_back=lambda: model_missing() is None,
                                      restarts="restart" in client_features)

@@ -487,7 +487,7 @@ msgid "no AI service is set up on this box"
 msgstr "aucun service d'IA n'est configuré sur cet appareil"
 
 msgctxt "pattern"
-msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
 msgstr "^\\W*(?:(?:teaport|ok|okay|d['’]accord|alors|bon|et|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp)\\W+){0,3}(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?= *(?:[.,!?;:…]|$)| (?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)"
 
 msgctxt "spell"

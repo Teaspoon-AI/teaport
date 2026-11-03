@@ -99,8 +99,9 @@ class Voice(wifi_voice.PhraseVoice):
         self.pushed.append(frame)
 
 
-def _setup(host=HOST):
+def _setup(host=HOST, port=PORT):
     pairing.FRONTDOOR_HOST = host
+    settings_access.SETTINGS_PORT = port
     pairing.TRUSTED_CERT = False
     settings_access._live = None
     settings_access._codes = pairing.CodeBook()
@@ -147,6 +148,7 @@ def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fet
     app.include_router(config_ui.router)
     app.include_router(config_ui.router, prefix="/settings")
     app.include_router(settings_access.router)
+    app.add_middleware(settings_access.FrameGuard)
     headers = {"X-Forwarded-Proto": proto} if proto else {}
     headers["Host"] = f"{HOST}:{port}" if port != 443 else HOST
     if fetch_site:
@@ -542,6 +544,40 @@ def test_the_key_check_follows_no_redirect_and_keeps_its_deadline():
         ai_account._request = real
 
 
+def test_nothing_may_frame_settings():
+    """Clickjacking: a gateway page is same-site, so a frame of Settings would carry the
+    cookie. Every answer under /settings forbids framing; the rest of the brain is as it was."""
+    async def run():
+        _setup()
+        screen = Screen()
+        await Voice(screen)._heard("open my settings")
+        code = _code_of(screen)
+        async with _client() as c:
+            for r in (await c.get("/settings"), await c.get(f"/settings/{code}"),
+                      await c.get("/settings/trust"), await c.get("/settings/api/config"),
+                      await c.get("/settings/config")):
+                assert r.headers["content-security-policy"] == "frame-ancestors 'none'", r.url
+                assert r.headers["x-frame-options"] == "DENY", r.url
+        async with _client(proto=None, origin=None, port=7861) as c:
+            r = await c.get("/config")
+            assert "x-frame-options" not in r.headers
+    asyncio.run(run())
+
+
+def test_a_brain_only_update_without_the_settings_site_says_so():
+    """`install.sh --only brain` renders no Caddy site and writes no TEAPORT_SETTINGS_PORT:
+    the phrase says Settings cannot be reached rather than show a QR code to a port
+    nothing listens on, and no line points the owner at it."""
+    async def run():
+        _setup(port=None)
+        screen = Screen()
+        v = Voice(screen)
+        assert await v._heard("open my settings")
+        assert v.said == [settings_access.UNAVAILABLE_TEXT] and screen.shown == []
+        assert not settings_access.available() and settings_access.heard_here()
+    asyncio.run(run())
+
+
 def test_a_code_read_aloud_never_reaches_the_journal():
     from loguru import logger
     from teaport_brain import conversation_log
@@ -567,6 +603,16 @@ def test_a_code_read_aloud_never_reaches_the_journal():
     text = "".join(lines)
     assert spelled not in text and ", ".join(parts[1:4]) not in text, text
     assert "<code>" in text
+    # Only the code: two items in a row, or letters inside words, are anyone's text; and
+    # a code past its life is forgotten.
+    record = {"message": f"DATA, BASE {parts[1]}, {parts[2]}", "name": "x"}
+    conversation_log.redact(record)
+    assert record["message"] == f"DATA, BASE {parts[1]}, {parts[2]}", record
+    conversation_log.never_log("q, r, s", sep=", ", secs=-1)
+    record = {"message": "q, r, s", "name": "x"}
+    conversation_log.redact(record)
+    assert record["message"] == "q, r, s" and all(
+        "q" not in p.pattern for _, p in conversation_log._NEVER)
 
 
 # ------------------------------------------------------------------ setup mode

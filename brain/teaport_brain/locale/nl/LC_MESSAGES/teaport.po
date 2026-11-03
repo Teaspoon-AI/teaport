@@ -482,7 +482,7 @@ msgid "no AI service is set up on this box"
 msgstr "er is geen AI-dienst ingesteld op dit apparaat"
 
 msgctxt "pattern"
-msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
 msgstr "^\\W*(?:(?:teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou)\\W+){0,3}(?:(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)|laat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)|(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b))"
 
 msgctxt "spell"

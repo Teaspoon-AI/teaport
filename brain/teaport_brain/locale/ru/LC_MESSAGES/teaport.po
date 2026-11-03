@@ -490,7 +490,7 @@ msgid "no AI service is set up on this box"
 msgstr "на этом устройстве не настроен сервис ИИ"
 
 msgctxt "pattern"
-msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgid "^\\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
 msgstr "^\\W*(?:(?:teaport|типорт|ну|так|окей|ок|слушай|пожалуйста|а|и)\\W+){0,3}(?:(?:открой(?:те)?|покажи(?:те)?|зайди(?:те)?|перейди(?:те)?|открыть|показать)(?:\\s+(?:мне|нам|пожалуйста|в|на|ка))*\\s+(?:(?:мои|свои|твои|ваши)\\s+настройки|настройки|(?:(?:мою|свою|твою|вашу)\\s+)?страницу\\s+настроек)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:пожалуйста|сейчас)\\b)|(?:(?:мои|свои|твои)\\s+)?настройки\\s+(?:пожалуйста\\s+)?(?:открой(?:те)?|покажи(?:те)?)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:пожалуйста|сейчас)\\b))"
 
 msgctxt "spell"

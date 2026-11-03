@@ -612,7 +612,8 @@ async def test_end_to_end_with_a_front_door_the_line_says_open_my_settings():
     line says to; the phone line stays as it was (sip_server, the test above)."""
     from test_call_experience import Rig as CxRig, TalkClient
     rig = CxRig(**{"LLM_BASE_URL": "", "LLM_API_KEY": "", "HOME": _HOME,
-                   "TEAPORT_FRONTDOOR_HOST": "teaport-9e35.local"})
+                   "TEAPORT_FRONTDOOR_HOST": "teaport-9e35.local",
+                   "TEAPORT_SETTINGS_PORT": "8443"})
     async with rig:
         talk = await TalkClient(rig.port).connect()
         await until(lambda: les.NO_MODEL_SETTINGS_TEXT in " ".join(rig.engine.tts_texts), 20)

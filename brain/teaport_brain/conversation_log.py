@@ -27,9 +27,9 @@
 # TEAPORT_LOG_CONVERSATIONS on too. TEAPORT_AUDIO_DUMP is the one that records on its
 # own: it writes caller audio files, and is off unless it names a directory.
 #
-import collections
 import re
 import sys
+import time
 
 from loguru import logger
 
@@ -72,30 +72,40 @@ _PIPECAT_TEXT = (
 )
 
 
-# Text no record may carry (never_log): the last few, a code's life is minutes.
-_NEVER: collections.deque = collections.deque(maxlen=4)
+# Text no record may carry (never_log): (until, pattern), each dropped once its code has
+# expired -- a code's life is minutes, and nothing is kept past it.
+_NEVER: list = []
 NEVER_MARK = "<code>"
+# A clause of a spelled code is blanked from this many of its items in a row: fewer is
+# too common to be the code ("two, three" is anyone's words).
+NEVER_MIN_ITEMS = 3
 
 
-def never_log(text: str, sep: str | None = None) -> None:
-    """`text` never reaches the journal from here on: the patcher blanks it in every
-    record, TEAPORT_LOG_CONVERSATIONS or not. With `sep` (a code spelled out, items joined
-    by it), any two or more items of it in a row are blanked too: the TTS can log a line
-    cut into clauses."""
+def never_log(text: str, sep: str | None = None, secs: float = 600.0) -> None:
+    """`text` never reaches the journal for the next `secs` (its code's life, and some):
+    the patcher blanks it in every record, TEAPORT_LOG_CONVERSATIONS or not. With `sep` (a
+    code spelled out, items joined by it), any NEVER_MIN_ITEMS or more of its items in a
+    row are blanked too -- the TTS can log a line cut into clauses -- and only as whole
+    items (never inside a word: "DATA, BASE" is no "A, B")."""
     if not text:
         return
-    items = [re.escape(x) for x in text.split(sep)] if sep else [re.escape(text)]
-    runs = sorted({sep_join for i in range(len(items)) for j in range(i + 2, len(items) + 1)
-                   for sep_join in [re.escape(sep).join(items[i:j]) if sep else ""]
-                   if sep_join} or {re.escape(text)}, key=len, reverse=True)
-    _NEVER.append(re.compile("|".join(runs)))
+    items = text.split(sep) if sep else [text]
+    joiner = re.escape(sep.strip() if sep else "") + r"\s*"
+    runs = {joiner.join(re.escape(x.strip()) for x in items[i:j])
+            for i in range(len(items))
+            for j in range(i + min(NEVER_MIN_ITEMS, len(items)), len(items) + 1)}
+    pattern = re.compile(r"(?<!\w)(?:" + "|".join(sorted(runs, key=len, reverse=True)) + r")(?!\w)")
+    _NEVER.append((time.monotonic() + secs, pattern))
 
 
 def redact(record: dict) -> None:
     """A loguru patcher: blanks never_log()'s text in every record, and the text in
     pipecat's conversation-carrying lines (unless TEAPORT_LOG_CONVERSATIONS)."""
-    for secret in list(_NEVER):
-        record["message"] = secret.sub(NEVER_MARK, record["message"])
+    if _NEVER:
+        now = time.monotonic()
+        _NEVER[:] = [(until, p) for until, p in _NEVER if until > now]
+        for _, pattern in _NEVER:
+            record["message"] = pattern.sub(NEVER_MARK, record["message"])
     if LOG_WORDS or not (record.get("name") or "").startswith("pipecat"):
         return
     msg = record["message"]

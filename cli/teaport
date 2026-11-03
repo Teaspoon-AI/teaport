@@ -259,6 +259,10 @@ cmd_doctor() {
   if env_file_check "$ETC/brain.env"; then
     [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
     [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN | tr -d "\"' \t")" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
+    # The owner's Settings site (#279) comes with a full install, not with --only brain.
+    if [ -n "$(envval "$ETC/brain.env" TEAPORT_FRONTDOOR_HOST)" ] && [ -z "$(envval "$ETC/brain.env" TEAPORT_SETTINGS_PORT)" ]; then
+      warnc "no Settings site (TEAPORT_SETTINGS_PORT unset): \"open my settings\" cannot work until install.sh runs without --only"
+    fi
   fi
   if grep -qs '[^[:space:]]' "$SECRETS/llm_key" || [[ "${LLM_API_KEY:-}" == *[![:space:]]* ]]; then ok "LLM API key present"; else warnc "no LLM key — say \"open my settings\" to the box, or set LLM_API_KEY or write $SECRETS/llm_key"; fi
   local u st

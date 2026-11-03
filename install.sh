@@ -2049,6 +2049,9 @@ write_caddyfile() {
     "$FRONTDOOR_HOST:$SETTINGS_PORT {" \
     "${tls[@]}" \
     "    import teaport_ca" \
+    "    # Nothing may frame Settings (the brain says so too)." \
+    "    header Content-Security-Policy \"frame-ancestors 'none'\"" \
+    "    header X-Frame-Options DENY" \
     "    @settings path /settings /settings/*" \
     "    handle @settings {" \
     "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \

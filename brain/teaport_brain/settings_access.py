@@ -100,9 +100,20 @@ _live: pairing.LiveCode | None = None
 _screen: display.Screen | None = None  # the screen showing the current code
 
 
-def available() -> bool:
-    """Whether Settings can be offered: the front door's name is known."""
+def heard_here() -> bool:
+    """Whether "open my settings" is listened for: the box has a front door. Where its
+    Settings site is not set up yet, the phrase says so (available)."""
     return bool(pairing.FRONTDOOR_HOST)
+
+
+def available() -> bool:
+    """Whether Settings can be offered: the front door's name is known, and its Settings
+    site is set up -- TEAPORT_SETTINGS_PORT, which only the full installer writes, as it
+    renders Caddy's site for it. An `install.sh --only brain` update of an older box
+    leaves both out (it touches no system config), and a QR code to a port nothing
+    listens on would be a dead end: the phrase says Settings cannot be reached instead,
+    and nothing else points at it."""
+    return bool(pairing.FRONTDOOR_HOST) and bool(SETTINGS_PORT)
 
 
 def origin() -> str:
@@ -260,6 +271,33 @@ def _signed_in() -> Response:
 _NOT_FOUND = PlainTextResponse("Not Found", status_code=404)
 router = APIRouter()
 
+# No page may frame Settings (clickjacking): the gateway's pages are same-site, so a frame
+# of theirs would carry the Strict cookie and its fetches would pass the origin checks --
+# a click on Restart, "Set up Wi-Fi" or "Save anyway" under someone else's page.
+FRAME_GUARD = ((b"content-security-policy", b"frame-ancestors 'none'"),
+               (b"x-frame-options", b"DENY"))
+
+
+class FrameGuard:
+    """ASGI middleware (gateway_server adds it): every answer under /settings carries
+    FRAME_GUARD, whatever Caddyfile fronts it (Caddy's Settings site adds them too)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if not (path == "/settings" or path.startswith(PREFIX)):
+            return await self.app(scope, receive, send)
+
+        async def guarded(message):
+            if message["type"] == "http.response.start":
+                message["headers"] = [h for h in message.get("headers", [])
+                                      if h[0].lower() not in dict(FRAME_GUARD)] + list(FRAME_GUARD)
+            await send(message)
+
+        await self.app(scope, receive, guarded)
+
 
 async def _gate(request: Request, post: bool) -> tuple[Response | None, dict]:
     """pairing's checks for a code page (front door, small form), on the Settings site."""
@@ -369,6 +407,11 @@ class SettingsPhrase:
             logger.info("settings: asked for, but the box is on no network")
             await voice.say(t._(OFFLINE_TEXT))
             return
+        if not available():
+            logger.warning("settings: no Settings site on this box (TEAPORT_SETTINGS_PORT "
+                           "unset) -- run install.sh without --only to set it up")
+            await voice.say(t._(UNAVAILABLE_TEXT))
+            return
         try:
             offer = start()
         except pairing.PairingUnavailable as e:
@@ -390,5 +433,6 @@ class SettingsPhrase:
         code = wifi_voice.spell(offer.code.lower(), t)
         # The code is the owner's access until used: never in the journal, whatever
         # TEAPORT_LOG_CONVERSATIONS says (pipecat's "Generating TTS [...]", the ledger).
-        conversation_log.never_log(code, sep=t.p("spell", ", "))
+        conversation_log.never_log(code, sep=t.p("spell", ", "),
+                                   secs=max(0.0, offer.expires_at - _clock()) + 60)
         await voice.say(t._(SPOKEN_TEXT).format(address=address, code=code))

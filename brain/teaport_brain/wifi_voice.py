@@ -147,12 +147,14 @@ PATTERNS = {
     "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
     "repeat": r"\b(?:repeat|again|what was|what's the|password|network name|say that)\b",
     # "open my settings" (settings_access.SettingsPhrase, #279): a request to see the
-    # box's settings, said as a request on its own -- the phrase ends the sentence (or
-    # "page", "please", "now" follow it). How short and that it is no question is the
-    # phrase's own rule (settings_access.PHRASE_MAX_WORDS).
-    "settings": r"\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)?"
-                r" (?:(?:my|your|the|teaport's|teaport) )?settings"
-                r"(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\b)",
+    # box's settings, said as a request on its own -- it starts the utterance (after at
+    # most a short lead-in: "ok", "hey", "please"...), so "on my phone, open the settings"
+    # is not it, and the phrase ends the sentence (or "page", "please", "now" follow it).
+    # How short and that it is no question is the phrase's own rule
+    # (settings_access.PHRASE_MAX_WORDS). Every catalog's pattern is anchored the same way.
+    "settings": r"^\W*(?:(?:ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
+                r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
+                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\b)",
 }
 
 # English words that make a "start" match a question or a complaint about Wi-Fi rather

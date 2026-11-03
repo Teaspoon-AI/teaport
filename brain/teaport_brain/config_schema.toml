@@ -1308,11 +1308,10 @@ type = "int"
 unit = "port"
 min = 1
 max = 65535
-default = 8443
 read = "startup"
 tier = "installer"
-help = "The front door's port for the owner's Settings (\"open my settings\", settings_access.py): https://<TEAPORT_FRONTDOOR_HOST>:<this>/settings/<code>. An origin of its own, apart from the gateway's on 443, so no page the gateway serves can reach the Settings session. The installer writes it and renders Caddy's site for it; http://<front door>/settings is redirected there."
-note = "Changing it means re-running the installer (Caddy listens on it)."
+help = "Unset: this box has no Settings site yet (an install.sh --only brain update touches no system config), and \"open my settings\" says Settings cannot be reached; the full installer writes 8443 (TEAPORT_SETTINGS_PORT at install time) and renders Caddy's site for it. The front door's port for the owner's Settings (\"open my settings\", settings_access.py): https://<TEAPORT_FRONTDOOR_HOST>:<this>/settings/<code>. An origin of its own, apart from the gateway's on 443, so no page the gateway serves can reach the Settings session. The installer writes it and renders Caddy's site for it; http://<front door>/settings is redirected there."
+note = "Changing it means re-running the installer (Caddy listens on it). The port must be reachable from phones on the LAN."
 
 [[settings]]
 name = "TEAPORT_FRONTDOOR_CERT"

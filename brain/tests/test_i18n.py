@@ -288,7 +288,7 @@ SETTINGS = {
            ["افتح إعدادات الهاتف", "افتح إعدادات الواي فاي", "افتح إعدادات الشبكة", "افتح إعدادات البلوتوث", "في الهاتف افتح الإعدادات", "افتح إعدادات التطبيق", "الإعدادات جيدة الآن", "أحب إعداداتك"]),
     "hi": (["सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "Teaport की सेटिंग्स खोलो", "ज़रा अपनी सेटिंग्स दिखाओ"],
            ["फ़ोन की सेटिंग्स खोलो", "अपने फ़ोन की सेटिंग्स खोलो", "वाई-फ़ाई की सेटिंग्स खोलो", "नेटवर्क सेटिंग्स खोलो", "ब्लूटूथ सेटिंग्स खोलो", "ऐप की सेटिंग्स खोलो", "खोलो फ़ोन की सेटिंग्स", "सेटिंग्स ठीक हैं", "मुझे सेटिंग्स पसंद हैं"]),
-    "zh": (["打开设置", "Teaport，打开你的设置", "请帮我打开设置页面", "把设置打开"],
+    "zh": (["好的，打开设置", "打开设置", "Teaport，打开你的设置", "请帮我打开设置页面", "把设置打开"],
            ["打开手机设置", "打开 Wi-Fi 设置", "打开网络设置", "打开蓝牙设置", "手机，打开设置", "打开应用的设置", "设置这样就好", "我喜欢你的设置"]),
     "ja": (["設定を開いて", "ティーポート、設定を開いて", "あなたの設定を見せてください", "ちょっと設定画面を開いて"],
            ["スマホの設定を開いて", "Wi-Fi 設定を開いて", "ネットワーク 設定を開いて", "Bluetooth の設定を開いて", "スマホ、設定を開いて", "アプリの設定を開いて", "設定はこれでいい", "設定が好きです"]),
@@ -312,7 +312,9 @@ def test_the_settings_pattern_hears_requests_not_talk(lang):
     assert _settings_heard("open my settings", t)                # English works too
     # Some other thing's settings are never the box's (#279 review).
     for other in ("open the phone settings", "open wifi settings", "open my phone's settings",
-                  "open the network settings", "open bluetooth settings"):
+                  "open the network settings", "open bluetooth settings",
+                  "on my phone, open the settings", "in the app, open settings",
+                  "then open the settings"):
         assert not _settings_heard(other, t), other
     # Neither phrase is the other's.
     assert [s for s in asks if wifi_voice.heard("start", s, t)] == []
