@@ -73,8 +73,8 @@
 # status of aplay's own substream (/proc/asound/<card>/pcm<dev>p/sub*/status) when the
 # device is a plain hw: one; otherwise from the wall clock since the first write.
 #
-# The face tap: when an OLED avatar daemon (github.com/Teaspoon-AI/teaport-oled-avatar,
-# `oled_face.py --serve`) is listening on LOCAL_AUDIO_FACE_SOCK, the bridge drives it
+# The face tap: when an OLED avatar daemon (the display on Teaspoon AI
+# appliances) is listening on LOCAL_AUDIO_FACE_SOCK, the bridge drives it
 # from the same /talk events it already sees: the user's transcript (listening,
 # thinking), the bot's captions (speaking, the reply text for its sentiment mood) and the
 # speaker going quiet (idle). The mouth follows the AUDIO, not the words: each 20 ms

@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2693#311a0a5b -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2693#5b3d94e6 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -393,7 +393,7 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 | `LOCAL_AUDIO_CONVERSATION_SECS` | **7200.0** s (0.0–604800.0) | With wake words: one conversation at the box lasts until it has been asleep this long. A wake within it continues where it stopped ("what about tomorrow?" three minutes later still knows the question) and is not greeted; after it, a new conversation starts with a greeting. The brain keeps the last conversation's messages in memory (at most 40 messages / 24k characters), for the box's own mic only; a restart of teaport-brain forgets it. |
 | `LOCAL_AUDIO_BACKOFF_SECS` | **60.0** s (0.0–3600.0) | When another client (the dashboard, grokani, a browser) has the box -- it took the session from the sleeping bridge, or the brain refused the bridge because that client's conversation is live -- the box is theirs: the bridge stops listening for a voice until the brain has had no live session for this long, so the room (or the dashboard user's own voice) does not keep asking. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off (with wake words a refused bridge then retries on a doubling wait, never at once). |
 | `LOCAL_AUDIO_URL` | `ws://127.0.0.1:<BRAIN_PORT>/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
-| `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes. |
+| `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The Unix datagram socket of a display that draws the box's face. The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. Nothing serving the socket means no face; nothing else changes. |
 | `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
 | `LOCAL_AUDIO_FACE_TYPIST` | `hands` | Who types on the OLED face while the agent works on a question: hands, or claws. Takes effect the next time it starts typing, on an avatar that has both; an older one types its own way. One of `hands`, `claws`. |
 

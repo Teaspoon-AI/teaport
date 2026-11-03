@@ -13,9 +13,7 @@
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
 #   - a url with no sha256 (models.voxtral.aux) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
-#     branch or tag (what `git clone --branch` takes), unless it is marked
-#     "private": true (oled_avatar: Teaspoon AI installs it with access; install.sh
-#     skips it on a box without);
+#     branch or tag (what `git clone --branch` takes); a private repo fails;
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
@@ -62,8 +60,7 @@ REQUIRED = (
     "models.voxtral",
     "models.kokoro",
 )
-# The {repo, tag} entries install.sh always clones (the brain); oled_avatar is cloned
-# only on request, so it is checked when present.
+# The {repo, tag} entries install.sh always clones (the brain).
 REQUIRED_REPOS = ("brain",)
 NPM_REGISTRY = "https://registry.npmjs.org"
 
@@ -105,10 +102,10 @@ def entries(node, path=""):
 
 
 def repos(node, path=""):
-    """(dotted path, repo, tag, private) for every {repo, tag} node."""
+    """(dotted path, repo, tag) for every {repo, tag} node."""
     if isinstance(node, dict):
         if "repo" in node and "tag" in node:
-            yield path, node["repo"], node["tag"], node.get("private") is True
+            yield path, node["repo"], node["tag"]
         for key, value in node.items():
             if not key.startswith("_"):
                 yield from repos(value, f"{path}.{key}" if path else key)
@@ -176,8 +173,6 @@ def check(manifest_path, placeholders_ok):
         if not isinstance(node, dict) or not node.get("repo") or not node.get("tag"):
             problems.append(f"{where}: missing, or without a repo and a tag (install.sh "
                             "clones it)")
-        elif node.get("private") is True:
-            problems.append(f"{where}: marked private, but every install clones it")
 
     for where, url, sha in entries(manifest):
         if url is None:
@@ -201,12 +196,9 @@ def check(manifest_path, placeholders_ok):
         else:
             print(f"ok {where}" + ("" if sha else " (no sha256 to check; it answers)"))
 
-    for where, repo, tag, private in repos(manifest):
+    for where, repo, tag in repos(manifest):
         if "TODO" in f"{repo}{tag}":
             placeholder(where, f"{repo}@{tag}")
-            continue
-        if private:
-            print(f"-- {where} (github.com/{repo} @ {tag}): private, not checked anonymously")
             continue
         why = resolves(repo, tag)
         if why:

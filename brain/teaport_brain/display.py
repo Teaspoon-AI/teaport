@@ -1,8 +1,8 @@
 #
 # teaport — text on the box's display: the OLED avatar's screens.
 #
-# The OLED avatar (github.com/Teaspoon-AI/teaport-oled-avatar, install.sh
-# phase_oled_avatar) draws a face, and over it, for as long as a sender wants, a
+# The OLED avatar (a display daemon on the face socket; Teaspoon AI appliances come with
+# one) draws a face, and over it, for as long as a sender wants, a
 # "screen": a title and a few lines of text, for whatever a person has to read off the
 # box — the setup network's name and password (wifi_setup.py), a pairing code, an
 # address to open. This is the sending side, for any teaport process:

@@ -2646,7 +2646,7 @@ type = "path"
 default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
-help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
+help = "The Unix datagram socket of a display that draws the box's face. The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. Nothing serving the socket means no face; nothing else changes."
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
