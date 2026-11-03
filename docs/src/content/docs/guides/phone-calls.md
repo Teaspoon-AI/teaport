@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:8,369-373#0ac45871; brain/teaport_brain/sip_server.py:485#f51c16f8 -->
+<!-- source: cli/teaport:8,376-380#0ac45871; brain/teaport_brain/sip_server.py:489#f51c16f8 -->
 
 ## Keep the line running
 
@@ -201,7 +201,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1825-1835#a986d676; cli/teaport:1261-1263#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1825-1835#a986d676; cli/teaport:1268-1270#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — +1 346 234 8500. Should I
@@ -308,7 +308,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,249#de2d5741; brain/teaport_brain/config_schema.toml:1863-1872#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,253#de2d5741; brain/teaport_brain/config_schema.toml:1863-1872#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -372,7 +372,7 @@ To test the phone path, follow these steps:
    The front-end logs `SIP front-end: connected to the gateway at ...` when it
    connects.
 
-   <!-- source: brain/teaport_brain/sip_server.py:485#f51c16f8 -->
+   <!-- source: brain/teaport_brain/sip_server.py:489#f51c16f8 -->
 
 6. End the fake; it removes the socket when it exits. Then clean up:
 
