@@ -388,6 +388,20 @@ test("the plugin tells the brain it speaks caption protocol 2", () => {
   assert.equal(new URL(bridge._url).searchParams.get("captions"), "2");
 });
 
+test("the plugin says it has a relay only when the host gave it onToolCall", () => {
+  // teaport#78: a brain session with the relay feature sends the consult's tool_call and
+  // waits for the relay's ack; one without asks the agent directly.
+  assert.equal(
+    withVoiceParams("ws://brain/talk", { relay: true }),
+    "ws://brain/talk?captions=2&session_config=1&run_control=1&features=relay",
+  );
+  const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
+  const withTools = provider.createBridge({ providerConfig: {}, onToolCall: () => {} });
+  assert.equal(new URL(withTools._url).searchParams.get("features"), "relay");
+  const without = provider.createBridge({ providerConfig: {} });
+  assert.equal(new URL(without._url).searchParams.get("features"), null);
+});
+
 test("the plugin names the Talk client, so only its own reconnect replaces its session", () => {
   const key = { value: "openclaw:0123456789abcdef" };
   const provider = buildTeaportRealtimeProvider({

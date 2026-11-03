@@ -16,26 +16,41 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: de\n"
 
-msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Möchtest du das WLAN einrichten? Ich bin dann ein paar Minuten offline, während du das auf deinem Handy machst. Sag ja oder nein."
+msgid "Do you want to set up Wi-Fi? I'll go into setup mode and be offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Möchtest du das WLAN einrichten? Ich gehe dann in den Einrichtungsmodus und bin ein paar Minuten offline, während du das auf deinem Handy machst. Sag ja oder nein."
 
-msgid "Wi-Fi setup is already running."
-msgstr "Die WLAN-Einrichtung läuft schon."
+msgid "I'm already in setup mode."
+msgstr "Ich bin schon im Einrichtungsmodus."
 
 msgid "Okay. Give me a moment to look for networks."
 msgstr "Okay. Einen Moment, ich suche nach Netzwerken."
 
-msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "Tut mir leid, ich konnte die WLAN-Einrichtung auf diesem Gerät nicht starten."
+msgid "I'm in setup mode."
+msgstr "Ich bin jetzt im Einrichtungsmodus."
 
-msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "Okay, ich habe die WLAN-Einrichtung beendet und alles wieder so eingestellt wie vorher."
+msgid "Sorry, I couldn't go into setup mode."
+msgstr "Tut mir leid, ich konnte nicht in den Einrichtungsmodus wechseln."
 
-msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "Die WLAN-Einrichtung ist nicht gestartet. Versuch es bitte gleich noch einmal."
+msgid "Okay, I've left setup mode and put things back as they were."
+msgstr "Okay, ich habe den Einrichtungsmodus beendet und alles wieder so eingestellt wie vorher."
 
-msgid "I'm still waiting for you on the setup page."
-msgstr "Ich warte noch, bis du auf der Einrichtungsseite fertig bist."
+msgid "Okay, I've cancelled that. Everything is as it was."
+msgstr "Okay, ich habe das abgebrochen. Alles ist wie vorher."
+
+msgid "Setup mode was turned off. Everything is as it was."
+msgstr "Der Einrichtungsmodus wurde ausgeschaltet. Alles ist wie vorher."
+
+msgid "One moment, I'm getting setup mode ready. Say cancel to stop."
+msgstr "Einen Moment, ich bereite den Einrichtungsmodus vor. Sag abbrechen, um aufzuhören."
+
+msgid "I couldn't stop yet. Say cancel again in a moment."
+msgstr "Ich konnte noch nicht aufhören. Sag gleich noch einmal abbrechen."
+
+msgid "I couldn't go into setup mode. Please try again in a moment."
+msgstr "Ich konnte nicht in den Einrichtungsmodus wechseln. Versuch es bitte gleich noch einmal."
+
+msgid "I'm still in setup mode, waiting for you."
+msgstr "Ich bin noch im Einrichtungsmodus und warte auf dich."
 
 msgid "That didn't work: {reason}."
 msgstr "Das hat nicht geklappt: {reason}."
@@ -46,11 +61,14 @@ msgstr "Alles klar. Ich verbinde mich jetzt mit {network}. Verbinde dein Handy b
 msgid "I'm connected to {network}, and I'm online again."
 msgstr "Ich bin mit {network} verbunden und wieder online."
 
-msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "Die WLAN-Einrichtung hat zu lange gedauert, deshalb habe ich alles wieder so eingestellt wie vorher."
+msgid "Nothing connected in time, so I've left setup mode and put things back as they were."
+msgstr "Es hat sich nichts rechtzeitig verbunden, deshalb habe ich den Einrichtungsmodus beendet und alles wieder so eingestellt wie vorher."
 
-msgid "Wi-Fi setup stopped: {reason}."
-msgstr "Die WLAN-Einrichtung wurde abgebrochen: {reason}."
+msgid "I've left setup mode: {reason}."
+msgstr "Ich habe den Einrichtungsmodus verlassen: {reason}."
+
+msgid "Sorry, I couldn't go into setup mode: {reason}."
+msgstr "Tut mir leid, ich konnte nicht in den Einrichtungsmodus wechseln: {reason}."
 
 msgid "your network"
 msgstr "deinem Netzwerk"
@@ -61,20 +79,20 @@ msgstr "Etwas ist schiefgelaufen"
 msgid "Okay, never mind."
 msgstr "Okay, schon gut."
 
-msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "Sag ja, um die WLAN-Einrichtung zu starten, oder nein."
+msgid "Say yes to go into setup mode, or no."
+msgstr "Sag ja, um in den Einrichtungsmodus zu wechseln, oder nein."
 
-msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "Ich bin gerade in der WLAN-Einrichtung. Sag wiederholen, um die Angaben noch einmal zu hören, oder abbrechen, um aufzuhören."
+msgid "I'm in setup mode. Say repeat to hear the details, or cancel to leave setup mode."
+msgstr "Ich bin gerade im Einrichtungsmodus. Sag wiederholen, um die Angaben zu hören, oder abbrechen, um den Einrichtungsmodus zu verlassen."
 
-msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Eine Einrichtungsseite sollte sich von selbst öffnen. Falls nicht, öffne {url}."
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. Then open your browser, go to {url}, and pick your Wi-Fi."
+msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Öffne dann deinen Browser, geh zu {url} und wähle dein WLAN aus."
 
-msgid "You can also read these details on my screen."
-msgstr "Du findest diese Angaben auch auf meinem Display."
+msgid "On your phone, join the Wi-Fi network shown on my screen, using the password shown there. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Verbinde dein Handy mit dem WLAN, das auf meinem Display steht, und nimm das Passwort, das dort angezeigt wird. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
 
-msgid "You can also scan the code on my screen to join, or read these details there."
-msgstr "Du kannst auch den Code auf meinem Display scannen, um dich zu verbinden, oder die Angaben dort ablesen."
+msgid "Scan the code on my screen with your phone's camera to join my setup network. Then, in your phone's browser, go to the address on my screen and pick your Wi-Fi. Say repeat if you'd like me to read the details."
+msgstr "Scanne den Code auf meinem Display mit der Kamera deines Handys, um dich mit meinem Einrichtungsnetzwerk zu verbinden. Öffne dann im Browser deines Handys die Adresse auf meinem Display und wähle dein WLAN aus. Sag wiederholen, wenn ich dir die Angaben vorlesen soll."
 
 msgid "the saved settings for it did not work"
 msgstr "Die gespeicherten Einstellungen für dieses Netzwerk haben nicht funktioniert"
@@ -97,14 +115,11 @@ msgstr "Dieses Gerät hat kein WLAN"
 msgid "the setup network would not start"
 msgstr "Das Einrichtungsnetzwerk ließ sich nicht starten"
 
-msgid "the setup page could not start"
-msgstr "Die Einrichtungsseite ließ sich nicht starten"
-
 msgid "open"
 msgstr "offen"
 
-msgid "Teaport Wi-Fi setup"
-msgstr "Teaport-WLAN-Einrichtung"
+msgid "Connect Teaport to Wi-Fi"
+msgstr "Teaport mit dem WLAN verbinden"
 
 msgid "Connect to Wi-Fi"
 msgstr "Mit WLAN verbinden"
@@ -288,3 +303,15 @@ msgstr "Ich gehe kurz ran — bin gleich wieder da."
 
 msgid "Sorry about that — where were we?"
 msgstr "Entschuldige die Unterbrechung — wo waren wir stehen geblieben?"
+
+msgid "Sorry, I couldn't get an answer just then. Could you try again?"
+msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen. Kannst du es noch einmal versuchen?"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. It can be fixed on my settings page."
+msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für meine Antworten nutze, braucht Aufmerksamkeit, und ein neuer Versuch hilft nicht. Das lässt sich auf meiner Einstellungsseite beheben."
+
+msgid "I still can't answer until my account is sorted out."
+msgstr "Ich kann erst wieder antworten, wenn mein Konto in Ordnung gebracht ist."
+
+msgid "Sorry, I couldn't get an answer just then."
+msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."

@@ -22,7 +22,7 @@
 # Then:
 #
 #   * Words arrive: the normal barge-in runs (TEAPORT_INTERRUPT_MIN_WORDS words, as
-#     before -- or, while paused, a single stop word, PauseAwareMinWordsStrategy), the
+#     before -- or a single stop word, paused or not, PauseAwareMinWordsStrategy), the
 #     interruption cancels the reply and the caller has the turn.
 #   * No words: a cough, a breath, a backchannel too short to count. Playout RESUMES
 #     from the very sample it stopped on -- the audio waited in the transport's own
@@ -159,10 +159,22 @@ from teaport_brain.settings import setting
 from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
-# -- on /talk (the room mic, the app, the dashboard, Discord) only with TALK_ENABLED as
-# well: off there until the playout timing across a pause is done (#255; Known limits).
+# -- on /talk only with a switch of its own as well (talk_pauses): off there until the
+# playout timing across a pause is done (#255; Known limits). The room mic has its own,
+# because there the limit costs more than captions: its echo guard times the bot's words
+# on the wall clock, so after a pause the resumed reply's echo passes as the user's words
+# and cuts the reply -- the bot answering itself on the box's speaker. The app, the
+# dashboard and Discord have no echo guard; their clients cancel their own echo.
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
 TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
+ROOM_ENABLED = setting("TEAPORT_BARGE_PAUSE_ROOM")
+
+
+def talk_pauses(room: bool) -> bool:
+    """Whether a /talk session's playout pauses on a barge-in: the room mic's (the
+    local audio bridge, ?features=local) by ROOM_ENABLED, any other client's by
+    TALK_ENABLED."""
+    return ENABLED and (ROOM_ENABLED if room else TALK_ENABLED)
 # The LONGEST a pause with no words waits after the caller's speech (both the VAD and
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
@@ -171,12 +183,15 @@ RESUME_SECS = min(8.0, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
 # The longest a pause lasts, from its start: at most MAX_CAP_S, below the transport's
 # own end to a pause (PAUSE_GUARD_S).
 MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
-# What ends a paused reply on its own, whatever TEAPORT_INTERRUPT_MIN_WORDS says: with
-# the bot silent there is no echo to garble into one, and a lone "Stop." is the most
-# natural thing to say. An utterance counts only if EVERY word of it is one of these
-# (so "don't stop" is not a stop), entries may be phrases ("hold on"), and any "shh"
-# ("shhh", "sshh") is "shh". "No" is deliberately not one: over the bot it is as often
-# an answer to what is being said as an objection to it.
+# What ends a reply on its own, paused or still playing, whatever
+# TEAPORT_INTERRUPT_MIN_WORDS says: a lone "Stop." is the most natural thing to say, and
+# the short unvoiced word the pause is likeliest to miss (#216). An utterance counts only
+# if EVERY word of it is one of these (so "don't stop" is not a stop), entries may be
+# phrases ("hold on"), and any "shh" ("shhh", "sshh") is "shh". "No" is deliberately not
+# one: over the bot it is as often an answer to what is being said as an objection to
+# it. The bot's own "wait" coming back as echo is the room echo guard's to take
+# (echo_guard._taken), and the line's echo canceller's elsewhere; a cough the STT hears
+# as "stop" costs one cut reply, as a 2-word garble always has.
 STOP_WORDS = tuple(
     w.strip().lower() for w in setting("TEAPORT_STOP_WORDS").split(",")
     if w.strip())
@@ -524,10 +539,16 @@ class BargeInPauser(FrameProcessor):
 _SHH = re.compile(r"s*h{2,}")
 
 
+def fold_shh(word: str) -> str:
+    """Every "shhh" ("sshh", "shhhh") as "shh": the one fold the stop words and the echo
+    guard's word match share."""
+    return "shh" if _SHH.fullmatch(word) else word
+
+
 def _tokens(text: str) -> list:
     """The words of `text` (word_tokens, the rule sliced turn texts share), every "shhh"
     as "shh"."""
-    return ["shh" if _SHH.fullmatch(w) else w for w in word_tokens(text)]
+    return [fold_shh(w) for w in word_tokens(text)]
 
 
 def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
@@ -550,9 +571,13 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 
 
 class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
-    """The brain's barge-in rule, plus, while playout is paused (PlayoutPauseFrame):
+    """The brain's barge-in rule, plus:
 
-      * an utterance made only of stop words starts the turn whatever its length;
+      * over the speaking bot, paused or not, an utterance made only of stop words
+        starts the turn whatever its length (#216);
+
+    and while playout is paused (PlayoutPauseFrame):
+
       * once the audio the pause held back would have finished playing anyway (the
         pause frame's tail_secs), the bot counts as silent and one word is a turn --
         as it would have been without the pause;
@@ -622,13 +647,19 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         return result
 
     async def _count(self, frame):
-        if not (self._bot_speaking and self._playout_paused):
-            return await super()._handle_transcription(frame)
-        if is_stop_utterance(frame.text, self._stop_words):
-            logger.debug(f"{self}: stop word while playout is paused "
-                         f"({frame.text!r}) -- starting the turn")
+        if self._bot_speaking and is_stop_utterance(frame.text, self._stop_words):
+            # Paused or not (#216): the pause fails most on short unvoiced words, and
+            # "stop" is one, so the word that must always work is the likeliest to land
+            # on a reply still playing.
+            # info: a cut on the bot's own echoed stop word (SIP and non-room Talk
+            # have no echo guard) must show in the journal.
+            logger.info(f"{self}: stop word over the bot "
+                         f"({'paused' if self._playout_paused else 'playing'}, "
+                         f"{frame.text!r}) -- starting the turn")
             await self.trigger_user_turn_started()
             return ProcessFrameResult.STOP
+        if not (self._bot_speaking and self._playout_paused):
+            return await super()._handle_transcription(frame)
         if self._would_end_at is not None and time.monotonic() >= self._would_end_at:
             # Without the pause the reply would be over by now and this would be an
             # answer to it, not a barge-in: count it as one.

@@ -228,12 +228,13 @@ eula_gate() {
 # and R39, so the name is a stale label rather than a real target. Renaming it would mean
 # republishing the artifact and the manifest, so the key stays put.
 ASSET_KEY="l4t38-cu13"   # JetPack 7.2 / CUDA 13 — L4T R38 or R39
-L4T_RELEASE=""           # R-number from /etc/nv_tegra_release; empty off-Jetson (dev/dry-run)
+NV_TEGRA_RELEASE=/etc/nv_tegra_release   # there on a Jetson only (also install_arp_multihome)
+L4T_RELEASE=""           # R-number from $NV_TEGRA_RELEASE; empty off-Jetson (dev/dry-run)
 
 phase_preflight() {
   log "preflight"
-  if [ -f /etc/nv_tegra_release ]; then
-    local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' /etc/nv_tegra_release | head -1)"
+  if [ -f "$NV_TEGRA_RELEASE" ]; then
+    local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' "$NV_TEGRA_RELEASE" | head -1)"
     L4T_RELEASE="$l4t"
     case "$l4t" in
       38|39) log "Jetson L4T R$l4t (JetPack 7.2) — engine asset: $ASSET_KEY" ;;
@@ -242,7 +243,7 @@ phase_preflight() {
   elif [ "$ALLOW_NON_JETSON" = 1 ]; then
     warn "not a Jetson — continuing because TEAPORT_ALLOW_NON_JETSON=1 (dev/dry-run only)"
   else
-    die "not an NVIDIA Jetson (/etc/nv_tegra_release missing)"
+    die "not an NVIDIA Jetson ($NV_TEGRA_RELEASE missing)"
   fi
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
@@ -593,7 +594,7 @@ SRC_DIR=""
 # lives in it (uv's flags and pin: a checkout one commit behind the
 # --reinstall-package fix installed the PREVIOUS build's code under the new revision),
 # and so does some of what --only brain writes (the busy lamp's group and tmpfiles line,
-# sip_brain_detach's and migrate_brain_dropins' unit edits). The price: a commit that
+# the ARP sysctl drop-in, sip_brain_detach's and migrate_brain_dropins' unit edits). The price: a commit that
 # touches install.sh for the engine or SIP alone also asks for a git pull first.
 # Keep in step with those functions (test_install_brain_only.py checks the paths).
 BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 packaging/resolved install.sh)
@@ -1186,6 +1187,73 @@ install_dns_resilience() {
   SUDO install -D -m 0644 -o root -g root "$src" "$RESOLVED_DROPIN"
   SUDO systemctl try-reload-or-restart systemd-resolved \
     || warn "dns: reloading systemd-resolved failed — the drop-in applies from the next boot"
+}
+
+# ARP on a box with Ethernet and Wi-Fi on one subnet (#225). With the kernel's defaults
+# (arp_ignore=0, arp_announce=0) any interface answers ARP for any of the host's addresses,
+# so after a cable re-plug the Wi-Fi card answers the Ethernet link's duplicate-address
+# probe and NetworkManager logs a "conflict detected" with the box itself; both times the
+# wired connection came back with no IPv4 routes (2026-10-20 and 10-24). That the false
+# conflict is what drops the routes is the hypothesis #225 still has to prove on a box.
+# arp_ignore=1: answer only for addresses on the interface the request came in on;
+# arp_announce=2: send from the outgoing interface's own address. Only `all` is set: the
+# kernel uses the larger of conf/all and conf/<interface> for both keys, so `all` already
+# covers every interface, including ones that appear later, and `default` would add
+# nothing. The settings are the whole host's, so a machine that is not a Jetson keeps its
+# own (a dry run still shows them). Written only when the file differs, and applied only
+# then or while $ARP_APPLIED is missing: the apply is `sysctl --system`, which reads every
+# sysctl.d file in order as boot does, so an operator's drop-in that sorts after this one
+# (99-local.conf) keeps winning, and a run with both in place touches nothing. The apply is
+# judged by the live values in $ARP_PROC first: --system also fails on another file's key
+# the kernel lacks (net.bridge.* without br_netfilter) after applying ours. Values that are
+# ours, or not ours after a clean --system (a later drop-in setting them on purpose, said in
+# one log line), are recorded in $ARP_APPLIED (as setup_logs' JOURNAL_APPLIED); values
+# that are not ours after a failed --system are not, so the next run tries again. Rides
+# --only brain too, like the resolver's drop-in: boxes are updated that way.
+ARP_SYSCTL_DROPIN=/etc/sysctl.d/60-teaport-multihome.conf
+ARP_APPLIED="$STATE/arp-multihome.applied"
+ARP_PROC=/proc/sys/net/ipv4/conf/all
+install_arp_multihome() {
+  local want have ignore announce rc=0
+  if [ ! -f "$NV_TEGRA_RELEASE" ] && [ "$DRY_RUN" != 1 ]; then
+    log "network: not a Jetson — this machine's ARP settings are left as they are"
+    return 0
+  fi
+  want="$(printf '%s\n' \
+    "# teaport (install.sh install_arp_multihome, #225): with Ethernet and Wi-Fi on one subnet," \
+    "# each interface answers ARP only for its own addresses and sends from them. install.sh" \
+    "# owns this file and puts it back when it differs; to override, use a drop-in that sorts" \
+    "# after it (99-local.conf, say)." \
+    "net.ipv4.conf.all.arp_ignore = 1" \
+    "net.ipv4.conf.all.arp_announce = 2")"
+  have="$(cat "$ARP_SYSCTL_DROPIN" 2>/dev/null || true)"
+  if [ "$want" = "$have" ] && [ "$(cat "$ARP_APPLIED" 2>/dev/null || true)" = "$want" ]; then
+    return 0
+  fi
+  log "network: ARP drop-in -> $ARP_SYSCTL_DROPIN (each interface answers ARP only for its own addresses: Ethernet and Wi-Fi on one subnet)"
+  if [ "$want" != "$have" ]; then
+    # A new file is a new apply: the record of an earlier one goes first, so an apply of
+    # this file that fails below leaves none, and the next run tries again.
+    if ! SUDO rm -f "$ARP_APPLIED" || ! write_root "$ARP_SYSCTL_DROPIN" "$want"; then
+      warn "network: could not write $ARP_SYSCTL_DROPIN — ARP stays as it was"
+      return 0
+    fi
+  fi
+  SUDO sysctl -q --system || rc=$?   # judged below, with what the kernel holds
+  [ "$DRY_RUN" = 1 ] && return 0
+  ignore="$(cat "$ARP_PROC/arp_ignore" 2>/dev/null || true)"
+  announce="$(cat "$ARP_PROC/arp_announce" 2>/dev/null || true)"
+  if ! { [ "$ignore" = 1 ] && [ "$announce" = 2 ]; }; then
+    if [ "$rc" != 0 ]; then
+      warn "network: ARP is arp_ignore=${ignore:-?} arp_announce=${announce:-?} after a failed sysctl --system, not 1 and 2 — the next run tries again"
+      return 0
+    fi
+    # Every file applied cleanly and the values are still not ours: a drop-in sorting
+    # after this one sets them on purpose. Said once, recorded, not fought.
+    log "network: a sysctl.d drop-in after $ARP_SYSCTL_DROPIN sets ARP to arp_ignore=${ignore:-?} arp_announce=${announce:-?} — left as it is"
+  fi
+  write_root "$ARP_APPLIED" "$want" \
+    || warn "network: could not record the ARP settings in $ARP_APPLIED — the next run applies them again"
 }
 
 # Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker
@@ -2778,9 +2846,11 @@ main_brain_only() {
     local msg="no brain venv at $BRAIN_LINK — --only brain updates an installed brain; run install.sh without --only to install one"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
   fi
-  # --only brain installs no system packages and leaves the box's setup alone: a box no full
-  # run has set up since setup_logs (no logrotate, or no journal drop-in) keeps its
-  # unrotated, uncapped logs, so say so.
+  # --only brain installs no system packages, and of the box's setup it touches only the
+  # busy lamp's udev rule, the resolver's serve-stale drop-in and the ARP sysctl drop-in
+  # (after the swap, below). The logs are not among them: a box no full run has set up
+  # since setup_logs (no logrotate, or no journal drop-in) keeps its unrotated, uncapped
+  # logs, so say so.
   if [ ! -x "$LOGROTATE_BIN" ] || [ ! -e "$JOURNAL_DROPIN" ] || [ ! -e "$JOURNAL_APPLIED" ]; then
     warn "logs may not be rotated or capped on this box yet (no logrotate, or no record of journald taking $JOURNAL_DROPIN): run install.sh without --only once"
   fi
@@ -2794,6 +2864,7 @@ main_brain_only() {
   sip_brain_retire
   install_busy_lamp   # only now: the swap has been verified
   install_dns_resilience
+  install_arp_multihome
   brain_prune
   log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
   printf '  undo:    install.sh --rollback brain\n'
@@ -2844,6 +2915,7 @@ main() {
   phase_brain
   install_busy_lamp
   install_dns_resilience
+  install_arp_multihome
   phase_agent
   phase_credentials
   phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them

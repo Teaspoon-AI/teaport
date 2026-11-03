@@ -8,10 +8,10 @@
 # address to open. This is the sending side, for any teaport process:
 #
 #     screen = display.Screen("wifi-setup")
-#     screen.show("Wi-Fi setup", ["Network  teaport-ab12", "Password  48201937"])
+#     screen.show("Setup mode", ["Network  teaport-ab12", "Password  48201937"])
 #     ...                                  # held up (re-sent) until
 #     screen.close()                       # it is taken down
-#     screen.show("Wi-Fi setup", ["Connected"], secs=10)   # or up for a while, alone
+#     screen.show("Setup mode", ["Connected"], secs=10)   # or up for a while, alone
 #     screen.show("Pair", ["Code 4821"], qr="https://...")  # with a QR code beside or
 #                                                           # in turn with the text
 #

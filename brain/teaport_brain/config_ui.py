@@ -632,7 +632,7 @@ async def restart(request: Request):
 # the unauthenticated one, and it is a separate, short-lived process.
 
 _wifi_lock = asyncio.Lock()
-_SETUP_BUSY = "Wi-Fi setup is running on this box"
+_SETUP_BUSY = "this box is already in setup mode"
 
 
 def _wifi_nm():
