@@ -188,6 +188,20 @@ def test_doctor_reads_engine_env_as_the_unit_does():
     assert "FAILC" not in out
 
 
+def test_doctor_drops_whitespace_as_systemd_does():
+    out = _run(_box(engine_env="  VOX_LICENSE_MODE = on \r\n"), "license_check")
+    assert "FAILC no valid engine license key" in out and "will not start without one" in out, out
+
+
+def test_status_runs_the_license_line_only_for_an_engine_with_keys():
+    for old, shown in ((False, True), (True, False)):
+        t = _box(old_engine=old, journal=["License key: TS-1 (personal) for Pat, expires never"])
+        status = _fn("cmd_status")
+        gate = next(ln for ln in status.splitlines() if "license_line" in ln)
+        out = _run(t, "installed() { :; }\n" + gate)
+        assert ("license key (engine)" in out) == shown, (old, out)
+
+
 def test_doctor_ignores_the_shells_own_exports():
     t = _box()
     body = 'export VOX_LICENSE_MODE=on VOX_LICENSE_FILE=/nonexistent; license_check'

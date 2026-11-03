@@ -279,14 +279,18 @@ as_run_user() { if [ "$(id -un)" = "$RUN_USER" ]; then "$@"; else sudo -u "$RUN_
 # the engine download, and a typo should not cost the ~15GB before it.
 license_src_check() {
   [ -n "$LICENSE_SRC" ] || return 0
-  [ -f "$LICENSE_SRC" ] || die "--license-file: no such file: $LICENSE_SRC"
-  LICENSE_SRC="$(cd "$(dirname "$LICENSE_SRC")" && pwd)/$(basename "$LICENSE_SRC")"
+  [ -f "$LICENSE_SRC" ] || die "--license-file: no such file (or $(id -un) cannot reach it): $LICENSE_SRC"
+  LICENSE_SRC="$(CDPATH='' cd -P -- "$(dirname -- "$LICENSE_SRC")" && pwd)/$(basename -- "$LICENSE_SRC")"
 }
 # env_value <env file> <KEY> — KEY's value as systemd's EnvironmentFile reads it: the last
-# assignment wins, and one pair of surrounding quotes is removed. "" when unset or unreadable.
+# assignment wins, whitespace around the key, the = and the value (a CR included) is
+# dropped, and one pair of surrounding quotes is removed. "" when unset or unreadable.
 env_value() {
   local v=""
-  if [ -e "$1" ]; then v="$(read_env_file "$1" --lenient | sed -n "s/^$2=//p" | tail -1)"; fi
+  if [ -e "$1" ]; then
+    v="$(read_env_file "$1" --lenient | sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" | tail -1)"
+  fi
+  v="${v%"${v##*[![:space:]]}"}"
   if [ ${#v} -ge 2 ]; then case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac; fi
   printf '%s' "$v"
 }

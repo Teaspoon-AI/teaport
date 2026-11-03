@@ -220,6 +220,31 @@ def test_a_quoted_mode_reads_as_systemd_gives_it_to_the_engine():
     assert rc == 0 and "WARN no valid engine license key" in out and "enforcement: warn" in out, out
 
 
+def test_engine_env_whitespace_is_dropped_as_systemd_drops_it():
+    for text in ('VOX_LICENSE_MODE=warn \n', 'VOX_LICENSE_MODE=warn\r\n', 'VOX_LICENSE_MODE="warn" \n',
+                 '  VOX_LICENSE_MODE = warn\n'):
+        box = _box()
+        (box[0] / "etc" / "engine.env").write_text(text)
+        rc, out = _run(box, 'printf "[%s]\\n" "$(env_value "$ETC/engine.env" VOX_LICENSE_MODE)"')
+        assert rc == 0 and "[warn]" in out, (text, out)
+    box = _box()
+    (box[0] / "etc" / "engine.env").write_text("  VOX_LICENSE_MODE=on\n")
+    rc, out = _run(box, "install_license")
+    assert rc == 1 and "would refuse to start" in out, out
+
+
+def test_a_relative_license_file_with_spaces_and_cdpath_set():
+    box = _box()
+    d = box[0] / "my keys"
+    d.mkdir()
+    key = _key(box, name="my keys/lic.json")
+    decoy = box[0] / "cdpath" / "my keys"
+    decoy.mkdir(parents=True)
+    rc, out = _run(box, f'cd "{box[0]}"; export CDPATH="{box[0]}/cdpath"; license_src_check; echo "SRC=$LICENSE_SRC"',
+                   license_src="my keys/lic.json")
+    assert rc == 0 and f"SRC={key}\n" in out, out
+
+
 def test_the_installers_own_shell_exports_do_not_reach_the_check():
     box = _box()
     rc, out = _run(box, "export VOX_LICENSE_MODE=on VOX_LICENSE_FILE=/nonexistent; install_license")

@@ -131,10 +131,12 @@ license_line() {  # the key, as a status line
   printf '  %-28s %s\n' "license key (engine)" "$(c "$col" "$text")"
 }
 # unit_env_value <env file> <KEY> — KEY as the unit's EnvironmentFile gives it to the engine:
-# the last assignment wins, and one pair of surrounding quotes is removed (envval takes the
-# first, as written).
+# the last assignment wins, whitespace around the key, the = and the value (a CR included)
+# is dropped, and one pair of surrounding quotes is removed (envval takes the first, as
+# written).
 unit_env_value() {
-  local v; v="$(sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1 || true)"
+  local v; v="$(sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | tail -1 || true)"
+  v="${v%"${v##*[![:space:]]}"}"
   if [ ${#v} -ge 2 ]; then case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac; fi
   printf '%s' "$v"
 }
