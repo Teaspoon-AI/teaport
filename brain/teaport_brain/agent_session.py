@@ -921,7 +921,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     )
 
     # The pauser below is built after the aggregator (it needs the transport's output);
-    # the start strategy tells it when the caller's speech came back with no turn in it.
+    # the start strategy tells it when the caller's speech came back with no turn in it,
+    # and when the STT has heard that speech out (barge_pause.py HEARD OUT).
     pause_link: dict = {}
 
     async def _final_without_turn():
@@ -929,8 +930,14 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_final_without_turn()
 
+    async def _speech_heard(watch):
+        pauser = pause_link.get("pauser")
+        if pauser is not None:
+            await pauser.on_speech_heard(watch)
+
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
-        min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn)
+        min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn,
+        on_speech_heard=_speech_heard)
     start_strategy.taken_words = taken_words
 
     context_aggregator = LLMContextAggregatorPair(
@@ -1053,6 +1060,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # words in hand at its cap, before it resumes (stt.py TURN TEXT).
         stt.barge_hold = lambda on: barge_pauser.hold_resume(on, who="the turn's final")
         barge_pauser.before_cap = stt.close_held
+        # A quiet line resumes once the STT has heard the speech out, where its engine
+        # reports how far it has transcribed (barge_pause.py HEARD OUT, #275).
+        barge_pauser.watch_heard = stt.watch_heard
         logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
                     "speech and resumes if no words follow")
     # Words over a paused reply go to a one-word judge before they start the turn

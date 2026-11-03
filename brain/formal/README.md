@@ -2753,20 +2753,31 @@ The new steps:
 - `JudgeContinue`: CONTINUE, asked again on words that grew since the judge was asked.
 - `JudgeLetOn`: any other verdict, the deadline, or a pause that ended first.
 - `ResumeP` is the pause's quiet resume, which the gate holds while it waits.
+- `HeardOut` (#275): the engine's transcription report has passed the caller's speech,
+  so every word of it has come. As shipped, `ResumeP` waits for it.
 
-The new monitor is `resumeOverWords`: the reply resumed while words were held, and those
-words then started a turn. That is a question talked over while it was being judged.
+The monitors:
+- `resumeOverWords`: the reply resumed while words were held, and those words then
+  started a turn. That is a question talked over while it was being judged.
+- `unjudged` (#275): words of speech said over the paused reply arrived after it resumed,
+  and started a turn on it with no judge to ask. The ghost `unheard` marks such speech
+  from its start over the pause until `HeardOut`.
 
-| JUDGE | | `NoResumeOverWords` | `NoMissedBargeIn` |
-|---|---|---|---|
-| `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ |
-| `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ |
-| `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again | ✓ | ✓ |
+| JUDGE | | `NoResumeOverWords` | `NoMissedBargeIn` | `NoUnjudgedWords` |
+|---|---|---|---|---|
+| `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ | ✓ |
+| `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
+| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275) | ✓ | ✓ | ✗ |
+| `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
 
 `shipped` holds every property the shipped pause holds:
-- `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 12k states.
-- `ut_judge_shipped_timed`: the timers as they are, everything but the accepted
-  `NoStaleReply` residual, 34k states.
+- `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 20k states. For
+  the pause, that assumption is the report coming before the pauser's bound on waiting
+  for it (2 s of quiet; on the box it passed the speech end at most 1.19 s after the VAD
+  stop, over 1,009 stops).
+- `ut_judge_shipped_timed`: the timers as they are, 118k states. Everything holds but
+  the accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked
+  there: a report later than the bound resumes the pause as the window did.
 
 The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 
@@ -2798,9 +2809,27 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
   As shipped, the stop word lets everything held on at once. That is also faster: as
   first written, "Stop." waited for the verdict on "Okay" and then for a judge of its own
   (the PR #232 review).
+- `NoUnjudgedWords`: **words said over a paused reply are the judge's to decide.**
+  `quietWindow`, 10 states:
+
+  ```
+  ... BotStart                 a reply plays
+  VadStart                     the caller speaks over it: paused
+  VadStop ResumeP              0.8 s of quiet: the pause resumes, no words yet
+  Interject                    "Right." -- the engine returns it now; the reply is
+                               playing, so no gate holds it, and it cuts the reply
+  ```
+
+  Live on 2026-11-02: a "Right." over a story tripped only the onset test (no VAD stop
+  to commit it), and its first interim came 20 ms after the window resumed. As shipped,
+  the pause waits for the engine's report to pass the speech (`HeardOut`), so the word
+  arrives while it is still paused and is judged.
 
 What is not modelled:
 - The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
+- How long the report takes: `HeardOut` can come at any point after the caller falls
+  quiet. The pauser's bound on waiting for it is a timer, so it is in the `timed` rows
+  only, as the hold's are.
 - The pause cap (at most 7.5 s, under the transport's 8 s write guard): a caller still talking keeps the pause; the cap ends it as a pause end.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
@@ -2987,7 +3016,7 @@ transport pauses as the SIP one does (`playout_pause.py`): `HOLD = "none"`,
 `PAUSE = "shipped"`. `ut_talk_shipped_all` holds every property but those two
 (`ut_talk_shipped_nostalereply`, `ut_talk_shipped_nosplitturn`), so nothing in the
 pause's own properties leans on the hold: `ut_talk_judge_all` holds them with the judge
-on as well, and the witnesses (`ut_talk_pause_reach`, `ut_talk_judge_reach`) show the
+on as well (`NoUnjudgedWords` too), and the witnesses (`ut_talk_pause_reach`, `ut_talk_judge_reach`) show the
 pause and the judging are reached without it. The room's own turn timing (`ROOM_*`, #159) and
 `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 

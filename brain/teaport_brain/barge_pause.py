@@ -26,15 +26,17 @@
 #     interruption cancels the reply and the caller has the turn.
 #   * No words: a cough, a breath, a backchannel too short to count. Playout RESUMES
 #     from the very sample it stopped on -- the audio waited in the transport's own
-#     queue -- so nothing is lost or repeated. It resumes as soon as the STT's close of
-#     that speech has come back with no turn in it (a final under the word guard, or a
-#     wordless close) plus a short grace, and at the latest TEAPORT_BARGE_PAUSE_RESUME_S
-#     after the line went quiet -- which, with the VAD's own stop delay, is a stall of
-#     about ENDPOINT_STOP_SECS + TEAPORT_BARGE_PAUSE_RESUME_S (~1.0 s at 0.2 + 0.8) for
-#     a cough. A blip under 250 ms resumes after 0.3 s. TEAPORT_BARGE_PAUSE_MAX_S caps a
-#     pause from its start; a barge-in the STT still holds there (stt.py TURN TEXT)
-#     closes on the words in hand first, and the reply resumes _FINAL_GRACE_S after
-#     that close, so its words are decided paused.
+#     queue -- so nothing is lost or repeated. It resumes a short grace after the STT
+#     says the speech had no turn in it: its close came back so (a final under the word
+#     guard, or a wordless close), or, where the engine reports how far it has
+#     transcribed, that report passed the speech (HEARD OUT, below). Failing either, it
+#     resumes TEAPORT_BARGE_PAUSE_RESUME_S after the line went quiet, or _HEARD_WAIT_S
+#     while that report is awaited. With the VAD's own stop delay, a cough stalls the
+#     bot about ENDPOINT_STOP_SECS + 0.7 s (the report's median, plus the grace). A blip
+#     under 250 ms resumes after 0.3 s where there is no report to wait for.
+#     TEAPORT_BARGE_PAUSE_MAX_S caps a pause from its start; a barge-in the STT still
+#     holds there (stt.py TURN TEXT) closes on the words in hand first, and the reply
+#     resumes _FINAL_GRACE_S after that close, so its words are decided paused.
 #
 # THE JUDGE (#224, TEAPORT_BARGE_JUDGE). Words that would start the turn over a paused
 # reply -- "Okay.", "Mm-hmm.", as well as "Wait, what?" -- do not start it at once:
@@ -54,6 +56,27 @@
 # context) continued over 61 of 96 questions. A pause with no words in it is no
 # different with the judge: an empty transcript that was really a "stop" still resumes
 # (the STT's to fix, not a decision's).
+#
+# HEARD OUT (#275). The quiet window alone cannot tell a cough from a word the engine has
+# not returned yet. Over the bot a short word often trips only the onset test -- the
+# VAD's volume gate never opens on it, so no VAD stop commits it -- and its first interim
+# then comes when the decoder gets to it: 20 ms AFTER the 0.8 s window resumed the reply,
+# on the box (2026-11-02, a "Right." over a story). A word that lands on a reply playing
+# again is no longer over a paused reply: the judge never sees it, the word count cuts
+# the reply, and the bot starts afresh. So where the engine reports its progress
+# (stt.py SPEECH_DECODED), the pauser asks the STT, as the line goes quiet, to say when
+# the report has passed the caller's speech (stt.watch_heard, the onset test's own speech
+# end): every word of it is then in the interims ahead of that notice
+# (endpointing.SpeechHeardFrame), which comes down behind them, through the judge's
+# gate, to the start strategy. Words there are judged as any over the pause are; with
+# none, the reply resumes _FINAL_GRACE_S after the notice. The quiet window is then only the
+# bound on a report that does not come, at _HEARD_WAIT_S: on the box (1,009 VAD stops,
+# 2026-10-30..11-03) the report passed the speech end a median 0.56 s after the stop, p99
+# 1.08 s, at most 1.19 s, so a cough waits about what the window made it wait. A blip
+# waits on it as well -- on Talk's 0.2 s stop a short "yeah" is one -- and a release of
+# the judge's or the STT's hold on the same notice. An engine without the report, or a
+# session that has none yet, resumes on the window as before. formal/UserTurn.tla's
+# NoUnjudgedWords checks it (JUDGE = "quietWindow" is the window alone).
 #
 # Three things it does NOT pause, each because pausing there cost more than it saved:
 #
@@ -155,6 +178,7 @@ from teaport_brain.endpointing import (
     STT_FRAMES,
     SegmentDoneFrame,
     SegmentResetFrame,
+    SpeechHeardFrame,
 )
 from teaport_brain.settings import setting
 from teaport_brain.word_tokens import word_tokens
@@ -199,11 +223,16 @@ STOP_WORDS = tuple(
 
 # No pause when the reply is fully synthesized and at most this much of it is left.
 _NEAR_END_S = 0.5
-# Speech shorter than this is a blip: its pause resumes after _BLIP_RESUME_S.
+# Speech shorter than this is a blip: its pause resumes after _BLIP_RESUME_S where the
+# STT will not report (HEARD OUT), and counts as echo-like either way.
 _BLIP_S = 0.25
 _BLIP_RESUME_S = 0.3
 # After the STT's close of the speech came back with no turn, resume this much later.
 _FINAL_GRACE_S = 0.15
+# The longest a quiet line waits for the STT to say it has heard the speech out (HEARD
+# OUT), past which the engine is further behind than any report measured on the box
+# (at most 1.19 s after the VAD stop) and the reply resumes as on the window alone.
+_HEARD_WAIT_S = 2.0
 # The transport's own end to a pause (sip_transport._wait_if_paused, which takes it from
 # here): a write blocked this long resumes whatever the pauser asks, since pipecat's
 # MediaSender bounds a write at audio_out_write_timeout_secs (10 s) and treats running
@@ -327,6 +356,16 @@ class BargeInPauser(FrameProcessor):
         # Called (async) at the cap, before it resumes, while anyone holds: the STT's
         # close of a held barge-in on the words in hand (set by build_agent_session).
         self.before_cap = None
+        # Called (async) with a watch's number as the line goes quiet: the STT's watch
+        # for its report passing the speech (stt.watch_heard, set by
+        # build_agent_session), True if a notice will come (HEARD OUT). The latest
+        # watch, and whether its notice came: the speech is heard out.
+        self.watch_heard = None
+        self._watch_seq = 0
+        self._watch = None
+        self._heard = False
+        # The last speech over the pause was a blip (_BLIP_S): its resume is echo-like.
+        self._blip = False
         # Echo-like pauses (resumed on a blip, no words) in this bot-speaking window.
         self._noword = 0
         # Tallies, for the log and the tests.
@@ -351,10 +390,42 @@ class BargeInPauser(FrameProcessor):
     async def on_final_without_turn(self):
         """PauseAwareMinWordsStrategy: the STT closed the caller's speech and it started
         no turn (a final under the word guard, or a close with no words). If the line is
-        quiet, resume after a short grace rather than the full window."""
+        quiet, resume after a short grace rather than the full window -- unless the STT
+        is still to hear out speech since (HEARD OUT): a close may be of an earlier
+        segment, and the notice says it for all of it."""
+        if self._watch is not None and not self._heard:
+            return
         if self._paused and not self._speaking:
             self._schedule_resume(_FINAL_GRACE_S, "the STT's close of it had no turn in it",
                                   echo=False)
+
+    async def on_speech_heard(self, watch: int):
+        """PauseAwareMinWordsStrategy: the STT's notice for `watch` (SpeechHeardFrame),
+        behind every word of the speech it was asked on, none of which started a turn.
+        The latest watch's resumes a quiet line after a short grace (HEARD OUT)."""
+        if watch != self._watch:
+            return  # an earlier speech's: the caller has spoken since
+        self._heard = True
+        if self._paused and not self._speaking:
+            self._schedule_resume(_FINAL_GRACE_S, "the STT heard it out with no turn in it",
+                                  echo=self._blip)
+
+    def _quiet_resume(self, why: str):
+        """The line is quiet over the pause with nothing holding it: resume after a
+        grace if the STT has heard the speech out; while its notice is awaited, at the
+        latest _HEARD_WAIT_S on (HEARD OUT); with no notice to come, on the window (a
+        blip's, _BLIP_RESUME_S, for speech too short to be more than echo)."""
+        if self._heard:
+            self._schedule_resume(_FINAL_GRACE_S, f"{why}, the speech heard out",
+                                  echo=self._blip)
+        elif self._watch is not None:
+            wait = max(self._resume_secs, _HEARD_WAIT_S)
+            self._schedule_resume(wait, f"{why}, no report from the STT within {wait:.1f}s",
+                                  echo=self._blip)
+        else:
+            wait = min(self._resume_secs, _BLIP_RESUME_S) if self._blip else self._resume_secs
+            self._schedule_resume(wait, f"{why}, no words within {wait:.1f}s",
+                                  echo=self._blip)
 
     @property
     def _held(self) -> bool:
@@ -364,18 +435,19 @@ class BargeInPauser(FrameProcessor):
         """Words over the pause are being decided (`on`), or no longer are, by `who`: the
         judge (BargeInJudgeGate), or the STT, whose barge-in turn waits on its final
         (stt.py TURN TEXT). Each holds and lets go its own. While any holds, nothing but
-        the cap resumes; after, a quiet line resumes on the usual window if nothing sooner
-        does (the close that follows)."""
+        the cap resumes; after, a quiet line resumes as on going quiet (_quiet_resume) if
+        nothing sooner does (the close that follows)."""
         if on:
             self._holds.add(who)
             self._cancel(self._resume_task)
             self._resume_task = None
             return
         self._holds.discard(who)
+        # Words were decided: whatever the speech was, it was not echo.
+        self._blip = False
         if (not self._holds and self._paused and not self._speaking
                 and self._resume_task is None):
-            self._schedule_resume(self._resume_secs, f"{who} let the reply carry on",
-                                  echo=False)
+            self._quiet_resume(f"{who} let the reply carry on")
 
     async def _speech(self, source: str, started: bool):
         was_speaking = self._speaking
@@ -385,16 +457,28 @@ class BargeInPauser(FrameProcessor):
                 self._speech_t0 = time.monotonic()
             self._cancel(self._resume_task)
             self._resume_task = None
+            # More speech: what was heard out is not all of it.
+            self._watch = None
+            self._heard = False
             if self._may_pause(source):
                 await self._pause(source)
         elif self._paused and not self._speaking:
-            blip = (self._speech_t0 is not None
-                    and time.monotonic() - self._speech_t0 < _BLIP_S)
-            self._schedule_resume(
-                min(self._resume_secs, _BLIP_RESUME_S) if blip else self._resume_secs,
-                "a blip" if blip else
-                f"no words within {self._resume_secs:.1f}s of the caller stopping",
-                echo=blip)
+            # A blip resumes on a shorter window and counts as echo-like -- but waits for
+            # the STT like any speech where it will report: a short word is short too.
+            self._blip = (self._speech_t0 is not None
+                          and time.monotonic() - self._speech_t0 < _BLIP_S)
+            if self.watch_heard is not None:
+                # Numbered before the ask: a notice the STT can push at once must match.
+                self._watch_seq += 1
+                self._watch = self._watch_seq
+                try:
+                    if not await self.watch_heard(self._watch):
+                        self._watch = None
+                except Exception as e:  # noqa: BLE001 -- the window still resumes
+                    logger.warning(f"BARGE-PAUSE: asking the STT to report failed ({e!r})")
+                    self._watch = None
+            if self._paused and not self._speaking and self._resume_task is None:
+                self._quiet_resume("a blip" if self._blip else "the caller stopped")
 
     def _may_pause(self, source: str) -> bool:
         if self._paused or not self._bot_speaking or not self._reply_audio:
@@ -478,6 +562,9 @@ class BargeInPauser(FrameProcessor):
     def _end(self):
         self._paused = False
         self._holds.clear()
+        self._watch = None
+        self._heard = False
+        self._blip = False
         for task in (self._resume_task, self._cap_task):
             self._cancel(task)
         self._resume_task = self._cap_task = None
@@ -583,15 +670,18 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         pause frame's tail_secs), the bot counts as silent and one word is a turn --
         as it would have been without the pause;
       * a final (or a wordless close) that starts no turn tells the pauser, which then
-        resumes sooner (on_final_without_turn).
+        resumes sooner (on_final_without_turn), as does the STT's notice that it has
+        heard the speech out (SpeechHeardFrame, on_speech_heard).
 
     Anything else counts words exactly as MinWordsUserTurnStartStrategy does, so a
     backchannel ("yeah") still does not cut the bot, and the pause it caused resumes."""
 
-    def __init__(self, *, stop_words=STOP_WORDS, on_final_without_turn=None, **kwargs):
+    def __init__(self, *, stop_words=STOP_WORDS, on_final_without_turn=None,
+                 on_speech_heard=None, **kwargs):
         super().__init__(**kwargs)
         self._stop_words = tuple(stop_words)
         self._on_final_without_turn = on_final_without_turn
+        self._on_speech_heard = on_speech_heard
         # taken_turn.TakenWords, where the session keeps one (agent_session).
         self.taken_words = None
         self._playout_paused = False
@@ -616,6 +706,9 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             self._pause_t0 = self._would_end_at = None
         elif isinstance(frame, SegmentDoneFrame) and self._playout_paused:
             await self._notify()
+        elif (isinstance(frame, SpeechHeardFrame) and self._playout_paused
+              and self._on_speech_heard is not None):
+            await self._on_speech_heard(frame.watch)
         return await super().process_frame(frame)
 
     def judges(self, text: str) -> bool:

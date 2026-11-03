@@ -1091,7 +1091,7 @@ max = 7.75
 default = 0.8
 read = "startup"
 tier = "tuning"
-help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). With the VAD's own stop delay a cough stalls the bot about ENDPOINT_STOP_SECS + this. At most 7.75, as the cap (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's 8 s guard on a held write."
+help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). Where the speech engine reports how far it has transcribed, the reply waits for that report to pass the caller's speech instead, so a word it returns late is still decided over the paused reply; this, or 2 s if longer, is then only the bound on a report that does not come. At most 7.75, as the cap (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's 8 s guard on a held write."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_MAX_S"

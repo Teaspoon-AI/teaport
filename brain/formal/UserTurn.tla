@@ -174,6 +174,13 @@
 (* JUDGE = "shipped"  -- barge_pause.py: the pauser's quiet resume is held  *)
 (*                       while a verdict is awaited, and a CONTINUE on      *)
 (*                       words that grew since it was asked is asked again. *)
+(*                       A quiet resume waits until the STT has heard the   *)
+(*                       caller's speech out (the engine's report has       *)
+(*                       passed it: every word of it is in), #275.          *)
+(* JUDGE = "quietWindow" -- the shipped gate with the resume on a timer of  *)
+(*                       quiet alone (before #275): a word the engine       *)
+(*                       returns after it lands on the resumed reply,       *)
+(*                       which no gate holds, and cuts it unjudged.         *)
 (* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
 (*                       resume (0.8 s of quiet) can come first.            *)
 (* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
@@ -243,7 +250,9 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           HOLD,            \* the reply hold's design (see the header)
           WORDS_IN_TIME,   \* ASSUMPTION, for the gate's holding row: a resumed caller's
                            \* words (or the STT's word-less close) arrive before the
-                           \* release timer or the cap. FALSE: the timers as they are
+                           \* release timer or the cap -- and, for the pause, the
+                           \* engine's report before the pauser's bound on waiting for
+                           \* it. FALSE: the timers as they are
           PAUSE,           \* the barge-in pause's design (see the header)
           FENCE,           \* the cut-before-commit order (see the header)
           EARLY_FINAL,     \* a final of the caller's resumed words can be aggregated
@@ -380,8 +389,14 @@ VARIABLES
     grown,           \* more of their words came after the ones the judge was asked on
     stopHeld,        \* ghost: a stop word is among the held words
     resumedUnder,    \* ghost: the reply resumed while the words were held
-    resumeOverWords  \* monitor: the reply resumed over words that then started a turn
-judgeVars == <<judging, grown, stopHeld, resumedUnder, resumeOverWords>>
+    resumeOverWords, \* monitor: the reply resumed over words that then started a turn
+    unheard,         \* ghost: the caller spoke over this reply while it was paused, and
+                     \* the engine has not yet transcribed past that speech: words of it
+                     \* may still come (#275)
+    unjudged         \* monitor: such words came after the reply had resumed and started
+                     \* a turn on it, unjudged
+judgeVars == <<judging, grown, stopHeld, resumedUnder, resumeOverWords, unheard,
+               unjudged>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -462,7 +477,7 @@ Init ==
     /\ answer = "none" /\ pend = FALSE /\ gpend = FALSE /\ asUnder = FALSE /\ ansOver = FALSE
     /\ ansLost = FALSE /\ skipLost = FALSE /\ gstale = FALSE
     /\ judging = FALSE /\ grown = FALSE /\ stopHeld = FALSE /\ resumedUnder = FALSE
-    /\ resumeOverWords = FALSE
+    /\ resumeOverWords = FALSE /\ unheard = FALSE /\ unjudged = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -521,7 +536,9 @@ VadStart ==
                    splitTurn>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
-    /\ UNCHANGED judgeVars
+    \* Speech over a paused reply: its words are the pause's, and may yet come.
+    /\ unheard' = (unheard \/ pausedP')
+    /\ UNCHANGED <<judging, grown, stopHeld, resumedUnder, resumeOverWords, unjudged>>
 
 \* The user falls quiet: `VadStop`, below the commit it may re-apply.
 
@@ -628,12 +645,16 @@ CutLands ==
 \* are not judged: `StopWord` starts the turn on its own.
 JudgeWindow == botSpeaking /\ pausedP /\ ~(tailKnown /\ wouldEnd)
 Judged == JUDGE /= "off" /\ JudgeWindow
+\* The pauser waits for the STT to have heard the caller's speech out before a quiet
+\* resume (#275): as shipped, and in the shipped gate's rejected variants.
+HeardOutWait == JUDGE \notin {"off", "quietWindow"}
 
 \* The gate lets what it holds on: the words start the turn as they would have.
 JudgeRelease ==
     /\ judging' = FALSE /\ grown' = FALSE /\ stopHeld' = FALSE /\ resumedUnder' = FALSE
     \* A reply that resumed while they were held has played over them.
     /\ resumeOverWords' = (resumeOverWords \/ resumedUnder)
+    /\ UNCHANGED <<unheard, unjudged>>
 
 \* The gate has the words: nothing below it sees them yet.
 HeldWords ==
@@ -671,7 +692,7 @@ Interject ==
          ELSE IF (judging /\ JudgeWindow) \/ (~judging /\ Judged)
          THEN \* The gate holds them (more words of the held speech, or the first).
               /\ judging' = TRUE /\ grown' = judging
-              /\ UNCHANGED <<stopHeld, resumedUnder, resumeOverWords>>
+              /\ UNCHANGED <<stopHeld, resumedUnder, resumeOverWords, unheard, unjudged>>
               /\ HeldWords
          ELSE IF judging
          THEN \* The reply would be over by now: everything held goes on.
@@ -680,7 +701,12 @@ Interject ==
               /\ UNCHANGED missedBargeIn
          ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
-              /\ UNCHANGED judgeVars
+              \* Words of the speech the reply paused for, on that reply playing
+              \* again: they cut it with no judge to ask (#275).
+              /\ unjudged' = (unjudged \/ (JUDGE /= "off" /\ unheard /\ botSpeaking
+                                           /\ ~pausedP))
+              /\ UNCHANGED <<judging, grown, stopHeld, resumedUnder, resumeOverWords,
+                             unheard>>
     /\ watchdog' = FALSE
     /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
@@ -744,10 +770,13 @@ ResumeP ==
     /\ pausedP /\ ~userSpeaking
     \* hold_resume: no quiet resume while a verdict is awaited (the gate's own).
     /\ ~(judging /\ JUDGE /= "noHold")
+    \* #275: nor while the STT has not heard the speech out -- under WORDS_IN_TIME, its
+    \* report comes before the pauser's bound on waiting for it.
+    /\ ~(unheard /\ HeardOutWait /\ WORDS_IN_TIME)
     /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
     /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
     /\ resumedUnder' = (resumedUnder \/ judging)
-    /\ UNCHANGED <<judging, grown, stopHeld, resumeOverWords>>
+    /\ UNCHANGED <<judging, grown, stopHeld, resumeOverWords, unheard, unjudged>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED holdVars
@@ -769,7 +798,8 @@ OneWord ==
     /\ turns < MaxTurns /\ ~userTurn /\ ~userSpeaking /\ ~stopInFlight
     /\ IF judging /\ JudgeWindow
          THEN /\ grown' = TRUE                 \* held with the rest
-              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords>>
+              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords, unheard,
+                             unjudged>>
               /\ HeldWords
          ELSE IF judging
          THEN \* The reply would be over by now: everything held goes on.
@@ -804,7 +834,7 @@ StopWord ==
     /\ IF judging /\ JUDGE = "noReask"
          THEN \* Held with the rest: "Okay -- stop." waits on the verdict on "Okay".
               /\ grown' = TRUE /\ stopHeld' = TRUE
-              /\ UNCHANGED <<judging, resumedUnder, resumeOverWords>>
+              /\ UNCHANGED <<judging, resumedUnder, resumeOverWords, unheard, unjudged>>
               /\ HeldWords
          ELSE IF judging
          THEN \* As shipped, a stop word lets everything held on at once.
@@ -826,6 +856,22 @@ StopWord ==
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
 
+\* The engine's transcription report passes the caller's speech with the line quiet
+\* (SpeechHeardFrame, behind every word it returned for it): no more words of it will
+\* come. Words it did return were `Interject` and the rest, before this.
+HeardOut ==
+    /\ ~endQueued
+    /\ unheard /\ ~userSpeaking
+    /\ unheard' = FALSE
+    /\ UNCHANGED <<judging, grown, stopHeld, resumedUnder, resumeOverWords, unjudged>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
+
 (***************************************************************************)
 (* The barge-in judge's verdicts.                                           *)
 (***************************************************************************)
@@ -842,11 +888,12 @@ JudgeContinue ==
     /\ judging /\ pausedP
     /\ IF grown /\ JUDGE /= "noReask"
          THEN /\ grown' = FALSE
-              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords, stopHeard>>
+              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords, stopHeard,
+                             unheard, unjudged>>
          ELSE /\ judging' = FALSE /\ grown' = FALSE /\ stopHeld' = FALSE
               /\ resumedUnder' = FALSE
               /\ stopHeard' = (stopHeard \/ stopHeld)
-              /\ UNCHANGED resumeOverWords
+              /\ UNCHANGED <<resumeOverWords, unheard, unjudged>>
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
@@ -1267,7 +1314,9 @@ BotStart ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
-    /\ UNCHANGED judgeVars
+    \* A new reply: only speech it is paused for at its start is its pause's.
+    /\ unheard' = pausedP'
+    /\ UNCHANGED <<judging, grown, stopHeld, resumedUnder, resumeOverWords, unjudged>>
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -1675,7 +1724,7 @@ Next ==
     \/ SpecStart \/ CtxChange \/ Retext \/ Release \/ Cap \/ Hangup
     \/ ToolCall \/ CallLands \/ LateLands
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP
-    \/ JudgeContinue \/ JudgeLetOn
+    \/ JudgeContinue \/ JudgeLetOn \/ HeardOut
 
 Spec == Init /\ [][Next]_vars
 
@@ -1773,6 +1822,10 @@ NoResumeOverWords == ~resumeOverWords
 \* Witness: the gate holds words (a judged pause is reachable).
 NoJudging == ~judging
 
+\* #275. Words said over a paused reply are the judge's to decide: none of them starts
+\* a turn on the reply after it resumed, past the gate.
+NoUnjudgedWords == ~unjudged
+
 TypeOK ==
     /\ userTurn \in BOOLEAN /\ userSpeaking \in BOOLEAN /\ watchdog \in BOOLEAN
     /\ botSpeaking \in BOOLEAN /\ inference \in BOOLEAN /\ stopInFlight \in BOOLEAN
@@ -1814,9 +1867,10 @@ TypeOK ==
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
-    /\ JUDGE \in {"off", "shipped", "noHold", "noReask"}
+    /\ JUDGE \in {"off", "shipped", "noHold", "noReask", "quietWindow"}
     /\ judging \in BOOLEAN /\ grown \in BOOLEAN /\ stopHeld \in BOOLEAN
     /\ resumedUnder \in BOOLEAN /\ resumeOverWords \in BOOLEAN
+    /\ unheard \in BOOLEAN /\ unjudged \in BOOLEAN
     /\ (JUDGE = "off" => ~judging)
     /\ ((grown \/ stopHeld \/ resumedUnder) => judging)
 =============================================================================

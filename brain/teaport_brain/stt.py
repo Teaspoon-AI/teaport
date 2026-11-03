@@ -86,6 +86,7 @@ from teaport_brain.endpointing import (
     NoSpeechReportFrame,
     SegmentResetFrame,
     SpeechDecodedFrame,
+    SpeechHeardFrame,
     SpeechPreviewFrame,
     SttProgressFrame,
     TurnTextFinalFrame,
@@ -1119,6 +1120,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._decoded_through = None
         self._decoded_stop = 0
         self._stop_at = 0.0
+        # The barge-in pauser's watch (watch_heard): its number, the send position the
+        # report must pass, and when it was asked; None while none is out.
+        self._heard_watch = None
         # Whether to ask the engine for the report (SPEECH_DECODED; set by
         # build_agent_session), and whether this engine session gives it.
         self.transcription_progress = False
@@ -1969,6 +1973,51 @@ class TeaportSTTService(WebsocketSTTService):
                     "after the stop")
         await self.push_frame(SpeechDecodedFrame(stop_n=self._vad_stops))
 
+    async def watch_heard(self, watch: int) -> bool:
+        """The barge-in pauser, as the line goes quiet over a paused reply: push
+        SpeechHeardFrame(watch) once the engine has transcribed past the caller's
+        speech, so every word of it is in the interims pushed ahead of it
+        (barge_pause.py HEARD OUT). Its end is the onset test's voice end, on the send
+        clock as the speech end above is placed (SPEECH_DECODED), plus the report's
+        margin: or, with no marks or audio left unsent since the caller's start, all
+        the audio sent so far, which is never short of it. False where no report will
+        say -- an engine session without one -- and the pauser resumes on its window.
+        A watch replaces the one before; a new engine session drops it unanswered."""
+        if not (self._reports or self._slicing):
+            self._heard_watch = None
+            return False
+        rate = self.sample_rate or 16000
+        end = self._sent_samples
+        w = self._voice_marks()
+        if w is not None and w.voice_end is not None and not self._hint_gap:
+            end = min(end, self._sent_samples - (self._passed_samples - w.voice_end))
+        self._heard_watch = (watch, end + _REPORT_MARGIN_MS * rate // 1000,
+                             time.monotonic())
+        await self._push_if_heard()
+        return True
+
+    def _heard_through(self) -> Optional[int]:
+        """How far every word is in hand, on the send clock: a sliced session's end
+        bound (TURN TEXT: a word is returned once complete, so the decoder's own
+        position is no bound on it), else the report's position; None before either."""
+        if self._slicing:
+            if self._end_through < 0:
+                return None
+            rate = self.sample_rate or 16000
+            return self._session_origin + self._end_through * rate // 1000
+        return self._decoded_through
+
+    async def _push_if_heard(self):
+        """Answer the pauser's watch once the report has passed it (watch_heard)."""
+        through = self._heard_through()
+        if self._heard_watch is None or through is None or through < self._heard_watch[1]:
+            return
+        watch, _, asked = self._heard_watch
+        self._heard_watch = None
+        logger.debug(f"{self}: the caller's speech over the paused reply transcribed "
+                     f"through, {time.monotonic() - asked:.2f}s after the pauser asked")
+        await self.push_frame(SpeechHeardFrame(watch=watch))
+
     def _claim(self, for_voice: bool = False) -> tuple[Optional[int], Optional[int]]:
         """What the commit going out now claims as trailing silence, in ms, and where on
         the send clock its carry starts, the next segment's start (CARRY THE TAIL).
@@ -2784,6 +2833,8 @@ class TeaportSTTService(WebsocketSTTService):
                 # sends nothing on the new socket before this is taken.
                 self._session_origin = self._sent_samples
                 self._decoded_through = None
+                # A watch is on the old session's clock: the pauser's bound resumes it.
+                self._heard_watch = None
                 # Nor does a carry reach back into the last session's audio.
                 self._carry_floor = self._sent_samples
                 # Slices are asked for, and taken until the session's created says
@@ -3212,6 +3263,7 @@ class TeaportSTTService(WebsocketSTTService):
                 rate = self.sample_rate or 16000
                 self._decoded_through = self._session_origin + int(ms) * rate // 1000
                 await self._push_if_speech_decoded()
+            await self._push_if_heard()
 
         elif mtype == "session.created":
             # Whether this engine session reports its transcription's progress (it
