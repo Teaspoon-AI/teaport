@@ -131,6 +131,7 @@ from loguru import logger
 from teaport_brain import conversation_log
 from teaport_brain.conversation_log import quoted
 from teaport_brain import display, xvf_echo
+from teaport_brain.tasks import cancel_and_wait
 from teaport_brain.face_mood import LEAD_WORDS, LazyVader, lead_words
 from teaport_brain.wake_words import parse_phrases as wake_phrases
 from teaport_brain.settings import setting
@@ -2127,12 +2128,12 @@ async def main() -> None:
     stopper = asyncio.create_task(stop.wait())
     await asyncio.wait({bridge, stopper}, return_when=asyncio.FIRST_COMPLETED)
     stopper.cancel()
-    if not bridge.done():
-        bridge.cancel()
-    try:
-        await bridge
-    except asyncio.CancelledError:
-        pass
+    # The bridge's own failure is raised, as `await bridge` did; a stop of this task is
+    # never eaten on the way (tasks.py).
+    ended = (await cancel_and_wait(bridge) if not bridge.done()
+             else None if bridge.cancelled() else bridge.exception())
+    if ended is not None:
+        raise ended
 
 
 if __name__ == "__main__":

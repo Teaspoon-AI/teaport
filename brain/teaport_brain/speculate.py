@@ -106,6 +106,7 @@ from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregate
 
 from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
+from teaport_brain.tasks import cancel_and_wait
 
 ENABLED = setting("TEAPORT_SPECULATIVE_REPLY")
 
@@ -172,11 +173,7 @@ class _Speculation:
         """Stop reading and release the HTTP stream. Idempotent."""
         task, self.task = self.task, None
         if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            await cancel_and_wait(task)   # how the reader ended is not the closer's to raise
         # Iterator first, then the stream -- the order base_llm's _closing keeps, for the
         # same uvloop reason (_RenumberedStream's docstring in services.py).
         it, self._iter = self._iter, None
