@@ -642,6 +642,31 @@ def test_a_refusal_keeps_the_credit_spent_until_a_real_top_up():
     assert restarted.state() == credit.OK             # and the mark is gone
 
 
+def test_a_refusal_with_credit_left_on_the_key_is_the_accounts_and_passes():
+    """A key's limit is a cap; the money is the account's. The vendor's balance behind the
+    starter keys runs dry: a 402 with $3 left on this key. The session ends as for any
+    such refusal, but nothing sticky is kept: once the account is refilled, the next read
+    shows the key as it is and the box answers again -- restart or not (#280 review)."""
+    _box()
+    m, fetch = _monitor({"limit": 5, "limit_remaining": 3.0, "usage": 2.0})
+    _run(m.refresh())
+    assert m.state() == credit.OK
+    m.refused_for_credit()
+    assert m.spent()                                  # until the next read
+    assert not any(k.endswith(":refused") for k in credit._load_notices())
+    _run(m.refresh())                                 # the vendor refilled the account
+    assert m.state() == credit.OK
+    restarted, _ = _monitor({"limit": 5, "limit_remaining": 3.0, "usage": 2.0})
+    _run(restarted.refresh())
+    assert restarted.state() == credit.OK
+    # No read yet when it was refused: nothing to judge by, nothing kept either.
+    fresh, _ = _monitor({"limit": 5, "limit_remaining": 3.0, "usage": 2.0})
+    fresh.refused_for_credit()
+    assert fresh.spent() and not any(k.endswith(":refused") for k in credit._load_notices())
+    _run(fresh.refresh())
+    assert fresh.state() == credit.OK
+
+
 # ------------------------------------------------------------------ where it shows
 
 def test_health_status_doctor_and_the_settings_line():

@@ -249,18 +249,29 @@ class Monitor:
 
     def refused_for_credit(self) -> None:
         """The provider refused the starter key for its credit (402) mid-conversation: it
-        counts as spent now, so the next session is built without a model (make_llm), and
-        stays spent -- across restarts too -- until a read shows a real top-up (refresh).
-        Read soon."""
+        counts as spent now, so the next session is built without a model (make_llm).
+        Read soon.
+
+        Sticky -- across reads and restarts, until one shows a real top-up (refresh) --
+        only when the refusal came near empty: the last read left LOW_USD or less. A key's
+        limit is only a cap, the money is the account's: with plenty left on the key the
+        refusal is the account's (the vendor's balance behind the starter keys ran dry),
+        and a mark of "more than now plus LOW_USD", which a key's remaining never exceeds,
+        would keep the box stopped after a refill. That one is left to the next read, and
+        so is a refusal before any read (nothing to judge it by)."""
         key = ai_account.current_key()
         if on_starter(key):
-            if self._state != EMPTY:
-                logger.info("credit: the provider refused the trial credit -- spent")
             mine = key_hash(key)
-            seen = _load_notices()
-            seen[f"{mine[:16]}:refused"] = float(self._numbers.get("remaining") or 0.0) \
-                if self._for == mine else 0.0
-            _save_notices(seen)
+            left = self._numbers.get("remaining") if self._for == mine else None
+            if left is not None and left <= LOW_USD:
+                logger.info("credit: the provider refused the trial credit -- spent")
+                seen = _load_notices()
+                seen[f"{mine[:16]}:refused"] = float(left)
+                _save_notices(seen)
+            else:
+                logger.info(f"credit: the provider refused the starter key with "
+                            f"{left if left is not None else 'an unknown amount'} left on it "
+                            "-- the account's refusal; the next read decides")
             self._for, self._state, self._fresh = mine, EMPTY, False
         self.poke()
 
