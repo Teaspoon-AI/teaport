@@ -33,7 +33,7 @@ The brain and the plugin are MIT. The engine is a separate component with its ow
 
 Yes. Install without an agent and teaport runs in voice-only mode: the brain offers only the tools that live on the device, and the installer writes `TEAPORT_AGENT=none`. Anything that needs the OpenClaw gateway, such as web search, memory, or the agent consult, is not available in this mode. Installing OpenClaw later and running the installer again turns the agent on; the choices are in [Install an agent](/getting-started/installation/#install-an-agent).
 
-<!-- source: install.sh:2070-2091#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
+<!-- source: install.sh:2065-2086#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
 
 ## Can teaport answer phone calls?
 
@@ -51,4 +51,4 @@ The engine serves a single speech-to-text session at a time, and the brain holds
 
 The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it builds a new environment beside the running one, checks it, swaps it in, and restarts `teaport-brain`. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new environment is not healthy, the previous one comes back by itself. The `teaport update` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
 
-<!-- source: install.sh:15-21,896#544cd662; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7#a00a5a5b -->
+<!-- source: install.sh:15-21,891#544cd662; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7#a00a5a5b -->
