@@ -14,13 +14,13 @@ This page walks you through installing teaport on a Jetson Orin Nano Dev Kit (8 
 - A **phone or laptop with a browser** on the same network. Its microphone and speaker carry the audio. Nothing to plug in: the device is already powered and on the network.
 - About **15 GB** of free disk space for the engine and its models. The installer warns when it finds less.
 
-<!-- source: install.sh:372-387,394-395,432,1763-1774#84cebf56 -->
+<!-- source: install.sh:376-391,398-399,436,1767-1778#84cebf56 -->
 
 ## Install JetPack 7.2
 
 This step is necessary. The engine ships for JetPack 7.2 on L4T R38 or R39 with CUDA 13. On any other release, the installer stops.
 
-<!-- source: install.sh:372-387,578-580#eec68840 -->
+<!-- source: install.sh:376-391,582-584#eec68840 -->
 
 Use NVIDIA SDK Manager or the Jetson Linux flashing tools, and follow NVIDIA's flashing guide. Teaspoon AI does not host a copy of JetPack. Do not use the JetPack 7.2 ISO: NVIDIA records a known problem where the ISO does not make the 25 W and MAXN SUPER power modes available.
 
@@ -34,7 +34,7 @@ recommended.
 
 Choose **one** of the two agents. If both are present, the installer uses NemoClaw.
 
-<!-- source: install.sh:1405-1407#5ef59d03 -->
+<!-- source: install.sh:1409-1411#5ef59d03 -->
 
 ### Option A — OpenClaw on the device
 
@@ -49,7 +49,7 @@ sudo npm install -g openclaw@2026.9.7
 
 The installer warns when the OpenClaw on the device is another release.
 
-<!-- source: manifest/stable.json:64-65#e907cb5f; install.sh:1446-1471#c117c11e -->
+<!-- source: manifest/stable.json:64-65#e907cb5f; install.sh:1450-1475#c117c11e -->
 
 Give OpenClaw a minimal configuration and start its gateway:
 
@@ -79,7 +79,7 @@ openclaw gateway status
 
 The line `Runtime:` must say `running`, and `Connectivity probe:` must say `ok`. The gateway listens on `127.0.0.1:18789`; the installer fronts it with Caddy.
 
-<!-- source: install.sh:1622,1786#9ad55e01 -->
+<!-- source: install.sh:1626,1790#9ad55e01 -->
 
 ### Option B — NemoClaw
 
@@ -91,11 +91,11 @@ bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)
 
 Run NemoClaw as your own user. Do not use `sudo`. The installer looks for `~/.nemoclaw/sandboxes.json` in your home folder. If NemoClaw installs into another user's home folder, the installer does not find it.
 
-<!-- source: install.sh:1409-1417#a69c730a -->
+<!-- source: install.sh:1413-1421#a69c730a -->
 
 You can skip both. The installer then finishes in voice-only mode. To add an agent later, install OpenClaw or NemoClaw and run the installer again.
 
-<!-- source: install.sh:1546-1554#8627897c -->
+<!-- source: install.sh:1550-1558#8627897c -->
 
 ## Install teaport
 
@@ -119,7 +119,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:42,73,241-245,1767-1774,2429-2431#8861cd83 -->
+<!-- source: install.sh:42,73,241-245,1771-1778,2433-2435#8861cd83 -->
 
 For OpenRouter, the base URL is `https://openrouter.ai/api/v1`.
 
@@ -135,13 +135,13 @@ Every question has an environment variable, so you can also run the installer un
 and `TEAPORT_LLM_API_KEY` preset the LLM answers. The flags and variables are in
 [Installer reference](/reference/installer/).
 
-<!-- source: install.sh:42,73,1763-1766#b8055463 -->
+<!-- source: install.sh:42,73,1767-1770#b8055463 -->
 
 You can run the installer again at any time. A re-run repairs the existing installation; it
 does not create a second one. It keeps settings that you added to `/etc/teaport/brain.env`
 yourself.
 
-<!-- source: install.sh:5,69,1836,1861-1888#49c391aa -->
+<!-- source: install.sh:5,69,1840,1865-1892#49c391aa -->
 
 The installer does these tasks:
 
@@ -158,8 +158,8 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:68,415,1175,1693,1706,2897,3076,3082,1791,2177#3d53f4d3; manifest/stable.json:5-25#bfd17340 -->
-<!-- source: install.sh:1926-1937,1964-2009#0dba2a43 -->
+<!-- source: install.sh:68,419,1179,1697,1710,2901,3080,3086,1795,2181#3d53f4d3; manifest/stable.json:5-25#bfd17340 -->
+<!-- source: install.sh:1930-1941,1968-2013#0dba2a43 -->
 
 ## Optional components
 
@@ -175,7 +175,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:49,52,2870#2f2e05c5; cli/teaport:366#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:49,52,2874#2f2e05c5; cli/teaport:368#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -187,7 +187,7 @@ teaport has three optional components. The installer sets up none of them by def
 
    All three services show `active`, with the engine and brain ports and the memory use.
 
-   <!-- source: cli/teaport:5,204,1526#678e2a72 -->
+   <!-- source: cli/teaport:5,206,1528#678e2a72 -->
 
 2. Run the health check:
 
@@ -199,7 +199,7 @@ teaport has three optional components. The installer sets up none of them by def
    configuration, the services, and the ports. Every check prints `ok`, or a warning that
    says what to fix.
 
-   <!-- source: cli/teaport:6,320-350#903195ff -->
+   <!-- source: cli/teaport:6,322-352#903195ff -->
 
 3. Optional: to confirm that speech recognition uses the fast path, read the engine's first
    messages:
@@ -221,7 +221,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:2947-2948#561957fe -->
+<!-- source: install.sh:2951-2952#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -238,7 +238,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:2951-2953,1666-1674#8d3dea6b -->
+<!-- source: install.sh:2955-2957,1670-1678#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
@@ -284,8 +284,8 @@ installer was given your own certificate (see
 [Use your own certificate](/reference/installer/#use-your-own-certificate)), there is
 nothing to trust, and the page leaves the step out.
 
-<!-- source: install.sh:2165-2171#4326c857 -->
-<!-- source: install.sh:1964-2009#cd323bfa; brain/teaport_brain/pairing.py:132-135,839-842#03054554 -->
+<!-- source: install.sh:2169-2175#4326c857 -->
+<!-- source: install.sh:1968-2013#cd323bfa; brain/teaport_brain/pairing.py:132-135,839-842#03054554 -->
 
 ## What's next
 
