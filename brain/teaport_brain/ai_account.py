@@ -35,6 +35,7 @@
 import json
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -167,17 +168,50 @@ def key_record(body) -> dict:
     return data if isinstance(data, dict) else body
 
 
-def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
-    """(status, body) of an authenticated GET. Raises OSError for no answer. Replaced in
-    tests: no test talks to a provider."""
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """A redirect is answered as it is, never followed: following one would send the
+    key's Authorization header to wherever it points (another host, plain http)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
+def _request(url: str, key: str, timeout: float) -> tuple[int, bytes]:
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}",
                                                "Accept": "application/json",
                                                "User-Agent": "teaport"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
+        with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
             return r.status, r.read(65536)
-    except urllib.error.HTTPError as e:
+    except urllib.error.HTTPError as e:  # 3xx (not followed), 4xx, 5xx
         return e.code, e.read(65536) if e.fp is not None else b""
+
+
+def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
+    """(status, body) of an authenticated GET, within `timeout` overall: urllib's own
+    timeout bounds each socket wait but not the name lookup, and a router's DNS stall has
+    held this box before. Raises OSError for no answer (TimeoutError past the deadline:
+    the stuck lookup is left to finish on a daemon thread). Replaced in tests: no test
+    talks to a provider."""
+    done: dict = {}
+
+    def run():
+        try:
+            done["answer"] = _request(url, key, timeout)
+        except BaseException as e:  # noqa: BLE001 -- handed to the caller below
+            done["error"] = e
+
+    worker = threading.Thread(target=run, name="ai-account-check", daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError("the key check took too long")
+    if "error" in done:
+        raise done["error"]
+    return done["answer"]
 
 
 def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
@@ -200,7 +234,7 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
         words = _provider_words(body)
         logger.info(f"ai account: the provider refused the key ({status})")
         return Check(REFUSED, words, ours=False) if words else Check(REFUSED, REFUSED_BARE)
-    if not 200 <= status < 300:
+    if not 200 <= status < 300:  # a redirect (not followed), a 5xx, a rate limit
         logger.info(f"ai account: the key check got HTTP {status}")
         return Check(UNKNOWN, UNREACHABLE)
     if not is_openrouter(base_url):
@@ -229,12 +263,36 @@ def store_key(key: str) -> None:
     logger.info("ai account: a new key was saved")
 
 
+# Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it
+# to the key file, so a key saved to the file alone would change nothing.
+IN_ENV_FILE, ELSEWHERE = "env_file", "elsewhere"
+
+
+def shadowed(env_file: dict | None) -> str | None:
+    """Would an environment copy of LLM_API_KEY shadow a key saved to its file? None: no
+    copy. IN_ENV_FILE: brain.env holds one (`env_file`: its values, as the config page
+    read them) -- the page drops it with its privileged helper and then forget_env_copy().
+    ELSEWHERE: this process has one that brain.env does not explain (a unit drop-in), or
+    the caller cannot read brain.env (env_file None: the setup unit, which loads it into
+    its environment and cannot edit it). The one rule both pages follow (#279)."""
+    if env_file is not None and (env_file.get("LLM_API_KEY") or "").strip():
+        return IN_ENV_FILE
+    if (os.environ.get("LLM_API_KEY") or "").strip():
+        return ELSEWHERE
+    return None
+
+
+def forget_env_copy() -> None:
+    """brain.env's copy was just dropped: this process stops reading its own copy too, so
+    the key file counts from the next conversation, not the next restart."""
+    os.environ.pop("LLM_API_KEY", None)
+
+
 def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
     """Check `key`, and save it only if it works: the setup-mode page's way, where nobody
-    is left to say "save anyway" (and #282's, once OAuth hands over a key). A key set in
-    the process's environment (an env-file copy, which every reader prefers to the file)
-    is not replaced from here: SET_ELSEWHERE."""
-    if os.environ.get("LLM_API_KEY", "").strip():
+    is left to say "save anyway" (and #282's, once OAuth hands over a key). With an
+    environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved."""
+    if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
     result = check_key(key, base_url, timeout)
     if result.state == WORKS:

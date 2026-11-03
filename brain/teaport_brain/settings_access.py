@@ -6,7 +6,13 @@
 # and asks for GATEWAY_TOKEN, which lives in /etc/teaport/brain.env: changing the AI key
 # took SSH. This is the owner's way in, on the front door (Caddy, `tls internal` with the
 # box's own CA, install.sh write_caddyfile), the way pairing's short links are served
-# (pairing.py):
+# (pairing.py) -- but on an origin of its own: https://<front door>:<SETTINGS_PORT>
+# (TEAPORT_SETTINGS_PORT, 8443). The front door's default port is the OpenClaw gateway's,
+# whose Control UI and whatever pages the agent serves run there; sharing that origin, a
+# script of theirs could read the page or change a setting while the owner's session is
+# live, and neither SameSite nor an Origin check could tell it from the page. Another port
+# is another origin. Plain http://<front door>/settings (a typed address, the one the
+# voice reads) is redirected there by Caddy.
 #
 #   1. "open my settings", a fixed phrase (SettingsPhrase, heard by the session's
 #      PhraseVoice, wifi_voice.py) on the owner's surfaces: the room and Talk, never a
@@ -15,7 +21,7 @@
 #   2. start(): a code, pairing's kind (pairing.new_code_text: six characters a reader
 #      cannot confuse, pairing.OFFER_SECS, single use, pairing.MAX_WRONG wrong ones end
 #      it). One at a time: asking again replaces it. The screen shows it as a QR code of
-#      https://<front door>/settings/<code> (display.Screen "settings"), the code itself
+#      https://<front door>:8443/settings/<code> (display.Screen "settings"), the code itself
 #      under it; a box without a screen that draws one reads the address and the code
 #      aloud (the page at /settings takes the code typed).
 #   3. /settings/<code>: a GET spends nothing (a link preview, a prefetch); its button
@@ -33,37 +39,38 @@
 #
 # What keeps a session to the owner's phone:
 #   - the code: shown on the box's screen or said aloud in the room, five minutes, once;
-#   - only what came through the front door over HTTPS is answered here at all
-#     (pairing.via_front_door): the brain's own port, open to the LAN, gets a 404 that is
-#     no guess, and a Secure cookie is never sent to it in cleartext;
+#   - only what came through the Settings site over HTTPS is answered here at all
+#     (on_settings_site: Caddy over loopback saying https, for the Settings port): the
+#     brain's own port, open to the LAN, gets a 404 that is no guess, and a Secure cookie
+#     is never sent to it in cleartext;
 #   - another origin cannot use the cookie: SameSite=Strict keeps the browser from
-#     sending it on any cross-site request, and a request that changes anything must
-#     also carry the front door's own Origin (same_origin) -- a browser sets that header
-#     itself and a page cannot forge it.
+#     sending it on any cross-site request; a request that changes anything must carry
+#     the Settings origin itself as its Origin (same_origin), and one a browser marks as
+#     from another origin (Sec-Fetch-Site) is refused even to read -- the gateway's pages,
+#     same site but another origin, included. A browser sets both headers itself.
 #
 # The pages are in the phone's language (Accept-Language, i18n.py). The steps to trust
 # the box's certificate are pairing's own (pairing.trust), in English for now, as on the
 # pairing pages.
 #
-import collections
 import hashlib
 import hmac
 import html
 import math
 import secrets
 import time
-from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from loguru import logger
 
-from teaport_brain import display, i18n, pairing
+from teaport_brain import conversation_log, display, i18n, pairing
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
 
 PREFIX = "/settings/"
 PAGE_PATH = "/settings/config"
+SETTINGS_PORT = setting("TEAPORT_SETTINGS_PORT")
 COOKIE = "teaport_settings"
 SESSION_SECS = 3600
 SCREEN_ID, SCREEN_TITLE = "settings", "Settings"
@@ -72,7 +79,7 @@ USED_SCREEN_SECS = 10.0
 # "open my settings" said as a request of its own, not inside a longer sentence.
 PHRASE_MAX_WORDS = 6
 
-_clock = time.monotonic  # the code's clock; replaced in tests
+_clock = time.monotonic  # the code's clock; replaced in tests (a LiveCode reads it)
 _wall = time.time        # the session's (a cookie outlives the process)
 
 # What the voice says (SettingsPhrase). The quoted words are a phrase in each catalog
@@ -81,22 +88,15 @@ SHOWN_TEXT = N_("I've put a code on my screen. Scan it with your phone's camera,
                 "the link that appears to get to my settings.")
 SPOKEN_TEXT = N_("In your phone's browser, go to {address}, and enter the code {code}. It "
                  "works once, for the next five minutes.")
+# No network at all (the phone reaches the box over the home network, not the internet).
 OFFLINE_TEXT = N_("I need to be online for that. Say \"set up Wi-Fi\" to get me online.")
 UNAVAILABLE_TEXT = N_("Sorry, my settings can't be reached from a phone on this box.")
 
 
-@dataclass(frozen=True)
-class Offer:
-    code: str
-    link: str          # https://<front door>/settings/<code>
-    expires_at: float  # _clock() deadline
-
-
-_offer: Offer | None = None
-_dead = False      # the current code was used or locked (expiry is the clock's)
-_wrong = 0
-_spent: collections.deque = collections.deque(maxlen=8)    # used lately: "already used"
-_recent: collections.deque = collections.deque(maxlen=32)  # issued lately: never a guess
+# The current code (pairing.LiveCode), kept with pairing's own CodeBook machinery: one
+# at a time, single use, pairing.MAX_WRONG wrong guesses lock it.
+_codes = pairing.CodeBook()
+_live: pairing.LiveCode | None = None
 _screen: display.Screen | None = None  # the screen showing the current code
 
 
@@ -105,48 +105,31 @@ def available() -> bool:
     return bool(pairing.FRONTDOOR_HOST)
 
 
-def start() -> Offer:
+def origin() -> str:
+    """The Settings origin: https://<front door>:<SETTINGS_PORT>."""
+    port = "" if SETTINGS_PORT == 443 else f":{SETTINGS_PORT}"
+    return f"https://{pairing.FRONTDOOR_HOST}{port}"
+
+
+def start() -> pairing.Offer:
     """A new code (the one before can no longer be used). Raises
     pairing.PairingUnavailable when the front door is unknown or no host name. A link too
     long for the screen's QR code is still made: the voice reads it out instead."""
-    global _offer, _dead, _wrong
-    host = pairing.check_host(pairing.FRONTDOOR_HOST, PREFIX, qr=False)
-    code = pairing.new_code_text()
-    _recent.append(code)
-    _offer = Offer(code, pairing.link(host, code, PREFIX), _clock() + pairing.OFFER_SECS)
-    _dead, _wrong = False, 0
+    global _live
+    pairing.check_host(pairing.FRONTDOOR_HOST, PREFIX, qr=False)
+    code = _codes.issue()
+    offer = pairing.Offer(code, f"{origin()}{PREFIX}{code}", _clock() + pairing.OFFER_SECS)
+    _live = pairing.LiveCode(offer, clock=lambda: _clock())
     logger.info(f"settings: a code was made, {pairing.OFFER_SECS:.0f} s to use it")
-    return _offer
-
-
-def _usable() -> bool:
-    return _offer is not None and not _dead and _clock() < _offer.expires_at
+    return offer
 
 
 def _find(code: str) -> str:
-    """"live", "used" or "expired" for a code at /settings/. A code that is neither the
-    current one nor one issued lately is a wrong guess while the current one can be used;
-    pairing.MAX_WRONG of them end it."""
-    global _dead, _wrong
-    code = code.strip().upper()
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _spent):
-        return "used"
-    if _offer is not None and hmac.compare_digest(code.encode(), _offer.code.encode()):
-        return "live" if _usable() else "expired"
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _recent):
-        return "expired"
-    if _usable():
-        _wrong += 1
-        if _wrong >= pairing.MAX_WRONG:
-            logger.warning(f"settings: {_wrong} wrong codes; the code is locked")
-            _dead = True
-    return "expired"
+    return _codes.find(code, _live, "settings")
 
 
 def _spend() -> None:
-    global _dead
-    _dead = True
-    _spent.append(_offer.code)
+    _codes.spend(_live)
     logger.info("settings: the code was used; a session was opened")
     if _screen is not None:
         _screen.show(SCREEN_TITLE, ["Go on", "on your phone"], secs=USED_SCREEN_SECS)
@@ -185,19 +168,30 @@ def session_ok(value: str | None) -> bool:
 
 
 def same_origin(request: Request) -> bool:
-    """The request names the front door as its origin: a browser sets Origin itself on a
-    request that changes anything, and a page elsewhere cannot make it say ours."""
-    origin = (request.headers.get("origin") or "").strip().lower().rstrip("/")
-    want = f"https://{pairing.FRONTDOOR_HOST}".lower()
-    return bool(pairing.FRONTDOOR_HOST) and origin in (want, want + ":443")
+    """The request names the Settings origin as its own: a browser sets Origin itself on
+    a request that changes anything, and a page elsewhere cannot make it say ours."""
+    got = (request.headers.get("origin") or "").strip().lower().rstrip("/")
+    return available() and got == origin().lower()
+
+
+def on_settings_site(request: Request) -> bool:
+    """Through Caddy over HTTPS (pairing.via_front_door), for the Settings port: Caddy
+    passes the browser's Host on, so a request the gateway's site handed over (were it
+    ever routed here) names another port and is refused."""
+    if not available() or not pairing.via_front_door(request):
+        return False
+    _, _, port = (request.headers.get("host") or "").rpartition(":")
+    return (int(port) if port.isdigit() else 443) == SETTINGS_PORT
 
 
 def authorized(request: Request) -> bool:
-    """Is this a Settings session from the owner's phone: through the front door, a
-    valid session cookie, and for anything but a read, from the front door's own page."""
-    if not available() or not pairing.via_front_door(request):
+    """Is this a Settings session from the owner's phone: on the Settings site, a valid
+    session cookie, nothing a browser marks as from another origin, and for anything but
+    a read, from the Settings page itself."""
+    if not on_settings_site(request) or not session_ok(request.cookies.get(COOKIE)):
         return False
-    if not session_ok(request.cookies.get(COOKIE)):
+    if (request.headers.get("sec-fetch-site") or "same-origin").lower() not in (
+            "same-origin", "none"):
         return False
     return request.method in ("GET", "HEAD") or same_origin(request)
 
@@ -267,11 +261,28 @@ _NOT_FOUND = PlainTextResponse("Not Found", status_code=404)
 router = APIRouter()
 
 
+async def _gate(request: Request, post: bool) -> tuple[Response | None, dict]:
+    """pairing's checks for a code page (front door, small form), on the Settings site."""
+    if not on_settings_site(request):
+        return _NOT_FOUND, {}
+    return await pairing.front_door_request(request, post)
+
+
+def _redeemed(t: i18n.T, state: str, wrong: Response) -> Response:
+    """A code looked at for spending: the session, or why not (`wrong` for a live-less
+    "expired")."""
+    if state == "live":
+        _spend()
+        return _signed_in()
+    return _used(t) if state == "used" else wrong
+
+
 @router.get("/settings")
 @router.get("/settings/")
 async def enter(request: Request) -> Response:
-    if not available() or not pairing.via_front_door(request):
-        return _NOT_FOUND
+    refused, _ = await _gate(request, post=False)
+    if refused is not None:
+        return refused
     if session_ok(request.cookies.get(COOKIE)):
         return RedirectResponse(PAGE_PATH, status_code=303, headers=pairing.NO_STORE)
     return _enter(_t(request))
@@ -280,28 +291,25 @@ async def enter(request: Request) -> Response:
 @router.post("/settings")
 @router.post("/settings/")
 async def enter_code(request: Request) -> Response:
-    if not available() or not pairing.via_front_door(request):
-        return _NOT_FOUND
-    form = await pairing.small_form(request)
-    if form is None:
-        return PlainTextResponse("Payload Too Large", status_code=413)
+    """A code read aloud (or under the QR code), typed in."""
+    refused, form = await _gate(request, post=True)
+    if refused is not None:
+        return refused
     t = _t(request)
     typed = "".join((form.get("code") or [""])[0].split())
     if not typed:
         return _enter(t)
-    state = _find(typed)
-    if state != "live":
-        return _enter(t, t._("That code didn't work. Check it, or ask Teaport for a new one."))
-    _spend()
-    return _signed_in()
+    return _redeemed(t, _find(typed), _enter(
+        t, t._("That code didn't work. Check it, or ask Teaport for a new one.")))
 
 
 @router.get("/settings/trust")
 async def trust_steps(request: Request) -> Response:
     """How to trust the box's certificate on each kind of device (pairing's steps), for
     the Settings page to link to: no code needed, nothing spent."""
-    if not available() or not pairing.via_front_door(request):
-        return _NOT_FOUND
+    refused, _ = await _gate(request, post=False)
+    if refused is not None:
+        return refused
     if pairing.TRUSTED_CERT:  # nothing to trust: devices already do
         return RedirectResponse(PAGE_PATH, status_code=303, headers=pairing.NO_STORE)
     t = _t(request)
@@ -312,27 +320,23 @@ async def trust_steps(request: Request) -> Response:
 async def landing(code: str, request: Request) -> Response:
     """Unauthenticated: the phone has no session yet; the code is the grant. A GET
     spends nothing."""
-    if not available() or not pairing.via_front_door(request):
-        return _NOT_FOUND
+    refused, _ = await _gate(request, post=False)
+    if refused is not None:
+        return refused
     t = _t(request)
     state = _find(code)
     if state == "live":
-        return _landing(t, _offer.code)
+        return _landing(t, _live.code.code)
     return _used(t) if state == "used" else _expired(t)
 
 
 @router.post("/settings/{code}")
 async def redeem(code: str, request: Request) -> Response:
-    if not available() or not pairing.via_front_door(request):
-        return _NOT_FOUND
-    if await pairing.small_form(request) is None:
-        return PlainTextResponse("Payload Too Large", status_code=413)
+    refused, _ = await _gate(request, post=True)
+    if refused is not None:
+        return refused
     t = _t(request)
-    state = _find(code)
-    if state != "live":
-        return _used(t) if state == "used" else _expired(t)
-    _spend()
-    return _signed_in()
+    return _redeemed(t, _find(code), _expired(t))
 
 
 # ------------------------------------------------------------------ the phrase
@@ -358,10 +362,11 @@ class SettingsPhrase:
         global _screen
         from teaport_brain import wifi_voice
         t = voice.t
-        online = getattr(voice, "box_online", None)
-        if online is not None and not await online():
-            # Spoken Wi-Fi setup is here and the box is offline: no phone reaches it.
-            logger.info("settings: asked for, but the box is offline")
+        on_network = getattr(voice, "box_on_network", None)
+        if on_network is not None and not await on_network():
+            # Spoken Wi-Fi setup is here and the box is on no network at all: no phone
+            # reaches it. (No internet is no reason: the phone needs the home network.)
+            logger.info("settings: asked for, but the box is on no network")
             await voice.say(t._(OFFLINE_TEXT))
             return
         try:
@@ -382,5 +387,8 @@ class SettingsPhrase:
         logger.info("settings: no screen draws the code -- reading it out")
         address = (wifi_voice.spoken_address(pairing.FRONTDOOR_HOST, t) + " "
                    + t.p("spell", "slash") + " settings")
-        await voice.say(t._(SPOKEN_TEXT).format(
-            address=address, code=wifi_voice.spell(offer.code.lower(), t)))
+        code = wifi_voice.spell(offer.code.lower(), t)
+        # The code is the owner's access until used: never in the journal, whatever
+        # TEAPORT_LOG_CONVERSATIONS says (pipecat's "Generating TTS [...]", the ledger).
+        conversation_log.never_log(code, sep=t.p("spell", ", "))
+        await voice.say(t._(SPOKEN_TEXT).format(address=address, code=code))

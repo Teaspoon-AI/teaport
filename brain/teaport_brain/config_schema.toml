@@ -1301,6 +1301,20 @@ help = "The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing 
 note = "The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen."
 
 [[settings]]
+name = "TEAPORT_SETTINGS_PORT"
+store = "brain_env"
+group = "agent"
+type = "int"
+unit = "port"
+min = 1
+max = 65535
+default = 8443
+read = "startup"
+tier = "installer"
+help = "The front door's port for the owner's Settings (\"open my settings\", settings_access.py): https://<TEAPORT_FRONTDOOR_HOST>:<this>/settings/<code>. An origin of its own, apart from the gateway's on 443, so no page the gateway serves can reach the Settings session. The installer writes it and renders Caddy's site for it; http://<front door>/settings is redirected there."
+note = "Changing it means re-running the installer (Caddy listens on it)."
+
+[[settings]]
 name = "TEAPORT_FRONTDOOR_CERT"
 store = "brain_env"
 group = "agent"

@@ -57,7 +57,8 @@ from teaport_brain import (  # noqa: E402
 from teaport_brain import gateway_server  # noqa: E402
 
 HOST = "teaport-9e35.local"
-ORIGIN = f"https://{HOST}"
+PORT = 8443                       # TEAPORT_SETTINGS_PORT's default: an origin of its own
+ORIGIN = f"https://{HOST}:{PORT}"
 TOKEN = "t0k3n-made-up"
 FAKE_KEY = "sk-or-v1-" + "0" * 64   # a made-up key of the real shape
 
@@ -86,9 +87,9 @@ class Voice(wifi_voice.PhraseVoice):
         super().__init__(phrases=[settings_access.SettingsPhrase(screen=lambda: screen)], **kw)
         self.pushed = []
         if online is not None:
-            async def box_online():
+            async def box_on_network():
                 return online
-            self.box_online = box_online
+            self.box_on_network = box_on_network
 
     @property
     def said(self):
@@ -101,11 +102,8 @@ class Voice(wifi_voice.PhraseVoice):
 def _setup(host=HOST):
     pairing.FRONTDOOR_HOST = host
     pairing.TRUSTED_CERT = False
-    settings_access._offer = None
-    settings_access._dead = False
-    settings_access._wrong = 0
-    settings_access._spent.clear()
-    settings_access._recent.clear()
+    settings_access._live = None
+    settings_access._codes = pairing.CodeBook()
     settings_access._screen = None
     settings_access._clock = lambda: 1000.0
     settings_access._wall = lambda: 1_800_000_000.0
@@ -142,13 +140,17 @@ def _setup(host=HOST):
     return home, check, checks
 
 
-def _client(proto="https", origin=ORIGIN, cookie=None, lang=None):
-    """Through the front door as Caddy is one: a loopback peer saying https."""
+def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fetch_site=None):
+    """Through the Settings site as Caddy is one: a loopback peer saying https, with the
+    browser's Host (the Settings port) passed on."""
     app = FastAPI()
     app.include_router(config_ui.router)
     app.include_router(config_ui.router, prefix="/settings")
     app.include_router(settings_access.router)
     headers = {"X-Forwarded-Proto": proto} if proto else {}
+    headers["Host"] = f"{HOST}:{port}" if port != 443 else HOST
+    if fetch_site:
+        headers["Sec-Fetch-Site"] = fetch_site
     if origin:
         headers["Origin"] = origin
     if lang:
@@ -160,7 +162,7 @@ def _client(proto="https", origin=ORIGIN, cookie=None, lang=None):
 
 def _code_of(screen):
     link = screen.shown[-1][3]
-    assert link.startswith(f"https://{HOST}/settings/"), link
+    assert link.startswith(f"{ORIGIN}/settings/"), link
     return link.rsplit("/", 1)[1]
 
 
@@ -389,7 +391,7 @@ def test_without_a_screen_the_address_and_code_are_read_out():
         _setup()
         v = Voice(Screen(qr=False))
         assert await v._heard("open the settings page")
-        code = settings_access._offer.code
+        code = settings_access._live.code.code
         line = v.said[-1]
         assert "teaport dash nine E three five dot local slash settings" in line, line
         assert wifi_voice.spell(code.lower(), i18n.get("en")) in line and "capital" not in line
@@ -401,7 +403,7 @@ def test_offline_or_without_a_front_door_it_says_so_and_talk_is_not_the_phrase()
         _setup()
         v = Voice(Screen(), online=False)
         assert await v._heard("open my settings")
-        assert v.said == [settings_access.OFFLINE_TEXT] and settings_access._offer is None
+        assert v.said == [settings_access.OFFLINE_TEXT] and settings_access._live is None
         _setup(host="")
         v = Voice(Screen())
         assert await v._heard("open my settings")
@@ -429,6 +431,142 @@ def test_a_settings_code_never_reaches_the_access_log():
     assert gateway_server._redact('"GET /settings/AB3CD9 HTTP/1.1"') == '"GET /settings/<redacted> HTTP/1.1"'
     for path in ("/settings/config", "/settings/api/config", "/settings/health", "/settings/trust"):
         assert gateway_server._redact(f'"GET {path} HTTP/1.1"') == f'"GET {path} HTTP/1.1"'
+
+
+def test_no_token_does_not_open_the_front_door():
+    """An unset GATEWAY_TOKEN leaves the LAN port open as before, never the front door's
+    mount: there only a Settings session counts (#279 review)."""
+    async def run():
+        _setup()
+        os.environ["GATEWAY_TOKEN"] = ""
+        body = {"store": "brain_env", "values": {"TTS_VOICE": "af_bella"}}
+        async with _client() as c:
+            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.put("/settings/api/config", json=body)).status_code == 401
+            assert (await c.post("/settings/api/restart", json={"unit": "teaport-brain"})).status_code == 401
+            assert (await c.post("/settings/api/wifi/connect", json={"ssid": "x"})).status_code == 401
+        async with _client(proto=None, origin=None, port=7861) as c:
+            assert (await c.get("/api/config")).status_code == 200  # the LAN port, open as before
+        screen = Screen()
+        await Voice(screen)._heard("open my settings")
+        async with _client() as c:
+            session = await _signed_in(c, _code_of(screen))
+        async with _client(cookie=session) as c:
+            assert (await c.put("/settings/api/config", json=body)).status_code == 200
+    asyncio.run(run())
+
+
+def test_settings_answers_only_on_its_own_origin():
+    """The gateway's origin (443) shares the site, not the origin: a request Caddy handed
+    over from there, or one a browser marks cross-origin, gets nothing."""
+    async def run():
+        _setup()
+        screen = Screen()
+        await Voice(screen)._heard("open my settings")
+        code = _code_of(screen)
+        async with _client(port=443, origin=f"https://{HOST}") as c:
+            assert (await c.get(f"/settings/{code}")).status_code == 404
+        async with _client() as c:
+            session = await _signed_in(c, code)
+        async with _client(cookie=session, port=443, origin=f"https://{HOST}") as c:
+            assert (await c.get("/settings/api/config")).status_code == 401
+        async with _client(cookie=session, fetch_site="same-site", origin=f"https://{HOST}") as c:
+            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.put("/settings/api/config", json={"store": "brain_env", "values": {
+                "LLM_BASE_URL": "https://elsewhere.example/v1"}})).status_code == 401
+        async with _client(cookie=session, fetch_site="same-origin") as c:
+            assert (await c.get("/settings/api/config")).status_code == 200
+    asyncio.run(run())
+
+
+def test_a_key_in_the_environment_is_handled_the_same_on_both_pages():
+    """brain.env's copy: the page drops it and this brain forgets its own, so the saved
+    key is the one used next. A copy from elsewhere: neither page saves (#279 review)."""
+    async def run():
+        home, check, _ = _setup()
+        etc = config_ui.ETC_DIR
+        with open(os.path.join(etc, "brain.env"), "a") as f:
+            f.write("LLM_API_KEY=sk-old-made-up\n")
+        os.environ["LLM_API_KEY"] = "sk-old-made-up"
+        auth = {"authorization": f"Bearer {TOKEN}"}
+        put = {"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}}
+        async with _client(proto=None, origin=None, port=7861) as c:
+            r = await c.put("/api/config", json=put, headers=auth)
+            assert r.status_code == 200 and r.json()["superseded"] == ["LLM_API_KEY"]
+            assert "LLM_API_KEY" not in os.environ
+            assert open(os.path.join(home, "llm_key")).read() == FAKE_KEY + "\n"
+            assert "LLM_API_KEY" not in open(os.path.join(etc, "brain.env")).read()
+            os.environ["LLM_API_KEY"] = "sk-from-a-drop-in"  # not brain.env's
+            r = await c.put("/api/config", json={**put, "force_key": True}, headers=auth)
+            assert r.status_code == 400 and r.json()["key_check"]["reason"] == ai_account.SET_ELSEWHERE
+        assert ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
+        os.environ.pop("LLM_API_KEY")
+    asyncio.run(run())
+
+
+def test_the_key_check_follows_no_redirect_and_keeps_its_deadline():
+    import http.server
+    import threading as th
+    import time as tm
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen.append((self.path, self.headers.get("Authorization")))
+            if self.path.startswith("/v1/models"):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{srv.server_port}/elsewhere")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    th.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        got = ai_account.check_key(FAKE_KEY, f"http://127.0.0.1:{srv.server_port}/v1")
+        assert got == ai_account.Check(ai_account.UNKNOWN, ai_account.UNREACHABLE), got
+        assert [p for p, _ in seen] == ["/v1/models"]  # the redirect was not followed
+    finally:
+        srv.shutdown()
+    real = ai_account._request
+    ai_account._request = lambda url, key, timeout: tm.sleep(5)  # a lookup that stalls
+    try:
+        t0 = tm.monotonic()
+        got = ai_account.check_key(FAKE_KEY, "https://openrouter.ai/api/v1", timeout=0.3)
+        assert got.state == ai_account.UNKNOWN and tm.monotonic() - t0 < 2
+    finally:
+        ai_account._request = real
+
+
+def test_a_code_read_aloud_never_reaches_the_journal():
+    from loguru import logger
+    from teaport_brain import conversation_log
+    async def run():
+        _setup()
+        v = Voice(Screen(qr=False))
+        await v._heard("open my settings")
+        return wifi_voice.spell(settings_access._live.code.code.lower(), i18n.get("en"))
+    spelled = asyncio.run(run())
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+    logger.configure(patcher=conversation_log.redact)
+    old = conversation_log.LOG_WORDS
+    conversation_log.LOG_WORDS = True  # even with the conversation in the journal
+    try:
+        logger.bind().debug(f"Generating TTS [go there, and enter the code {spelled}. It works once]")
+        parts = spelled.split(", ")
+        logger.debug(f"clause={', '.join(parts[1:4])!r}")  # a clause cut out of the line
+    finally:
+        conversation_log.LOG_WORDS = old
+        logger.remove(sink)
+        logger.configure(patcher=None)
+    text = "".join(lines)
+    assert spelled not in text and ", ".join(parts[1:4]) not in text, text
+    assert "<code>" in text
 
 
 # ------------------------------------------------------------------ setup mode

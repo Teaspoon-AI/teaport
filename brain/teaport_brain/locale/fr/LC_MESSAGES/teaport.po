@@ -412,7 +412,7 @@ msgid "I can't answer questions yet, because the account I use for my answers is
 msgstr "Je ne peux pas encore répondre aux questions : le compte qui me sert pour mes réponses reste à configurer. Dites « ouvre les réglages » pour le configurer."
 
 msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
-msgstr "La clé de compte IA que vous avez saisie ne fonctionne pas, je ne la garde donc pas. Dites « ouvre les réglages » pour réessayer."
+msgstr "Je n’ai pas pu utiliser la clé de compte IA que vous avez saisie, je ne l’ai donc pas enregistrée. Dites « ouvre les réglages » pour réessayer."
 
 msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
 msgstr "Pour cela, il me faut Internet. Dites « configure le Wi-Fi » pour me connecter à Internet."
@@ -488,7 +488,7 @@ msgstr "aucun service d'IA n'est configuré sur cet appareil"
 
 msgctxt "pattern"
 msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "\\b(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?= *(?:[.,!?;:…]|$)| (?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)"
+msgstr "^\\W*(?:(?:teaport|ok|okay|d['’]accord|alors|bon|et|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp)\\W+){0,3}(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?= *(?:[.,!?;:…]|$)| (?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)"
 
 msgctxt "spell"
 msgid "slash"

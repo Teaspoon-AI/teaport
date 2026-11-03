@@ -267,33 +267,33 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
 
 
 # "open my settings" (settings_access.py, #279): ways to ask, and talk about settings that
-# is not a request -- heard as SettingsPhrase hears it (no question, at most
+# is not a request -- the phone's, Wi-Fi, network, Bluetooth or app settings among it -- heard as SettingsPhrase hears it (no question, at most
 # PHRASE_MAX_WORDS words).
 SETTINGS = {
-    "es": (["abre los ajustes", "Ábreme los ajustes, por favor.", "muéstrame tus ajustes", "abre la página de ajustes"],
-           ["los ajustes de mi teléfono son confusos", "¿cómo cambio los ajustes?", "ayer cambié los ajustes", "no abras los ajustes"]),
-    "pt_BR": (["abrir as configurações", "abre as configurações", "abra suas configurações, por favor", "me mostra as configurações"],
-           ["as configurações do meu celular são confusas", "como mudo as configurações?", "eu mudei as configurações ontem", "não abra as configurações"]),
-    "fr": (["ouvre les réglages", "Affichez vos réglages, svp.", "montre-moi tes réglages", "affiche la page des réglages"],
-           ["les réglages de mon téléphone sont compliqués", "comment je change les réglages ?", "j'ai changé les réglages hier", "n'ouvre pas les réglages"]),
-    "it": (["Apri le impostazioni", "apri le mie impostazioni", "Mostrami le tue impostazioni.", "apri la pagina delle impostazioni"],
-           ["le impostazioni del mio telefono sono complicate", "come si cambiano le impostazioni?", "ieri ho cambiato le impostazioni", "non aprire le impostazioni"]),
-    "de": (["Öffne die Einstellungen", "Öffne meine Einstellungen.", "Zeig mir deine Einstellungen", "Mach bitte die Einstellungen auf"],
-           ["Die Einstellungen auf meinem Handy sind verwirrend.", "Wie ändere ich die Einstellungen?", "Ich habe gestern die Einstellungen geändert.", "Öffne nicht die Einstellungen."]),
-    "nl": (["Open de instellingen", "Open mijn instellingen.", "Laat me je instellingen zien", "Toon de instellingen"],
-           ["De instellingen van mijn telefoon zijn verwarrend.", "Hoe verander ik de instellingen?", "Ik heb gisteren de instellingen veranderd.", "Open de instellingen niet."]),
-    "ru": (["Открой настройки", "Открой мои настройки.", "Покажи свои настройки", "Покажи мне настройки"],
-           ["Настройки на моём телефоне такие запутанные.", "Как поменять настройки?", "Я вчера поменял настройки.", "Не открывай настройки."]),
-    "ar": (["افتح الإعدادات", "افتح لي الإعدادات من فضلك", "اعرض إعداداتك", "افتح صفحة الإعدادات"],
-           ["إعدادات هاتفي معقدة", "كيف أغيّر الإعدادات؟", "غيّرت الإعدادات أمس", "لا تفتح الإعدادات"]),
-    "hi": (["सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "अपनी सेटिंग्स दिखाओ", "सेटिंग्स का पेज खोलिए"],
-           ["मेरे फ़ोन की सेटिंग्स बहुत उलझी हुई हैं", "सेटिंग्स कैसे बदलते हैं?", "मैंने कल सेटिंग्स बदल दी थीं", "सेटिंग्स मत खोलो"]),
-    "zh": (["打开设置", "打开我的设置", "帮我打开设置页面", "请打开你的设置吧"],
-           ["我手机的设置好复杂", "我昨天改了设置", "不要打开设置", "别打开设置"]),
-    "ja": (["設定を開いて", "設定を開いてください", "設定画面を見せて", "設定ページを開いてください"],
-           ["スマホの設定がわかりにくい", "設定の変え方を教えて", "昨日設定を変えました", "設定は開かないで"]),
-    "ko": (["설정 열어 줘", "설정 열어줘", "설정 좀 열어 주세요", "설정 페이지 열어 줘"],
-           ["내 휴대폰 설정이 너무 복잡해", "설정은 어떻게 바꿔", "어제 설정을 바꿨어", "설정 열지 마"]),
+    "es": (["abre los ajustes", "Teaport, abre tus ajustes", "por favor, abre la configuración", "muéstrame mis ajustes"],
+           ["abre los ajustes del teléfono", "abre los ajustes de wifi", "abre la configuración de red", "abre los ajustes de bluetooth", "en el móvil, abre los ajustes", "abre los ajustes de la app", "me gustan tus ajustes", "los ajustes están bien así"]),
+    "pt_BR": (["abrir as configurações", "Teaport, abre as suas configurações", "por favor, abre as configurações", "me mostra minhas configurações"],
+           ["abre as configurações do celular", "abre as configurações do wi-fi", "abre as configurações de rede", "abre as configurações do bluetooth", "no celular, abre as configurações", "abre as configurações do aplicativo", "gostei das configurações", "as configurações estão boas"]),
+    "fr": (["ouvre les réglages", "Teaport, ouvre tes réglages", "svp, affiche les paramètres", "ouvre mes réglages maintenant"],
+           ["ouvre les réglages du téléphone", "ouvre les réglages Wi-Fi", "ouvre les paramètres réseau", "ouvre les réglages Bluetooth", "sur mon téléphone, ouvre les réglages", "ouvre les réglages de l'appli", "j'aime bien tes réglages", "les réglages sont bons comme ça"]),
+    "it": (["apri le impostazioni", "Teaport, apri le tue impostazioni", "per favore, mostrami le impostazioni", "apri le mie impostazioni"],
+           ["apri le impostazioni del telefono", "apri le impostazioni wifi", "apri le impostazioni di rete", "apri le impostazioni bluetooth", "sul telefono, apri le impostazioni", "apri le impostazioni dell'app", "le impostazioni vanno bene", "ho cambiato le impostazioni"]),
+    "de": (["Öffne die Einstellungen", "Teaport, öffne deine Einstellungen", "Bitte zeig mir die Einstellungen", "Öffne meine Einstellungen"],
+           ["Öffne die Handy-Einstellungen", "Öffne die WLAN-Einstellungen", "Öffne die Netzwerkeinstellungen", "Öffne die Bluetooth Einstellungen", "Auf dem Handy öffne die Einstellungen", "Öffne die Einstellungen der App", "Die Einstellungen passen so", "Ich mag deine Einstellungen"]),
+    "nl": (["Open de instellingen", "Teaport, open je instellingen", "Alsjeblieft, toon de instellingen", "Open mijn instellingen"],
+           ["Open de telefooninstellingen", "Open de wifi-instellingen", "Open de netwerkinstellingen", "Open de bluetooth instellingen", "Op mijn telefoon, open de instellingen", "Open de instellingen van de app", "De instellingen zijn prima", "Ik vind je instellingen mooi"]),
+    "ru": (["Открой настройки", "Teaport, открой свои настройки", "Пожалуйста, покажи мне настройки", "Открой мои настройки"],
+           ["Открой настройки телефона", "Открой настройки Wi-Fi", "Открой сетевые настройки", "Открой настройки блютуза", "На телефоне открой настройки", "Открой настройки приложения", "Настройки и так хорошие", "Мне нравятся твои настройки"]),
+    "ar": (["افتح الإعدادات", "يا Teaport، افتح إعداداتك", "من فضلك اعرض الإعدادات", "افتح لي الإعدادات الآن"],
+           ["افتح إعدادات الهاتف", "افتح إعدادات الواي فاي", "افتح إعدادات الشبكة", "افتح إعدادات البلوتوث", "في الهاتف افتح الإعدادات", "افتح إعدادات التطبيق", "الإعدادات جيدة الآن", "أحب إعداداتك"]),
+    "hi": (["सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "Teaport की सेटिंग्स खोलो", "ज़रा अपनी सेटिंग्स दिखाओ"],
+           ["फ़ोन की सेटिंग्स खोलो", "अपने फ़ोन की सेटिंग्स खोलो", "वाई-फ़ाई की सेटिंग्स खोलो", "नेटवर्क सेटिंग्स खोलो", "ब्लूटूथ सेटिंग्स खोलो", "ऐप की सेटिंग्स खोलो", "खोलो फ़ोन की सेटिंग्स", "सेटिंग्स ठीक हैं", "मुझे सेटिंग्स पसंद हैं"]),
+    "zh": (["打开设置", "Teaport，打开你的设置", "请帮我打开设置页面", "把设置打开"],
+           ["打开手机设置", "打开 Wi-Fi 设置", "打开网络设置", "打开蓝牙设置", "手机，打开设置", "打开应用的设置", "设置这样就好", "我喜欢你的设置"]),
+    "ja": (["設定を開いて", "ティーポート、設定を開いて", "あなたの設定を見せてください", "ちょっと設定画面を開いて"],
+           ["スマホの設定を開いて", "Wi-Fi 設定を開いて", "ネットワーク 設定を開いて", "Bluetooth の設定を開いて", "スマホ、設定を開いて", "アプリの設定を開いて", "設定はこれでいい", "設定が好きです"]),
+    "ko": (["설정 열어 줘", "티포트야, 설정 열어 줘", "내 설정 보여 줘", "그럼 설정 페이지 열어 주세요"],
+           ["휴대폰 설정 열어 줘", "와이파이 설정 열어 줘", "네트워크 설정 열어 줘", "블루투스 설정 열어 줘", "내 휴대폰 설정 열어 줘", "앱 설정 열어 줘", "설정은 이대로 좋아", "설정이 마음에 들어"]),
 }
 
 
@@ -310,6 +310,10 @@ def test_the_settings_pattern_hears_requests_not_talk(lang):
     assert [s for s in asks if not _settings_heard(s, t)] == []
     assert [s for s in talk if _settings_heard(s, t)] == []
     assert _settings_heard("open my settings", t)                # English works too
+    # Some other thing's settings are never the box's (#279 review).
+    for other in ("open the phone settings", "open wifi settings", "open my phone's settings",
+                  "open the network settings", "open bluetooth settings"):
+        assert not _settings_heard(other, t), other
     # Neither phrase is the other's.
     assert [s for s in asks if wifi_voice.heard("start", s, t)] == []
 

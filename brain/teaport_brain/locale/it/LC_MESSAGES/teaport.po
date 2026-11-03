@@ -491,7 +491,7 @@ msgstr "su questo dispositivo non è configurato nessun servizio di IA"
 
 msgctxt "pattern"
 msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "(?<!non )\\b(?:apri(?:mi)?|apra|mostra(?:mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?= *(?:[.,!?;:…]|$)| (?:per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)"
+msgstr "^\\W*(?:(?:teaport|ok|okay|allora|dai|ehi|e|per favore|senti)\\W+){0,3}(?:apri(?:mi)?|apra|mostra(?:mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?= *(?:[.,!?;:…]|$)| (?:per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)"
 
 msgctxt "spell"
 msgid "slash"

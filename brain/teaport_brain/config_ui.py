@@ -109,11 +109,17 @@ def token_matches(got: str | None, want: str | None) -> bool:
 
 
 def _authorize(request: Request) -> None:
+    url = getattr(request, "url", None)  # a bare stand-in (a test's) has none
+    if getattr(url, "path", "").startswith(settings_access.PREFIX):
+        # The front door's mount (gateway_server): the owner's Settings session and
+        # nothing else, whatever the token -- an unset token opens the LAN port, never
+        # the front door.
+        if not settings_access.authorized(request):
+            raise HTTPException(status_code=401, detail="no Settings session")
+        return
     want = _token()
     if not want:
         return
-    if settings_access.authorized(request):
-        return  # the owner's Settings session, on the front door
     got = request.query_params.get("token", "")
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -598,6 +604,12 @@ async def put_config(request: Request):
     if failed and not body.get("force"):
         return JSONResponse(status_code=400, content={"constraints": failed})
     if "LLM_API_KEY" in secret_updates:
+        # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
+        # saving the file would change nothing, so nothing is saved.
+        if ai_account.shadowed(parse_env(current)) == ai_account.ELSEWHERE:
+            check = ai_account.Check(ai_account.REFUSED, ai_account.SET_ELSEWHERE)
+            return JSONResponse(status_code=400,
+                                content={"key_check": check.public(_reader(request))})
         # Checked against the endpoint it will be used with: this save's, else the file's.
         check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"],
                                         merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"))
@@ -616,6 +628,8 @@ async def put_config(request: Request):
         await asyncio.to_thread(settings.write_secret, spath, value)
         logger.info(f"config: secret {name} written to {spath}")
 
+    if "LLM_API_KEY" in superseded:
+        ai_account.forget_env_copy()  # this brain reads the new file from the next session
     if superseded:
         logger.info(f"config: {STORE_FILES[store]} copy of {', '.join(superseded)} dropped — the file wins now")
     return {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),

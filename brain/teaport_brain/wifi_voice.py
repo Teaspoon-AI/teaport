@@ -439,7 +439,7 @@ class WifiSetupVoice(PhraseVoice):
 
     def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
                  lang_fn=lambda: "en-us", alive=None, online=None, model: bool = True,
-                 **kw):
+                 on_network=None, **kw):
         super().__init__(lang_fn=lang_fn, clock=clock, **kw)
         # The session has a model (#277). Without one the phrase works online too: the
         # rule that leaves it to the model online has no model to leave it to.
@@ -447,6 +447,7 @@ class WifiSetupVoice(PhraseVoice):
         self._run = run or _run_helper
         self._alive = alive or _unit_active
         self._online = online or _box_online
+        self._on_network = on_network or _box_on_network
         self._status_path = status_path
         self.state = "idle"  # idle | confirm | running
         self._unclear = 0
@@ -471,6 +472,12 @@ class WifiSetupVoice(PhraseVoice):
         # an end that leaves the box offline says how to start it again.
         self._first_boot = False
         self._kept = -math.inf  # when the bridge was last told setup is under way
+
+    async def box_on_network(self) -> bool:
+        """Is the box on a network a phone can reach it on, internet or not (Settings,
+        settings_access.py)? Wrong on the safe side: anything but a clear "no network"
+        counts as on one (_on_network)."""
+        return await self._on_network()
 
     async def box_online(self) -> bool:
         """Is the box on the internet (_box_online, or the check it was given)?"""
@@ -924,6 +931,24 @@ async def _box_online() -> bool:
     the safe side: anything but a fresh "full" leaves the phrase working (no check
     configured, a slow or dead link included)."""
     return await connectivity() == "full"
+
+
+# NetworkManager's overall state (NMState): CONNECTED_LOCAL and up (50 local, 60 site,
+# 70 global) have an address on some network.
+NM_CONNECTED_LOCAL = 50
+
+
+async def _box_on_network() -> bool:
+    """Is the box on any network (NetworkManager's State at least CONNECTED_LOCAL)? Only
+    a clear answer below it is "no": NM not answering counts as on one."""
+    state = await _output(
+        "busctl", "get-property", "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", "State",
+        timeout=NM_PROPERTY_SECS)
+    parts = (state or "").split()
+    if len(parts) == 2 and parts[0] == "u" and parts[1].isdigit():
+        return int(parts[1]) >= NM_CONNECTED_LOCAL
+    return True
 
 
 async def _unit_active() -> bool | None:

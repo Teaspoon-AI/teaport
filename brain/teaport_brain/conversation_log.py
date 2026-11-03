@@ -18,11 +18,16 @@
 #     that adds or rewords one fails test_conversation_log's premise check, which scans
 #     every pipecat module the brain loads, rather than leaking quietly.
 #
+# Some words are never logged, switch or no switch: a one-time code the box reads out
+# (settings_access.py, #279), which is the owner's access until it is used. never_log()
+# names them, and the patcher blanks them in every record of every logger.
+#
 # The diagnostic switches (LEDGER_TRACE, TEAPORT_TRACE, TEAPORT_ENDPOINT_DEBUG,
 # TEAPORT_RAW_LLM_CAPTURE) follow the same rule: their lines carry words only with
 # TEAPORT_LOG_CONVERSATIONS on too. TEAPORT_AUDIO_DUMP is the one that records on its
 # own: it writes caller audio files, and is off unless it names a directory.
 #
+import collections
 import re
 import sys
 
@@ -67,8 +72,30 @@ _PIPECAT_TEXT = (
 )
 
 
+# Text no record may carry (never_log): the last few, a code's life is minutes.
+_NEVER: collections.deque = collections.deque(maxlen=4)
+NEVER_MARK = "<code>"
+
+
+def never_log(text: str, sep: str | None = None) -> None:
+    """`text` never reaches the journal from here on: the patcher blanks it in every
+    record, TEAPORT_LOG_CONVERSATIONS or not. With `sep` (a code spelled out, items joined
+    by it), any two or more items of it in a row are blanked too: the TTS can log a line
+    cut into clauses."""
+    if not text:
+        return
+    items = [re.escape(x) for x in text.split(sep)] if sep else [re.escape(text)]
+    runs = sorted({sep_join for i in range(len(items)) for j in range(i + 2, len(items) + 1)
+                   for sep_join in [re.escape(sep).join(items[i:j]) if sep else ""]
+                   if sep_join} or {re.escape(text)}, key=len, reverse=True)
+    _NEVER.append(re.compile("|".join(runs)))
+
+
 def redact(record: dict) -> None:
-    """A loguru patcher: blanks the text in pipecat's conversation-carrying lines."""
+    """A loguru patcher: blanks never_log()'s text in every record, and the text in
+    pipecat's conversation-carrying lines (unless TEAPORT_LOG_CONVERSATIONS)."""
+    for secret in list(_NEVER):
+        record["message"] = secret.sub(NEVER_MARK, record["message"])
     if LOG_WORDS or not (record.get("name") or "").startswith("pipecat"):
         return
     msg = record["message"]

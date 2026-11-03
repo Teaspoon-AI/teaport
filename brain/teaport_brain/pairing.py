@@ -265,11 +265,73 @@ _session: _Session | None = None
 _ended: tuple[int, Result] | None = None  # the last session's id and Result, for wait()
 _sessions = 0                             # ids
 _creating: asyncio.Future | None = None   # a first start() reading the device list
-# Codes tapped lately, for "already used" (the current session's and the one before).
-_spent: collections.deque = collections.deque(maxlen=8)
-# Every code issued lately, by any pairing: scanning one again (a photo of an old QR) is
-# never a wrong guess against the current code.
-_recent: collections.deque = collections.deque(maxlen=32)
+
+
+class CodeBook:
+    """One kind of one-time code, the state every code of it shares: pairing's /p/ codes
+    (_codes, below), Settings' /settings/ codes (settings_access.py). `spent`: codes used
+    lately, for "already used" (the current one's and a few before); `recent`: every code
+    issued lately, so scanning one again (a photo of an old QR) is never a wrong guess
+    against the current code.
+
+    The current code itself lives in its holder -- a pairing's _Session, or a LiveCode --
+    which has `code` (an Offer), code_usable(), and the counters this keeps on it:
+    `wrong`, `code_dead`, `locked`."""
+
+    def __init__(self):
+        self.spent: collections.deque = collections.deque(maxlen=8)
+        self.recent: collections.deque = collections.deque(maxlen=32)
+
+    def issue(self) -> str:
+        code = new_code_text()
+        self.recent.append(code)
+        return code
+
+    def find(self, code: str, holder, what: str) -> str:
+        """"used", "expired" or "live" for `code` against `holder`'s current code (None:
+        there is none). A code that is none of these (nor one tapped lately) is a wrong
+        guess while the current code can be used, and MAX_WRONG of them end that code
+        (`what` names the kind in the log). Constant-time compares throughout."""
+        code = code.strip().upper()
+        if any(hmac.compare_digest(code.encode(), c.encode()) for c in self.spent):
+            return "used"  # a second scan of a used code is not a guess
+        if holder is None:
+            return "expired"
+        usable = holder.code_usable()
+        if hmac.compare_digest(code.encode(), holder.code.code.encode()):
+            return "live" if usable else "expired"
+        if any(hmac.compare_digest(code.encode(), c.encode()) for c in self.recent):
+            return "expired"  # an earlier code, of this holder or one before
+        if usable:
+            holder.wrong += 1
+            if holder.wrong >= MAX_WRONG:
+                logger.warning(f"{what}: {holder.wrong} wrong codes; the code is locked")
+                holder.code_dead = holder.locked = True
+        return "expired"
+
+    def spend(self, holder) -> None:
+        """`holder`'s current code is used: no longer usable, and "already used" after."""
+        holder.code_dead = True
+        self.spent.append(holder.code.code)
+
+
+@dataclass(eq=False)
+class LiveCode:
+    """A current code with nothing else around it (Settings'): CodeBook's holder."""
+    code: "Offer"
+    clock: object = None       # the deadline's clock (default: this module's _clock)
+    code_dead: bool = False    # used, or locked
+    locked: bool = False
+    wrong: int = 0
+
+    def code_usable(self) -> bool:
+        return not self.code_dead and (self.clock or _clock)() < self.code.expires_at
+
+
+_codes = CodeBook()
+# The book's two lists, by their old names (tests clear them).
+_spent = _codes.spent
+_recent = _codes.recent
 
 
 def _pulse(s: _Session) -> None:
@@ -543,8 +605,7 @@ def new_code_text() -> str:
 
 
 def _new_code(s_id: int, host: str) -> Offer:
-    code = new_code_text()
-    _recent.append(code)
+    code = _codes.issue()
     expires_at = _clock() + min(OFFER_SECS, OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS)
     return Offer(code=code, link=link(host, code), expires_at=expires_at, session=s_id)
 
@@ -942,28 +1003,31 @@ def via_front_door(request: Request) -> bool:
 
 
 def _find(code: str) -> tuple[str, _Session | None]:
-    """("used" | "expired" | "live", the session when "live") for a code at /p/. A code
-    that is none of the pairing's (nor one tapped lately) is a wrong guess while its
-    current code can be used, and MAX_WRONG of them end that code. Its own codes, asked
-    again, are never guesses."""
-    code = code.strip().upper()
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _spent):
-        return "used", None  # a second scan of a used code is not a guess
+    """("used" | "expired" | "live", the session when "live") for a code at /p/
+    (CodeBook.find). Its own codes, asked again, are never guesses."""
     s = _session
-    if s is None or s.result is not None:
-        return "expired", None
-    usable = s.code_usable()
-    if hmac.compare_digest(code.encode(), s.code.code.encode()):
-        return ("live", s) if usable else ("expired", None)
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _recent):
-        return "expired", None  # an earlier code, of this pairing or one before
-    if usable:
-        s.wrong += 1
-        if s.wrong >= MAX_WRONG:
-            logger.warning(f"pairing: {s.wrong} wrong codes; the code is locked")
-            s.code_dead = s.locked = True
-            _pulse(s)
-    return "expired", None
+    if s is not None and s.result is not None:
+        s = None
+    locked = s is not None and s.locked
+    state = _codes.find(code, s, "pairing")
+    if s is not None and s.locked and not locked:
+        _pulse(s)  # wrong codes ended it: whoever waits on the pairing hears it
+    return state, (s if state == "live" else None)
+
+
+async def front_door_request(request: Request, post: bool) -> tuple[Response | None, dict]:
+    """The checks a code page (pairing's /p/, Settings' /settings/) makes before it looks
+    at a code: (a response to answer with, {}) -- 404 for anything that did not come
+    through the front door over HTTPS (no guess either), 413 for a POST body over
+    MAX_FORM_BYTES (spends nothing) -- or (None, the POST's form; {} for a GET)."""
+    if not via_front_door(request):
+        return PlainTextResponse(_NOT_FOUND, status_code=404), {}
+    if not post:
+        return None, {}
+    form = await small_form(request)
+    if form is None:
+        return PlainTextResponse("Payload Too Large", status_code=413), {}
+    return None, form
 
 
 _NOT_FOUND = "Not Found"
@@ -992,8 +1056,9 @@ router = APIRouter()
 async def landing(code: str, request: Request) -> Response:
     """Unauthenticated: the browser asking has no token yet; the code is the grant.
     A GET spends nothing: it shows the two choices."""
-    if not via_front_door(request):
-        return PlainTextResponse(_NOT_FOUND, status_code=404)  # not a guess either
+    refused, _ = await front_door_request(request, post=False)
+    if refused is not None:
+        return refused
     state, s = _find(code)
     if state == "live":
         return _choose(s.code.code)
@@ -1004,19 +1069,17 @@ async def landing(code: str, request: Request) -> Response:
 async def redeem(code: str, request: Request) -> Response:
     """The choice: the code is spent here, before the handoff is minted (a second post
     while the first mints finds it used), and the handoff is made for what was chosen."""
-    if not via_front_door(request):
-        return PlainTextResponse(_NOT_FOUND, status_code=404)
-    form = await small_form(request)
-    if form is None:  # before the code is looked at: spends nothing, guesses nothing
-        return PlainTextResponse("Payload Too Large", status_code=413)
+    # Before the code is looked at: a refusal spends nothing and guesses nothing.
+    refused, form = await front_door_request(request, post=True)
+    if refused is not None:
+        return refused
     choice = (form.get("choice") or [""])[0]
     state, s = _find(code)
     if state != "live":
         return _used() if state == "used" else _expired()
     if choice not in (DASHBOARD, APP):
         return _choose(s.code.code)  # nothing chosen: nothing spent
-    s.code_dead = True
-    _spent.append(s.code.code)
+    _codes.spend(s)
     tap = _Tap(choice, _clock() + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS) + _window(choice),
                peer=_peer_of(request))
     s.taps.append(tap)

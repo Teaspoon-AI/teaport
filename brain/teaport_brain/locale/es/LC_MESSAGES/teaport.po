@@ -483,7 +483,7 @@ msgstr "este dispositivo no tiene ningún servicio de IA configurado"
 
 msgctxt "pattern"
 msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "(?<!no )\\b(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?= *(?:[.,!?;:…]|$)| (?:por favor|porfa|ahora|ya|de teaport)\\b)"
+msgstr "^\\W*(?:(?:teaport|oye|ok|okay|vale|bueno|entonces|y|por favor|porfa)\\W+){0,3}(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?= *(?:[.,!?;:…]|$)| (?:por favor|porfa|ahora|ya|de teaport)\\b)"
 
 msgctxt "spell"
 msgid "slash"
