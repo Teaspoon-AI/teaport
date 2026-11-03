@@ -472,6 +472,78 @@ def test_a_room_in_setup_mode_is_live_for_the_arbiter():
     assert not gs.session_asleep(None, None, room=False, keepalive=45)
 
 
+def test_an_unanswered_question_lapses_by_itself_and_the_room_is_free_again(monkeypatch):
+    """"Set up Wi-Fi", then nobody says a word: in a room without wake words nothing else
+    would ever end the question, and the room would stay busy with setup for good -- every
+    Talk client refused, every caller busy."""
+    from teaport_brain import gateway_server as gs
+    monkeypatch.setattr(wv, "CONFIRM_SECS", 0.05)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        session.followup_gate = SimpleNamespace(user_heard=False)
+        v = session.wifi
+        assert await v._heard("set up wifi")
+        assert v.state == "confirm"
+        assert not gs.session_asleep(session, None, room=True, keepalive=45)
+        await asyncio.sleep(0.15)
+        assert v.state == "idle", "the question never lapsed"
+        assert gs.session_asleep(session, None, room=True, keepalive=45)
+        # A question answered "no", then asked again: the new one gets its own full time,
+        # the first one's timer does not end it.
+        assert await v._heard("set up wifi")
+        assert await v._heard("no") and v.state == "idle"
+        await asyncio.sleep(0.03)
+        assert await v._heard("set up wifi") and v.state == "confirm"
+        await asyncio.sleep(0.03)                  # past the first question's time
+        assert v.state == "confirm", "an older question's timer ended the new one"
+        await asyncio.sleep(0.05)
+        assert v.state == "idle"
+    asyncio.run(run())
+
+
+def test_a_room_in_setup_cannot_be_asked_about_a_call():
+    """While setup asks or runs it takes every word said, so a call's question would never
+    get its answer and its default would put the room on hold mid-setup: the room cannot
+    be asked, and the arbiter turns the caller away (busy)."""
+    from teaport_brain import gateway_server as gs
+    from teaport_brain import session_arbiter as arb
+    asked = []
+    for state, expected in (("idle", True), ("confirm", False), ("running", False)):
+        s = SimpleNamespace(call_prompt=object(), wifi=SimpleNamespace(state=state))
+        assert gs.session_can_be_asked(s) is expected, state
+        room = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: False,
+                         ask=asked.append, hold=asked.append, resume=asked.append,
+                         can_ask=lambda s=s: gs.session_can_be_asked(s))
+        call = arb.Claim(arb.CALL, client="sip")
+        assert arb.decide(room, call) == (arb.PROMPT if expected else arb.REFUSED), state
+    assert not gs.session_can_be_asked(SimpleNamespace(call_prompt=None, wifi=None))
+
+
+def test_the_first_boot_wake_is_logged_as_what_it_is(box):
+    """Not as a wake word nobody said: the brain logs "woken for first-boot setup", and
+    the bridge, told why and no phrase, says the same."""
+    from loguru import logger
+    from teaport_brain.local_audio import wake_note
+    seen = []
+    sink = logger.add(lambda m: seen.append(m.record["message"]), level="INFO")
+
+    async def run():
+        session, _ = _room(asleep=True)
+        assert await _run(session, "none")
+        await session.wifi._stop_following()
+        return [f.message for f in session.task.queued if hasattr(f, "message")][0]
+    try:
+        message = asyncio.run(run())
+    finally:
+        logger.remove(sink)
+    assert any(m.startswith("woken for first-boot setup") for m in seen), seen
+    assert not any("wake word" in m for m in seen), seen
+    assert "phrase" not in message and message["why"] == "first-boot setup", message
+    assert wake_note(message) == "woken for first-boot setup"
+    assert wake_note({"type": "wake", "phrase": "hey teaport"}) == 'wake word "hey teaport" heard'
+
+
 def test_the_typing_bed_leaves_setups_working_message_alone():
     from teaport_brain.thinking_sound import ThinkingSound
     from pipecat.processors.frame_processor import FrameDirection

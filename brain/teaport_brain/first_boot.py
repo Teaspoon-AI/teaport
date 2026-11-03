@@ -228,7 +228,7 @@ async def run(session) -> bool:
         if gate is not None and gate.asleep:
             async def push(frame):
                 await session.task.queue_frames([frame])
-            await gate.wake(push, "(first boot)", greet=False)
+            await gate.wake(push, None, why="first-boot setup", greet=False)
         return await wifi.begin_first_boot()
     except asyncio.CancelledError:
         raise

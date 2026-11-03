@@ -318,6 +318,7 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"  # idle | confirm | running
         self._unclear = 0
         self._asked = 0.0  # when the confirm question was put
+        self._lapser: asyncio.Task | None = None  # lapses it (_question_lapses)
         # The words setup took while asking (the phrase, unclear answers): given back to
         # the model if the answer never becomes a yes or a no.
         self._held: list[str] = []
@@ -389,9 +390,26 @@ class WifiSetupVoice(FrameProcessor):
             return
         self.state, self._unclear, self._held = "confirm", 0, []
         self._asked, self._by_model = self._clock(), by_model
+        # The question lapses by itself: nobody may say anything after it (they walked
+        # off), and until then the room counts as busy with setup (gateway_server).
+        if self._lapser is not None:
+            self._lapser.cancel()
+        self._lapser = self._spawn(self._question_lapses(self._asked))
         await self.say(self.t._("Do you want to set up Wi-Fi? I'll go into setup mode and be "
                                 "offline for a few minutes while you do it on your phone. "
                                 "Say yes or no."))
+
+    def _lapse(self) -> None:
+        """The confirm question went unanswered: back to conversation."""
+        logger.info("wifi setup: the question went unanswered — back to conversation")
+        self.state, self._held = "idle", []
+        self._ended(_UNCONFIRMED)
+
+    async def _question_lapses(self, asked: float) -> None:
+        """CONFIRM_SECS after the question asked at `asked`: unanswered, it lapses."""
+        await asyncio.sleep(CONFIRM_SECS)
+        if self.state == "confirm" and self._asked == asked:
+            self._lapse()
 
     async def begin_first_boot(self) -> bool:
         """Go into setup mode unasked, with the welcome instead of the question: a new box
@@ -698,6 +716,8 @@ class WifiSetupVoice(FrameProcessor):
             self._bot_speaking, self._quiet_since = False, self._clock()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             # The unit outlives the session; only the following stops.
+            if self._lapser is not None:
+                self._lapser.cancel()
             await self._stop_following()
         elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
               and not is_taken(frame)):
@@ -720,9 +740,7 @@ class WifiSetupVoice(FrameProcessor):
             logger.debug(f"wifi setup: {quoted(text[:40])} is the box's own voice — ignored")
             return True
         if self.state == "confirm" and self._clock() - self._asked > CONFIRM_SECS:
-            logger.info("wifi setup: the question went unanswered — back to conversation")
-            self.state, self._held = "idle", []
-            self._ended(_UNCONFIRMED)
+            self._lapse()  # its timer has not run yet (a busy loop): the words decide
         if self.state == "idle":
             if not heard("start", text, t):
                 return False

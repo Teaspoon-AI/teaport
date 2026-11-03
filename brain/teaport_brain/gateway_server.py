@@ -365,7 +365,8 @@ async def run_relay_bot(websocket: WebSocket):
         gone=lambda: _client_gone(websocket, serializer),
         end=lambda why: _end_for(websocket, session_holder.get("s"), why, room=room,
                                  asleep=asleep()),
-        ask=ask, can_ask=lambda: prompt() is not None, hold=hold, resume=resume)
+        ask=ask, can_ask=lambda: session_can_be_asked(session_holder.get("s")), hold=hold,
+        resume=resume)
     # A sleeping wake-word room asked nothing; a dial without wake words is a voice in the
     # room, and is told.
     speak_refusal = not (gate is not None and gate.asleep)
@@ -547,17 +548,31 @@ async def run_relay_bot(websocket: WebSocket):
             gate.ended()  # the mic conversation, kept for the next wake (wake_gate.py)
 
 
+def in_setup(session) -> bool:
+    """The session's Wi-Fi setup asks or runs (wifi_voice.WifiSetupVoice.state)."""
+    return getattr(getattr(session, "wifi", None), "state", "idle") != "idle"
+
+
+def session_can_be_asked(session) -> bool:
+    """Can this conversation be asked whether to take a phone call (the claim's can_ask:
+    session_arbiter PROMPT)? Where it has a call prompt -- and not in setup mode: while
+    setup asks or runs it takes every word said (wifi_voice), so the question would
+    never get its answer, and its default would put the room on hold mid-setup, its
+    setup network up with nobody following it. Not askable, the caller hears busy."""
+    return getattr(session, "call_prompt", None) is not None and not in_setup(session)
+
+
 def session_asleep(session, gate, *, room: bool, keepalive: float) -> bool:
     """Does this /talk session count as asleep for the session arbiter (the claim's
     asleep): a wake-word room per its gate, a room without wake words while nobody uses
     it (room_idle), a Talk session never.
 
-    A room in setup mode -- asked or begun, by voice or a new box by itself (first_boot)
-    -- is live, not a room nobody uses: a Talk client is refused as by any live
-    conversation, and a call is put to it as to one (asked where it can be, else the
-    caller hears busy). Asleep, the newcomer would end it without a word, its setup
-    network up with nobody following it."""
-    if room and getattr(getattr(session, "wifi", None), "state", "idle") != "idle":
+    A room in setup mode -- asked (the question lapses on its own, wifi_voice
+    CONFIRM_SECS) or begun, by voice or a new box by itself (first_boot) -- is live, not
+    a room nobody uses: a Talk client is refused as by any live conversation, and a
+    caller hears busy (session_can_be_asked). Asleep, the newcomer would end it without
+    a word, its setup network up with nobody following it."""
+    if room and in_setup(session):
         return False
     if gate is not None:
         return gate.asleep
