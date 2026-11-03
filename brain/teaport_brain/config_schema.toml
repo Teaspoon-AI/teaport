@@ -2212,6 +2212,29 @@ tier = "installer"
 help = "Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody."
 source = "install.sh"
 
+[[settings]]
+name = "VOX_LICENSE_FILE"
+store = "engine_env"
+group = "engine_service"
+type = "path"
+default = "/etc/teaport/license.json"
+read = "startup"
+tier = "installer"
+help = "The engine's license key (engine 1.7 and later): a signed file bound to this device's id. install.sh --license-file installs one here; teaport doctor checks it. Older engines ignore it."
+source = ["install.sh", "cli/teaport"]
+
+[[settings]]
+name = "VOX_LICENSE_MODE"
+store = "engine_env"
+group = "engine_service"
+type = "enum"
+values = ["", "off", "warn", "on"]
+default = ""
+read = "startup"
+tier = "installer"
+help = "Whether the engine needs a valid license key (engine 1.7 and later). Unset or empty: the engine build's default, warn. warn: it runs without one and says so in its journal. on: it refuses to start without one (exit 78, which the unit does not retry). off: no check. The installer does not write it; set it by hand only to differ from the engine's default. An engine built to enforce ignores a looser value. install.sh and teaport doctor check the key under it."
+source = "cli/teaport"
+
 # ================================================================ teaport-sip.conf
 
 [[settings]]

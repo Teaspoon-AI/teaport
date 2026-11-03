@@ -92,6 +92,85 @@ answers_line() {  # the answers, as a status line
   [ "$st" = unknown ] && line=$'unknown\tunknown (the brain does not say)'
   printf '  %-28s %s\n' "answers (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
+# ---- engine license key (engine 1.7+, teagram-engine#107) ------------------------------
+# The engine checks a signed, device-bound key at start and before each new session, and
+# says what it found in its journal. Under its default enforcement ("warn") a box without
+# a valid key runs anyway; under "on" the engine exits 78 and the unit stays stopped.
+engine_prop() { systemctl show -p "$1" --value teaport-engine.service 2>/dev/null || true; }
+engine_refused() { [ "$(engine_prop Result)" = exit-code ] && [ "$(engine_prop ExecMainStatus)" = 78 ]; }
+# engine_has <flag> — the installed engine's --help lists it; an older engine has no keys.
+engine_has() {
+  local h; h="$("$PREFIX/bin/voxtral" --help 2>&1 || true)"
+  grep -qE -- "^[[:space:]]+$1([[:space:]]|\$)" <<< "$h"
+}
+# The running engine's latest license line, from this invocation of the unit: the startup
+# check ("License key: ...", or the "* LICENSE KEY: no valid license key" banner) or a later
+# re-check ("License key: re-check: ..." / "LICENSE KEY: re-check FAILED: ...").
+engine_license_line() {
+  local inv; inv="$(engine_prop InvocationID)"
+  [ -n "$inv" ] || return 0
+  journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o cat --no-pager 2>/dev/null \
+    | grep -m1 -aE '^(\* )?(License key|LICENSE KEY):' || true
+}
+license_line() {  # the key, as a status line
+  local line text col=0
+  if engine_refused; then
+    text="engine refused to start: no valid license key (exit 78) — teaport doctor"; col="$RED"
+  else
+    line="$(engine_license_line)"
+    case "$line" in
+      *'re-check FAILED'*) text="no valid key: ${line#*FAILED: }"; col="$RED" ;;
+      *'no valid license key'*) text="no valid key — the engine runs anyway (warn)"; col="$YEL" ;;
+      *'TEST key'*) text="signed with a TEST key — not a production build"; col="$YEL" ;;
+      *'check off'*) text="not checked ${line#*check off }"; col="$YEL" ;;
+      'License key: re-check: '*) text="valid: ${line#License key: re-check: }"; col="$GREEN" ;;
+      'License key: '*) text="valid: ${line#License key: }"; col="$GREEN" ;;
+      *) text="not in the journal $(id -un) can read — teaport doctor" ;;
+    esac
+  fi
+  printf '  %-28s %s\n' "license key (engine)" "$(c "$col" "$text")"
+}
+# unit_env_value <env file> <KEY> — KEY as the unit's EnvironmentFile gives it to the engine:
+# the last assignment wins, whitespace around the key, the = and the value (a CR included)
+# is dropped, and one pair of surrounding quotes is removed (envval takes the first, as
+# written).
+unit_env_value() {
+  local v; v="$(sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | tail -1 || true)"
+  v="${v%"${v##*[![:space:]]}"}"
+  if [ ${#v} -ge 2 ]; then case "$v" in \"*\"|\'*\') v="${v:1:${#v}-2}" ;; esac; fi
+  printf '%s' "$v"
+}
+# license_check — doctor's look at the key the engine reads (engine.env's VOX_LICENSE_FILE,
+# else the engine's default), checked by the engine itself as this user. Uses doctor's
+# ok/warnc/failc.
+license_check() {
+  [ -x "$PREFIX/bin/voxtral" ] || return 0
+  engine_has --license-status || { ok "engine license key: not used by this engine release"; return 0; }
+  local f mode out rc=0 envs=() user result enf dev
+  f="$(unit_env_value "$ETC/engine.env" VOX_LICENSE_FILE)"; f="${f:-/etc/teaport/license.json}"
+  mode="$(unit_env_value "$ETC/engine.env" VOX_LICENSE_MODE)"
+  if [ -n "$mode" ]; then envs=("VOX_LICENSE_MODE=$mode"); fi
+  # The unit's view, not this shell's: its own exports must not reach the engine.
+  out="$(env -u VOX_LICENSE_MODE -u VOX_LICENSE_FILE "${envs[@]}" "$PREFIX/bin/voxtral" --license-status --license-file "$f" 2>&1)" || rc=$?
+  result="$(sed -n 's/^Result:[[:space:]]*//p' <<< "$out")"
+  enf="$(sed -n 's/^Enforcement:[[:space:]]*//p' <<< "$out")"
+  dev="$(sed -n 's/^This device:[[:space:]]*//p' <<< "$out")"
+  if engine_refused; then
+    failc "the engine refused to start for want of a valid license key (exit 78): ${result:-no status} (device id: ${dev:-unknown}); once a valid key is installed: sudo systemctl restart teaport-engine"
+  elif [ "$rc" = 0 ]; then
+    ok "engine license key: $(sed -n 's/^License id:[[:space:]]*//p' <<< "$out") ($(sed -n 's/^Tier:[[:space:]]*//p' <<< "$out")), expires $(sed -n 's/^Expires:[[:space:]]*//p' <<< "$out")"
+  else
+    case "$enf" in
+      on*) failc "no valid engine license key: ${result:-no status} — the engine enforces keys and will not start without one (device id: ${dev:-unknown})" ;;
+      *) warnc "no valid engine license key: ${result:-no status} — the engine runs anyway (enforcement: ${enf:-unknown}); a key is issued for this device id: ${dev:-unknown}" ;;
+    esac
+  fi
+  user="$(engine_prop User)"
+  if [ -n "$user" ] && [ "$user" != "$(id -un)" ]; then
+    warnc "  checked as $(id -un); the engine runs as $user, whose access to $f and the GPU is what counts (sudo -u $user teaport doctor)"
+  fi
+}
+
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
 # Not `grep -q`: under pipefail, grep leaving at its first match can SIGPIPE ss and
 # fail the pipeline for a port that IS listening (install.sh's contains() says more).
@@ -136,6 +215,7 @@ cmd_status() {
   # A capped or revoked key passes every other line here: the units run, the ports
   # listen, and only real turns find out (#205).
   answers_line
+  if installed teaport-engine && [ -x "$PREFIX/bin/voxtral" ] && engine_has --license-status; then license_line; fi
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
@@ -270,6 +350,7 @@ cmd_doctor() {
   done
   listening "$ENGINE_PORT" && ok "engine :$ENGINE_PORT listening" || failc "engine :$ENGINE_PORT not listening (allow ~1min after start)"
   listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
+  license_check
   brain_pacing_check
   answers_check
   # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no

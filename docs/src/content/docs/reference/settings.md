@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2693#5b3d94e6 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2716#90463c7c -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -331,6 +331,8 @@ In `/etc/teaport/engine.env`.
 | `ENGINE_DELAY` | **480** | --delay to the engine binary. *Set by the installer.* |
 | `TTS_CTX` | **192** | --tts-ctx to the engine binary. *Set by the installer.* |
 | `VOX_REQUIRE_DICT_G2P` | `1` | Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody. One of `1`. *Set by the installer.* |
+| `VOX_LICENSE_FILE` | `/etc/teaport/license.json` | The engine's license key (engine 1.7 and later): a signed file bound to this device's id. install.sh --license-file installs one here; teaport doctor checks it. Older engines ignore it. *Set by the installer.* |
+| `VOX_LICENSE_MODE` | `""` | Whether the engine needs a valid license key (engine 1.7 and later). Unset or empty: the engine build's default, warn. warn: it runs without one and says so in its journal. on: it refuses to start without one (exit 78, which the unit does not retry). off: no check. The installer does not write it; set it by hand only to differ from the engine's default. An engine built to enforce ignores a looser value. install.sh and teaport doctor check the key under it. One of `""`, `off`, `warn`, `on`. *Set by the installer.* |
 
 ## SIP gateway
 
