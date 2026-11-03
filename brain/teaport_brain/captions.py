@@ -79,8 +79,10 @@ _TRACE = setting("TEAPORT_TRACE")
 # user's first interim renders, so any partial we emit during their utterance
 # REOPENS a second assistant bubble ("seen twice"; a following tool card then
 # renders into that stray bubble). A gap longer than this since the last user
-# interim counts as quiet again — inter-interim gaps run ~0.3-0.7s, and a fresh
-# reply's first audio lands well past this after the user's final.
+# interim counts as quiet again — inter-interim gaps run ~0.3-0.7s. The user's
+# final holds only a bubble that was open before it: a fresh reply's first audio
+# can land well inside this after the final (0.8 s, live 2026-11-02), and holding
+# it lost the reply's first words whenever it was then cut (CaptionTap, USER-HOLD).
 _USER_HOLD_S = setting("TEAPORT_CAPTION_USER_HOLD_S")
 
 # Caption text rides pipecat 1.5.0's AggregatedTextProgressFrame, NOT the bare
@@ -143,16 +145,18 @@ def _remember(seen: dict, key, cap: int) -> None:
 
 
 class VoiceActivity:
-    """One shared fact: when did the USER's transcript last reach the client?
-    UserTranscriptEmitter stamps it as it sends text (an empty transcript changes
-    nothing in the Talk view, so it doesn't count); CaptionTap reads it to hold
-    assistant partials while the user talks."""
+    """One shared fact: when did the USER's transcript last reach the client, and
+    was it their final? UserTranscriptEmitter stamps it as it sends text (an empty
+    transcript changes nothing in the Talk view, so it doesn't count); CaptionTap
+    reads it to hold assistant partials while the user talks."""
 
     def __init__(self):
         self.user_ts = 0.0  # time.monotonic() of the last user interim/final sent
+        self.user_final = False  # that last one was a final: their entry is closed
 
-    def stamp(self):
+    def stamp(self, final: bool = False):
         self.user_ts = time.monotonic()
+        self.user_final = final
 
     def user_active(self) -> bool:
         return (time.monotonic() - self.user_ts) <= _USER_HOLD_S
@@ -212,7 +216,7 @@ class UserTranscriptEmitter(FrameProcessor):
             # after this turn's interims.
             text = (frame.text or "").strip()
             if self._activity and text:
-                self._activity.stamp()
+                self._activity.stamp(final=True)
             await self.push_frame(
                 OutputTransportMessageUrgentFrame(message={
                     "type": "transcript", "role": "user",
@@ -286,7 +290,13 @@ class CaptionTap(FrameProcessor):
     renders into. So while user interims are active (shared VoiceActivity stamp)
     partials are HELD — the buffer keeps accumulating, and if the utterance
     survives (no barge), the next emit carries the full text so far (the plugin
-    shows only what follows the committed bubble).
+    shows only what follows the committed bubble). After the user's FINAL, only a
+    bubble that was already open is held (the final committed it, as an interim
+    would): an utterance that starts after their final has no bubble the view
+    could have committed, and its first partial opens its own, after their words.
+    Holding that one too (live 2026-11-02, a reply 0.8 s after the final) showed
+    nothing of a reply cut in its first second -- its opening word spoken, never charted:
+    a barged utterance gets no final, so what was held is never sent.
 
     Finals during the hold depend on the client (every_final, from ?captions=).
     A client that speaks caption protocol 2 (the current plugin) gets every
@@ -317,6 +327,7 @@ class CaptionTap(FrameProcessor):
         self._acc = ""          # live sentence's played prefix (accumulated_text)
         self._last_sent = ""    # longest partial emitted (forward-only guard)
         self._first_pts = None  # pts of its first word (guards stale End frames)
+        self._opened_ts = None  # when its bubble opened: its first partial sent
         self._dead = {}         # barged context ids: drop their late progress frames
         self._playing_ctx = None  # the context the transport is writing (its TTSStartedFrame)
         self._ahead = []        # lines charted ahead (caption_ahead), not playing yet
@@ -324,6 +335,16 @@ class CaptionTap(FrameProcessor):
 
     def _user_active(self) -> bool:
         return bool(self._activity) and self._activity.user_active()
+
+    def _user_holds(self) -> bool:
+        """Whether the user's words may have committed this utterance's bubble in the
+        view, so that a partial now would reopen it (USER-HOLD): they are mid-utterance,
+        or their final came while the bubble was open."""
+        if not self._user_active():
+            return False
+        if not self._activity.user_final:
+            return True
+        return self._opened_ts is not None and self._opened_ts <= self._activity.user_ts
 
     async def _start_interruption(self):
         await super()._start_interruption()
@@ -350,6 +371,7 @@ class CaptionTap(FrameProcessor):
         self._acc = ""
         self._last_sent = ""
         self._first_pts = None
+        self._opened_ts = None
 
     @staticmethod
     def _join(parts) -> str:
@@ -377,12 +399,12 @@ class CaptionTap(FrameProcessor):
         so it contributes its FULL source text, not just the accumulated prefix
         (covers a force-completed tail whose timestamps the engine dropped)."""
         text = self._join([*self._done, self._seg_text])
-        ctx, shown, user_active = self._ctx, self._last_sent, self._user_active()
+        ctx, shown, committed = self._ctx, self._last_sent, self._user_holds()
         self._reset()
         if not text:
             return
-        if not self._every_final and user_active and text == shown:
-            # An older client: the user is mid-utterance and their interim already
+        if not self._every_final and committed and text == shown:
+            # An older client: the user is talking and their words already
             # committed the bubble showing exactly this text — a final now would
             # render as a duplicate bubble after their message and add nothing.
             if _TRACE:
@@ -431,7 +453,7 @@ class CaptionTap(FrameProcessor):
             self._acc = frame.accumulated_text or ""
             snapshot = self._snapshot()
             if len(snapshot) > len(self._last_sent):
-                if self._user_active():
+                if self._user_holds():
                     # The client committed the active bubble at the user's interim;
                     # a partial now would reopen a second one. Keep accumulating —
                     # if this utterance survives, the next emit carries it all.
@@ -439,6 +461,8 @@ class CaptionTap(FrameProcessor):
                         logger.info(f"[CAP] partial held (user talking) tail={quoted(snapshot[-30:])}")
                     return
                 self._last_sent = snapshot
+                if self._opened_ts is None:
+                    self._opened_ts = time.monotonic()
                 await self.push_frame(
                     OutputTransportMessageUrgentFrame(message={
                         "type": "transcript", "role": "assistant",

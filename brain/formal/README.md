@@ -2976,10 +2976,10 @@ started is still the one a continuation drops. With
 `retryOnQuiet` and `retryMerges` are one machine and those rows keep `retryOnQuiet`.
 Talk and the room mic run the same turn machine and fence, without the hold
 (`TEAPORT_REPLY_HOLD_TALK` defaults off) and, as shipped, without the pause
-(`TEAPORT_BARGE_PAUSE_TALK` defaults off until the playout timing across a pause is done,
-#255): `HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as
+(`TEAPORT_BARGE_PAUSE_TALK`, and `TEAPORT_BARGE_PAUSE_ROOM` for the room mic, default off
+until the playout timing across a pause is done, #255): `HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as
 before #85 — without a gate nothing knows the first reply has not played, so the second
-commit stays a second message there. With `TEAPORT_BARGE_PAUSE_TALK` the `/talk`
+commit stays a second message there. With either switch the `/talk`
 transport pauses as the SIP one does (`playout_pause.py`): `HOLD = "none"`,
 `PAUSE = "shipped"`. `ut_talk_shipped_all` holds every property but those two
 (`ut_talk_shipped_nostalereply`, `ut_talk_shipped_nosplitturn`), so nothing in the

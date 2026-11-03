@@ -160,10 +160,22 @@ from teaport_brain.settings import setting
 from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
-# -- on /talk (the room mic, the app, the dashboard, Discord) only with TALK_ENABLED as
-# well: off there until the playout timing across a pause is done (#255; Known limits).
+# -- on /talk only with a switch of its own as well (talk_pauses): off there until the
+# playout timing across a pause is done (#255; Known limits). The room mic has its own,
+# because there the limit costs more than captions: its echo guard times the bot's words
+# on the wall clock, so after a pause the resumed reply's echo passes as the user's words
+# and cuts the reply -- the bot answering itself on the box's speaker. The app, the
+# dashboard and Discord have no echo guard; their clients cancel their own echo.
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
 TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
+ROOM_ENABLED = setting("TEAPORT_BARGE_PAUSE_ROOM")
+
+
+def talk_pauses(room: bool) -> bool:
+    """Whether a /talk session's playout pauses on a barge-in: the room mic's (the
+    local audio bridge, ?features=local) by ROOM_ENABLED, any other client's by
+    TALK_ENABLED."""
+    return ENABLED and (ROOM_ENABLED if room else TALK_ENABLED)
 # The LONGEST a pause with no words waits after the caller's speech (both the VAD and
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
