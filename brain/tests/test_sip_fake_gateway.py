@@ -28,6 +28,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -111,6 +112,13 @@ class Rig:
         return p
 
 
+def _log_time(line: str) -> float:
+    """Seconds of the day of a loguru line ("2026-11-03 11:15:02.249 | ..."), colours
+    or not (loguru colours its lines on CI)."""
+    h, m, sec = re.search(r"(\d{2}):(\d{2}):(\d{2}\.\d+)", line).groups()
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
 async def wait_until(pred, timeout=10.0):
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
@@ -128,6 +136,58 @@ def user_texts(engine):
 
 
 # --- 1-3. the real brain ----------------------------------------------------------
+
+async def test_a_sigterm_right_after_a_call_the_brain_ended_stops_it_at_once():
+    # #284: a brain with no model answers a call with its "not set up" line and hangs up
+    # itself; a SIGTERM straight after (a deploy, `teaport sip restart`) used to be eaten
+    # by the call's teardown, and the brain ran on until systemd's SIGKILL. It must stop
+    # as promptly as an idle brain does.
+    async with Rig() as rig:
+        env_for = rig.engine.env_for
+        rig.engine.env_for = lambda: {k: v for k, v in env_for().items()
+                                      if k not in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")}
+        p = rig.start_brain()
+        assert await rig.gw.wait_brain(60), "teaport-brain never connected to the gateway"
+
+        def log() -> str:
+            with open(rig.logs[-1], encoding="utf-8", errors="replace") as f:
+                return f.read()
+
+        # First, left alone: the call's own teardown runs to its end (the runner waited
+        # out, the settle, the session-end reclaim) though the gateway's `disconnected`
+        # for the hangup cancels the bring-up that started it.
+        call = await rig.gw.place_call()
+        await asyncio.wait_for(call.ended.wait(), 60)
+        assert call.ended_by == "brain", call.ended_by
+        assert await wait_until(lambda: "session-end reclaim" in log(), 15), \
+            "the brain-ended call's teardown was cut short: no session-end reclaim"
+        # And its claim on the box goes only at the end of that teardown (runner waited
+        # out, then the 0.3 s settle), not at the `disconnected` that cut the bring-up:
+        # a conversation on hold for the call would come back onto the STT slot early.
+        stamps = {}
+        for line in log().splitlines():
+            for key, needle in (("down", "tearing down the per-call pipeline (no model"),
+                                ("free", f"call {call.call_id}: lets the box go")):
+                if needle in line and key not in stamps:
+                    stamps[key] = _log_time(line)
+        assert set(stamps) == {"down", "free"}, stamps
+        assert stamps["free"] - stamps["down"] >= 0.25, \
+            f"the claim went {stamps['free'] - stamps['down']:.3f}s into the teardown"
+        # Then a SIGTERM straight after the next one's hangup.
+        call = await rig.gw.place_call()
+        await asyncio.wait_for(call.ended.wait(), 60)
+        assert call.ended_by == "brain", call.ended_by
+        t0 = time.monotonic()
+        p.terminate()
+        while p.poll() is None and time.monotonic() - t0 < 30:
+            await asyncio.sleep(0.05)
+        took = time.monotonic() - t0
+        assert p.poll() is not None, f"teaport-brain still running {took:.1f}s after SIGTERM"
+        assert took < 5.0, f"teaport-brain took {took:.1f}s to stop after SIGTERM"
+        # Stopped through its shutdown, not killed: uvicorn re-raises the SIGTERM it took.
+        assert p.returncode == -signal.SIGTERM, p.returncode
+        assert "Shutting down" in log(), "uvicorn's shutdown never ran"
+
 
 async def test_a_call_is_greeted_transcribed_and_answered():
     async with Rig() as rig:

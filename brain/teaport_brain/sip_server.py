@@ -107,6 +107,7 @@ from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
+from teaport_brain.tasks import cancel_and_wait, wait_ended
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
     BYTES_PER_FRAME,
@@ -404,6 +405,7 @@ class CallClaim:
         for cid in [call_id] if call_id is not None else list(self._claims):
             claim = self._claims.pop(cid, None)
             if claim is not None:
+                logger.info(f"call {cid}: lets the box go")
                 arb.ARBITER.release(claim)
 
 
@@ -538,11 +540,14 @@ async def run_connection(sock, on_ready=None):
     # The call_id is load-bearing: without it a `disconnected` cannot tell whether it
     # is about the pipeline we are actually running (see on_call_state).
     active = {"call": None}
-    # Teardowns started from inside the pipeline's own finish (see _bring_up's
-    # on_pipeline_finished). Held so the event loop keeps a strong reference until they
-    # run — a bare create_task() result may be collected mid-flight — and so the next
-    # call's bring-up can wait them out: each ends by letting go of its call's claim.
-    teardowns: set = set()
+    # Teardowns the call's own side started (end_call_from_inside): the pipeline's own
+    # finish, and a bring-up that ends its call. Held so the event loop keeps a strong
+    # reference until they run — a bare create_task() result may be collected
+    # mid-flight — and so the next call's bring-up can wait them out: each ends by
+    # letting go of its call's claim.
+    # By task, the call id each one tears down: while one runs, that call's claim is its
+    # to let go (cancel_active_call's finally), not a `disconnected`'s.
+    teardowns: dict = {}
     # A declined call the gateway answered anyway hears the busy line from a task, by
     # call id (the same strong reference). It holds no claim -- the arbiter refused it --
     # so no bring-up waits for it; its caller hanging up stops it (stop_busy_line).
@@ -558,6 +563,21 @@ async def run_connection(sock, on_ready=None):
     replayed: dict = {}
     # Said once per connection: the gateway answers calls itself (auto_answer=true).
     told = {"auto_answer": False}
+
+    def end_call_from_inside(reason: str, call_id: str) -> asyncio.Task:
+        """Tear the call down from its own side (its pipeline finished, or its bring-up
+        ends it: never confirmed, no model, STT unavailable) as a task held in
+        `teardowns`. Not inline in the bring-up: the caller's `disconnected`, a newer
+        call or the brain stopping cancels the bring-up (cancel_setup), and the teardown
+        must still run to its end -- the runner waited out, the engine's STT slot given
+        back, the reclaim -- or the next call's STT can meet the old one's slot. The next
+        bring-up waits for it (bring_up_call). A bring-up awaits it through
+        asyncio.shield: in order when nothing cuts in, and left running when the
+        bring-up is cancelled (#284 review: inline, the cancel cut it short)."""
+        t = asyncio.create_task(cancel_active_call(reason, call_id=call_id))
+        teardowns[t] = call_id
+        t.add_done_callback(lambda done: teardowns.pop(done, None))
+        return t
 
     async def cancel_active_call(reason: str, call_id: str | None = None,
                                  reclaim: bool = True):
@@ -590,14 +610,15 @@ async def run_connection(sock, on_ready=None):
                 await session.task.cancel()
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"error cancelling per-call pipeline task: {e!r}")
-            try:
-                await asyncio.wait_for(runner_task, timeout=5.0)
-            except asyncio.TimeoutError:
+            # Not wait_for + `except CancelledError: pass`: that also ate a cancellation
+            # of THIS task (the brain stopping mid-teardown), and the receive loop read
+            # on under uvicorn's shutdown (#284, tasks.py).
+            ended = await wait_ended(runner_task, timeout=5.0)
+            if isinstance(ended, asyncio.TimeoutError):
                 logger.warning("per-call pipeline runner did not finish within 5s of cancel")
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"per-call pipeline runner ended with: {e!r}")
+                ended = await cancel_and_wait(runner_task)
+            if ended is not None:
+                logger.warning(f"per-call pipeline runner ended with: {ended!r}")
             # Let the engine process the STT close and free the single slot before the
             # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
             await asyncio.sleep(0.3)
@@ -695,13 +716,10 @@ async def run_connection(sock, on_ready=None):
         setup["task"] = None
         setup["call_id"] = None
         if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"bring-up task ended with: {e!r}")
+            # A cancellation of this task while it waits is raised, not eaten (#284).
+            ended = await cancel_and_wait(task)
+            if ended is not None:
+                logger.warning(f"bring-up task ended with: {ended!r}")
 
     async def stop_busy_line(call_id=None):
         """Stop the busy line playing to call `call_id` (None: to any): its caller hung
@@ -710,8 +728,7 @@ async def run_connection(sock, on_ready=None):
         for cid in [call_id] if call_id is not None else list(busy_lines):
             task = busy_lines.pop(cid, None)
             if task is not None and not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+                await cancel_and_wait(task)
 
     async def bring_up_call(call_id, resumed: bool = False):
         """Build the per-call pipeline and greet. Runs as a TASK, never inline in the
@@ -901,10 +918,7 @@ async def run_connection(sock, on_ready=None):
             # As a TASK, not inline: this handler is awaited BY the runner task, and
             # cancel_active_call waits on that same task — inline it would wait on
             # itself and only get past on the 5s timeout.
-            t = asyncio.create_task(
-                cancel_active_call("pipeline ended under the call", call_id=call_id))
-            teardowns.add(t)
-            t.add_done_callback(teardowns.discard)
+            end_call_from_inside("pipeline ended under the call", call_id)
 
         if recording is not None:
             @session.task.event_handler("on_pipeline_finished")
@@ -923,7 +937,7 @@ async def run_connection(sock, on_ready=None):
             prepared = await ring_head_start(session, ring)
             if not await answer(ring):
                 await transport.send_control({"type": "call.hangup", "call_id": call_id})
-                await cancel_active_call("never confirmed", call_id=call_id)
+                await asyncio.shield(end_call_from_inside("never confirmed", call_id))
                 return
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
@@ -940,7 +954,7 @@ async def run_connection(sock, on_ready=None):
             t = i18n.for_espeak(getattr(session.tts, "espeak_language", None))
             await session.say_last_line(t._(NO_MODEL_CALL_TEXT), NO_MODEL_LINE_MAX_SECS)
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
-            await cancel_active_call("no model to answer", call_id=call_id)
+            await asyncio.shield(end_call_from_inside("no model to answer", call_id))
             return
         # A recorded call starts with the notice, in the call's language, before the
         # greeting -- a resumed one too: the brain that was cut off may not have
@@ -964,7 +978,7 @@ async def run_connection(sock, on_ready=None):
                         "then hanging up")
             await session.followup_gate.wait_until_delivered()
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
-            await cancel_active_call("STT unavailable", call_id=call_id)
+            await asyncio.shield(end_call_from_inside("STT unavailable", call_id))
 
     @connection.event_handler("on_call_state")
     async def on_call_state(_connection, call_id, state, replay=False):
@@ -1017,8 +1031,13 @@ async def run_connection(sock, on_ready=None):
             await cancel_setup("call disconnected during bring-up", call_id=call_id)
             await cancel_active_call("call disconnected", call_id=call_id)
             await stop_busy_line(call_id)
-            if active["call"] is None and setup["task"] is None:
-                presence.end(call_id)  # a call that never got its pipeline
+            if (active["call"] is None and setup["task"] is None
+                    and call_id not in teardowns.values()):
+                # A call that never got its pipeline. Not one whose own teardown is
+                # still running (end_call_from_inside): it lets the claim go when the
+                # runner is done and the engine's STT slot is free -- let go here, a
+                # conversation on hold for the call came back onto that slot (#284 review).
+                presence.end(call_id)
             CALL_FACE.end(call_id)  # hung up while ringing, or refused and gone
             ring = rings.get(call_id)
             if ring is not None and ring.declined:

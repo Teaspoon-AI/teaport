@@ -53,6 +53,7 @@ from teaport_brain import conversation_log, first_boot, host_context
 from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
+from teaport_brain.tasks import cancel_and_wait
 from teaport_brain import session_arbiter as arb
 from teaport_brain import thinking_sound
 from teaport_brain.talk_transport import TalkWebsocketTransport
@@ -641,11 +642,7 @@ async def _lifespan(_app):
         yield
     finally:
         for t in (lamp, watcher):
-            t.cancel()
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
+            await cancel_and_wait(t)
 
 
 app = FastAPI(lifespan=_lifespan)

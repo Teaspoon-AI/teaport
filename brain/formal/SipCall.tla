@@ -36,7 +36,11 @@
 (*   "shipped"       -- sip_server.py today: a teardown releases ITS call's *)
 (*                      claim, in a finally (a cancelled one too), and the  *)
 (*                      bring-up waits out the teardown tasks in flight     *)
-(*                      before it asks                                      *)
+(*                      before it asks. A bring-up that ends its own call   *)
+(*                      does it as one of those tasks, awaited through      *)
+(*                      asyncio.shield (end_call_from_inside, #284): a      *)
+(*                      cancel_setup ends the bring-up, not the teardown,   *)
+(*                      and a `disconnected` leaves that call's claim to it *)
 (*                                                                          *)
 (* The 2026-08 modes keep the 2026-08 gateway: it confirms by itself and    *)
 (* may confirm a second call before the first's `disconnected`. The         *)
@@ -56,6 +60,7 @@ Guarded  == MODE # "asWritten"                         \* teardown matches call_
 RingGw   == MODE \in {"heldClaim", "ownClaim", "shipped"} \* #111 ring + 0.6.0 gateway
 OwnClaim == MODE \in {"ownClaim", "shipped"}           \* end(call_id): its own claim
 ClaimFix == MODE = "shipped"                           \* + the finally + the wait
+OwnTask  == MODE = "shipped"                           \* bring-up's teardown a task (#284)
 
 VARIABLES
     \* --- the gateway
@@ -75,7 +80,8 @@ VARIABLES
     pipe,        \* calls whose pipeline is running (STT connected)
     setup,       \* setup["call_id"]: the bring-up task's call, or None
     bpc,         \* that task's pc: "none" | "new" | "settle" | "ring" | "greet" | "td"
-    td,          \* teardowns in flight: <<call, owner>>, owner "reader"|"bringup"|"task"
+    td,          \* teardowns in flight: <<call, owner>>, owner "reader"|"bringup"|"task"|
+                 \* "shielded" (a task the bring-up awaits through asyncio.shield, #284)
     ring,        \* the call in `rings`, or None
     ringAns,     \* its `answered` event
     presence,    \* heldClaim: CallClaim._claim, whose claim it holds, or None
@@ -155,6 +161,10 @@ CancelOutcomes ==
               {[keep EXCEPT !.rel = rel \cup {s},
                             !.holder = IF holder = s THEN None ELSE holder,
                             !.presence = IF presence = s THEN None ELSE presence]}
+         [] bpc = "td" /\ OwnTask ->
+              \* The bring-up awaits its teardown through asyncio.shield: the cancel
+              \* ends the bring-up; the teardown task runs on and lets the claim go.
+              {keep}
          [] bpc = "td" ->
               LET e == EndClaim(s) IN
               { \* swallowed: the teardown runs to its end
@@ -303,6 +313,7 @@ ReaderRest ==
             /\ UNCHANGED arbVars
        ELSE \* disconnected: no pipeline and no bring-up left -> presence.end(c).
             /\ IF active = None /\ setup = None
+                  /\ ~(OwnTask /\ \E t \in td : t[1] = rdCall)  \* its teardown's to let go
                THEN ApplyClaim(EndClaim(rdCall))
                ELSE UNCHANGED arbVars
             /\ ring' = IF ring = rdCall THEN None ELSE ring
@@ -330,6 +341,10 @@ TdEnd(t) ==
                                     /\ UNCHANGED <<setup, bpc>>
               [] t[2] = "bringup" -> /\ BringUpOver
                                     /\ rd' = IF rd = "bringUp" THEN "free" ELSE rd
+              [] t[2] = "shielded" /\ bpc = "td" /\ setup = c ->
+                                    \* the bring-up awaiting it carries on, and ends
+                                    /\ BringUpOver
+                                    /\ rd' = IF rd = "bringUp" THEN "free" ELSE rd
               [] OTHER            -> UNCHANGED <<rd, setup, bpc>>
     /\ UNCHANGED <<gwVars, rdKind, rdCall, rdAns, heard, active, ring, ringAns,
                    wrongTeardown, replaced, overlap>>
@@ -355,7 +370,7 @@ GrantPublish(s) ==
 \* a declined call's busy line (answer_busy, `busy_lines`) holds no claim -- the
 \* arbiter refused it -- so it is nothing SequentialClaims needs waited for, and the
 \* code does not (it once sat in `teardowns`, and the next greeting waited it out).
-DrainWait == ClaimFix /\ \E t \in td : t[2] = "task"
+DrainWait == ClaimFix /\ \E t \in td : t[2] \in {"task", "shielded"}
 
 \* The task's run up to its ask: presence.start() (the call's claim), then
 \* ARBITER.acquire. The holder is a call (the same "sip" client): REPLACED, its
@@ -398,7 +413,7 @@ BuFail ==
     /\ LET s == setup IN
          /\ hang' = hang \cup {s}
          /\ IF active = s
-            THEN /\ td' = td \cup {<<s, "bringup">>}
+            THEN /\ td' = td \cup {<<s, IF OwnTask THEN "shielded" ELSE "bringup">>}
                  /\ active' = None
                  /\ bpc' = "td"
                  /\ UNCHANGED <<setup, rd>>
