@@ -1249,6 +1249,7 @@ async def test_a_released_hold_waits_for_the_notice_and_then_for_what_it_decided
                 await p.on_speech_heard(p._watch)
                 await asyncio.sleep(0.25)
                 assert p.paused, "held: only the cap resumes"
+                p._resume_secs = 0.6                      # the window well clear of the grace
                 p.hold_resume(False)
                 await asyncio.sleep(_FINAL_GRACE + 0.05)
                 assert p.paused, "the release resumed on the grace, ahead of its close"

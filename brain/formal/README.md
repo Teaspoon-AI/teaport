@@ -2773,8 +2773,8 @@ The monitors:
 `shipped` holds every property the shipped pause holds:
 - `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 20k states. For
   the pause, that assumption is the report coming before the pauser's bound on waiting
-  for it (2 s of quiet; on the box it passed the speech end at most 1.19 s after the VAD
-  stop, over 1,009 stops).
+  for it (2.5 s of quiet; on the box the same bounds passed a sliced turn's commit at
+  most 1.98 s after it, p99 1.44 s, over 1,494 turns).
 - `ut_judge_shipped_timed`: the timers as they are, 118k states. Everything holds but
   the accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked
   there: a report later than the bound resumes the pause as the window did.
