@@ -43,7 +43,6 @@
 import asyncio
 import math
 import random
-import time
 import wave
 from itertools import accumulate
 from typing import NamedTuple
@@ -161,6 +160,13 @@ _AHEAD = int(_SR * 0.15)         # keystrokes are rendered this far ahead of the
 # The typing's level before the limiter: ~-34.8 dBFS RMS, as loud as the bed it replaced
 # (so TEAPORT_THINKING_GAIN keeps its level). Measured over 10 min of this keyboard.
 _LEVEL = 0.0405
+
+
+def _now() -> float:
+    """The bed's clock: its event loop's (time.monotonic() on asyncio's own loop). One
+    clock for the line's state and the typing's pace, so a test can run it all on
+    virtual time."""
+    return asyncio.get_running_loop().time()
 
 
 def _poisson(rng: random.Random, lam: float) -> int:
@@ -458,18 +464,23 @@ class ThinkingSound(FrameProcessor):
         # The line, as this place in the pipeline sees it: who is talking, and when
         # anyone last was (or a reply was on its way).
         self._user = self._bot = False
-        self._reply_t = None        # the open reply's LLMFullResponseStart (time.monotonic())
+        self._reply_t = None        # the open reply's LLMFullResponseStart (_now())
         self._spoke = 0.0
-        # When the typing last pushed is heard out (time.monotonic()): it is no bot
+        # When the typing last pushed is heard out (_now()): it is no bot
         # speech, but echoes on a line all the same (sip_server.HalfDuplexInputGate).
-        self.heard_until = -math.inf
+        self._heard_until = -math.inf
+
+    def heard_within(self, tail_s: float) -> bool:
+        """Whether the typing is heard now, or was within the last `tail_s` (its echo's
+        tail), on the bed's own clock."""
+        return _now() < self._heard_until + tail_s
 
     def _quiet(self) -> bool:
         """Nobody talking, no reply on its way, for the grace; and not on hold. Its own
         view of the line, not the FollowupGate's: that one is whether a run of ours may
         start (its LLM flag held up by an End held at the TTS), this one is whether
         anything is audible or about to be, from below the TTS (its start and audio)."""
-        now = time.monotonic()
+        now = _now()
         replying = self._reply_t is not None and now - self._reply_t < _REPLY_WAIT_S
         held = self._gate is not None and self._gate.held
         return (not (self._user or self._bot or replying or held or self._controlling(now))
@@ -491,7 +502,7 @@ class ThinkingSound(FrameProcessor):
         if self._task is not None:
             return
         self._heard = 0
-        self._spoke = time.monotonic()      # the consult's own turn is talking about it
+        self._spoke = _now()                # the consult's own turn is talking about it
         await self._say({"type": "typing", "on": True, "first_key_ms": round(_GRACE_S * 1000)},
                         urgent=True)
         self._task = self.create_task(self._run())
@@ -510,10 +521,9 @@ class ThinkingSound(FrameProcessor):
     async def _run(self):
         await asyncio.sleep(_GRACE_S)
         typist = _Typist(_KEYBOARD) if _LOOP is None else None
-        loop = asyncio.get_running_loop()
-        started = due = loop.time()
+        started = due = _now()
         i = 0
-        while loop.time() - started < _TYPING_MAX_S:
+        while _now() - started < _TYPING_MAX_S:
             heard = self._quiet() and self._heard * _CHUNK_MS / 1000 < _MAX_S
             chunk, pressed = None, []
             if typist is None:
@@ -537,7 +547,7 @@ class ThinkingSound(FrameProcessor):
                 # speech, so nothing waiting for the bot to finish waits on the typing.
                 await self.push_frame(OutputAudioRawFrame(chunk, _SR, 1), FrameDirection.DOWNSTREAM)
                 self._heard += 1
-                self.heard_until = time.monotonic() + _CHUNK_MS / 1000
+                self._heard_until = _now() + _CHUNK_MS / 1000
             i += 1
             # Paced on the clock, not by a sleep after each chunk: the render time
             # would add up and starve the transport, a gap in the typing. After a
@@ -545,8 +555,8 @@ class ThinkingSound(FrameProcessor):
             # queued ahead of the real reply. (One such stall: MemoryReclaim's gc, at
             # most once a minute while the line is quiet, the typing being no speech
             # to the gate -- ~0.2 s on the box: a pause a typist makes anyway.)
-            due = max(due + _CHUNK_MS / 1000, loop.time())
-            await asyncio.sleep(due - loop.time())
+            due = max(due + _CHUNK_MS / 1000, _now())
+            await asyncio.sleep(due - _now())
         self._task = None
         self._consults.clear()
         await self._say({"type": "typing", "on": False, "done": False}, urgent=True)
@@ -554,7 +564,7 @@ class ThinkingSound(FrameProcessor):
 
     def _track_line(self, frame: Frame) -> None:
         """Who is talking, as the frames passing here say."""
-        now = time.monotonic()
+        now = _now()
         if isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
             self._user = isinstance(frame, VADUserStartedSpeakingFrame)
         elif isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)):
@@ -580,7 +590,7 @@ class ThinkingSound(FrameProcessor):
     def _track_controls(self, frame: Frame) -> None:
         """The control calls waiting (_CONTROL), whatever the consult mode."""
         if isinstance(frame, FunctionCallsStartedFrame):
-            now = time.monotonic()
+            now = _now()
             for call in frame.function_calls or []:
                 if getattr(call, "function_name", None) in _CONTROL:
                     self._controls[getattr(call, "tool_call_id", None)] = now
