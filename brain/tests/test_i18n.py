@@ -55,6 +55,7 @@ DYNAMIC = {
         "t._(self._why)",                    # status.json's reason: N_() in wifi.py / wifi_setup.py
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
+        "self.t._(ONLINE_NOW_TEXT)",
     },
 }
 

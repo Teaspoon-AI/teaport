@@ -62,7 +62,7 @@ from teaport_brain import display, i18n
 from teaport_brain.conversation_log import quoted
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS
-from teaport_brain.wifi_setup import PAGE_FAILED
+from teaport_brain.wifi_setup import NO_WIFI_DEVICE, PAGE_FAILED
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
 
 UNIT = "teaport-wifi-setup"
@@ -108,6 +108,8 @@ WELCOME_TEXT = N_("Hi, I'm Teaport. Let's get me online. Give me a moment to loo
 # After a first-boot setup that left the box offline: it does not start again by itself
 # until the next boot. The quoted words are the start phrase (tests/test_i18n.py).
 AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
+# The first-boot setup, left because the box came online by another way (_leave_online).
+ONLINE_NOW_TEXT = N_("I'm online now, so I've left setup mode.")
 # While setup runs, the client hears it is under way (_keep_awake): the call id it is
 # told by, and how long that holds unless it is said again.
 WORKING_ID = "wifi-setup"
@@ -157,6 +159,12 @@ _TASHKEEL = re.compile("[ً-ٰٟـ]")
 _QUESTION = re.compile("[?？؟]")
 # Scripts written without spaces between words (Han, kana): sized by characters.
 _UNSPACED = re.compile("[぀-ヿ㐀-䶿一-鿿豈-﫿]")
+
+
+def _first_boot():
+    """first_boot.py, imported where it is used: it imports this module."""
+    from teaport_brain import first_boot
+    return first_boot
 
 
 def heard(meaning: str, text: str, t: i18n.T) -> bool:
@@ -395,13 +403,25 @@ class WifiSetupVoice(FrameProcessor):
         await self._shielded(self._start(welcome=True))
         return True
 
-    async def _say_end(self, line: str) -> None:
-        """A setup's last line. After the first-boot setup, when the box is still offline,
-        how to start it again: it does not start again by itself before the next boot."""
-        if self._first_boot:
-            self._first_boot = False
+    async def _say_end(self, line: str, retry: bool = True) -> None:
+        """A setup's last line. After the first-boot setup, while the box is still new
+        (never online: it is offline), how to start it again -- it does not start again by
+        itself before the next boot. Not when trying again cannot help (`retry` False: no
+        Wi-Fi device, the unit would not start) or the line says so already."""
+        if self._first_boot and retry and _first_boot().is_new():
             line += " " + self.t._(AGAIN_TEXT)
+        self._first_boot = False
         await self.say(line)
+
+    async def _leave_online(self) -> None:
+        """The first-boot setup, and the box came online meanwhile (Ethernet plugged in, a
+        network back: first_boot's watcher saw it): setup mode is left at once -- the
+        setup network would only keep the box off a network it no longer needs."""
+        logger.info("wifi setup: the box is online now — leaving the first-boot setup")
+        await self._stop_unit()
+        self.state, self._first_boot = "idle", False
+        self._ended(f"the box came online by itself; {_PUT_BACK}", online=True)
+        await self.say(self.t._(ONLINE_NOW_TEXT))
 
     async def _keep_awake(self, on: bool) -> None:
         """Tell the client that setup is under way (or over), the way an answer still owed
@@ -430,6 +450,9 @@ class WifiSetupVoice(FrameProcessor):
         # By content, not by clock: the clock jumps when the box comes online (NTP).
         old = self._read_file()
         self._before = (old.get("run_id"), old.get("time")) if old else None
+        # Any setup spends this boot's first-boot try: one the owner started is not
+        # followed by one nobody asked for.
+        _first_boot().setup_started()
         await self.say(self.t._(WELCOME_TEXT) if welcome
                        else self.t._("Okay. Give me a moment to look for networks."))
         rc, err = await self._run("restart", UNIT)
@@ -437,7 +460,7 @@ class WifiSetupVoice(FrameProcessor):
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")
             self.state = "idle"
             self._ended("it could not start; nothing changed.")
-            await self._say_end(self.t._("Sorry, I couldn't go into setup mode."))
+            await self._say_end(self.t._("Sorry, I couldn't go into setup mode."), retry=False)
             return
         logger.info("wifi setup: started" + (" (first boot)" if welcome else ""))
         await self._keep_awake(True)
@@ -511,6 +534,13 @@ class WifiSetupVoice(FrameProcessor):
             now = self._clock()
             if now - self._kept >= KEEP_AWAKE_SECS / 3:
                 await self._keep_awake(True)
+            # The first-boot setup, and the box is online by another way meanwhile -- not
+            # while it joins the network picked on the phone: that is this setup's own
+            # success, which "connected" announces.
+            if (self._first_boot and self._last.get("phase") in (None, "ap_up", "failed")
+                    and not _first_boot().is_new()):
+                await self._leave_online()
+                return
             if status is not None:
                 seen = True
                 if self._news(status):
@@ -530,7 +560,8 @@ class WifiSetupVoice(FrameProcessor):
                 self.state = "idle"
                 self._ended("it did not start; nothing changed.")
                 await self._say_end(
-                    self.t._("I couldn't go into setup mode. Please try again in a moment."))
+                    self.t._("I couldn't go into setup mode. Please try again in a moment."),
+                    retry=False)  # it says how already
                 return
             if now - started > DEADLINE_SECS:
                 logger.warning("wifi setup: still running past the unit's own hard stop")
@@ -609,8 +640,7 @@ class WifiSetupVoice(FrameProcessor):
                          if target else "connected") + "; the box is online.", online=True)
             # Online once: the box is no longer new (first_boot.py).
             self._first_boot = False
-            from teaport_brain import first_boot
-            first_boot.reached_online("Wi-Fi setup connected")
+            _first_boot().reached_online("Wi-Fi setup connected")
             await self.say(t._("I'm connected to {network}, and I'm online again.")
                            .format(network=network))
         elif phase == "timeout":
@@ -633,10 +663,12 @@ class WifiSetupVoice(FrameProcessor):
             if status.get("reason") == PAGE_FAILED:
                 # Only ever before setup mode, and nothing a user can act on but a retry.
                 await self._say_end(
-                    t._("I couldn't go into setup mode. Please try again in a moment."))
+                    t._("I couldn't go into setup mode. Please try again in a moment."),
+                    retry=False)  # it says how already
             else:
                 await self._say_end(self._stopped_line(
-                    t._(status.get("reason") or N_("something went wrong"))))
+                    t._(status.get("reason") or N_("something went wrong"))),
+                    retry=status.get("reason") != NO_WIFI_DEVICE)
 
     def _put_back_line(self, cancelled: bool) -> str:
         """A stop -- the user's spoken cancel, or from outside (the Settings page, a
@@ -769,11 +801,11 @@ async def _output(*cmd: str, timeout: float) -> str | None:
             await p.wait()
 
 
-async def connectivity() -> str | None:
+async def connectivity(timeout: float | None = None) -> str | None:
     """NetworkManager's connectivity, freshly checked: "full", or what it says instead
     ("limited", "portal", "none", "unknown"; "" when the check could not be run or took
-    longer than ONLINE_CHECK_SECS). None when NM has no connectivity check configured, so
-    nobody can tell (first_boot.py does nothing then).
+    longer than `timeout`, by default ONLINE_CHECK_SECS). None when NM has no connectivity
+    check configured, so nobody can tell (first_boot.py does nothing then).
 
     The check must be configured (Ubuntu's network-manager-config-connectivity-ubuntu,
     which install.sh puts there): without it NM says "full" whenever there is a default
@@ -786,7 +818,7 @@ async def connectivity() -> str | None:
     if enabled != "b true":
         return None
     return await _output("nmcli", "networking", "connectivity", "check",
-                         timeout=ONLINE_CHECK_SECS) or ""
+                         timeout=ONLINE_CHECK_SECS if timeout is None else timeout) or ""
 
 
 async def _box_online() -> bool:

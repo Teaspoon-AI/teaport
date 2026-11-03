@@ -338,7 +338,10 @@ msgstr "我现在准备好了。请和我开始一段新的对话。"
 
 # The first-boot setup (wifi_voice.py, first_boot.py, #278).
 msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
-msgstr "你好，我是 Teaport。我们来让我联网吧。稍等，我正在搜索网络。"
+msgstr "你好，我是 Teaport。我们来让我联网吧。稍等一下，我来找找附近的网络。"
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "你随时可以说“设置无线网”再试一次。"
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "我已经能上网了，所以退出了配网模式。"

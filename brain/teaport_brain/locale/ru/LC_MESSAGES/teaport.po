@@ -346,7 +346,10 @@ msgstr "Теперь я готов. Начните, пожалуйста, нов
 
 # The first-boot setup (wifi_voice.py, first_boot.py, #278).
 msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
-msgstr "Привет, я Teaport. Давайте подключим меня к интернету. Секунду, я ищу сети."
+msgstr "Привет, я Teaport. Давайте подключим меня к интернету. Минутку, поищу доступные сети."
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "Чтобы попробовать ещё раз, в любой момент скажите «настрой вай-фай»."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Интернет появился, поэтому режим подключения выключен."

@@ -342,3 +342,6 @@ msgstr "Hola, soy Teaport. Vamos a conectarme a internet. Dame un momento para b
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "Puedes decir «configura el wifi» en cualquier momento para volver a intentarlo."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Ya tengo internet, así que salí del modo de configuración."

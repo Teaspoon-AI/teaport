@@ -338,7 +338,10 @@ msgstr "Ik ben nu klaar. Begin een nieuw gesprek met me."
 
 # The first-boot setup (wifi_voice.py, first_boot.py, #278).
 msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
-msgstr "Hallo, ik ben Teaport. Laten we me online krijgen. Even geduld, ik zoek naar netwerken."
+msgstr "Hallo, ik ben Teaport. Laten we me online krijgen. Momentje, ik zoek naar netwerken."
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "Je kunt altijd ‘stel de wifi in’ zeggen om het opnieuw te proberen."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "Ik ben nu online, dus ik heb de verbindingsmodus verlaten."

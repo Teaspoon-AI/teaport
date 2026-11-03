@@ -341,12 +341,7 @@ async def run_relay_bot(websocket: WebSocket):
     session_holder: dict = {}
 
     def asleep() -> bool:
-        if gate is not None:
-            return gate.asleep
-        if not room:
-            return False
-        s = session_holder.get("s")
-        return s is None or room_idle(s.followup_gate, keepalive)
+        return session_asleep(session_holder.get("s"), gate, room=room, keepalive=keepalive)
 
     # A call during this conversation asks it first (session_arbiter PROMPT, issue #111):
     # the session's CallPrompt puts the question and, on a yes, the hold. A session
@@ -550,6 +545,25 @@ async def run_relay_bot(websocket: WebSocket):
         arb.ARBITER.release(claim)
         if gate is not None:
             gate.ended()  # the mic conversation, kept for the next wake (wake_gate.py)
+
+
+def session_asleep(session, gate, *, room: bool, keepalive: float) -> bool:
+    """Does this /talk session count as asleep for the session arbiter (the claim's
+    asleep): a wake-word room per its gate, a room without wake words while nobody uses
+    it (room_idle), a Talk session never.
+
+    A room in setup mode -- asked or begun, by voice or a new box by itself (first_boot)
+    -- is live, not a room nobody uses: a Talk client is refused as by any live
+    conversation, and a call is put to it as to one (asked where it can be, else the
+    caller hears busy). Asleep, the newcomer would end it without a word, its setup
+    network up with nobody following it."""
+    if room and getattr(getattr(session, "wifi", None), "state", "idle") != "idle":
+        return False
+    if gate is not None:
+        return gate.asleep
+    if not room:
+        return False
+    return session is None or room_idle(session.followup_gate, keepalive)
 
 
 def room_idle(followup_gate, keepalive: float) -> bool:

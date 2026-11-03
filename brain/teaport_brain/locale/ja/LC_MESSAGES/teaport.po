@@ -342,3 +342,6 @@ msgstr "こんにちは、Teaport です。オンラインにしましょう。�
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "もう一度試すときは、いつでも「ワイファイを設定して」と言ってください。"
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "オンラインになったので、セットアップモードを終了しました。"

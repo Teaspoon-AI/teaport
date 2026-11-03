@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime")
 from pinned_pipecat import require_pinned  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 
@@ -22,7 +23,7 @@ from pipecat.frames.frames import OutputTransportMessageUrgentFrame  # noqa: E40
 
 import test_wifi_voice as wvt  # noqa: E402
 from teaport_brain import first_boot, i18n, wifi_voice as wv  # noqa: E402
-from teaport_brain.wake_gate import WakeGate  # noqa: E402
+from teaport_brain.wake_gate import MicConversation, WakeGate  # noqa: E402
 
 EN = i18n.get("en")
 
@@ -36,14 +37,20 @@ def box(monkeypatch):
     monkeypatch.setattr(first_boot, "_BOOT_ID", boot)
     monkeypatch.setattr(first_boot, "_UPTIME", up)
     monkeypatch.setattr(first_boot, "ENABLED", True)
+    monkeypatch.setattr(first_boot, "CONFIRM_SECS", 0.01)
+    monkeypatch.setattr(first_boot, "_tried_here", False)
     monkeypatch.setattr(wv, "POLL_SECS", 0.01)
     monkeypatch.setattr(wv, "LIVENESS_SECS", 0.05)
 
-    def reboot(boot_id="boot-1", uptime=120.0):
+    boots = iter(range(1, 1000))
+
+    def reboot(boot_id=None, uptime=120.0):
+        """A new boot: its id and uptime, and a brain process that has tried nothing."""
         with open(boot, "w") as f:
-            f.write(boot_id + "\n")
+            f.write((boot_id or f"boot-{next(boots)}") + "\n")
         with open(up, "w") as f:
             f.write(f"{uptime} 0.0\n")
+        first_boot._tried_here = False
     reboot()
     return SimpleNamespace(reboot=reboot, root=root)
 
@@ -61,15 +68,18 @@ def _room(asleep=True):
     gate, its task."""
     path = wvt._path()
     session = SimpleNamespace(wifi=wvt.Voice(path), task=_Task(),
-                              wake_gate=WakeGate(["hey teaport"], asleep=asleep))
+                              wake_gate=WakeGate(["hey teaport"], asleep=asleep,
+                                                 store=MicConversation()))
     return session, path
 
 
-def _online(state):
-    async def check():
+def _online(*states):
+    """A connectivity check answering `states` in turn (the last one from then on)."""
+    async def check(timeout=None):
         check.asked += 1
-        return state
-    check.asked = 0
+        check.timeouts.append(timeout)
+        return states[min(check.asked, len(states)) - 1]
+    check.asked, check.timeouts = 0, []
     return check
 
 
@@ -78,14 +88,15 @@ def _messages(voice, kind):
             and f.message.get("type") == kind]
 
 
-async def _run(session, state):
+async def _run(session, *states):
     """first_boot.run with the connectivity check faked."""
     orig = wv.connectivity
-    wv.connectivity = _online(state)
+    wv.connectivity = check = _online(*states)
     try:
         return await first_boot.run(session)
     finally:
         wv.connectivity = orig
+        _run.check = check
 
 
 # ---- the four cases ---------------------------------------------------------------------
@@ -212,7 +223,7 @@ def test_it_waits_out_the_boot_grace_period_first(box):
         async def sleep(secs):
             slept.append(secs)
         assert await first_boot.due(connectivity=_online("none"), sleep=sleep)
-        assert slept == [pytest.approx(first_boot.GRACE_SECS - 10.0)], slept
+        assert slept[0] == pytest.approx(first_boot.GRACE_SECS - 10.0), slept
     asyncio.run(run())
 
 
@@ -271,6 +282,194 @@ def test_a_setup_already_under_way_is_left_alone(box):
         assert not await _run(session, "none")
         assert v.state == "confirm" and EN._(wv.WELCOME_TEXT) not in v.said
     asyncio.run(run())
+
+
+# ---- review round: no false offline, no loop, no stale persona, no silent end ------------
+
+def test_a_slow_or_passing_answer_is_not_offline(box):
+    """An online box must never be taken off its network for a check that timed out ("")
+    or one moment of "limited": offline is two answers saying so."""
+    async def run():
+        for states in (("",), ("", "limited", "")):
+            box.reboot()
+            session, _ = _room()
+            assert not await _run(session, *states), states
+            assert session.wifi.said == [] and session.wifi.calls == [], states
+            # Given the long timeout, not the phrase's short one; read again, up to a limit.
+            assert set(_run.check.timeouts) == {first_boot.CHECK_SECS}, _run.check.timeouts
+            assert _run.check.asked == first_boot.READINGS
+            assert not first_boot.tried_this_boot(), "an unknown answer spent the boot's try"
+        # Two answers that say so, with a timeout between them: offline.
+        session, _ = _room()
+        assert await _run(session, "limited", "", "none")
+        await session.wifi._stop_following()
+        # A passing "limited", or timeouts, then full: online, the marker, nothing said.
+        for states in (("limited", "full"), ("", "", "full")):
+            os.remove(os.path.join(first_boot.state_dir(), "setup-done")) \
+                if not first_boot.is_new() else None
+            box.reboot()
+            session, _ = _room()
+            assert not await _run(session, *states), states
+            assert session.wifi.said == [] and not first_boot.is_new(), states
+    asyncio.run(run())
+
+
+def test_once_a_boot_holds_when_the_try_cannot_be_written(box, monkeypatch):
+    """No boot id to compare, and setup-tried not writable: the process still remembers,
+    so a wake-word room opening a session after every sleep is not set up on a loop."""
+    def refuse(*_a, **_k):
+        raise OSError("read-only state directory")
+
+    async def run():
+        with open(first_boot._BOOT_ID, "w") as f:
+            f.write("")
+        monkeypatch.setattr(first_boot, "_write", refuse)
+        first, _ = _room()
+        assert await _run(first, "none")
+        await first.wifi._stop_following()
+        second, _ = _room()
+        assert not await _run(second, "none")
+        assert second.wifi.said == []
+    asyncio.run(run())
+
+
+def test_a_setup_the_owner_started_spends_the_boots_try(box):
+    """Started by voice during the grace period and cancelled: no setup nobody asked for
+    at the end of it."""
+    async def run():
+        session, _ = _room(asleep=False)
+        v = session.wifi
+        assert await v._heard("set up wifi") and await v._heard("yes")
+        await v._cancel()
+        assert first_boot.tried_this_boot()
+        assert not v.said[-1].endswith(EN._(wv.AGAIN_TEXT)), "a first-boot line on the owner's"
+        later, _ = _room()
+        assert not await _run(later, "none")
+        assert later.wifi.said == []
+    asyncio.run(run())
+
+
+def test_the_retry_line_only_where_a_retry_can_help(box):
+    async def run():
+        cases = [
+            ({"phase": "error", "reason": wv.NO_WIFI_DEVICE}, False),     # nothing to retry
+            ({"phase": "error", "reason": wv.PAGE_FAILED}, False),        # says so already
+            ({"phase": "error", "reason": "the setup network would not start"}, True),
+        ]
+        for status, again in cases:
+            box.reboot()
+            session, path = _room()
+            assert await _run(session, "none")
+            wvt._write(path, **status)
+            await asyncio.sleep(0.1)
+            v = session.wifi
+            assert v.state == "idle", (status, v.said)
+            assert v.said[-1].endswith(EN._(wv.AGAIN_TEXT)) == again, (status, v.said[-1])
+            assert v.said[-1].count(EN._("try again")) <= 1, v.said[-1]
+        # Set up meanwhile (online once): no "say set up Wi-Fi to try again".
+        box.reboot()
+        session, path = _room()
+        assert await _run(session, "none")
+        first_boot.reached_online("synthetic")
+        v = session.wifi
+        v._first_boot, v.state = True, "running"
+        await v._say_end("Synthetic end line.")
+        assert v.said[-1] == "Synthetic end line."
+        await v._stop_following()
+    asyncio.run(run())
+
+
+def test_a_first_boot_setup_leaves_setup_mode_when_the_box_comes_online(box):
+    """Ethernet plugged in while the setup network is up: the watcher writes the marker,
+    and the setup stops itself -- not while it joins the network picked on the phone."""
+    async def run():
+        session, path = _room()
+        assert await _run(session, "none")
+        v = session.wifi
+        wvt._write(path, phase="ap_up", screen=True, qr=True, **wvt.DETAILS)
+        await asyncio.sleep(0.1)
+        first_boot.reached_online("synthetic: Ethernet")
+        await asyncio.sleep(0.1)
+        assert v.state == "idle" and v.calls == ["restart", "stop"], (v.state, v.calls)
+        assert v.said[-1] == EN._(wv.ONLINE_NOW_TEXT), v.said
+        assert _messages(v, "working")[-1].get("done")
+        # Joining: the box online is the setup's own doing; it carries on.
+        box.reboot()
+        os.remove(os.path.join(first_boot.state_dir(), "setup-done"))
+        session, path = _room()
+        assert await _run(session, "none")
+        v = session.wifi
+        wvt._write(path, phase="joining", target="Synthetic Net", **wvt.DETAILS)
+        await asyncio.sleep(0.1)
+        first_boot.reached_online("synthetic: joined")
+        await asyncio.sleep(0.1)
+        assert v.state == "running" and v.calls == ["restart"], (v.state, v.calls)
+        await v._stop_following()
+    asyncio.run(run())
+
+
+def test_the_first_boot_wake_is_a_wake(box):
+    """The same wake as a wake word's (WakeGate.wake): the voice context asked again, a
+    recent conversation restored -- with no greeting cue: the welcome is the greeting."""
+    async def run():
+        session, _ = _room(asleep=True)
+        gate = session.wake_gate
+        asked = []
+
+        async def refresh():
+            asked.append(True)
+        gate.refresh = refresh
+        gate.store.save([{"role": "user", "content": "synthetic earlier words"}])
+        gate.context = SimpleNamespace(added=[], add_messages=lambda m: gate.context.added.extend(m),
+                                       add_message=lambda m: gate.context.added.append(m))
+        assert await _run(session, "none")
+        assert asked == [True] and gate.refresh is None
+        assert gate.context.added == [{"role": "user", "content": "synthetic earlier words"}]
+        woke = [f.message for f in session.task.queued if hasattr(f, "message")]
+        assert woke[0]["type"] == "wake" and woke[0]["greeted"] is False, woke
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_the_watcher_gives_up_without_a_connectivity_check(box):
+    async def run():
+        check = _online(None)
+        await asyncio.wait_for(first_boot.watch(connectivity=check), 5)
+        assert check.asked == 1 and first_boot.is_new()
+    asyncio.run(run())
+
+
+def test_a_failure_in_the_unawaited_task_is_logged_not_lost(box):
+    from loguru import logger
+    seen = []
+    sink = logger.add(lambda m: seen.append(m.record["message"]), level="ERROR")
+
+    async def run():
+        session, _ = _room()
+
+        async def broken():
+            raise RuntimeError("synthetic failure")
+        session.wifi.begin_first_boot = broken
+        assert await _run(session, "none") is False
+    try:
+        asyncio.run(run())
+    finally:
+        logger.remove(sink)
+    assert any("could not go into setup mode" in m for m in seen), seen
+
+
+def test_a_room_in_setup_mode_is_live_for_the_arbiter():
+    """While Wi-Fi setup asks or runs, the room is no room nobody uses: a newcomer is
+    refused or asks, as for a conversation, and does not end it without a word."""
+    from teaport_brain import gateway_server as gs
+    idle_gate = SimpleNamespace(user_heard=False)
+    for state, gate, asleep in (("idle", None, True), ("running", None, False),
+                                ("confirm", None, False),
+                                ("idle", SimpleNamespace(asleep=True), True),
+                                ("running", SimpleNamespace(asleep=True), False)):
+        s = SimpleNamespace(wifi=SimpleNamespace(state=state), followup_gate=idle_gate)
+        assert gs.session_asleep(s, gate, room=True, keepalive=45) is asleep, (state, gate)
+    assert not gs.session_asleep(None, None, room=False, keepalive=45)
 
 
 def test_the_typing_bed_leaves_setups_working_message_alone():

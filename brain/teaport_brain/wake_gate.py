@@ -150,6 +150,17 @@ class WakeGate:
                 self._carry = (tail, self._clock())
             return None
         phrase, rest = found
+        await self.wake(push, phrase, run_greeting=not rest)
+        return rest or None
+
+    async def wake(self, push, phrase: str, *, greet: bool = True,
+                   run_greeting: bool = True) -> None:
+        """Wake the session: a wake phrase heard (final), or the box waking itself (a new
+        box going into setup mode, first_boot.py, with `greet` False: its welcome is the
+        greeting). The voice context is asked again, a recent conversation restored, and
+        the client told ({"type": "wake"}); a new conversation is greeted unless `greet`
+        is False -- its cue goes into the context, and with `run_greeting` the reply is
+        asked for now (not when words follow the phrase: they are the turn)."""
         self.asleep = False
         self.woke = True
         refresh, self.refresh = self.refresh, None
@@ -165,7 +176,7 @@ class WakeGate:
             self.context.add_messages(restored)
             if self.owed is not None:
                 self.owed.restore(self.store.records)
-        greet = not restored
+        greet = greet and not restored
         logger.info(f'wake word "{phrase}" heard — '
                     + (f"continuing the conversation ({len(restored)} messages)" if restored
                        else "a new conversation"))
@@ -174,9 +185,8 @@ class WakeGate:
                      "resumed": bool(restored)}))
         if greet and self.greeting and self.context is not None:
             self.context.add_message({"role": "user", "content": self.greeting})
-            if not rest:
+            if run_greeting:
                 await push(LLMRunFrame())
-        return rest or None
 
     def ended(self) -> None:
         """The session is over: what it said is the mic conversation, to be continued."""

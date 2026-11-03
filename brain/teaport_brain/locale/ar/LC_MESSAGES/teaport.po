@@ -349,7 +349,10 @@ msgstr "أنا جاهز الآن. ابدأ محادثة جديدة معي من �
 
 # The first-boot setup (wifi_voice.py, first_boot.py, #278).
 msgid "Hi, I'm Teaport. Let's get me online. Give me a moment to look for networks."
-msgstr "مرحبًا، أنا Teaport. لنوصلني بالإنترنت. لحظة من فضلك، أبحث عن الشبكات."
+msgstr "مرحبًا، أنا Teaport. لنوصلني بالإنترنت. لحظة واحدة، سأبحث عن الشبكات المتاحة."
 
 msgid "You can say \"set up Wi-Fi\" any time to try again."
 msgstr "يمكنك قول «إعداد الواي فاي» في أي وقت لإعادة المحاولة."
+
+msgid "I'm online now, so I've left setup mode."
+msgstr "أصبحتُ متصلًا بالإنترنت الآن، لذا خرجتُ من وضع التوصيل."
