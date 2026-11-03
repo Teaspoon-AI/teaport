@@ -216,7 +216,7 @@ class HalfDuplexInputGate(FrameProcessor):
 
     def _typing_heard(self) -> bool:
         bed = self.thinking_sound
-        return bed is not None and time.monotonic() < bed.heard_until + self._tail_s
+        return bed is not None and bed.heard_within(self._tail_s)
 
     async def _unmute_after_tail(self):
         await asyncio.sleep(self._tail_s)
