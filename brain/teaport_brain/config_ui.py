@@ -14,7 +14,15 @@ runs, this is a static file and a few file reads.
 
 Auth is the same shared secret /talk uses: GATEWAY_TOKEN, as a bearer header
 or ?token=. Unset means open, exactly like /talk, and the brain already warns
-about that at startup.
+about that at startup. On the front door the owner's phone gets in without it: the
+routes are mounted again under /settings (gateway_server), and a Settings session
+from "open my settings" stands in for the token there (settings_access.py, #279).
+
+Saving LLM_API_KEY checks the key with the provider first (ai_account.check_key, the
+one way every page takes a key): one that is refused or cannot be checked is not saved
+unless the save says so again (force_key), and the answer says why. GET /api/account is
+the owner's "AI account" step: whether a key is set, and its words in the phone's
+language.
 
 What the routes know comes from config_schema.toml (types, bounds, tiers,
 which file, which unit) — nothing here names a setting. Secrets are never
@@ -51,7 +59,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
-from teaport_brain import config_schema, settings
+from teaport_brain.i18n import N_
+
+from teaport_brain import ai_account, config_schema, i18n, settings, settings_access
 
 ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts (install.sh
@@ -99,6 +109,14 @@ def token_matches(got: str | None, want: str | None) -> bool:
 
 
 def _authorize(request: Request) -> None:
+    url = getattr(request, "url", None)  # a bare stand-in (a test's) has none
+    if getattr(url, "path", "").startswith(settings_access.PREFIX):
+        # The front door's mount (gateway_server): the owner's Settings session and
+        # nothing else, whatever the token -- an unset token opens the LAN port, never
+        # the front door.
+        if not settings_access.authorized(request):
+            raise HTTPException(status_code=401, detail="no Settings session")
+        return
     want = _token()
     if not want:
         return
@@ -585,6 +603,20 @@ async def put_config(request: Request):
     failed = check_constraints(rows, merged, touched=set(env_updates))
     if failed and not body.get("force"):
         return JSONResponse(status_code=400, content={"constraints": failed})
+    if "LLM_API_KEY" in secret_updates:
+        # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
+        # saving the file would change nothing, so nothing is saved.
+        if ai_account.shadowed(parse_env(current)) == ai_account.ELSEWHERE:
+            check = ai_account.Check(ai_account.REFUSED, ai_account.SET_ELSEWHERE)
+            return JSONResponse(status_code=400,
+                                content={"key_check": check.public(_reader(request))})
+        # Checked against the endpoint it will be used with: this save's, else the file's.
+        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"],
+                                        merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"))
+        logger.info(f"config: the new LLM key: {check.state}")
+        if check.state != ai_account.WORKS and not body.get("force_key"):
+            return JSONResponse(status_code=400,
+                                content={"key_check": check.public(_reader(request))})
 
     if env_updates:
         new_text = render_env(current, env_updates)
@@ -593,22 +625,63 @@ async def put_config(request: Request):
             logger.info(f"config: {STORE_FILES[store]} updated — {', '.join(sorted(env_updates))}")
     for name, value in secret_updates.items():
         spath = os.path.expanduser(rows[name]["file"])
-        await asyncio.to_thread(_write_secret, spath, value)
+        await asyncio.to_thread(settings.write_secret, spath, value)
         logger.info(f"config: secret {name} written to {spath}")
 
+    if "LLM_API_KEY" in superseded:
+        ai_account.forget_env_copy()  # this brain reads the new file from the next session
     if superseded:
         logger.info(f"config: {STORE_FILES[store]} copy of {', '.join(superseded)} dropped — the file wins now")
     return {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
             "secrets": sorted(secret_updates), "superseded": superseded, "warnings": failed}
 
 
-def _write_secret(path: str, value: str) -> None:
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(value + "\n")
-    os.replace(tmp, path)
+def _reader(request: Request) -> i18n.T:
+    """The language of whoever reads the answer: their browser's."""
+    return i18n.for_accept_language(request.headers.get("accept-language"))
+
+
+# The key check (ai_account.check_key); replaced in tests: none talks to a provider.
+check_key = ai_account.check_key
+
+# The owner's "AI account" step, in the reader's language (GET /api/account).
+ACCOUNT_TEXT = {
+    "settings": N_("Settings"),
+    "title": N_("AI account"),
+    "intro": N_("Teaport uses an OpenRouter account for its answers. To use your own, "
+                "paste a key from your OpenRouter account."),
+    "connected": N_("An account is connected."),
+    "none": N_("No account is connected yet."),
+    "key": N_("OpenRouter key"),
+    "save": N_("Test and save"),
+    "checking": N_("Checking the key…"),
+    "works": N_("The key works, and it's saved. Teaport uses it from your next "
+                "conversation."),
+    "refused": N_("This key didn't work: {reason}."),
+    "unknown": N_("Teaport couldn't check this key: {reason}."),
+    "force": N_("Save anyway"),
+    "advanced": N_("Show advanced"),
+    "trust": N_("If your phone warns that this page is not private, here is how to trust "
+                "Teaport."),
+}
+
+
+@router.get("/api/account")
+async def account(request: Request):
+    """The owner's AI account step: whether it is offered here (the box's endpoint is
+    OpenRouter's: OpenRouter keys only, #283), whether a key is set, and the step's
+    words. The key itself is never returned."""
+    _authorize(request)
+    t = _reader(request)
+    rows = _rows()
+    text = await asyncio.to_thread(_read_text, _store_path("brain_env"))
+    stored = parse_env(text or "")
+    base = stored.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
+    return {"offered": ai_account.is_openrouter(base),
+            "key_set": _secret_is_set(rows["LLM_API_KEY"], stored),
+            "trusted_cert": settings_access.pairing.TRUSTED_CERT,
+            "lang": t.lang.replace("_", "-"), "dir": t.dir,
+            "text": {k: t._(v) for k, v in ACCOUNT_TEXT.items()}}
 
 
 @router.post("/api/restart")

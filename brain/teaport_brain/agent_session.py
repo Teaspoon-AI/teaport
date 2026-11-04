@@ -100,7 +100,9 @@ from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.run_control import RunControlClaims
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords
-from teaport_brain.wifi_voice import WifiSetupVoice
+from teaport_brain.settings_access import SettingsPhrase
+from teaport_brain import settings_access
+from teaport_brain.wifi_voice import PhraseVoice, WifiSetupVoice
 from teaport_brain.pair_device import SessionPairing
 from teaport_brain.tools import (
     AGENT_FIRST,
@@ -827,9 +829,19 @@ def build_agent_session(transport, *, voice: str | None = None,
     # client, the unit installed). It also answers the spoken phrase with no LLM --
     # online too when there is none (wifi_voice.py).
     # It speaks the voice's language, read live (a switch_voice switches it too).
-    wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
-                           model=llm is not None)
+    # "open my settings" (settings_access.py, #279): the owner's surfaces only -- the room
+    # and Talk, not a bridge relaying someone far away, never a phone call -- and only
+    # where the front door is known. With or without a model.
+    settings_phrase = (SettingsPhrase() if front_end in ("talk", "room") and via is None
+                       and settings_access.heard_here() else None)
+    voice_lang = lambda: getattr(tts, "espeak_language", "en-us")  # noqa: E731
+    wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None,
+                           phrases=[settings_phrase] if settings_phrase else ())
             if any(t.name == "wifi_setup" for t in session_tools) else None)
+    # The session's fixed phrases, one processor (wifi_voice.PhraseVoice): Wi-Fi setup's
+    # where it is on, else one for "open my settings" alone.
+    phrases = wifi or (PhraseVoice(lang_fn=voice_lang, phrases=[settings_phrase])
+                       if settings_phrase else None)
     # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
     # that tool is active (switched on, a gateway, the room or a Talk session) and a model
     # can call it.
@@ -840,14 +852,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     # once the gate exists) -- go on emptied, and this ends the turn they opened
     # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
     # dead).
-    taken_closer = TakenTurnCloser() if wifi is not None or run_control else None
+    taken_closer = TakenTurnCloser() if phrases is not None or run_control else None
     # Where the caller's finals went when not to the model -- taken (Wi-Fi setup, run
     # control), judged a backchannel, dropped by the barge-in guard: what a sliced turn's
     # correction reads when its words are nowhere (turn_text.py), and what stands the
     # speculation asked on them down (below). Only where the setting asks for slices.
     taken_words = TakenWords() if stt.slices_asked else None
-    if wifi is not None:
-        wifi.taken_words = taken_words
+    if phrases is not None:
+        phrases.taken_words = taken_words
     moods = mood_tag.ENABLED and "mood" in client_features
 
     def compose(host) -> str:
@@ -1179,7 +1191,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     # awake), else as any session ends. (A phone call never gets this far: sip_server
     # says its line and hangs up.)
     error_speaker = (LLMErrorSpeaker(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"),
-                                     no_model=llm is None, wifi=wifi, gate=followup_gate,
+                                     no_model=llm is None, wifi=wifi, phrases=phrases,
+                                     settings=settings_access.usable([settings_phrase]),
+                                     gate=followup_gate,
                                      model_back=lambda: model_missing() is None,
                                      restarts="restart" in client_features)
                      if llm_error_speaker.ENABLED or llm is None else None)
@@ -1201,9 +1215,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         # reads it, and the turn has not ended on it yet (run_control.py). None off Talk.
         claims,
         # Below the caption emitter (the user still sees their words), above everything
-        # that feeds the LLM: while Wi-Fi setup runs, the user's words are its, not the
-        # model's (wifi_voice.py).
-        wifi,
+        # that feeds the LLM: the fixed phrases ("open my settings"), and while Wi-Fi
+        # setup runs, every word -- the user's words are theirs, not the model's
+        # (wifi_voice.py).
+        phrases,
         # fire memory_search on interim, inject before the LLM (built above, for the
         # speculator; None without a gateway).
         memory_recall,
@@ -1401,6 +1416,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
+    session.phrases = phrases  # the fixed phrases (Wi-Fi setup's, or the settings phrase's)
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)

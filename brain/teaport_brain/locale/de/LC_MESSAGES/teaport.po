@@ -377,3 +377,136 @@ msgstr "Ich kümmere mich gleich darum, einen Moment."
 
 msgid "One moment, let me set that up."
 msgstr "Einen Moment, ich richte das ein."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "KI-Konto"
+
+msgid "AI account (optional)"
+msgstr "KI-Konto (optional)"
+
+msgid "An account is connected."
+msgstr "Ein Konto ist verbunden."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Bitte Teaport um einen neuen: Sag „Öffne die Einstellungen“."
+
+msgid "Checking the key…"
+msgstr "Schlüssel wird geprüft …"
+
+msgid "Code"
+msgstr "Code"
+
+msgid "Continue"
+msgstr "Weiter"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Gib den Code ein, den Teaport dir gegeben hat. Er funktioniert nur einmal."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Ich kann noch keine Fragen beantworten, weil das Konto, das ich für meine Antworten nutze, noch nicht eingerichtet ist. Sag „Öffne die Einstellungen“, um es einzurichten."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "Ich konnte den Schlüssel für das KI-Konto, den du eingegeben hast, nicht verwenden, deshalb habe ich ihn nicht gespeichert. Sag „Öffne die Einstellungen“, um es noch einmal zu versuchen."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Dafür muss ich online sein. Sag „Richte das WLAN ein“, damit ich online komme."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "Ich habe einen Code auf meinem Display angezeigt. Scanne ihn mit der Kamera deines Handys und tippe dann auf den Link, der erscheint, um zu meinen Einstellungen zu kommen."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Wenn dein Handy warnt, dass die Verbindung nicht privat ist, installiere zuerst {certificate} und bitte Teaport dann um einen neuen Code."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Wenn dein Handy warnt, dass diese Seite nicht privat ist, erfährst du hier, wie du Teaport vertrauen kannst."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "Öffne im Browser deines Handys {address} und gib den Code {code} ein. Er funktioniert einmal, in den nächsten fünf Minuten."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Lass dieses Feld leer, um das Konto zu behalten, das Teaport gerade nutzt. Wenn du dein eigenes OpenRouter-Konto nutzen möchtest, füge hier seinen Schlüssel ein. Teaport prüft den Schlüssel, sobald es online ist, und sagt laut, ob er funktioniert hat."
+
+msgid "No account is connected yet."
+msgstr "Noch ist kein Konto verbunden."
+
+msgid "OpenRouter key"
+msgstr "OpenRouter-Schlüssel"
+
+msgid "Save anyway"
+msgstr "Trotzdem speichern"
+
+msgid "Settings"
+msgstr "Einstellungen"
+
+msgid "Show advanced"
+msgstr "Erweiterte Optionen anzeigen"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Tut mir leid, auf diesem Gerät sind meine Einstellungen nicht über ein Handy erreichbar."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Tippe auf „Weiter“, um auf diesem Handy zu den Einstellungen von Teaport zu kommen. Der Code funktioniert nur einmal."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport konnte diesen Schlüssel nicht prüfen: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport nutzt für seine Antworten ein OpenRouter-Konto. Wenn du dein eigenes nutzen möchtest, füge einen Schlüssel aus deinem OpenRouter-Konto ein."
+
+msgid "Teaport's certificate"
+msgstr "das Zertifikat von Teaport"
+
+msgid "Test and save"
+msgstr "Prüfen und speichern"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Dieser Code hat nicht funktioniert. Prüfe ihn oder bitte Teaport um einen neuen."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "Der Schlüssel funktioniert und ist gespeichert. Teaport nutzt ihn ab deinem nächsten Gespräch."
+
+msgid "This code has expired"
+msgstr "Dieser Code ist abgelaufen"
+
+msgid "This code was already used"
+msgstr "Dieser Code wurde schon verwendet"
+
+msgid "This key didn't work: {reason}."
+msgstr "Dieser Schlüssel hat nicht funktioniert: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Dein KI-Konto ist verbunden."
+
+msgid "no AI service is set up on this box"
+msgstr "auf diesem Gerät ist kein KI-Dienst eingerichtet"
+
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so)\\W+){0,3}(?:(?:öffne|öffnet|oeffne|offne|zeig|zeige|zeigt|ruf|rufe|geh|gehe)(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich|zu|in))*\\s+(?:(?:die|deine|meine|ihre|der|den|teaports?)\\s+)?einstellung(?:en|sseite)(?:\\s+(?:auf|an))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal|seite)\\b)|mach(?:e|t)?(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich))*\\s+(?:(?:die|deine|meine|ihre|teaports?)\\s+)?einstellung(?:en|sseite)\\s+auf(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt|mal)\\b)|(?:bitte\\s+)?(?:(?:die|deine|meine)\\s+)?einstellung(?:en|sseite)\\s+(?:bitte\\s+)?(?:öffnen|oeffnen|offnen|aufmachen|zeigen|anzeigen|aufrufen)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:bitte|jetzt)\\b))"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "Schrägstrich"
+
+msgid "that doesn't look like a key"
+msgstr "das sieht nicht wie ein Schlüssel aus"
+
+msgid "the AI service didn't answer"
+msgstr "der KI-Dienst hat nicht geantwortet"
+
+msgid "the AI service refused this key"
+msgstr "der KI-Dienst hat diesen Schlüssel abgelehnt"
+
+msgid "the key is empty"
+msgstr "der Schlüssel ist leer"
+
+msgid "this account has no credit left"
+msgstr "dieses Konto hat kein Guthaben mehr"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "der Schlüssel dieses Geräts wird bei der Installation festgelegt und kann hier nicht geändert werden"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "Ich konnte den Schlüssel für das KI-Konto, den du eingegeben hast, nicht verwenden, deshalb habe ich ihn nicht gespeichert."

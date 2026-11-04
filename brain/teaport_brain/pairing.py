@@ -32,7 +32,7 @@
 #     app's steps. Neither is ever logged, the access log's request line has the code
 #     masked (gateway_server._RedactTokens: /p/<redacted>), and both pages are
 #     no-store. /p/ answers only what came through Caddy over HTTPS
-#     (_via_front_door); the brain's own port, open to the LAN for the config page,
+#     (via_front_door); the brain's own port, open to the LAN for the config page,
 #     gets a 404 there that does not count as a guess.
 #
 # Minting at the tap, not at start(), is the choice made in #244: the screen shows the
@@ -265,11 +265,73 @@ _session: _Session | None = None
 _ended: tuple[int, Result] | None = None  # the last session's id and Result, for wait()
 _sessions = 0                             # ids
 _creating: asyncio.Future | None = None   # a first start() reading the device list
-# Codes tapped lately, for "already used" (the current session's and the one before).
-_spent: collections.deque = collections.deque(maxlen=8)
-# Every code issued lately, by any pairing: scanning one again (a photo of an old QR) is
-# never a wrong guess against the current code.
-_recent: collections.deque = collections.deque(maxlen=32)
+
+
+class CodeBook:
+    """One kind of one-time code, the state every code of it shares: pairing's /p/ codes
+    (_codes, below), Settings' /settings/ codes (settings_access.py). `spent`: codes used
+    lately, for "already used" (the current one's and a few before); `recent`: every code
+    issued lately, so scanning one again (a photo of an old QR) is never a wrong guess
+    against the current code.
+
+    The current code itself lives in its holder -- a pairing's _Session, or a LiveCode --
+    which has `code` (an Offer), code_usable(), and the counters this keeps on it:
+    `wrong`, `code_dead`, `locked`."""
+
+    def __init__(self):
+        self.spent: collections.deque = collections.deque(maxlen=8)
+        self.recent: collections.deque = collections.deque(maxlen=32)
+
+    def issue(self) -> str:
+        code = new_code_text()
+        self.recent.append(code)
+        return code
+
+    def find(self, code: str, holder, what: str) -> str:
+        """"used", "expired" or "live" for `code` against `holder`'s current code (None:
+        there is none). A code that is none of these (nor one tapped lately) is a wrong
+        guess while the current code can be used, and MAX_WRONG of them end that code
+        (`what` names the kind in the log). Constant-time compares throughout."""
+        code = code.strip().upper()
+        if any(hmac.compare_digest(code.encode(), c.encode()) for c in self.spent):
+            return "used"  # a second scan of a used code is not a guess
+        if holder is None:
+            return "expired"
+        usable = holder.code_usable()
+        if hmac.compare_digest(code.encode(), holder.code.code.encode()):
+            return "live" if usable else "expired"
+        if any(hmac.compare_digest(code.encode(), c.encode()) for c in self.recent):
+            return "expired"  # an earlier code, of this holder or one before
+        if usable:
+            holder.wrong += 1
+            if holder.wrong >= MAX_WRONG:
+                logger.warning(f"{what}: {holder.wrong} wrong codes; the code is locked")
+                holder.code_dead = holder.locked = True
+        return "expired"
+
+    def spend(self, holder) -> None:
+        """`holder`'s current code is used: no longer usable, and "already used" after."""
+        holder.code_dead = True
+        self.spent.append(holder.code.code)
+
+
+@dataclass(eq=False)
+class LiveCode:
+    """A current code with nothing else around it (Settings'): CodeBook's holder."""
+    code: "Offer"
+    clock: object = None       # the deadline's clock (default: this module's _clock)
+    code_dead: bool = False    # used, or locked
+    locked: bool = False
+    wrong: int = 0
+
+    def code_usable(self) -> bool:
+        return not self.code_dead and (self.clock or _clock)() < self.code.expires_at
+
+
+_codes = CodeBook()
+# The book's two lists, by their old names (tests clear them).
+_spent = _codes.spent
+_recent = _codes.recent
 
 
 def _pulse(s: _Session) -> None:
@@ -510,17 +572,21 @@ def front_door_url(browser_url: str, host: str) -> str:
     return base + "#" + "&".join(pairs)
 
 
-def _link(host: str, code: str) -> str:
-    return f"https://{host}/p/{code}"
+def link(host: str, code: str, prefix: str = "/p/") -> str:
+    """The short link a QR code holds: https://<front door><prefix><code>. Pairing's is
+    /p/; Settings' (settings_access.py) is /settings/."""
+    return f"https://{host}{prefix}{code}"
 
 
-def _check_host(host: str) -> str:
+def check_host(host: str, prefix: str = "/p/", qr: bool = True) -> str:
+    """`host` if it is a host name and, with `qr`, a link to it (with `prefix`) fits the
+    screen's QR code. Raises PairingUnavailable."""
     host = (host or "").strip()
     if not host:
         raise PairingUnavailable("no front door host (TEAPORT_FRONTDOOR_HOST)")
     if re.search(r"[\s/?#@\\]", host):
         raise PairingUnavailable("TEAPORT_FRONTDOOR_HOST is not a host name")
-    if len(_link(host, "X" * CODE_LEN).encode()) > QR_MAX_BYTES:
+    if qr and len(link(host, "X" * CODE_LEN, prefix).encode()) > QR_MAX_BYTES:
         raise PairingUnavailable(f"TEAPORT_FRONTDOOR_HOST is too long for the screen's "
                                  f"{QR_MAX_BYTES}-byte QR code")
     return host
@@ -533,11 +599,15 @@ def available() -> bool:
     return bool(FRONTDOOR_HOST)
 
 
+def new_code_text() -> str:
+    """A fresh code: CODE_LEN characters of CODE_ALPHABET (Settings' codes too)."""
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
+
+
 def _new_code(s_id: int, host: str) -> Offer:
-    code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
-    _recent.append(code)
+    code = _codes.issue()
     expires_at = _clock() + min(OFFER_SECS, OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS)
-    return Offer(code=code, link=_link(host, code), expires_at=expires_at, session=s_id)
+    return Offer(code=code, link=link(host, code), expires_at=expires_at, session=s_id)
 
 
 async def start() -> Offer:
@@ -548,7 +618,7 @@ async def start() -> Offer:
     global _session, _sessions, _creating
     if not agent_backend.HAS_AGENT:
         raise PairingUnavailable("no agent on this box (TEAPORT_AGENT=none)")
-    host = _check_host(FRONTDOOR_HOST)
+    host = check_host(FRONTDOOR_HOST)
     while _creating is not None and not _creating.done():
         try:  # another start() is opening the session: a new code in it, after
             await asyncio.shield(_creating)
@@ -737,9 +807,9 @@ async def _poll() -> list[dict] | None:
 
 # ------------------------------------------------------------------ /p/<code>
 
-_NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
-_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+_PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style></head>
 <body><main><div class="logo">{logo}</div>
@@ -774,9 +844,11 @@ function(){try{document.execCommand("copy")&&done()}catch(e){}})}
 else{try{document.execCommand("copy")&&done()}catch(e){}}})})()</script>"""
 
 
-def _ca_link() -> str:
+def ca_link(label: str = "Teaport's certificate") -> str:
+    """The link to the box's CA, over plain HTTP (the one path the front door serves
+    there). `label` is the link's text (Settings' pages translate it)."""
     url = html.escape(f"http://{FRONTDOOR_HOST}/teaport-ca.crt", quote=True)
-    return f'<a href="{url}">Teaport\'s certificate</a>'
+    return f'<a href="{url}">{html.escape(label)}</a>'
 
 
 # How to trust the box's certificate, per kind of device: one <details> each, closed until
@@ -785,7 +857,7 @@ def _ca_link() -> str:
 # which entry is this one. Steps follow each system's own menu names as of 2026;
 # Android's differ between makers, so its steps name the search term.
 def _ca_help() -> str:
-    link = _ca_link()
+    link = ca_link()
     name = f"<strong>{html.escape(CA_NAME)}</strong>"
 
     def block(title: str, steps: list[str], note: str = "") -> str:
@@ -794,7 +866,7 @@ def _ca_help() -> str:
                 + (f'<p class="small">{note}</p>' if note else "") + "</details>")
 
     return "".join((
-        _p("How to trust the box on:"),
+        para("How to trust the box on:"),
         block("iPhone or iPad", [
             f"Open {link} in <strong>Safari</strong> and tap <strong>Allow</strong>.",
             "Open <strong>Settings</strong>, tap <strong>Profile Downloaded</strong> (or "
@@ -831,23 +903,25 @@ def _ca_help() -> str:
     ))
 
 
-def _p(*parts: str) -> str:
-    """A paragraph of plain text (escaped) with HTML pieces: _p("text ", _ca_link())."""
+def para(*parts: str) -> str:
+    """A paragraph of plain text (escaped) with HTML pieces: para("text ", ca_link())."""
     return "<p>" + "".join(x if x.startswith("<") else html.escape(x) for x in parts) + "</p>"
 
 
-def _trust(*parts: str) -> str:
+def trust(*parts: str) -> str:
     """The paragraph about trusting the box, then how: nothing when devices already trust
     the front door's certificate (TRUSTED_CERT)."""
-    return "" if TRUSTED_CERT else _p(*parts) + _ca_help()
+    return "" if TRUSTED_CERT else para(*parts) + _ca_help()
 
 
-def _page(heading: str, body: str, status: int = 200, script: str = "") -> HTMLResponse:
-    """`body` is HTML, built from _p() and fixed markup."""
+def page(heading: str, body: str, status: int = 200, script: str = "", lang: str = "en",
+         dir: str = "ltr", headers: dict | None = None) -> HTMLResponse:
+    """`body` is HTML, built from para() and fixed markup. `lang` and `dir`: the page's
+    language (Settings' pages are translated, settings_access.py; these are English)."""
     return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS + _EXTRA_CSS,
                                      logo=logo_html(), heading=html.escape(heading),
-                                     body=body, script=script),
-                        status_code=status, headers=_NO_STORE)
+                                     body=body, script=script, lang=lang, dir=dir),
+                        status_code=status, headers={**NO_STORE, **(headers or {})})
 
 
 def _choose(code: str) -> HTMLResponse:
@@ -859,19 +933,19 @@ def _choose(code: str) -> HTMLResponse:
         return (f'<form method="post" action="{action}"><input type="hidden" name="choice" '
                 f'value="{choice}"><button type="submit"{cls}>{html.escape(label)}</button></form>')
 
-    return _page("Connect this device to Teaport", "".join((
-        _p("Choose how you want to use Teaport on this device. The code works once."),
+    return page("Connect this device to Teaport", "".join((
+        para("Choose how you want to use Teaport on this device. The code works once."),
         button(DASHBOARD, "Open the dashboard here"),
         button(APP, "Use the OpenClaw app", ' class="alt"'),
         '<p id="wait" class="small" hidden>Starting, this can take a few seconds…</p>',
-        _trust("If your phone warns that the connection is not private, install ", _ca_link(),
+        trust("If your phone warns that the connection is not private, install ", ca_link(),
                " first, then scan a new code."))), script=_ONE_TAP)
 
 
 def _app_code(setup_code: str) -> HTMLResponse:
     """The setup code, shown once (no-store): the app's Add Gateway takes it pasted."""
-    return _page("Add Teaport to the OpenClaw app", "".join((
-        _p("Copy this code and paste it into the app. It works once, so paste it in the "
+    return page("Add Teaport to the OpenClaw app", "".join((
+        para("Copy this code and paste it into the app. It works once, so paste it in the "
            "next few minutes."),
         f'<textarea id="code" readonly autocomplete="off" autocapitalize="none" '
         f'spellcheck="false" aria-label="Setup code">{html.escape(setup_code)}</textarea>',
@@ -880,14 +954,14 @@ def _app_code(setup_code: str) -> HTMLResponse:
         "<li>Open <strong>Add Gateway</strong> from the app's menu (or "
         "<strong>Settings</strong>, then <strong>Gateway</strong>, if it already has one).</li>"
         "<li>Paste the code and connect.</li></ol>",
-        _trust("The app connects only if this phone trusts the box: install ", _ca_link(),
+        trust("The app connects only if this phone trusts the box: install ", ca_link(),
                " and turn on full trust for it in the phone's settings first. Then ask "
                "Teaport for a new code if this one has run out."))), script=_COPY)
 
 
 def _failed() -> HTMLResponse:
-    return _page("Teaport could not start the connection",
-                 _p("Something went wrong on the box. Ask Teaport again for a new code."), 503)
+    return page("Teaport could not start the connection",
+                 para("Something went wrong on the box. Ask Teaport again for a new code."), 503)
 
 
 
@@ -897,23 +971,23 @@ def _used() -> HTMLResponse:
     # not open the first time, and the usual reason is a phone that does not trust the
     # box yet.
     if TRUSTED_CERT:
-        return _page("This code was already used", _p(
+        return page("This code was already used", para(
             "Each code connects one device. If the dashboard did not open on this phone, "
             "ask Teaport for a new code."), 410)
-    return _page("This code was already used", _trust(
+    return page("This code was already used", trust(
         "Each code connects one device. If the dashboard did not open on this phone, it "
-        "needs to trust the box first: install ", _ca_link(),
+        "needs to trust the box first: install ", ca_link(),
         ", then ask Teaport for a new code."), 410)
 
 
 def _expired() -> HTMLResponse:
-    return _page("This code has expired", _p(
-        "Ask Teaport for a new one, and scan it within a few minutes.") + _trust(
-        "If your phone warns that the connection is not private, install ", _ca_link(),
+    return page("This code has expired", para(
+        "Ask Teaport for a new one, and scan it within a few minutes.") + trust(
+        "If your phone warns that the connection is not private, install ", ca_link(),
         " first."), 410)
 
 
-def _via_front_door(request: Request) -> bool:
+def via_front_door(request: Request) -> bool:
     """Whether the request came through Caddy over HTTPS. The brain listens on every
     interface (http://<box>:7861 is the config page), so without this anyone on the
     LAN could reach /p/ in cleartext, or burn a live offer with wrong guesses. uvicorn
@@ -929,28 +1003,31 @@ def _via_front_door(request: Request) -> bool:
 
 
 def _find(code: str) -> tuple[str, _Session | None]:
-    """("used" | "expired" | "live", the session when "live") for a code at /p/. A code
-    that is none of the pairing's (nor one tapped lately) is a wrong guess while its
-    current code can be used, and MAX_WRONG of them end that code. Its own codes, asked
-    again, are never guesses."""
-    code = code.strip().upper()
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _spent):
-        return "used", None  # a second scan of a used code is not a guess
+    """("used" | "expired" | "live", the session when "live") for a code at /p/
+    (CodeBook.find). Its own codes, asked again, are never guesses."""
     s = _session
-    if s is None or s.result is not None:
-        return "expired", None
-    usable = s.code_usable()
-    if hmac.compare_digest(code.encode(), s.code.code.encode()):
-        return ("live", s) if usable else ("expired", None)
-    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _recent):
-        return "expired", None  # an earlier code, of this pairing or one before
-    if usable:
-        s.wrong += 1
-        if s.wrong >= MAX_WRONG:
-            logger.warning(f"pairing: {s.wrong} wrong codes; the code is locked")
-            s.code_dead = s.locked = True
-            _pulse(s)
-    return "expired", None
+    if s is not None and s.result is not None:
+        s = None
+    locked = s is not None and s.locked
+    state = _codes.find(code, s, "pairing")
+    if s is not None and s.locked and not locked:
+        _pulse(s)  # wrong codes ended it: whoever waits on the pairing hears it
+    return state, (s if state == "live" else None)
+
+
+async def front_door_request(request: Request, post: bool) -> tuple[Response | None, dict]:
+    """The checks a code page (pairing's /p/, Settings' /settings/) makes before it looks
+    at a code: (a response to answer with, {}) -- 404 for anything that did not come
+    through the front door over HTTPS (no guess either), 413 for a POST body over
+    MAX_FORM_BYTES (spends nothing) -- or (None, the POST's form; {} for a GET)."""
+    if not via_front_door(request):
+        return PlainTextResponse(_NOT_FOUND, status_code=404), {}
+    if not post:
+        return None, {}
+    form = await small_form(request)
+    if form is None:
+        return PlainTextResponse("Payload Too Large", status_code=413), {}
+    return None, form
 
 
 _NOT_FOUND = "Not Found"
@@ -960,7 +1037,7 @@ _NOT_FOUND = "Not Found"
 MAX_FORM_BYTES = 1024
 
 
-async def _small_form(request: Request) -> dict[str, list[str]] | None:
+async def small_form(request: Request) -> dict[str, list[str]] | None:
     """The urlencoded form, or None when the body is (or says it is) over
     MAX_FORM_BYTES."""
     declared = (request.headers.get("content-length") or "").strip()
@@ -979,8 +1056,9 @@ router = APIRouter()
 async def landing(code: str, request: Request) -> Response:
     """Unauthenticated: the browser asking has no token yet; the code is the grant.
     A GET spends nothing: it shows the two choices."""
-    if not _via_front_door(request):
-        return PlainTextResponse(_NOT_FOUND, status_code=404)  # not a guess either
+    refused, _ = await front_door_request(request, post=False)
+    if refused is not None:
+        return refused
     state, s = _find(code)
     if state == "live":
         return _choose(s.code.code)
@@ -991,19 +1069,17 @@ async def landing(code: str, request: Request) -> Response:
 async def redeem(code: str, request: Request) -> Response:
     """The choice: the code is spent here, before the handoff is minted (a second post
     while the first mints finds it used), and the handoff is made for what was chosen."""
-    if not _via_front_door(request):
-        return PlainTextResponse(_NOT_FOUND, status_code=404)
-    form = await _small_form(request)
-    if form is None:  # before the code is looked at: spends nothing, guesses nothing
-        return PlainTextResponse("Payload Too Large", status_code=413)
+    # Before the code is looked at: a refusal spends nothing and guesses nothing.
+    refused, form = await front_door_request(request, post=True)
+    if refused is not None:
+        return refused
     choice = (form.get("choice") or [""])[0]
     state, s = _find(code)
     if state != "live":
         return _used() if state == "used" else _expired()
     if choice not in (DASHBOARD, APP):
         return _choose(s.code.code)  # nothing chosen: nothing spent
-    s.code_dead = True
-    _spent.append(s.code.code)
+    _codes.spend(s)
     tap = _Tap(choice, _clock() + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS) + _window(choice),
                peer=_peer_of(request))
     s.taps.append(tap)
@@ -1020,7 +1096,7 @@ async def redeem(code: str, request: Request) -> Response:
         try:
             handoff = await tap.mint
             answer = (RedirectResponse(front_door_url(handoff, FRONTDOOR_HOST), status_code=303,
-                                       headers=_NO_STORE)
+                                       headers=NO_STORE)
                       if choice == DASHBOARD else _app_code(handoff))
         except asyncio.CancelledError:
             if tap.stopped:  # the pairing stopped it: no handoff after the user's stop

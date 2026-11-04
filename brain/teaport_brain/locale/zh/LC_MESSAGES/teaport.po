@@ -377,3 +377,136 @@ msgstr "我来处理，请稍等。"
 
 msgid "One moment, let me set that up."
 msgstr "稍等，我来准备一下。"
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "AI 账户"
+
+msgid "AI account (optional)"
+msgstr "AI 账户（可选）"
+
+msgid "An account is connected."
+msgstr "已连接账户。"
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "可以让 Teaport 给你一个新的：说“打开设置”。"
+
+msgid "Checking the key…"
+msgstr "正在检查密钥…"
+
+msgid "Code"
+msgstr "验证码"
+
+msgid "Continue"
+msgstr "继续"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "请输入 Teaport 给你的验证码。它只能用一次。"
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "我还不能回答问题，因为我用来回答问题的账户还没有设置好。说“打开设置”就可以设置。"
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "你输入的 AI 账户密钥我用不了，所以没有保存。说“打开设置”再试一次。"
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "这件事需要我先联网。说“设置无线网”，就能让我联网。"
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "我在屏幕上显示了一个二维码。请用手机相机扫一下，然后点击出现的链接，进入我的设置。"
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "如果手机提示连接不是私密连接，请先安装 {certificate}，然后再让 Teaport 给你一个新的验证码。"
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "如果手机提示此页面不是私密连接，以下是信任 Teaport 的方法。"
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "请在手机浏览器里访问{address}，然后输入验证码{code}。验证码只能用一次，在接下来的五分钟内有效。"
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "留空则继续使用 Teaport 现在的账户。如果要使用你自己的 OpenRouter 账户，请把它的密钥粘贴到这里。Teaport 联网后会检查这个密钥，并用语音告诉你是否成功。"
+
+msgid "No account is connected yet."
+msgstr "还没有连接账户。"
+
+msgid "OpenRouter key"
+msgstr "OpenRouter 密钥"
+
+msgid "Save anyway"
+msgstr "仍然保存"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Show advanced"
+msgstr "显示高级选项"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "抱歉，这台设备不支持用手机访问我的设置。"
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "点击“继续”，即可在这部手机上进入 Teaport 的设置。验证码只能用一次。"
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport 无法检查这个密钥：{reason}。"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport 使用一个 OpenRouter 账户来回答问题。如果要使用你自己的账户，请粘贴你 OpenRouter 账户里的密钥。"
+
+msgid "Teaport's certificate"
+msgstr "Teaport 的证书"
+
+msgid "Test and save"
+msgstr "测试并保存"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "这个验证码无效。请检查一下，或者让 Teaport 给你一个新的。"
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "密钥可以使用，已经保存。Teaport 会从你的下一次对话开始使用它。"
+
+msgid "This code has expired"
+msgstr "此验证码已过期"
+
+msgid "This code was already used"
+msgstr "此验证码已被使用"
+
+msgid "This key didn't work: {reason}."
+msgstr "这个密钥无效：{reason}。"
+
+msgid "Your AI account is connected."
+msgstr "你的 AI 账户已连接。"
+
+msgid "no AI service is set up on this box"
+msgstr "这台设备上没有设置 AI 服务"
+
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我|给我|我要|我想|我想要)?\\s*(?:打开|打開|开一下|显示|顯示|调出|进入|進入|看看|看一下|去)(?:一下)?\\s*(?:我的|你的|teaport\\s*的|的)?\\s*(?:设置|设定|設定|設置)(?:页面|页|界面)?\\s*(?:吧|一下|呗|啊|呀|嘛)?\\s*(?:[，,。.!！…]|$)|^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我)?把(?:我的|你的)?(?:设置|设定)(?:页面|页|界面)?打开(?:吧|一下)?\\s*(?:[，,。.!！…]|$)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "斜杠"
+
+msgid "that doesn't look like a key"
+msgstr "这看起来不像是密钥"
+
+msgid "the AI service didn't answer"
+msgstr "AI 服务没有响应"
+
+msgid "the AI service refused this key"
+msgstr "AI 服务拒绝了这个密钥"
+
+msgid "the key is empty"
+msgstr "密钥是空的"
+
+msgid "this account has no credit left"
+msgstr "这个账户没有余额了"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "这台设备的密钥由安装者设置，所以不能在这里更改"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "你输入的 AI 账户密钥我用不了，所以没有保存。"

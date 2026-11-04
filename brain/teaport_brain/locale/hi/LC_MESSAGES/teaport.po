@@ -377,3 +377,241 @@ msgstr "इस पर काम शुरू करते हैं, एक प�
 
 msgid "One moment, let me set that up."
 msgstr "एक पल रुकिए, इसे तैयार किया जा रहा है।"
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "AI खाता"
+
+msgid "AI account (optional)"
+msgstr "AI खाता (वैकल्पिक)"
+
+msgid "An account is connected."
+msgstr "एक खाता जुड़ा हुआ है।"
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Teaport से नया कोड माँगें: “सेटिंग्स खोलो” बोलें।"
+
+msgid "Checking the key…"
+msgstr "कुंजी की जाँच हो रही है…"
+
+msgid "Code"
+msgstr "कोड"
+
+msgid "Continue"
+msgstr "आगे बढ़ें"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Teaport ने जो कोड दिया है, उसे डालें। यह सिर्फ़ एक बार काम करता है।"
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "अभी सवालों के जवाब नहीं दिए जा सकते, क्योंकि जवाबों के लिए इस्तेमाल होने वाला खाता अभी सेट अप नहीं है। इसे सेट अप करने के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "आपकी डाली हुई AI खाते की कुंजी इस्तेमाल नहीं हो पाई, इसलिए उसे सेव नहीं किया गया। फिर से कोशिश करने के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "इसके लिए इंटरनेट चालू होना ज़रूरी है। मुझे ऑनलाइन लाने के लिए “वाई-फ़ाई सेट अप करो” बोलिए।"
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "मेरी स्क्रीन पर एक कोड दिख रहा है। उसे अपने फ़ोन के कैमरे से स्कैन कीजिए, फिर मेरी सेटिंग्स तक पहुँचने के लिए दिखने वाले लिंक पर टैप कीजिए।"
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "अगर आपका फ़ोन चेतावनी दे कि कनेक्शन प्राइवेट नहीं है, तो पहले {certificate} इंस्टॉल करें, फिर Teaport से नया कोड माँगें।"
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "अगर आपका फ़ोन चेतावनी दे कि यह पेज प्राइवेट नहीं है, तो Teaport पर भरोसा करने का तरीका यह है।"
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "अपने फ़ोन के ब्राउज़र में {address} खोलिए, और कोड {code} डालिए। यह सिर्फ़ एक बार, अगले पाँच मिनट तक काम करेगा।"
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Teaport अभी जिस खाते का इस्तेमाल कर रहा है, उसे बनाए रखने के लिए इसे खाली छोड़ दें। अपना OpenRouter खाता इस्तेमाल करने के लिए उसकी कुंजी यहाँ पेस्ट करें। ऑनलाइन होते ही Teaport कुंजी की जाँच करेगा, और बोलकर बताएगा कि वह काम कर रही है या नहीं।"
+
+msgid "No account is connected yet."
+msgstr "अभी कोई खाता नहीं जुड़ा है।"
+
+msgid "OpenRouter key"
+msgstr "OpenRouter कुंजी"
+
+msgid "Save anyway"
+msgstr "फिर भी सेव करें"
+
+msgid "Settings"
+msgstr "सेटिंग्स"
+
+msgid "Show advanced"
+msgstr "एडवांस्ड सेटिंग्स दिखाएँ"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "माफ़ कीजिए, इस डिवाइस पर मेरी सेटिंग्स फ़ोन से नहीं खोली जा सकतीं।"
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "इस फ़ोन पर Teaport की सेटिंग्स खोलने के लिए “आगे बढ़ें” पर टैप करें। यह कोड सिर्फ़ एक बार काम करता है।"
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport इस कुंजी की जाँच नहीं कर पाया: {reason}।"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport अपने जवाबों के लिए एक OpenRouter खाते का इस्तेमाल करता है। अपना खाता इस्तेमाल करने के लिए अपने OpenRouter खाते की कुंजी पेस्ट करें।"
+
+msgid "Teaport's certificate"
+msgstr "Teaport का सर्टिफ़िकेट"
+
+msgid "Test and save"
+msgstr "जाँचें और सेव करें"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "यह कोड काम नहीं आया। इसे जाँच लें, या Teaport से नया कोड माँगें।"
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "कुंजी काम कर रही है, और सेव हो गई है। Teaport आपकी अगली बातचीत से इसका इस्तेमाल करेगा।"
+
+msgid "This code has expired"
+msgstr "इस कोड की समय-सीमा ख़त्म हो गई है"
+
+msgid "This code was already used"
+msgstr "यह कोड पहले ही इस्तेमाल हो चुका है"
+
+msgid "This key didn't work: {reason}."
+msgstr "यह कुंजी काम नहीं आई: {reason}।"
+
+msgid "Your AI account is connected."
+msgstr "आपका AI खाता जुड़ गया है।"
+
+msgid "no AI service is set up on this box"
+msgstr "इस डिवाइस पर कोई AI सेवा सेट अप नहीं है"
+
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:अं|उम+|उह|हम्म|अम्म|teaport|टीपोर्ट|ज़रा|ज़रा|जरा|प्लीज़?|प्लीज़|please|अरे|अच्छा|तो|ok|ओके)[\\s,.!।]+){0,3}(?:(?:(?:मेरी|मेरे|अपनी|अपने|तुम्हारी|तुम्हारे|आपकी|आपके|(?:teaport|टीपोर्ट)\\s?(?:की|के))\\s+)?(?:(?:(?:से|सै)टिंग(?:्स|्ज़|्ज़|्ज|स)?|\\bsettings?\\b)(?:\\s?(?:का|वाला)?\\s?(?:पेज़?|पेज़|page))?\\s?(?:को\\s)?(?:खोल(?:ो|िए|िये|ें|\\s?दो|\\s?दीजिए|\\s?दीजिये|\\s?दें|\\s?दे)|दिखा(?:ओ|इए|इये|एं|एँ|\\s?दो|\\s?दीजिए|\\s?दें)|पर\\s?ले\\s?चलो|\\bkholo|\\bkhol\\s?do|\\bkholiye|\\bdikhao|\\bdikha\\s?do|\\bopen\\s?karo)(?![\\u0900-\\u097F])(?=\\s*(?:[.,!?।|;:…]|$)|\\s+(?:ना|प्लीज़?|प्लीज़|please|अभी|ज़रा|ज़रा|जरा|जल्दी|na|plz)(?![\\u0900-\\u097F\\w])))|(?:खोलो|खोलिए|खोल\\s?दो|दिखाओ|दिखाइए)\\s+(?:(?:मेरी|मेरे|अपनी|अपने|तुम्हारी|तुम्हारे|आपकी|आपके|(?:teaport|टीपोर्ट)\\s?(?:की|के))\\s+)?(?:से|सै)टिंग(?:्स|्ज़|्ज़|्ज|स)?(?![\\u0900-\\u097F])(?=\\s*(?:[.,!?।|;:…]|$)))"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "स्लैश"
+
+msgid "that doesn't look like a key"
+msgstr "यह कुंजी जैसी नहीं लगती"
+
+msgid "the AI service didn't answer"
+msgstr "AI सेवा ने जवाब नहीं दिया"
+
+msgid "the AI service refused this key"
+msgstr "AI सेवा ने यह कुंजी अस्वीकार कर दी"
+
+msgid "the key is empty"
+msgstr "कुंजी खाली है"
+
+msgid "this account has no credit left"
+msgstr "इस खाते में कोई क्रेडिट नहीं बचा है"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "इस डिवाइस की कुंजी इसे इंस्टॉल करने वाले ने तय की है, इसलिए इसे यहाँ बदला नहीं जा सकता"
+
+# Letter names, for spelling a password aloud (wifi_voice.spell): the voice reads a bare Latin letter poorly.
+msgctxt "letter"
+msgid "A"
+msgstr "ए"
+
+msgctxt "letter"
+msgid "B"
+msgstr "बी"
+
+msgctxt "letter"
+msgid "C"
+msgstr "सी"
+
+msgctxt "letter"
+msgid "D"
+msgstr "डी"
+
+msgctxt "letter"
+msgid "E"
+msgstr "ई"
+
+msgctxt "letter"
+msgid "F"
+msgstr "एफ़"
+
+msgctxt "letter"
+msgid "G"
+msgstr "जी"
+
+msgctxt "letter"
+msgid "H"
+msgstr "एच"
+
+msgctxt "letter"
+msgid "I"
+msgstr "आई"
+
+msgctxt "letter"
+msgid "J"
+msgstr "जे"
+
+msgctxt "letter"
+msgid "K"
+msgstr "के"
+
+msgctxt "letter"
+msgid "L"
+msgstr "एल"
+
+msgctxt "letter"
+msgid "M"
+msgstr "एम"
+
+msgctxt "letter"
+msgid "N"
+msgstr "एन"
+
+msgctxt "letter"
+msgid "O"
+msgstr "ओ"
+
+msgctxt "letter"
+msgid "P"
+msgstr "पी"
+
+msgctxt "letter"
+msgid "Q"
+msgstr "क्यू"
+
+msgctxt "letter"
+msgid "R"
+msgstr "आर"
+
+msgctxt "letter"
+msgid "S"
+msgstr "एस"
+
+msgctxt "letter"
+msgid "T"
+msgstr "टी"
+
+msgctxt "letter"
+msgid "U"
+msgstr "यू"
+
+msgctxt "letter"
+msgid "V"
+msgstr "वी"
+
+msgctxt "letter"
+msgid "W"
+msgstr "डब्ल्यू"
+
+msgctxt "letter"
+msgid "X"
+msgstr "एक्स"
+
+msgctxt "letter"
+msgid "Y"
+msgstr "वाई"
+
+msgctxt "letter"
+msgid "Z"
+msgstr "ज़ेड"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "आपकी डाली हुई AI खाते की कुंजी इस्तेमाल नहीं हो पाई, इसलिए उसे सेव नहीं किया गया।"

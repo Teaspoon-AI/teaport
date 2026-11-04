@@ -109,6 +109,15 @@ WELCOME_TEXT = N_("Hi, I'm Teaport. Let's get me online. Give me a moment to loo
 # After a first-boot setup that left the box offline: it does not start again by itself
 # until the next boot. The quoted words are the start phrase (tests/test_i18n.py).
 AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
+# After "connected", how the AI account key typed on the setup page went (wifi_setup.py,
+# #279): saved, or not (refused, or it could not be checked). The quoted words are the
+# settings phrase (tests/test_i18n.py).
+ACCOUNT_SAVED_TEXT = N_("Your AI account is connected.")
+ACCOUNT_NOT_SAVED_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
+                            "save it. Say \"open my settings\" to try again.")
+# The same where "open my settings" is not usable (settings_access.usable).
+ACCOUNT_NOT_SAVED_PLAIN_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
+                                  "save it.")
 # The first-boot setup, left because the box came online by another way (_leave_online).
 ONLINE_NOW_TEXT = N_("I'm online now, so I've left setup mode.")
 # While setup runs, the client hears it is under way (_keep_awake): the call id it is
@@ -140,6 +149,15 @@ PATTERNS = {
     "no": r"\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\b",
     "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
     "repeat": r"\b(?:repeat|again|what was|what's the|password|network name|say that)\b",
+    # "open my settings" (settings_access.SettingsPhrase, #279): a request to see the
+    # box's settings, said as a request on its own -- it starts the utterance (after at
+    # most a short lead-in: "ok", "hey", "please"...), so "on my phone, open the settings"
+    # is not it, and the phrase ends the sentence (or "page", "please", "now" follow it).
+    # How short and that it is no question is the phrase's own rule
+    # (settings_access.PHRASE_MAX_WORDS). Every catalog's pattern is anchored the same way.
+    "settings": r"^\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
+                r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
+                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\b)",
 }
 
 # English words that make a "start" match a question or a complaint about Wi-Fi rather
@@ -258,6 +276,22 @@ def spell(text: str, t: i18n.T) -> str:
     return t.p("spell", ", ").join(words_)
 
 
+def spoken_address(host: str, t: i18n.T) -> str:
+    """A host name or address as a voice reads it out, label by label with "dot" between:
+    a label of letters alone as a word ("local"), digits one by one ("one zero"), anything
+    else spelled (spell(): "teaport dash nine E three five"). The setup page's address
+    (instructions) and the Settings address (settings_access.py) are read this way."""
+    said = []
+    for label in host.split("."):
+        if label.isascii() and label.isalpha():
+            said.append(label)
+        elif label.isascii() and label.isdigit():
+            said.append(" ".join(t.p("digit", d) for d in label))
+        else:
+            said.append(" ".join(spell(label, t).split(t.p("spell", ", "))))
+    return f" {t.p('spell', 'dot')} ".join(said)
+
+
 def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
     """What the user does next, in the order they do it. With the box's display up
     (wifi_setup.py shows "Network ...", "Password ..." and an address, and a code that
@@ -284,65 +318,40 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
     # the .local name, or the bare address digit by digit ("one zero dot four two ...").
     host = (status.get("url") or "").removeprefix("http://")
     name = ssid.split("-", 1)[1] if ssid.startswith(SSID_WORD + "-") else ""
-    if name and host == f"{ssid}.local":
-        parts = spell(name, t).split(t.p("spell", ", "))
-        url = " ".join([SSID_WORD, t.p("spell", "dash"), *parts, t.p("spell", "dot"), "local"])
-    else:
-        address = host if re.fullmatch(r"[0-9.]+", host) else AP_ADDRESS
-        url = f" {t.p('spell', 'dot')} ".join(
-            " ".join(t.p("digit", d) for d in part) for part in address.split("."))
+    if not (name and host == f"{ssid}.local") and not re.fullmatch(r"[0-9.]+", host):
+        host = AP_ADDRESS
+    url = spoken_address(host, t)
     return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "Then open your browser, go to {url}, and pick your Wi-Fi.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
 
 
-class WifiSetupVoice(FrameProcessor):
-    """Between the user's transcript and the LLM. Idle: passes everything through,
-    watching final transcripts for the setup phrase. Confirming or running: takes the
-    user's final transcripts itself and speaks fixed sentences."""
+class PhraseVoice(FrameProcessor):
+    """The session's fixed phrases, between the user's transcript and the LLM: what the
+    box hears and answers itself, without the model, in the session's language (catalog
+    "pattern" entries, heard()). It says its lines itself (say(): out of the context,
+    never through the LLM) and takes the box's own voice heard back for nothing (_echo).
+    A transcript a phrase takes goes on emptied and marked (taken_turn).
 
-    def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
-                 lang_fn=lambda: "en-us", alive=None, online=None, model: bool = True,
-                 **kw):
+    `phrases`: the phrases heard while nothing else holds the user's words, each an
+    object with `async heard(voice, text) -> bool` (True: it took them) -- "open my
+    settings" (settings_access.SettingsPhrase, #279). A subclass that holds the words for
+    a while (WifiSetupVoice, while it asks or runs) says so with idle(), and answers the
+    rest in _own()."""
+
+    TAKEN_BY = "taken by a fixed phrase"
+
+    def __init__(self, lang_fn=lambda: "en-us", clock=time.monotonic, phrases=(), **kw):
         super().__init__(**kw)
-        # The session has a model (#277). Without one the phrase works online too: the
-        # rule that leaves it to the model online has no model to leave it to.
-        self.model = model
         # taken_turn.TakenWords, where the session keeps one (agent_session).
         self.taken_words = None
         self._lang_fn = lang_fn  # the session's TTS language now ('en-us', 'es', ...)
-        self._run = run or _run_helper
-        self._alive = alive or _unit_active
-        self._online = online or _box_online
-        self._status_path = status_path
         self._clock = clock
-        self.state = "idle"  # idle | confirm | running
-        self._unclear = 0
-        self._asked = 0.0  # when the confirm question was put
-        self._lapser: asyncio.Task | None = None  # lapses it (_question_lapses)
-        # The words setup took while asking (the phrase, unclear answers): given back to
-        # the model if the answer never becomes a yes or a no.
-        self._held: list[str] = []
+        self.phrases = list(phrases)
         self._returning: list[str] = []
-        self._last: dict = {}
-        self._before: tuple | None = None  # (run_id, time) of the file before this run
-        self._why = ""  # the last failed attempt's reason (an English msgid)
-        # The user has heard "I'm in setup mode" this run: an error before that is a
-        # failure to go into it, not a leaving.
-        self._in_mode = False
-        self._poller: asyncio.Task | None = None
         self._bot_speaking = False
         self._quiet_since = -math.inf
         self._said: deque = deque(maxlen=8)  # (when, normalized line)
-        # Where the model hears how setup ended: the session's ClientNotes, set once it
-        # exists (agent_session.py); None, and the model is told nothing.
-        self.notes = None
-        self._by_model = False  # this setup began with the wifi_setup tool
-        self._cancelling = False  # the user's cancel is stopping the unit (_cancel)
-        # This setup is the first-boot one (first_boot.py): it began with the welcome, and
-        # an end that leaves the box offline says how to start it again.
-        self._first_boot = False
-        self._kept = -math.inf  # when the bridge was last told setup is under way
 
     @property
     def t(self) -> i18n.T:
@@ -355,12 +364,8 @@ class WifiSetupVoice(FrameProcessor):
 
     def note_said(self, text: str) -> None:
         """`text` is being said: heard back, it is the box's own voice (_echo). say()'s,
-        and the no-model line's, which holds the start phrase (llm_error_speaker.py)."""
+        and the no-model line's, which holds a phrase (llm_error_speaker.py)."""
         self._said.append((self._clock(), _norm(text)))
-
-    async def box_online(self) -> bool:
-        """Is the box on the internet (_box_online, or the check it was given)?"""
-        return await self._online()
 
     def _echo(self, text: str) -> bool:
         """Is `text` the box's own voice, heard back: while it speaks or just after, a
@@ -379,6 +384,116 @@ class WifiSetupVoice(FrameProcessor):
         else:
             return False
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
+
+    def _spawn(self, coro) -> asyncio.Task:
+        return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
+
+    @property
+    def settings_usable(self) -> bool:
+        """Is "open my settings" usable here (settings_access.usable): a line may tell the
+        user to say it."""
+        from teaport_brain import settings_access
+        return settings_access.usable(self.phrases)
+
+    # -- hearing
+    def idle(self) -> bool:
+        """Nothing holds the user's words: the phrases are listened for."""
+        return True
+
+    async def _heard(self, text: str) -> bool:
+        """Handle a final transcript; True if a phrase took it. Words to give the model
+        ahead of it, if any, are left in _returning."""
+        self._returning = []
+        if self._echo(text):
+            logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
+            return True
+        if self.idle():
+            for phrase in self.phrases:
+                if await phrase.heard(self, text):
+                    return True
+        return await self._own(text)
+
+    async def _own(self, text: str) -> bool:
+        """A subclass's own phrases and answers: none here."""
+        return False
+
+    async def _ending(self) -> None:
+        """The session ends (EndFrame, CancelFrame): what a subclass stops."""
+
+    # -- the frames
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking, self._quiet_since = False, self._clock()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            await self._ending()
+        elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
+              and not is_taken(frame)):
+            if await self._heard(frame.text or ""):
+                if self.taken_words is not None:
+                    await self.taken_words.took(frame.text, self.TAKEN_BY)
+                await self.push_frame(taken(frame), direction)  # ours: no words go on
+                return
+            for text in self._returning:
+                await self.push_frame(handed_back(frame, text), direction)
+            self._returning = []
+        await self.push_frame(frame, direction)
+
+
+class WifiSetupVoice(PhraseVoice):
+    """Spoken Wi-Fi setup. Idle: passes everything through, watching final transcripts
+    for the setup phrase (and the session's other phrases). Confirming or running: takes
+    the user's final transcripts itself and speaks fixed sentences."""
+
+    TAKEN_BY = "taken by Wi-Fi setup"
+
+    def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
+                 lang_fn=lambda: "en-us", alive=None, online=None, model: bool = True,
+                 on_network=None, **kw):
+        super().__init__(lang_fn=lang_fn, clock=clock, **kw)
+        # The session has a model (#277). Without one the phrase works online too: the
+        # rule that leaves it to the model online has no model to leave it to.
+        self.model = model
+        self._run = run or _run_helper
+        self._alive = alive or _unit_active
+        self._online = online or _box_online
+        self._on_network = on_network or _box_on_network
+        self._status_path = status_path
+        self.state = "idle"  # idle | confirm | running
+        self._unclear = 0
+        self._asked = 0.0  # when the confirm question was put
+        self._lapser: asyncio.Task | None = None  # lapses it (_question_lapses)
+        # The words setup took while asking (the phrase, unclear answers): given back to
+        # the model if the answer never becomes a yes or a no.
+        self._held: list[str] = []
+        self._last: dict = {}
+        self._before: tuple | None = None  # (run_id, time) of the file before this run
+        self._why = ""  # the last failed attempt's reason (an English msgid)
+        # The user has heard "I'm in setup mode" this run: an error before that is a
+        # failure to go into it, not a leaving.
+        self._in_mode = False
+        self._poller: asyncio.Task | None = None
+        # Where the model hears how setup ended: the session's ClientNotes, set once it
+        # exists (agent_session.py); None, and the model is told nothing.
+        self.notes = None
+        self._by_model = False  # this setup began with the wifi_setup tool
+        self._cancelling = False  # the user's cancel is stopping the unit (_cancel)
+        # This setup is the first-boot one (first_boot.py): it began with the welcome, and
+        # an end that leaves the box offline says how to start it again.
+        self._first_boot = False
+        self._kept = -math.inf  # when the bridge was last told setup is under way
+
+    async def box_on_network(self) -> bool:
+        """Is the box on a network a phone can reach it on, internet or not (Settings,
+        settings_access.py)? Wrong on the safe side: anything but a clear "no network"
+        counts as on one (_on_network)."""
+        return await self._on_network()
+
+    async def box_online(self) -> bool:
+        """Is the box on the internet (_box_online, or the check it was given)?"""
+        return await self._online()
 
     # -- the ways in
     async def begin(self, by_model: bool = False) -> None:
@@ -509,9 +624,6 @@ class WifiSetupVoice(FrameProcessor):
         self.state = "idle"
         self._ended(f"the user cancelled it; {_PUT_BACK}")
         await self._say_end(self._put_back_line(cancelled=True))
-
-    def _spawn(self, coro) -> asyncio.Task:
-        return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
 
     async def _stop_following(self) -> None:
         if self._poller and self._poller is not asyncio.current_task():
@@ -651,13 +763,22 @@ class WifiSetupVoice(FrameProcessor):
         elif phase == "connected":
             self.state = "idle"
             target = status.get("target")
+            account = status.get("account") if isinstance(status.get("account"), dict) else {}
+            saved = account.get("result") == "saved"
             self._ended((f"connected to {json.dumps(target, ensure_ascii=False)}"
-                         if target else "connected") + "; the box is online.", online=True)
+                         if target else "connected") + "; the box is online." + (
+                " The owner's AI account key from the setup page was saved." if saved else
+                f" The AI account key typed on the setup page was not saved "
+                f"({account.get('result')}: {account.get('reason') or 'no reason'})."
+                if account else ""), online=True)
             # Online once: the box is no longer new (first_boot.py).
             self._first_boot = False
             _first_boot().reached_online("Wi-Fi setup connected")
-            await self.say(t._("I'm connected to {network}, and I'm online again.")
-                           .format(network=network))
+            line = t._("I'm connected to {network}, and I'm online again.").format(network=network)
+            if account:
+                line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT
+                                  if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
+            await self.say(line)
         elif phase == "timeout":
             self.state = "idle"
             # The reasons are English msgids (wifi.py / wifi_setup.py): no password.
@@ -705,40 +826,22 @@ class WifiSetupVoice(FrameProcessor):
         return t._("Sorry, I couldn't go into setup mode: {reason}.").format(reason=reason)
 
     # -- the frames
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_speaking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking, self._quiet_since = False, self._clock()
-        elif isinstance(frame, (EndFrame, CancelFrame)):
-            # The unit outlives the session; only the following stops.
-            if self._lapser is not None:
-                self._lapser.cancel()
-            await self._stop_following()
-        elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
-              and not is_taken(frame)):
-            if await self._heard(frame.text or ""):
-                if self.taken_words is not None:
-                    await self.taken_words.took(frame.text, "taken by Wi-Fi setup")
-                await self.push_frame(taken(frame), direction)  # ours: no words go on
-                return
-            for text in self._returning:
-                await self.push_frame(handed_back(frame, text), direction)
-            self._returning = []
-        await self.push_frame(frame, direction)
+    async def _ending(self) -> None:
+        # The unit outlives the session; only the following stops.
+        if self._lapser is not None:
+            self._lapser.cancel()
+        await self._stop_following()
 
-    async def _heard(self, text: str) -> bool:
-        """Handle a final transcript; True if setup took it. Words to give the model
-        ahead of it, if any, are left in _returning."""
-        t = self.t
-        self._returning = []
-        if self._echo(text):
-            logger.debug(f"wifi setup: {quoted(text[:40])} is the box's own voice — ignored")
-            return True
+    def idle(self) -> bool:
         if self.state == "confirm" and self._clock() - self._asked > CONFIRM_SECS:
             self._lapse()  # its timer has not run yet (a busy loop): the words decide
-        if self.state == "idle":
+        return self.state == "idle"
+
+    async def _own(self, text: str) -> bool:
+        """Setup's own: the start phrase while idle, the answer to its question, and
+        "cancel" / "repeat" while it runs."""
+        t = self.t
+        if self.idle():
             if not heard("start", text, t):
                 return False
             if self.model and await self._online():
@@ -841,6 +944,24 @@ async def _box_online() -> bool:
     the safe side: anything but a fresh "full" leaves the phrase working (no check
     configured, a slow or dead link included)."""
     return await connectivity() == "full"
+
+
+# NetworkManager's overall state (NMState): CONNECTED_LOCAL and up (50 local, 60 site,
+# 70 global) have an address on some network.
+NM_CONNECTED_LOCAL = 50
+
+
+async def _box_on_network() -> bool:
+    """Is the box on any network (NetworkManager's State at least CONNECTED_LOCAL)? Only
+    a clear answer below it is "no": NM not answering counts as on one."""
+    state = await _output(
+        "busctl", "get-property", "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager", "State",
+        timeout=NM_PROPERTY_SECS)
+    parts = (state or "").split()
+    if len(parts) == 2 and parts[0] == "u" and parts[1].isdigit():
+        return int(parts[1]) >= NM_CONNECTED_LOCAL
+    return True
 
 
 async def _unit_active() -> bool | None:

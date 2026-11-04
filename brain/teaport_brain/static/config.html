@@ -7,7 +7,7 @@
 <meta name="description" content="Settings for this Teaport box.">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#137a6f">
-<link rel="icon" href="/config/logo.svg" type="image/svg+xml">
+<link rel="icon" href="config/logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Montserrat:wght@700&display=swap" rel="stylesheet">
@@ -181,13 +181,26 @@
   .wifi-form { display: grid; gap: 10px; max-width: 640px; margin: 16px 0 0; }
   .wifi-form input { height: var(--btn-height); font: inherit; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
   .wifi-msg { margin: 14px 0 0; }
+
+  /* The owner's part (#279): the AI account step, then everything else behind "Show
+     advanced" -- folded by default on the front door's /settings/config. */
+  body:not(.show-adv) .adv { display: none !important; }
+  body:not(.show-adv) .page { grid-template-columns: minmax(0, var(--maxw-prose)); }
+  .account { margin: 0 0 40px; }
+  .account .acct-form { display: grid; gap: 10px; max-width: 640px; margin: 16px 0 0; }
+  .account input { height: var(--btn-height); font: inherit; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
+  .account .acct-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .account .acct-msg { margin: 14px 0 0; }
+  .account .acct-msg.err { color: var(--err-ink); }
+  .account .acct-msg.ok { color: var(--ok-ink); }
+  .adv-toggle { margin: 0 0 24px; }
 </style>
 </head>
 <body>
 <header class="nav">
   <div class="wrap navbar">
     <div class="brand-lockup">
-      <a href="/config" aria-label="Teaport configuration"><img src="/config/logo.svg" alt="Teaport" class="brand-logo" width="86" height="48"></a>
+      <a href="config" aria-label="Teaport configuration"><img src="config/logo.svg" alt="Teaport" class="brand-logo" width="86" height="48"></a>
       <span class="brand-byline">configuration</span>
     </div>
     <div class="services" id="services" aria-live="polite"></div>
@@ -206,9 +219,11 @@
   </div>
 
   <div class="page" id="page" hidden>
-    <nav class="index" id="index" aria-label="Sections"></nav>
+    <nav class="index adv" id="index" aria-label="Sections"></nav>
     <div>
-      <header class="intro">
+      <section class="account" id="account" hidden></section>
+      <div class="adv-toggle" id="advtoggle" hidden><button class="btn-ghost btn-sm" type="button" id="advbtn"><span class="btn-label" id="advlabel">Show advanced</span></button></div>
+      <header class="intro adv">
         <div class="eyebrow">This box</div>
         <h1>Configuration</h1>
         <p class="lede">A change is written to the box the moment you save. It takes effect when the service that reads it restarts — nothing here hot-reloads, and the page says which service is waiting.</p>
@@ -218,8 +233,8 @@
         </div>
         <div id="banners"></div>
       </header>
-      <section class="group" id="g-wifi" hidden></section>
-      <div id="groups"></div>
+      <section class="group adv" id="g-wifi" hidden></section>
+      <div id="groups" class="adv"></div>
       <footer class="foot">
         Rendered from <span class="mono">config_schema.toml</span> — the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.
       </footer>
@@ -260,6 +275,11 @@
     return el;
   };
 
+  // On the front door the page is /settings/config and its routes are under /settings,
+  // where the owner's Settings session stands in for the token (settings_access.py).
+  const BASE = location.pathname.startsWith('/settings/') ? '/settings' : '';
+  document.body.classList.toggle('show-adv', !BASE);
+
   // ---- auth: ?token= once, then localStorage, then the gate.
   let token = '';
   try {
@@ -275,8 +295,8 @@
   } catch (e) { /* storage may be unavailable; the gate still works per load */ }
 
   const api = async (path, opts = {}) => {
-    const res = await fetch(path, {
-      ...opts,
+    const res = await fetch(BASE + path, {
+      ...opts, credentials: 'same-origin',
       headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(opts.headers || {}) },
     });
     if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401 });
@@ -514,6 +534,63 @@
       now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), nets, form, out);
   };
 
+  // ---- the AI account (#279): the owner's step, in the phone's language. The key is
+  // saved the way any setting is (PUT /api/config), which checks it with the provider
+  // first; a refused or unchecked key needs "Save anyway" (force_key).
+  const renderAccount = async () => {
+    const sec = $('#account');
+    let a;
+    try { a = (await api('/api/account')).body; } catch (e) { sec.hidden = true; return; }
+    const T = a.text || {};
+    $('#advlabel').textContent = T.advanced || 'Show advanced';
+    $('#advtoggle').hidden = !BASE;  // operators on /config see everything already
+    if (BASE) {
+      document.title = T.settings || document.title;
+      document.documentElement.lang = a.lang || 'en';
+      document.documentElement.dir = a.dir || 'ltr';
+    }
+    if (!a.offered) { sec.hidden = true; $('#advtoggle').hidden = true; document.body.classList.add('show-adv'); return; }
+    const state = h('p', { class: 'group-blurb' }, a.key_set ? T.connected : T.none);
+    const key = h('input', { type: 'password', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.key, placeholder: T.key });
+    const out = h('p', { class: 'acct-msg', 'aria-live': 'polite' });
+    const saveBtn = h('button', { class: 'btn-primary', type: 'submit' }, T.save);
+    const forceBtn = h('button', { class: 'btn-ghost', type: 'button', hidden: true }, h('span', { class: 'btn-label' }, T.force));
+    const send = async (force) => {
+      const value = key.value.trim();
+      if (!value) { key.focus(); return; }
+      saveBtn.disabled = forceBtn.disabled = true; forceBtn.hidden = true;
+      out.className = 'acct-msg'; out.textContent = T.checking;
+      try {
+        const res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store: 'brain_env', values: { LLM_API_KEY: value }, force_key: force }) });
+        if (res.status === 200) {
+          key.value = ''; out.className = 'acct-msg ok'; out.textContent = T.works;
+          state.textContent = T.connected;
+        } else if (res.body.key_check) {
+          const kc = res.body.key_check;
+          out.className = 'acct-msg err';
+          out.textContent = (kc.state === 'refused' ? T.refused : T.unknown).replace('{reason}', kc.reason || '');
+          forceBtn.hidden = false;
+        } else {
+          out.className = 'acct-msg err';
+          out.textContent = Object.values(res.body.errors || {}).join(' ') || (res.body.constraints || []).join(' ') || res.body.detail || '';
+        }
+      } catch (e) { out.className = 'acct-msg err'; out.textContent = e.message; }
+      finally { saveBtn.disabled = forceBtn.disabled = false; }
+    };
+    forceBtn.onclick = () => send(true);
+    const form = h('form', { class: 'acct-form', onsubmit: (e) => { e.preventDefault(); send(false); } },
+      key, h('div', { class: 'acct-actions' }, saveBtn, forceBtn));
+    sec.replaceChildren(
+      h('div', { class: 'group-head' }, h('h2', {}, T.title)),
+      h('p', { class: 'group-blurb' }, T.intro), state, form, out,
+      BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null);
+    sec.hidden = false;
+  };
+  $('#advbtn').addEventListener('click', () => {
+    document.body.classList.toggle('show-adv');
+    if (document.body.classList.contains('show-adv')) document.querySelectorAll('section.group').forEach((g) => io.observe(g));
+  });
+
   const renderServices = () => {
     const el = $('#services'); el.replaceChildren();
     for (const [unit, state] of Object.entries(data.services || {})) {
@@ -616,6 +693,14 @@
           force = true;
           res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force }) });
         }
+        if (res.status === 400 && res.body.key_check) {
+          // LLM_API_KEY is checked with the provider before it is saved (ai_account.py).
+          const kc = res.body.key_check;
+          const sure = await confirmDialog(kc.state === 'refused' ? 'The provider refused this key' : 'The key could not be checked',
+            [kc.reason || kc.state, 'Saved anyway, every answer may fail until the key is fixed.'], 'Save anyway');
+          if (!sure) return;
+          res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force, force_key: true }) });
+        }
         if (res.status === 400) { showErrors(res.body.errors || { _: res.body.detail || 'rejected' }); return; }
         for (const name of Object.keys(values)) delete edits[name];
       }
@@ -644,7 +729,7 @@
   // ---- load
   const fetchHealth = async () => {  // the brain's /health (no token), or null: it is down
     try {
-      const res = await fetch('/health', { cache: 'no-store' });
+      const res = await fetch(BASE + '/health', { cache: 'no-store' });
       return res.ok ? await res.json() : null;
     } catch (e) { return null; }
   };
@@ -655,10 +740,13 @@
       $('#gate').hidden = true; $('#page').hidden = false;
       render();
       renderWifi();
+      renderAccount();
       if (banner) renderBanners(banner);
       document.querySelectorAll('section.group').forEach((s) => io.observe(s));
     } catch (e) {
-      if (e.status === 401) {
+      if (e.status === 401 && BASE) {
+        location.href = '/settings';  // the session ran out: the code page
+      } else if (e.status === 401) {
         $('#page').hidden = true; $('#gate').hidden = false;
         $('#gateerr').hidden = !token;
         $('#tokeninput').focus();

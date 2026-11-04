@@ -393,6 +393,9 @@ label.f{display:block;margin:18px 0 6px;font-weight:600}
 button{margin-top:20px;width:100%;height:48px;border:0;border-radius:var(--radius);
 background:var(--btn-bg);color:var(--btn-fg);font:inherit;font-weight:700;cursor:pointer}
 .err{color:var(--err-ink);background:var(--err-bg);padding:10px 14px;border-radius:var(--radius);font-weight:600}
+details.acct{margin:22px 0 0;padding:10px 14px;border:1px solid var(--border-strong);
+border-radius:var(--radius);background:var(--surface)}details.acct summary{cursor:pointer;font-weight:600}
+details.acct p{margin:8px 0 0}
 .show{display:flex;gap:8px;align-items:center;color:var(--muted);margin-top:8px}
 /* The phone's own fonts, per script: the page sets lang, and a Han character must be
    drawn in the Japanese, Chinese or Korean form its reader expects (one code point,

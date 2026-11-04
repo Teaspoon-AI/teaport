@@ -226,6 +226,18 @@ def secret_file(name: str) -> str | None:
         return None
 
 
+def write_secret(path: str, value: str) -> None:
+    """Write a secret file the way the brain reads one (secret_file): one line, mode 600,
+    replaced atomically, its directory made 700 if missing. The config page's secrets
+    and the AI account's key (ai_account.store_key) are written here."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(value + "\n")
+    os.replace(tmp, path)
+
+
 def out_of_bounds(row: dict, n) -> str | None:
     """The reason `n` is outside the row's min/max, or None."""
     lo, hi = row.get("min"), row.get("max")

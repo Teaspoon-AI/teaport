@@ -2,6 +2,7 @@
 page, the join/rollback/timeout flow against a fake NetworkManager and a real HTTP
 server) and its voice half (wifi_voice.py — the phrase, confirming, speaking the
 details digit by digit, following status.json, repeat and cancel). No radio needed."""
+import re
 import asyncio
 import json
 import os
@@ -36,13 +37,50 @@ def test_an_all_hex_override_is_refused_with_a_warning(override, capsys):
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Cafe-1") == "Cafe-1"   # not all hex: kept
 
 
+DEFAULT = re.compile(r"[a-hj-km-npr-z2-9]{4}-[a-hj-km-npr-z2-9]{4}-[a-hj-km-npr-z2-9]{4}")
+
+
+def is_default(pw: str) -> bool:
+    """The default password's form: three groups of four, no 0/o/1/l/i."""
+    return bool(DEFAULT.fullmatch(pw)) and not set(pw) & set("0o1liq")
+
+
 def test_the_flash_time_password_wins_when_valid():
     assert ws.setup_password("47190352") == "47190352"
     assert ws.setup_password(" Tito2017 ") == "Tito2017"
+    assert ws.setup_password("k7mq-x4tn-p9wr") == "k7mq-x4tn-p9wr"  # the insert's form
     for bad in ("", "1234567", "x" * 64, "pässwörd1"):
-        pw = ws.setup_password(bad)
-        assert pw.isdigit() and len(pw) == ws.PASSWORD_DIGITS, bad
-    assert len({ws.setup_password("") for _ in range(20)}) > 1  # fresh each time
+        assert is_default(ws.setup_password(bad)), bad
+
+
+def test_the_default_password_is_three_groups_from_the_csprng_and_fresh_each_run(monkeypatch):
+    assert set(ws.PASSWORD_ALPHABET) == set("abcdefghjkmnprstuvwxyz23456789")
+    assert not set(ws.PASSWORD_ALPHABET) & set("0o1liq")  # look-alikes, and q (ja: 9)
+    many = [ws.setup_password("") for _ in range(500)]
+    assert all(is_default(pw) and len(pw) == 14 for pw in many)
+    assert len(set(many)) == len(many)              # fresh every run
+    assert set("".join(many).replace("-", "")) == set(ws.PASSWORD_ALPHABET)  # all used
+    drawn = []
+
+    class Csprng:
+        @staticmethod
+        def choice(seq):
+            drawn.append(seq)
+            return seq[0]
+
+    monkeypatch.setattr(ws, "secrets", Csprng)
+    assert ws.setup_password("") == "aaaa-aaaa-aaaa"
+    assert drawn == [ws.PASSWORD_ALPHABET] * 12     # the secrets module, one draw a character
+
+
+def test_the_qr_code_and_the_screen_carry_the_password_as_it_is_typed():
+    assert ws.wifi_qr("teaport-9e35", "k7mq-x4tn-p9wr") == "WIFI:T:WPA;S:teaport-9e35;P:k7mq-x4tn-p9wr;;"
+    assert ws.wifi_qr("Home;Net", 'a;b,c:d"e\\f') == 'WIFI:T:WPA;S:Home\\;Net;P:a\\;b\\,c\\:d\\"e\\\\f;;'
+    assert len(ws.wifi_qr("teaport-9e35", "k7mq-x4tn-p9wr").encode()) <= 53  # the avatar's QR
+    # One line that does not scroll: the 14 characters whole, after a shorter label.
+    assert ws.password_line("k7mq-x4tn-p9wr") == "Pass  k7mq-x4tn-p9wr"
+    assert ws.password_line("47190352") == "Password  47190352"
+    assert len(ws.password_line("k7mq-x4tn-p9wr")) <= ws.SCREEN_LINE_CHARS
 
 
 # ------------------------------------------------------------------ nmcli output

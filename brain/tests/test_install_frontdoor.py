@@ -25,7 +25,7 @@ INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
 
 STUBS = r'''
 set -euo pipefail
-DRY_RUN=0 BRAIN_PORT=7861 GATEWAY_PORT=18789 ETC="$T/etc" CADDY_PKI="$T/pki" CADDYFILE="$T/Caddyfile"
+DRY_RUN=0 BRAIN_PORT=7861 GATEWAY_PORT=18789 SETTINGS_PORT=8443 ETC="$T/etc" CADDY_PKI="$T/pki" CADDYFILE="$T/Caddyfile"
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}" FRONTDOOR_CA_NAME=""
 TLS_CERT="${TEAPORT_TLS_CERT:-}" TLS_KEY="${TEAPORT_TLS_KEY:-}" REGENERATE_CA="${TEAPORT_REGENERATE_CA:-0}"
 log()  { printf 'LOG %s\n' "$*"; }
@@ -293,6 +293,11 @@ def test_the_caddyfile_names_the_ca_and_serves_one_certificate_or_the_other():
     # leaves stopped the iPhone app with "Gateway certificate changed" every 8 hours.
     assert LOCAL_TLS in local and "tls internal" not in local
     assert "            intermediate_lifetime 1095d" in local
+    # The owner's Settings (#279) on an origin of its own: its own site on its own port,
+    # and only a redirect to it from the gateway's site and from plain http.
+    settings_site = local[local.index("teaport.local:8443 {"):]
+    assert "reverse_proxy 127.0.0.1:7861" in settings_site and "respond 404" in settings_site
+    assert local.count("redir https://{host}:8443{uri}") == 2
     adapted = _adapt(pathlib.Path(t, "Caddyfile"))
     if adapted is not None:
         assert '"name":"Teaport 9e35 Local Authority"' in adapted

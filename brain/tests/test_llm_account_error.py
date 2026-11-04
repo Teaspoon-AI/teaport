@@ -303,7 +303,7 @@ _CLI = os.path.join(HERE, "..", "..", "cli", "teaport")
 _MARK = {"✓": "OK", "!": "WARN", "✗": "FAIL"}
 
 
-def _cli(cmd: str, health) -> str:
+def _cli(cmd: str, health, brain_env: str | None = None) -> str:
     """`teaport <cmd>` with the brain's /health stubbed to `health` (None: no answer),
     nothing installed and no unit or port probed, as test_tts_pacing's _doctor_run."""
     from tempdirs import tempdir
@@ -317,6 +317,10 @@ def _cli(cmd: str, health) -> str:
     home = tempdir("teaport-answers-")
     env = dict(os.environ, HOME=home, TEAPORT_SECRETS_DIR=home,
                TEAPORT_PREFIX=os.path.join(home, "opt"), TEAPORT_ETC=os.path.join(home, "etc"))
+    if brain_env is not None:  # the box's brain.env, for what the CLI reads from it
+        os.makedirs(os.path.join(home, "etc"), exist_ok=True)
+        with open(os.path.join(home, "etc", "brain.env"), "w") as f:
+            f.write(brain_env)
     env.pop("LLM_API_KEY", None)
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
     assert not p.stderr, p.stderr

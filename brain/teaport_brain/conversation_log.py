@@ -18,6 +18,10 @@
 #     that adds or rewords one fails test_conversation_log's premise check, which scans
 #     every pipecat module the brain loads, rather than leaking quietly.
 #
+# Some words are never logged, switch or no switch: a one-time code the box reads out
+# (settings_access.py, #279), which is the owner's access until it is used. never_log()
+# names them, and the patcher blanks them in every record of every logger.
+#
 # The diagnostic switches (LEDGER_TRACE, TEAPORT_TRACE, TEAPORT_ENDPOINT_DEBUG,
 # TEAPORT_RAW_LLM_CAPTURE) follow the same rule: their lines carry words only with
 # TEAPORT_LOG_CONVERSATIONS on too. TEAPORT_AUDIO_DUMP is the one that records on its
@@ -25,6 +29,8 @@
 #
 import re
 import sys
+import threading
+import time
 
 from loguru import logger
 
@@ -67,8 +73,49 @@ _PIPECAT_TEXT = (
 )
 
 
+# Text no record may carry (never_log): (until, pattern), each dropped once its code has
+# expired -- a code's life is minutes, and nothing is kept past it.
+_NEVER: tuple = ()
+# never_log and the patcher run on any thread (loguru logs from all of them): the tuple is
+# replaced whole, under this lock, so an entry added while another thread drops the
+# expired ones is never lost.
+_NEVER_LOCK = threading.Lock()
+NEVER_MARK = "<code>"
+# A clause of a spelled code is blanked from this many of its items in a row: fewer is
+# too common to be the code ("two, three" is anyone's words).
+NEVER_MIN_ITEMS = 3
+
+
+def never_log(text: str, sep: str | None = None, secs: float = 600.0) -> None:
+    """`text` never reaches the journal for the next `secs` (its code's life, and some):
+    the patcher blanks it in every record, TEAPORT_LOG_CONVERSATIONS or not. With `sep` (a
+    code spelled out, items joined by it), any NEVER_MIN_ITEMS or more of its items in a
+    row are blanked too -- the TTS can log a line cut into clauses -- and only as whole
+    items (never inside a word: "DATA, BASE" is no "A, B")."""
+    if not text:
+        return
+    items = text.split(sep) if sep else [text]
+    joiner = re.escape(sep.strip() if sep else "") + r"\s*"
+    runs = {joiner.join(re.escape(x.strip()) for x in items[i:j])
+            for i in range(len(items))
+            for j in range(i + min(NEVER_MIN_ITEMS, len(items)), len(items) + 1)}
+    pattern = re.compile(r"(?<!\w)(?:" + "|".join(sorted(runs, key=len, reverse=True)) + r")(?!\w)")
+    global _NEVER
+    with _NEVER_LOCK:
+        _NEVER = _NEVER + ((time.monotonic() + secs, pattern),)
+
+
 def redact(record: dict) -> None:
-    """A loguru patcher: blanks the text in pipecat's conversation-carrying lines."""
+    """A loguru patcher: blanks never_log()'s text in every record, and the text in
+    pipecat's conversation-carrying lines (unless TEAPORT_LOG_CONVERSATIONS)."""
+    global _NEVER
+    if _NEVER:
+        now = time.monotonic()
+        if any(until <= now for until, _ in _NEVER):
+            with _NEVER_LOCK:
+                _NEVER = tuple(e for e in _NEVER if e[0] > now)
+        for _, pattern in _NEVER:
+            record["message"] = pattern.sub(NEVER_MARK, record["message"])
     if LOG_WORDS or not (record.get("name") or "").startswith("pipecat"):
         return
     msg = record["message"]

@@ -37,7 +37,7 @@ import os
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from teaport_brain import config_ui, settings
+from teaport_brain import ai_account, config_ui, settings
 import appliance
 from tempdirs import tempdir
 
@@ -90,6 +90,13 @@ def setup():
         return False
 
     config_ui._wifi_setup_busy = setup_idle
+
+    # No test talks to a provider: a saved LLM_API_KEY is "checked" here
+    # (test_settings_access.py has the check's own answers).
+    def works(key, base_url, timeout=None):
+        return ai_account.Check(ai_account.WORKS)
+
+    config_ui.check_key = works
 
     # The secret file the schema names for LLM_API_KEY, relative to $HOME.
     rows = config_ui._rows()

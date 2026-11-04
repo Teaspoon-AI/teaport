@@ -1643,6 +1643,9 @@ OPENCLAW_HEAP_MIB="${TEAPORT_OPENCLAW_HEAP_MIB:-1536}"   # its JS heap limit (ca
 # the gateway, and found at the agent phase it would stop the install halfway.
 [[ $OPENCLAW_HEAP_MIB =~ ^[1-9][0-9]*$ ]] || die "TEAPORT_OPENCLAW_HEAP_MIB must be a whole number of MiB, not '$OPENCLAW_HEAP_MIB'"
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS (resolve_frontdoor)
+SETTINGS_PORT="${TEAPORT_SETTINGS_PORT:-8443}"    # the owner's Settings, an origin of its own (#279)
+[[ $SETTINGS_PORT =~ ^[1-9][0-9]{0,4}$ ]] && [ "$SETTINGS_PORT" -le 65535 ] && [ "$SETTINGS_PORT" != 443 ] \
+  || die "TEAPORT_SETTINGS_PORT must be a port number other than 443, not '$SETTINGS_PORT'"
 # Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
 # HOME=/var/lib/caddy, so its data dir is the XDG default underneath that. Its leaf
 # certificates are cached beside it, under certificates/local.
@@ -1947,14 +1950,20 @@ reissue_short_intermediate() {
 # silently if the CA were ever regenerated. The path matcher is
 # exact and rewrites to a fixed file, so root.key next to it stays unreachable.
 #
-# /p/* is the one brain path the front door serves: the short pairing links the OLED shows
-# as a QR code (#243), which redirect to OpenClaw's one-time owner handoff. Only that
-# prefix, and only over HTTPS (the code is a bearer secret until used); the rest of the
-# brain (the config page, /talk) stays off the front door, and the http block above never
-# matches it, so a cleartext /p/ hit is just redirected to https first. The brain's own
-# port is open to the LAN (the config page), so the brain itself answers /p/ only to a
-# loopback peer that says X-Forwarded-Proto https -- this proxy, which sets that header
-# itself -- and gives anything else a 404 (pairing.py _via_front_door).
+# Two brain prefixes go through the front door: /p/*, the short pairing links the OLED
+# shows as a QR code (#243), which redirect to OpenClaw's one-time owner handoff; and
+# /settings and /settings/*, the owner's Settings (#279): the code links "open my
+# settings" shows, and the config page with its routes, which take the session a code
+# opens in place of the token (settings_access.py). Settings is served on a port of its
+# own, $SETTINGS_PORT (TEAPORT_SETTINGS_PORT, written to brain.env): another origin than
+# the gateway's, whose pages must not share the session; /settings on 80 and 443 only
+# redirects there. Only those, and only over HTTPS (a
+# code is a bearer secret until used, and the session cookie is Secure); the rest of the
+# brain (/talk, the config page at /config) stays off the front door, and the http block
+# above never matches them, so a cleartext hit is just redirected to https first. The
+# brain's own port is open to the LAN (the config page), so the brain itself answers
+# these only to a loopback peer that says X-Forwarded-Proto https -- this proxy, which
+# sets that header itself -- and gives anything else a 404 (pairing.py via_front_door).
 #
 # The global block names the local CA for this box (#251): every Caddy root is otherwise
 # "Caddy Local Authority", and a phone that trusts two boxes lists two identical entries.
@@ -1977,7 +1986,7 @@ write_caddyfile() {
   if [ -n "$TLS_CERT" ]; then tls=("    tls \"$TLS_CERT\" \"$TLS_KEY\""); fi
   if [ "$DRY_RUN" = 1 ]; then
     local how="local CA, leaf $LEAF_LIFETIME"; if [ -n "$TLS_CERT" ]; then how="own certificate $TLS_CERT"; fi
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, Settings on :%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$SETTINGS_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
@@ -2005,9 +2014,14 @@ write_caddyfile() {
     "    }" \
     "}" \
     "" \
-    "# Cleartext, one path only: the CA above; everything else goes to https." \
+    "# Cleartext, one path only: the CA above; everything else goes to https -- the" \
+    "# owner's Settings to its own port (the address the box reads out has no port)." \
     "http://$FRONTDOOR_HOST {" \
     "    import teaport_ca" \
+    "    @settings path /settings /settings/*" \
+    "    handle @settings {" \
+    "        redir https://{host}:$SETTINGS_PORT{uri}" \
+    "    }" \
     "    handle {" \
     "        redir https://{host}{uri} permanent" \
     "    }" \
@@ -2016,12 +2030,34 @@ write_caddyfile() {
     "$FRONTDOOR_HOST {" \
     "${tls[@]}" \
     "    import teaport_ca" \
-    "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
+    "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed" \
+    "    # here. The owner's Settings (#279) has an origin of its own, below." \
     "    handle /p/* {" \
     "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
     "    }" \
+    "    @settings path /settings /settings/*" \
+    "    handle @settings {" \
+    "        redir https://{host}:$SETTINGS_PORT{uri}" \
+    "    }" \
     "    handle {" \
     "        reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
+    "    }" \
+    "}" \
+    "" \
+    "# The owner's Settings (#279): another port, another origin, so no page the gateway" \
+    "# serves above shares it. Only /settings; the brain checks the port too." \
+    "$FRONTDOOR_HOST:$SETTINGS_PORT {" \
+    "${tls[@]}" \
+    "    import teaport_ca" \
+    "    # Nothing may frame Settings (the brain says so too)." \
+    "    header Content-Security-Policy \"frame-ancestors 'none'\"" \
+    "    header X-Frame-Options DENY" \
+    "    @settings path /settings /settings/*" \
+    "    handle @settings {" \
+    "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
+    "    }" \
+    "    handle {" \
+    "        respond 404" \
     "    }" \
     "}" | SUDO tee "$path" >/dev/null
 }
@@ -2084,7 +2120,8 @@ phase_services() {
     # the pairing pages say about trusting the box (resolve_frontdoor).
     local cert=local; if [ -n "$TLS_CERT" ]; then cert=trusted; fi
     agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT"
-           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST" "TEAPORT_FRONTDOOR_CERT=$cert"
+           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST" "TEAPORT_SETTINGS_PORT=$SETTINGS_PORT"
+           "TEAPORT_FRONTDOOR_CERT=$cert"
            "TEAPORT_FRONTDOOR_CA_NAME=$FRONTDOOR_CA_NAME")
   fi
   write_env "$ETC/brain.env" \

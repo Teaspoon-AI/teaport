@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:235-339#0535c9ab -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:245-352#bb473189 -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:235-339#0535c9ab -->
+<!-- source: cli/teaport:245-352#bb473189 -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1640#2ca3ef5a; install.sh:1946-2004#52b36989 -->
+<!-- source: install.sh:1640#2ca3ef5a; install.sh:1949-2013#6358e06b -->
 
 ## The page opens but nothing happens
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1946-2004#52b36989; install.sh:1818-1863#cd323bfa -->
+<!-- source: install.sh:1949-2013#6358e06b; install.sh:1821-1866#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2019-2025#4326c857; install.sh:2086-2088#1153cfec -->
+<!-- source: install.sh:2033-2037#3c1e6011; install.sh:2122-2125#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -388,7 +388,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:235-339#0535c9ab -->
+<!-- source: cli/teaport:245-352#bb473189 -->
 
 **Fix**
 
@@ -518,26 +518,32 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 - On the room microphone, while teaport is offline and spoken Wi-Fi setup is on:
   "I can't answer questions until I'm set up. Say "set up Wi-Fi" to get me online."
   Saying "set up Wi-Fi" then starts setup mode, online or not.
+- Where "open my settings" works (the room microphone or a Talk conversation, on a
+  device with a front door), the line says that the account it uses for its answers
+  is not set up, and to say "open my settings" to set it up.
 - Anywhere else, the line says that the account it uses for its answers is not set
   up.
 - A phone caller hears a short line that teaport can't take calls now, and then the
   call ends. A caller never hears setup instructions.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:135-148#283133ae -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:135-148#aeaad70d -->
 
 **Fix**
 
 1. Run `teaport status`. The `answers (brain)` line reads `not set up`, with what is
    missing: `no endpoint address`, `the endpoint address isn't valid`, or `no key`.
    `teaport doctor` reports the same line as a failure.
-2. Enter the endpoint and the key on the configuration page, or follow
+2. If only the key is missing, say "open my settings" and paste the key on your
+   phone, as [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)
+   shows, or type it on the setup page in setup mode. Otherwise enter the endpoint
+   and the key on the configuration page, or follow
    [The first sentence fails](#the-first-sentence-fails).
 3. Talk to teaport again. teaport reads the key for each conversation. A
    conversation that was already open says that teaport is ready, and ends: on the
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:75-79#cfea7bcb -->
+<!-- source: cli/teaport:82-89#336ee9d4 -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -549,7 +555,7 @@ it still can't answer. For other failures, such as a provider that is busy or sl
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:116-131#9051cca4 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:118-133#9051cca4 -->
 
 **Fix**
 
@@ -565,7 +571,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:56-94#a8094994 -->
+<!-- source: cli/teaport:59-104#3b2dddca -->
 
 ## teaport does not remember anything
 

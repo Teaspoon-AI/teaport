@@ -385,3 +385,136 @@ msgstr "Займусь этим, секунду."
 
 msgid "One moment, let me set that up."
 msgstr "Секунду, сейчас подготовлю."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "Аккаунт ИИ"
+
+msgid "AI account (optional)"
+msgstr "Аккаунт ИИ (необязательно)"
+
+msgid "An account is connected."
+msgstr "Аккаунт подключён."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Попросите у Teaport новый: скажите «открой настройки»."
+
+msgid "Checking the key…"
+msgstr "Проверка ключа…"
+
+msgid "Code"
+msgstr "Код"
+
+msgid "Continue"
+msgstr "Продолжить"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Введите код, который дал вам Teaport. Он действует один раз."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Я пока не могу отвечать на вопросы: аккаунт, который я использую для ответов, ещё не настроен. Скажите «открой настройки», чтобы его настроить."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "Не получилось использовать введённый вами ключ аккаунта ИИ, поэтому он не сохранён. Скажите «открой настройки», чтобы попробовать ещё раз."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Для этого мне нужен интернет. Скажите «настрой вай-фай», чтобы подключить меня к интернету."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "На моём экране появился код. Отсканируйте его камерой телефона, затем нажмите на появившуюся ссылку, чтобы перейти к моим настройкам."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Если телефон предупреждает, что подключение не защищено, сначала установите {certificate}, а затем попросите у Teaport новый код."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Если телефон предупреждает, что эта страница не защищена, здесь описано, как настроить доверие к Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "В браузере телефона откройте {address} и введите код {code}. Он действует один раз в течение пяти минут."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Оставьте поле пустым, чтобы сохранить аккаунт, который Teaport использует сейчас. Чтобы использовать свой аккаунт OpenRouter, вставьте сюда его ключ. Teaport проверит ключ, как только подключится к интернету, и скажет вслух, подошёл ли он."
+
+msgid "No account is connected yet."
+msgstr "Аккаунт ещё не подключён."
+
+msgid "OpenRouter key"
+msgstr "Ключ OpenRouter"
+
+msgid "Save anyway"
+msgstr "Всё равно сохранить"
+
+msgid "Settings"
+msgstr "Настройки"
+
+msgid "Show advanced"
+msgstr "Показать дополнительные"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Извините, на этом устройстве мои настройки недоступны с телефона."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Нажмите «Продолжить», чтобы открыть настройки Teaport на этом телефоне. Код действует один раз."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport не удалось проверить этот ключ: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport использует для ответов аккаунт OpenRouter. Чтобы использовать свой, вставьте ключ из своего аккаунта OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "сертификат Teaport"
+
+msgid "Test and save"
+msgstr "Проверить и сохранить"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Этот код не подошёл. Проверьте его или попросите у Teaport новый."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "Ключ работает и сохранён. Teaport начнёт использовать его со следующего разговора."
+
+msgid "This code has expired"
+msgstr "Срок действия этого кода истёк"
+
+msgid "This code was already used"
+msgstr "Этот код уже использован"
+
+msgid "This key didn't work: {reason}."
+msgstr "Этот ключ не подошёл: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Ваш аккаунт ИИ подключён."
+
+msgid "no AI service is set up on this box"
+msgstr "на этом устройстве не настроен сервис ИИ"
+
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:э+|эм+|мм+|teaport|типорт|ну|так|окей|ок|слушай|пожалуйста|а|и)\\W+){0,3}(?:(?:открой(?:те)?|покажи(?:те)?|зайди(?:те)?|перейди(?:те)?|открыть|показать)(?:\\s+(?:мне|нам|пожалуйста|в|на|ка))*\\s+(?:(?:мои|свои|твои|ваши)\\s+настройки|настройки|(?:(?:мою|свою|твою|вашу)\\s+)?страницу\\s+настроек)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:пожалуйста|сейчас)\\b)|(?:(?:мои|свои|твои)\\s+)?настройки\\s+(?:пожалуйста\\s+)?(?:открой(?:те)?|покажи(?:те)?)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:пожалуйста|сейчас)\\b))"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "слэш"
+
+msgid "that doesn't look like a key"
+msgstr "это не похоже на ключ"
+
+msgid "the AI service didn't answer"
+msgstr "сервис ИИ не ответил"
+
+msgid "the AI service refused this key"
+msgstr "сервис ИИ отклонил этот ключ"
+
+msgid "the key is empty"
+msgstr "ключ пустой"
+
+msgid "this account has no credit left"
+msgstr "на этом аккаунте не осталось средств"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "ключ этого устройства задан при установке, поэтому изменить его здесь нельзя"
+
+# The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
+msgid "I couldn't use the AI account key you entered, so I didn't save it."
+msgstr "Не получилось использовать введённый вами ключ аккаунта ИИ, поэтому он не сохранён."
