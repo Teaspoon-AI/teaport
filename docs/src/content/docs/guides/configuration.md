@@ -206,11 +206,11 @@ On a device with OpenClaw beside the brain, OpenClaw also pays for its answers a
 
 Both take the key, or neither does, and one save runs at a time, even when the setup page and the configuration page save at the same time. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, or a save stops midway, the page asks you to save the key again, and `teaport status` says that the two might be on different keys until a save goes through. When OpenClaw's gateway runs on another host and does not share this device's auth store, sharing does not apply: the brain saves the key alone, and `teaport status` says that OpenClaw keeps its own key there. Each time the brain starts, it reads OpenClaw's `gateway.mode` again, so a save shares the key again after the gateway is local.
 
-<!-- source: brain/teaport_brain/agent_key.py:65-75#2758bddd; brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:563-571#c05312bd -->
+<!-- source: brain/teaport_brain/agent_key.py:67-77#2758bddd; brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:565-573#c05312bd -->
 
 When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:53-63#78e2d9ae; brain/teaport_brain/agent_key.py:41-52#7d213413; cli/teaport:143-173#a609a6f5 -->
+<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:143-173#a609a6f5 -->
 
 ## What's next
 

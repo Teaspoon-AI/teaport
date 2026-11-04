@@ -46,7 +46,9 @@
 # the first and last 8 characters of a long key). OpenClaw offers no hash of a saved key
 # and its state files are its own, never read here. Every OpenRouter profile showing the
 # brain key's mask: recorded as shared. A different mask: "separate". No answer, or
-# anything that is not a mask (a secret reference, a token, OAuth): "unsynced" (not
+# anything that is not a mask (a secret reference, a token, OAuth), or a credential that
+# is not the saved profiles (kind "models.json": a file/exec/store SecretRef, its own
+# secret, which can win over the profiles -- seen on a box after onboarding): "unsynced" (not
 # known yet; the first save records it). The look writes only if nothing changed while
 # its CLI ran (a save meanwhile wins).
 #
@@ -583,6 +585,9 @@ async def look(brain) -> str | None:
     before = load()
     seen = compare_labels(await _shown(), current)
     if seen is None:
+        logger.info("agent key: OpenClaw's status doesn't show whether it uses the brain's key "
+                    "(no saved OpenRouter profile it is known to use); the next key saved in "
+                    "Settings gives it the same one")
         return None
     fp = fingerprint(current)
 
