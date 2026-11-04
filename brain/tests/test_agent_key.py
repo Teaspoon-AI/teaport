@@ -448,6 +448,34 @@ def test_openclaws_masked_key_is_compared_with_the_brains():
         assert agent_key.compare_labels(unknown, OLD) is None, unknown
 
 
+def _box_status_json(label, kind="models.json", detail="marker(secretref-managed)",
+                     value="marker(secretref-managed)"):
+    """The shape `openclaw models status --json` gave on a box (OpenClaw 2026.9.7):
+    models.providers.openrouter.apiKey a file/exec/store SecretRef, beside a saved profile
+    (key characters synthetic)."""
+    return {"agentDir": "~/.openclaw/agents/main/agent", "auth": {
+        "missingProvidersInUse": [], "oauth": {}, "providersWithOAuth": [],
+        "providers": [{"provider": "openrouter", "effective": {"kind": kind, "detail": detail},
+                       "profiles": {"count": 1, "oauth": 0, "token": 0, "apiKey": 1,
+                                    "labels": [label]},
+                       "modelsJson": {"value": value, "source": "models.json: "
+                                      "~/.openclaw/agents/main/agent/models.json"}}]}}
+
+
+def test_a_models_json_secret_ref_cant_be_told():
+    """OpenClaw onboarding can leave models.providers.openrouter.apiKey a file/exec/store
+    SecretRef: status then shows kind "models.json" (marker(secretref-managed)) even with a
+    saved profile. That ref is a secret of its own and can win over the profiles, so the
+    profile's label says nothing about the key in use: can't be told (the next save binds
+    the provider to the profile)."""
+    label = f"openrouter:manual={agent_key.mask(OLD)}"
+    assert len(label) == 18 + 8 + 3 + 8
+    for row in (_box_status_json(label), _box_status_json(f"openrouter:manual={agent_key.mask(NEW)}"),
+                _box_status_json(label, detail="env: OPENROUTER_API_KEY", value="literal")):
+        assert agent_key.compare_labels(row, OLD) is None, row
+    assert agent_key.compare_labels(_box_status_json(label, kind="profiles"), OLD) == agent_key.SAME
+
+
 def test_the_first_look_records_a_key_openclaw_already_has():
     """Provisioning gave both the same key, and no save recorded it: one look, while
     nobody is talking, at `openclaw models status --json` settles it."""
