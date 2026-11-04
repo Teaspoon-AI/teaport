@@ -178,7 +178,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 
 A device can ship with a starter key: an OpenRouter key with a small spending limit, so that the device answers before you connect your own account. Provisioning marks which key that is in `~/.local/state/teaport/starter_key_sha256`, the run user's state directory: the SHA-256 of the key in hexadecimal, alone on one line. The file holds the hash only, never the key. Write it with `printf %s "$KEY" | sha256sum | cut -d' ' -f1 > ~/.local/state/teaport/starter_key_sha256`, where `$KEY` holds the key without a newline; the hash of the key followed by one newline, which `sha256sum` of a key file gives, also counts. Any other key that you save later is your own, and everything in this section stops.
 
-<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:56#cb5b8dc8 -->
+<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:59#cb5b8dc8 -->
 
 While the device runs on the starter key, the brain reads the key's limit and what is left from OpenRouter, `GET /api/v1/key`, every 30 minutes and after each conversation. The read never holds up a reply, and a read that fails changes nothing. The device warns you at three points:
 
@@ -186,15 +186,17 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 - When $1 or less is left, set by `TEAPORT_STARTER_LOW_USD`.
 - When nothing is left.
 
-<!-- source: brain/teaport_brain/credit.py:16-28#e96849ac; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
+When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget.
+
+<!-- source: brain/teaport_brain/credit.py:16-32#3b958f27; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
-<!-- source: brain/teaport_brain/credit.py:29-39#bd581a1c; brain/teaport_brain/credit.py:95-98#5b43489c -->
+<!-- source: brain/teaport_brain/credit.py:32-42#bd581a1c; brain/teaport_brain/credit.py:98-101#5b43489c -->
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:101-102#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
 
 ## One key for OpenClaw too
 
