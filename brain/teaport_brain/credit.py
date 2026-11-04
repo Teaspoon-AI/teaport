@@ -21,9 +21,9 @@
 # last state known stays, marked not fresh. The record's fields are read tolerantly
 # (ai_account.key_record: "data" or the top level; limit_remaining, or limit minus usage)
 # -- the docs show two shapes. A newer record also carries effective_budget {limit_usd,
-# spend_usd, remaining_usd, ...} (and budgets[], not read): when its limit and remainder
-# are numbers, whichever of it and the key's own limit has less left is the one judged
-# (judge); a missing or malformed block changes nothing.
+# spend_usd, remaining_usd, ...}: whichever of it and the key's own limit has less left is
+# the one judged. ai_account.credit_left is that reading, the one the save-time key check
+# uses too; a missing or malformed block changes nothing.
 #
 # Three states warn (owner decision on #283), judged from the record (judge):
 #   - half: HALF_USED of the limit is used (TEAPORT_STARTER_HALF_USED, default half);
@@ -142,52 +142,22 @@ def on_starter(key: str | None) -> bool:
                     hashlib.sha256((stripped + "\n").encode()).hexdigest())
 
 
-def _number(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-def _budget(record: dict) -> dict | None:
-    """The record's newer budget block, effective_budget {limit_usd, spend_usd,
-    remaining_usd, ...}, as {"limit", "remaining", "usage"} -- None unless limit_usd and
-    remaining_usd are both numbers (anything else in it is ignored). Its usage is
-    spend_usd, else what the limit and the remainder imply."""
-    block = record.get("effective_budget")
-    if not isinstance(block, dict):
-        return None
-    limit, remaining = _number(block.get("limit_usd")), _number(block.get("remaining_usd"))
-    if limit is None or remaining is None:
-        return None
-    usage = _number(block.get("spend_usd"))
-    return {"limit": limit, "remaining": remaining,
-            "usage": usage if usage is not None else max(0.0, limit - remaining)}
-
-
 def judge(record: dict, half: float = None, low: float = None) -> tuple[str, dict]:
-    """(state, {"limit", "remaining", "usage"}) from the key's record. UNKNOWN when it
-    says nothing about what is left (no limit, no remaining). The key's own limit (limit,
-    limit_remaining, usage) and its effective budget (_budget) can both bound it: the one
-    with less left decides, the half mark included (its usage over its limit)."""
+    """(state, {"limit", "remaining", "usage"}) from the key's record, as
+    ai_account.credit_left reads it (the key's own limit or its effective budget,
+    whichever has less left). UNKNOWN when it says nothing about what is left (no limit,
+    no remaining)."""
     half = HALF_USED if half is None else half
     low = LOW_USD if low is None else low
-    limit, usage = _number(record.get("limit")), _number(record.get("usage"))
-    remaining = _number(record.get("limit_remaining"))
-    if remaining is None and limit is not None and usage is not None:
-        remaining = max(0.0, limit - usage)
-    numbers = {"limit": limit, "remaining": remaining, "usage": usage}
-    # Used, for the half mark: the key's limit minus what is left (as before), or the
-    # budget's own spend.
-    used = None if limit is None or remaining is None else limit - remaining
-    budget = _budget(record)
-    if budget is not None and (remaining is None or budget["remaining"] < remaining):
-        numbers = budget
-        limit, remaining, used = budget["limit"], budget["remaining"], budget["usage"]
-    if remaining is None:
+    left = ai_account.credit_left(record)
+    numbers = {"limit": left.limit, "remaining": left.remaining, "usage": left.usage}
+    if left.remaining is None:
         return UNKNOWN, numbers
-    if remaining <= EMPTY_USD:
+    if left.remaining <= EMPTY_USD:
         return EMPTY, numbers
-    if remaining <= low:
+    if left.remaining <= low:
         return LOW, numbers
-    if limit and used / limit >= half:
+    if left.limit and left.spent / left.limit >= half:
         return HALF, numbers
     return OK, numbers
 

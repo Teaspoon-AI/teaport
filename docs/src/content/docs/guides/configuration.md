@@ -186,9 +186,9 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 - When $1 or less is left, set by `TEAPORT_STARTER_LOW_USD`.
 - When nothing is left.
 
-When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget.
+When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#3b958f27; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:208-214#1b6deadd; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 

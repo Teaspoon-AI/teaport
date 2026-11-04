@@ -178,6 +178,52 @@ def key_record(body) -> dict:
     return data if isinstance(data, dict) else body
 
 
+@dataclass(frozen=True)
+class Left:
+    """What a key has left, from its record (credit_left). Any field None: not said.
+    `usage` is what the record calls spent (for a page); `spent` is what is measured
+    against `limit` for a share used (the half mark)."""
+    limit: float | None = None
+    remaining: float | None = None
+    usage: float | None = None
+    spent: float | None = None
+
+
+def _budget_left(record: dict) -> Left | None:
+    """The record's newer budget block, effective_budget {limit_usd, spend_usd,
+    remaining_usd, reset_interval, resets_at, scope, include_byok} -- None unless limit_usd
+    and remaining_usd are both numbers (anything else in it is ignored; budgets[] is not
+    read). Spent is spend_usd, else what the limit and the remainder imply."""
+    block = record.get("effective_budget")
+    if not isinstance(block, dict):
+        return None
+    limit, remaining = _number(block.get("limit_usd")), _number(block.get("remaining_usd"))
+    if limit is None or remaining is None:
+        return None
+    spent = _number(block.get("spend_usd"))
+    spent = spent if spent is not None else max(0.0, limit - remaining)
+    return Left(limit, remaining, spent, spent)
+
+
+def credit_left(record: dict) -> Left:
+    """How much a key has left, from its GET /api/v1/key record (key_record): the one
+    reading the save-time check (check_key) and the trial credit's monitor (credit.judge)
+    share. Two things can bound it: the key's own limit (limit, limit_remaining -- or
+    limit minus usage -- and usage) and, in a newer record, its effective budget
+    (_budget_left). Whichever has less left decides: its limit, what is left and what is
+    spent. Malformed or missing fields are not read; Left() when nothing is said."""
+    limit, usage = _number(record.get("limit")), _number(record.get("usage"))
+    remaining = _number(record.get("limit_remaining"))
+    if remaining is None and limit is not None and usage is not None:
+        remaining = max(0.0, limit - usage)
+    spent = None if limit is None or remaining is None else limit - remaining
+    left = Left(limit, remaining, usage, spent)
+    budget = _budget_left(record)
+    if budget is not None and (remaining is None or budget.remaining < remaining):
+        return budget
+    return left
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """A redirect is answered as it is, never followed: following one would send the
     key's Authorization header to wherever it points (another host, plain http)."""
@@ -253,8 +299,8 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
         record = key_record(json.loads(body.decode("utf-8", "replace")))
     except ValueError:
         record = {}
-    remaining = _number(record.get("limit_remaining"))
-    if remaining is not None and remaining <= 0:
+    remaining = credit_left(record).remaining
+    if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
     return Check(WORKS, data=record)
 

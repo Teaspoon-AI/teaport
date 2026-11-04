@@ -389,6 +389,44 @@ def test_the_check_reads_the_providers_answer():
         ai_account._get = real
 
 
+def test_a_key_whose_effective_budget_is_used_up_is_not_saved():
+    """The save check reads what is left the way the trial-credit monitor does
+    (ai_account.credit_left): a key with room under its own limit but none in its
+    effective budget is refused, on the page and in setup mode, and nothing is saved.
+    A budget with room left, or a malformed one, changes nothing (shapes from a live
+    read, made-up amounts)."""
+    def record(budget):
+        return {"data": {"label": "made-up", "limit": 5, "limit_remaining": 4.0, "usage": 1.0,
+                         "effective_budget": budget, "budgets": [budget]}}
+
+    spent = {"limit_usd": 2.0, "spend_usd": 2.0, "remaining_usd": 0.0, "reset_interval": "monthly",
+             "resets_at": "2026-12-01T00:00:00Z", "scope": "key", "include_byok": False}
+    real = ai_account._get
+
+    async def run():
+        home, _, _ = _setup()
+        config_ui.check_key = ai_account.check_key  # the real check, its request faked
+        ai_account._get = Provider((200, record(spent)))
+        auth = {"authorization": f"Bearer {TOKEN}"}
+        async with _client(proto=None, origin=None, port=7861) as c:
+            r = await c.put("/api/config", headers=auth,
+                            json={"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}})
+        assert r.status_code == 400 and r.json()["key_check"] == {
+            "state": ai_account.REFUSED, "reason": ai_account.NO_CREDIT}, r.text
+        assert not os.path.exists(os.path.join(home, "llm_key"))
+        got = await ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1")
+        assert got.state == ai_account.REFUSED and got.reason == ai_account.NO_CREDIT, got
+        assert not os.path.exists(os.path.join(home, "llm_key"))
+        for budget in ({**spent, "spend_usd": 0.5, "remaining_usd": 1.5}, {"limit_usd": "2", "remaining_usd": "0"}):
+            ai_account._get = Provider((200, record(budget)))
+            assert ai_account.check_key(FAKE_KEY, "https://openrouter.ai/api/v1").state == ai_account.WORKS, budget
+
+    try:
+        asyncio.run(run())
+    finally:
+        ai_account._get = real
+
+
 # ------------------------------------------------------------------ the voice's other ways
 
 def test_without_a_screen_the_address_and_code_are_read_out():
