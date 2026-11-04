@@ -515,6 +515,10 @@ msgstr "questo account non ha più credito"
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "la chiave di questo dispositivo è impostata da chi l'ha installato, quindi non si può cambiare qui"
 
+# A key the agent (OpenClaw) did not take: nothing changed (ai_account.save_key, #281).
+msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
+msgstr "Teaport non è riuscito a passare tutto a questa chiave, quindi ha tenuto quella che aveva. Riprova tra un minuto."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Non è stato possibile usare la chiave inserita per il tuo account IA, quindi non è stata salvata."

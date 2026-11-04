@@ -16,7 +16,12 @@
 #     works is saved; the voice says how it went (wifi_voice.py).
 #
 # Connecting with OpenRouter's OAuth (#282) ends the same way: whatever hands over a key
-# calls adopt(), which is check_key() then store_key().
+# calls adopt(), which is check_key() then save_key().
+#
+# save_key is the one save, whichever page: it writes the brain's key file (store_key) and,
+# on a box with OpenClaw, hands OpenClaw the same key (agent_key.give, #281: one key, one
+# balance). Both or neither: if OpenClaw does not take it, the key file is put back and
+# the save says why (NotSaved); agent_key.py says what is done when even that fails.
 #
 # The check is one cheap authenticated request. OpenRouter: GET /api/v1/key, the key's own
 # record (free, no tokens spent); it also carries the key's limit and usage, which the
@@ -32,6 +37,7 @@
 # echoes masked keys and links to the key's own page). The same cleaning serves the
 # brain's record of failed answers (llm_error_speaker.failure_reason, #205).
 #
+import asyncio
 import json
 import os
 import re
@@ -43,6 +49,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from teaport_brain import agent_key, conversation_log
 from teaport_brain.i18n import N_
 from teaport_brain.settings import ROWS, secret_file, setting, write_secret
 
@@ -60,6 +67,9 @@ UNREACHABLE = N_("the AI service didn't answer")
 REFUSED_BARE = N_("the AI service refused this key")
 NO_CREDIT = N_("this account has no credit left")
 SET_ELSEWHERE = N_("this box's key is set by its installer, so it can't be changed here")
+# A save the agent (OpenClaw) did not take: nothing changed (save_key).
+NOT_SHARED = N_("Teaport couldn't switch everything over to this key, so it kept the one "
+                "it had. Try again in a minute.")
 
 
 @dataclass(frozen=True)
@@ -263,10 +273,79 @@ def key_path() -> str:
 
 
 def store_key(key: str) -> None:
-    """Write `key` where the brain reads it, read again by the next session. The caller
-    has checked it (or the owner said to save it anyway)."""
+    """Write `key` where the brain reads it, read again by the next session: save_key's
+    first step (every page saves through save_key)."""
     write_secret(key_path(), key.strip())
-    logger.info("ai account: a new key was saved")
+    logger.info("ai account: the key file was written")
+
+
+def _read_file() -> str | None:
+    """The key file as it is (to put it back), None when there is none."""
+    try:
+        with open(key_path(), encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def _put_back(text: str | None) -> None:
+    if text is None:
+        try:
+            os.unlink(key_path())
+        except FileNotFoundError:
+            pass
+    else:
+        write_secret(key_path(), text.rstrip("\n"))
+
+
+class NotSaved(Exception):
+    """save_key did not save: `reason` is NOT_SHARED (a msgid); nothing changed."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(detail or reason)
+        self.reason, self.detail = reason, detail
+
+
+@dataclass
+class Saved:
+    """A save that went through, and what undo() puts back: for a caller whose own next
+    step failed (config_ui: brain.env's copy could not be dropped)."""
+    key: str
+    prev_file: str | None
+    prev: str | None
+    openrouter: bool
+
+    async def undo(self) -> None:
+        """The key file as it was, and OpenClaw back on the brain's previous key. Where
+        OpenClaw cannot follow (the brain had no key before, or OpenClaw does not take
+        it), the state says the two may differ (agent_key.MISMATCH)."""
+        await asyncio.to_thread(_put_back, self.prev_file)
+        logger.info("ai account: the new key was taken back")
+        if agent_key.skipped(self.openrouter) is not None:
+            return
+        if not self.prev or await agent_key.give(self.prev, self.key, self.openrouter) is not None:
+            agent_key.mismatch("a key change was taken back, but OpenClaw kept the new key")
+
+
+async def save_key(key: str, base_url: str | None) -> Saved:
+    """The one save (the module note): `key` into the brain's key file, and to OpenClaw as
+    its OpenRouter key where the box has one and the brain's endpoint is OpenRouter's
+    (`base_url`). The caller has checked it, or the owner said to save it anyway. Raises
+    NotSaved, with the key file as it was, when OpenClaw did not take it."""
+    key = key.strip()
+    prev = current_key()
+    for k in (key, prev):
+        if k:
+            conversation_log.never_log(k, secs=3600.0)
+    prev_file = await asyncio.to_thread(_read_file)
+    openrouter = is_openrouter(base_url)
+    await asyncio.to_thread(store_key, key)
+    failed = await agent_key.give(key, prev, openrouter)
+    if failed is not None:
+        await asyncio.to_thread(_put_back, prev_file)
+        logger.info("ai account: the new key was not saved, as OpenClaw did not take it")
+        raise NotSaved(NOT_SHARED, failed)
+    return Saved(key, prev_file, prev, openrouter)
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it
@@ -294,13 +373,32 @@ def forget_env_copy() -> None:
     os.environ.pop("LLM_API_KEY", None)
 
 
-def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
-    """Check `key`, and save it only if it works: the setup-mode page's way, where nobody
-    is left to say "save anyway" (and #282's, once OAuth hands over a key). With an
-    environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved."""
+async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
+    """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
+    where nobody is left to say "save anyway" (and #282's, once OAuth hands over a key).
+    With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
+    key that works but that OpenClaw did not take: UNKNOWN, NOT_SHARED, nothing saved."""
     if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
-    result = check_key(key, base_url, timeout)
+    result = await asyncio.to_thread(check_key, key, base_url, timeout)
     if result.state == WORKS:
-        store_key(key)
+        try:
+            await save_key(key, base_url)
+        except NotSaved as e:
+            return Check(UNKNOWN, e.reason, data=result.data)
     return result
+
+
+def adopt_blocking(key: str, base_url: str | None) -> Check:
+    """adopt() for a caller with no event loop (the setup-mode unit's thread)."""
+    async def run():
+        try:
+            return await adopt(key, base_url)
+        finally:
+            await agent_key.openclaw_client.settle()  # a stopped CLI's end, before the loop goes
+    return asyncio.run(run())
+
+
+def agent_key_status() -> dict:
+    """/health "agent_key": whether OpenClaw is on the brain's key (agent_key.status)."""
+    return agent_key.status(current_key(), is_openrouter(setting("LLM_BASE_URL")))

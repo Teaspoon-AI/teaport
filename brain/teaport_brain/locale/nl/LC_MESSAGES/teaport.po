@@ -507,6 +507,10 @@ msgstr "dit account heeft geen tegoed meer"
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "de sleutel van dit apparaat is door de installateur ingesteld, dus hij kan hier niet worden gewijzigd"
 
+# A key the agent (OpenClaw) did not take: nothing changed (ai_account.save_key, #281).
+msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
+msgstr "Teaport kon niet alles overzetten op deze sleutel en heeft daarom de oude gehouden. Probeer het over een minuut opnieuw."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Ik kon de sleutel voor het AI-account die je hebt ingevoerd niet gebruiken, dus ik heb hem niet opgeslagen."

@@ -85,7 +85,7 @@ A full install writes every unit and env file and restarts the engine and the br
 
 The installer honors the overrides in this table; the default applies when the variable is unset. `TEAPORT_REPO` and `TEAPORT_REF` belong to the one-line form alone.
 
-<!-- source: install.sh:35-50,61-72,244,1641,2299,2306,2751,2759,2774#a6f5983a -->
+<!-- source: install.sh:35-50,61-72,244,1641,2299,2306,2753,2761,2776#a6f5983a -->
 
 | Variable | Default | Controls |
 | --- | --- | --- |
@@ -219,11 +219,11 @@ Build and download space: the source checkouts, the `uv` download cache, and rel
 
 Root-owned helpers that run outside the brain venv, with one release directory per version and a symlink to the live one. The Wi-Fi setup helper and its captive DNS configuration are installed here.
 
-<!-- source: install.sh:1029,1056,1104,2718#3676d8bc -->
+<!-- source: install.sh:1029,1056,1104,2720#3676d8bc -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule for Wi-Fi setup.
 
-<!-- source: install.sh:336,364,1168,1213,2710-2715#41b1eb60 -->
+<!-- source: install.sh:336,364,1168,1213,2712-2717#41b1eb60 -->
 
 ## systemd units
 
@@ -265,17 +265,17 @@ The SIP front end for phone calls. Rendered on every run, never enabled by the i
 
 The local microphone and speaker bridge for a USB mic array, piping audio to the brain's `/talk` endpoint. Rendered on every install but inert until `.env` exists. `TEAPORT_ENABLE_LOCAL_AUDIO=1` seeds that file and enables the unit; a repair without it leaves the enabled state alone, so a bridge the operator disabled stays off.
 
-<!-- source: install.sh:2679-2683,2757,2776#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
+<!-- source: install.sh:2679-2683,2759,2778#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
 
 **`teaport-wifi-setup.service`**
 
 The Wi-Fi setup flow: a temporary setup network and a page where a phone enters the password. The brain starts it when the user asks for setup. Rendered when NetworkManager and iptables are present; never enabled by the installer.
 
-<!-- source: install.sh:2684-2688,2703-2709#141b4978; systemd/teaport-wifi-setup.service.in:25#d769a920 -->
+<!-- source: install.sh:2684-2688,2705-2711#141b4978; systemd/teaport-wifi-setup.service.in:25#d769a920 -->
 
 Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 
-<!-- source: install.sh:2747-2754#6384d3ce -->
+<!-- source: install.sh:2749-2756#6384d3ce -->
 
 The installer also enables `avahi-daemon` and `caddy`.
 

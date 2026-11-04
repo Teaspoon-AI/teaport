@@ -140,6 +140,35 @@ credit_line() {  # the trial credit, as a status line; nothing off it (an own ke
   case "$st" in ok) col="$GREEN" ;; half|low) col="$YEL" ;; empty) col="$RED" ;; *) col="0" ;; esac
   printf '  %-28s %s\n' "trial credit (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
+# Whether OpenClaw pays with the brain's key (/health "agent_key", issue #281), as
+# "<state>\t<text>": off | absent | other | none | separate | shared | restart | mismatch,
+# or "unknown" when the brain does not say.
+brain_agent_key() {
+  brain_health | python3 -c 'import json, sys
+k = json.load(sys.stdin).get("agent_key")
+if not isinstance(k, dict) or not k.get("state"):
+    raise SystemExit(1)
+st, why = k["state"], k.get("reason") or ""
+text = {
+    "off": "not shared: " + why,
+    "absent": "not shared: " + why,
+    "other": "not shared: " + why,
+    "none": "nothing to share: the brain has no key",
+    "separate": "OpenClaw has a key of its own (the key of the brain was not saved from Settings)",
+    "shared": "OpenClaw uses the same key as the brain",
+    "restart": "OpenClaw has the same key as the brain, and restarts to use it once nobody is talking"
+               + (" (last try: %s)" % k["last_error"] if k.get("last_error") else ""),
+    "mismatch": "OpenClaw and the brain may be on different keys: " + why
+                + " -- save the key again in Settings",
+}.get(st, st + ": " + why)
+print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
+}
+agent_key_line() {  # the shared key, as a status line; nothing where the brain does not say
+  local line st col; line="$(brain_agent_key)"; st="${line%%$'\t'*}"
+  case "$line" in unknown$'\t') return 0 ;; esac
+  case "$st" in shared) col="$GREEN" ;; restart|separate) col="$YEL" ;; mismatch) col="$RED" ;; *) col="0" ;; esac
+  printf '  %-28s %s\n' "model key (OpenClaw)" "$(c "$col" "${line#*$'\t'}")"
+}
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
 # Not `grep -q`: under pipefail, grep leaving at its first match can SIGPIPE ss and
 # fail the pipeline for a port that IS listening (install.sh's contains() says more).
@@ -185,6 +214,7 @@ cmd_status() {
   # listen, and only real turns find out (#205).
   answers_line
   credit_line
+  agent_key_line
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
@@ -269,6 +299,16 @@ credit_check() {
     empty$'\t'*)    failc "trial credit: ${line#*$'\t'}" ;;
   esac
 }
+# agent_key_check — OpenClaw on the brain's key (brain_agent_key, #281): a failure while
+# a key change left the two on different keys, a warning while a restart is owed.
+agent_key_check() {
+  local line; line="$(brain_agent_key)"
+  case "$line" in
+    shared$'\t'*)   ok "model key: ${line#*$'\t'}" ;;
+    restart$'\t'*)  warnc "model key: ${line#*$'\t'}" ;;
+    mismatch$'\t'*) failc "model key: ${line#*$'\t'}" ;;
+  esac
+}
 
 answers_check() {
   local line; line="$(brain_answers)"
@@ -337,6 +377,7 @@ cmd_doctor() {
   brain_pacing_check
   answers_check
   credit_check
+  agent_key_check
   # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no
   # line to check, and `sip disable` without --purge keeps the conf while the operator
   # means the line to be off, so "conf present" alone must NOT make --fix bring it back.

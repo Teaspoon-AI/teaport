@@ -609,7 +609,7 @@ class Setup:
         key, self.key = self.key, ""
         if not key or self.account is None:
             return None
-        check = ai_account.adopt(key, self.account)
+        check = ai_account.adopt_blocking(key, self.account)
         log(f"the AI account key: {check.state}")
         return {"result": "saved" if check.state == ai_account.WORKS else check.state,
                 "reason": check.reason, "ours": check.ours}

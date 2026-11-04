@@ -20,7 +20,9 @@ from "open my settings" stands in for the token there (settings_access.py, #279)
 
 Saving LLM_API_KEY checks the key with the provider first (ai_account.check_key, the
 one way every page takes a key): one that is refused or cannot be checked is not saved
-unless the save says so again (force_key), and the answer says why. GET /api/account is
+unless the save says so again (force_key), and the answer says why. It is saved through
+ai_account.save_key, which gives OpenClaw the same key (#281); a key OpenClaw does not
+take is not saved either, and the answer's errors say so. GET /api/account is
 the owner's "AI account" step: whether a key is set, and its words in the phone's
 language.
 
@@ -618,12 +620,30 @@ async def put_config(request: Request):
             return JSONResponse(status_code=400,
                                 content={"key_check": check.public(_reader(request))})
 
-    if env_updates:
-        new_text = render_env(current, env_updates)
-        if new_text != current:
-            await _privileged("write", STORE_FILES[store], stdin=new_text)
-            logger.info(f"config: {STORE_FILES[store]} updated — {', '.join(sorted(env_updates))}")
+    # The key first, through the one save (ai_account.save_key: the brain's file and
+    # OpenClaw's, both or neither, #281); if what follows fails, it is taken back.
+    saved = None
+    if "LLM_API_KEY" in secret_updates:
+        try:
+            saved = await ai_account.save_key(
+                secret_updates["LLM_API_KEY"],
+                merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"))
+        except ai_account.NotSaved as e:
+            return JSONResponse(status_code=400, content={
+                "errors": {"LLM_API_KEY": _reader(request)._(e.reason)}})  # N_() in ai_account
+    try:
+        if env_updates:
+            new_text = render_env(current, env_updates)
+            if new_text != current:
+                await _privileged("write", STORE_FILES[store], stdin=new_text)
+                logger.info(f"config: {STORE_FILES[store]} updated — {', '.join(sorted(env_updates))}")
+    except BaseException:
+        if saved is not None:
+            await saved.undo()
+        raise
     for name, value in secret_updates.items():
+        if name == "LLM_API_KEY":
+            continue  # saved above
         spath = os.path.expanduser(rows[name]["file"])
         await asyncio.to_thread(settings.write_secret, spath, value)
         logger.info(f"config: secret {name} written to {spath}")

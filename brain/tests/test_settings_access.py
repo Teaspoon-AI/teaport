@@ -51,7 +51,7 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 import appliance  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 from teaport_brain import (  # noqa: E402
-    ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
+    agent_key, ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
     wifi_voice,
 )
 from teaport_brain import gateway_server  # noqa: E402
@@ -138,6 +138,9 @@ def _setup(host=HOST, port=PORT):
 
     check.answer = ai_account.Check(ai_account.WORKS)
     config_ui.check_key = check
+    # A saved key is not handed to an OpenClaw on the machine running the tests
+    # (test_agent_key.py has that path, with a fake CLI).
+    agent_key.SHARES = False
     return home, check, checks
 
 
@@ -501,7 +504,7 @@ def test_a_key_in_the_environment_is_handled_the_same_on_both_pages():
             os.environ["LLM_API_KEY"] = "sk-from-a-drop-in"  # not brain.env's
             r = await c.put("/api/config", json={**put, "force_key": True}, headers=auth)
             assert r.status_code == 400 and r.json()["key_check"]["reason"] == ai_account.SET_ELSEWHERE
-        assert ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
+        assert (await ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1")).reason == ai_account.SET_ELSEWHERE
         os.environ.pop("LLM_API_KEY")
     asyncio.run(run())
 
@@ -699,7 +702,7 @@ def test_the_setup_page_takes_the_key_and_adopts_it_once_online():
     # An env-file copy of the key wins over the file: setup mode does not pretend.
     os.environ["LLM_API_KEY"] = "sk-set-by-the-installer"
     try:
-        assert ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
+        assert ai_account.adopt_blocking(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
     finally:
         os.environ.pop("LLM_API_KEY")
 
