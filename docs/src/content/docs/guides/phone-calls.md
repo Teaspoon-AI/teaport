@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:8,390-394#0ac45871; brain/teaport_brain/sip_server.py:489#f51c16f8 -->
+<!-- source: cli/teaport:8,390-394#0ac45871; brain/teaport_brain/sip_server.py:491#f51c16f8 -->
 
 ## Keep the line running
 
@@ -308,7 +308,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,253#de2d5741; brain/teaport_brain/config_schema.toml:1894-1903#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,254#de2d5741; brain/teaport_brain/config_schema.toml:1894-1903#52b15746 -->
 
 To test the phone path, follow these steps:
 

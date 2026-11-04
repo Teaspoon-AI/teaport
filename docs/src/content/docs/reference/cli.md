@@ -74,7 +74,7 @@ the trunk registration. When it finds a NemoClaw sandbox record, it names the co
 sandbox. Each check prints one line: a check mark for pass, `!` for warning, and a cross
 for failure.
 
-<!-- source: cli/teaport:245-350#af1e73d1; cli/teaport:59-98,223-230#e47384e0 -->
+<!-- source: cli/teaport:245-350#af1e73d1; cli/teaport:59-98,223-230#39e711b5 -->
 
 Option:
 

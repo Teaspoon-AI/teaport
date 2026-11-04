@@ -38,7 +38,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:827-831#abcad8a7 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:832-836#abcad8a7 -->
 
 1. The device shows a QR code under the title "Settings", with the code itself under it. Scan the QR code with the phone's camera, then tap the link that the camera shows. A device without a screen that draws QR codes reads out an address, `DEVICE_NAME.local/settings` for example, and a six-character code instead: open the address in the phone's browser and enter the code there.
 2. Tap **Continue**. You can use the code one time, within five minutes. Asking again replaces it.
