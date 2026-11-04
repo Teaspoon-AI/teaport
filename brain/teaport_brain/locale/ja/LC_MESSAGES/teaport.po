@@ -345,3 +345,35 @@ msgstr "もう一度試すときは、いつでも「ワイファイを設定し
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "オンラインになったので、セットアップモードを終了しました。"
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "すみません、音声アシスタントはほかのセッション中です。少し待ってからもう一度お試しください。"
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "すみません、今は声が聞こえません。音声認識が使えない状態です。少し待ってからもう一度お試しください。"
+
+msgid "Still working on that — {topic}."
+msgstr "まだ作業中です（{topic}）。"
+
+msgid "Still working on it."
+msgstr "まだ作業中です。"
+
+msgid "Almost there — {topic}."
+msgstr "もうすぐ終わります（{topic}）。"
+
+msgid "Almost there — hang tight."
+msgstr "もうすぐ終わります、もう少しだけ。"
+
+msgid "Looking up {q}."
+msgstr "{q}を調べます。"
+
+msgid "Opening that page."
+msgstr "そのページを開きます。"
+
+msgid "I'll work on that — give me a moment."
+msgstr "今やりますね、少々お待ちください。"
+
+msgid "One moment, let me set that up."
+msgstr "少々お待ちください、準備します。"

@@ -454,3 +454,35 @@ msgstr "다시 시도하려면 언제든 '와이파이 설정해 줘'라고 말�
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "인터넷에 연결돼서 연결 모드를 끝냈어요."
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "죄송해요, 음성 비서가 지금 다른 세션 중이에요. 조금 뒤에 다시 시도해 주세요."
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "죄송해요, 지금은 음성 인식이 안 돼요. 잠시 후 다시 시도해 주세요."
+
+msgid "Still working on that — {topic}."
+msgstr "아직 진행 중이에요 — {topic}."
+
+msgid "Still working on it."
+msgstr "아직 진행 중이에요."
+
+msgid "Almost there — {topic}."
+msgstr "거의 다 됐어요 — {topic}."
+
+msgid "Almost there — hang tight."
+msgstr "거의 다 됐어요, 조금만 기다려 주세요."
+
+msgid "Looking up {q}."
+msgstr "{q} 검색할게요."
+
+msgid "Opening that page."
+msgstr "그 페이지를 열게요."
+
+msgid "I'll work on that — give me a moment."
+msgstr "지금 할게요, 잠시만요."
+
+msgid "One moment, let me set that up."
+msgstr "잠시만요, 준비할게요."

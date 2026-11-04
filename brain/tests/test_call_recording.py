@@ -343,7 +343,7 @@ def _session(plays=True, recording=None):
     delivery settles once it is queued, with the input mute's state at each queue
     recorded); False, it never does, and greet() waits out NOTICE_MAX_SECS."""
     s = object.__new__(AgentSession)
-    s.context, s.stt, s.llm = _Context(), _Stt(), None
+    s.context, s.stt, s.llm, s.tts = _Context(), _Stt(), None, None
     s.input_mute = InputMute()
     s.should_end = False
     s.recording = recording

@@ -25,6 +25,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from teaport_brain import tools  # noqa: E402
+from teaport_brain import i18n  # noqa: E402
 
 ANSWER = "Upper Crust Bakery, Neon Belly, Russell's Bakery."
 
@@ -45,7 +46,7 @@ class _LLM:
             self.narrated_during_delivery.append(frame.text)
 
 
-async def _fast_progress(llm, request=None, gate=None):
+async def _fast_progress(llm, request=None, gate=None, tts=None):
     """The real narrator's shape, on a timescale a test can wait out. Accepts the
     request/gate kwargs _consult_and_land now passes, and ignores them — the
     ordering-vs-delivery contract these tests check is independent of them."""
@@ -129,12 +130,37 @@ class _Recorder:
 
 async def test_the_progress_line_names_the_user_request():
     # The request's own opening phrase, so a late line still has a referent.
-    line = tools._progress_line("Find good pastry shops on Burnet Road in Austin", 0)
+    line = tools._progress_line("Find good pastry shops on Burnet Road in Austin",
+                                 0, i18n.get("en"))
     assert "pastry shops on Burnet Road" in line, line
     assert line.startswith("Still working on that"), line
     # An empty request falls back to the generic line rather than a dangling "that —".
-    assert tools._progress_line("", 0) == "Still working on it."
-    assert "—" not in tools._progress_line("   ", 0)
+    assert tools._progress_line("", 0, i18n.get("en")) == "Still working on it."
+    assert "—" not in tools._progress_line("   ", 0, i18n.get("en"))
+
+
+async def test_another_language_gets_the_generic_line_not_an_english_fragment():
+    # The echo is the model's (usually English) restatement and its trimming is English.
+    request = "Find good pastry shops on Burnet Road in Austin"
+    assert tools._progress_line(request, 0, i18n.get("fr")) == "Je travaille toujours dessus."
+    assert "—" not in tools._progress_line(request, 1, i18n.get("fr"))
+
+
+async def test_the_narrator_speaks_the_voices_language_live():
+    class _Voice:
+        espeak_language = "en-us"
+    voice, llm = _Voice(), _Recorder()
+    saved = tools._PROGRESS_SCHEDULE
+    tools._PROGRESS_SCHEDULE = (0.0, 0.0)
+    try:
+        await tools._consult_progress(llm, request=None, gate=None, tts=voice)
+        voice.espeak_language = "es"        # a switch_voice between lines
+        llm._teaport_progress_active = False
+        await tools._consult_progress(llm, request=None, gate=None, tts=voice)
+    finally:
+        tools._PROGRESS_SCHEDULE = saved
+    assert llm.said[0] == "Still working on it.", llm.said
+    assert llm.said[2] == "Sigo trabajando en ello.", llm.said
 
 
 async def test_the_topic_echo_cuts_at_a_boundary_and_skips_non_prose():
@@ -150,7 +176,7 @@ async def test_the_topic_echo_cuts_at_a_boundary_and_skips_non_prose():
     assert T("summarize https://news.example.com/2026/09/02/a-really-long-slug-here") == ""
     long = "compare " + " ".join(["antidisestablishmentarianism"] * 6)
     assert 0 < len(T(long)) <= tools._PROGRESS_TOPIC_CHARS, T(long)
-    assert tools._progress_line('{"task": 1}', 0) == "Still working on it."
+    assert tools._progress_line('{"task": 1}', 0, i18n.get("en")) == "Still working on it."
 
 
 class _Timed(_Recorder):

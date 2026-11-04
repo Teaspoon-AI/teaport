@@ -356,3 +356,35 @@ msgstr "يمكنك قول «إعداد الواي فاي» في أي وقت لإ
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "أصبحتُ متصلًا بالإنترنت الآن، لذا خرجتُ من وضع التوصيل."
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "عذرًا، المساعد الصوتي مشغول بجلسة أخرى الآن. يُرجى المحاولة مجددًا بعد قليل."
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "عذرًا، لا أستطيع سماعك الآن، فالتعرف على الكلام غير متاح. يُرجى المحاولة مجددًا بعد قليل."
+
+msgid "Still working on that — {topic}."
+msgstr "ما زلت أعمل على ذلك — {topic}."
+
+msgid "Still working on it."
+msgstr "ما زلت أعمل على ذلك."
+
+msgid "Almost there — {topic}."
+msgstr "اقتربنا من الانتهاء — {topic}."
+
+msgid "Almost there — hang tight."
+msgstr "اقتربنا من الانتهاء، لحظات."
+
+msgid "Looking up {q}."
+msgstr "أبحث عن {q}."
+
+msgid "Opening that page."
+msgstr "أفتح تلك الصفحة."
+
+msgid "I'll work on that — give me a moment."
+msgstr "سأعمل على ذلك، لحظة."
+
+msgid "One moment, let me set that up."
+msgstr "لحظة، سأجهّز ذلك."

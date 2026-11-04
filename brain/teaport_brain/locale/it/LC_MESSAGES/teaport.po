@@ -353,3 +353,35 @@ msgstr "Puoi dire «configura il Wi-Fi» in qualsiasi momento per riprovare."
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "Ora sono online, quindi ho chiuso la modalità di configurazione."
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "Scusa, l'assistente vocale è occupato con un'altra sessione. Riprova tra un momento."
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "Scusa, ora non ti sento: il riconoscimento vocale non è disponibile. Riprova tra un momento."
+
+msgid "Still working on that — {topic}."
+msgstr "Ci sto ancora lavorando — {topic}."
+
+msgid "Still working on it."
+msgstr "Ci sto ancora lavorando."
+
+msgid "Almost there — {topic}."
+msgstr "Manca poco — {topic}."
+
+msgid "Almost there — hang tight."
+msgstr "Manca poco, un attimo ancora."
+
+msgid "Looking up {q}."
+msgstr "Cerco {q}."
+
+msgid "Opening that page."
+msgstr "Apro la pagina."
+
+msgid "I'll work on that — give me a moment."
+msgstr "Ci lavoro subito, un attimo."
+
+msgid "One moment, let me set that up."
+msgstr "Un attimo, lo preparo."

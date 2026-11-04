@@ -345,3 +345,35 @@ msgstr "Je kunt altijd ‘stel de wifi in’ zeggen om het opnieuw te proberen."
 
 msgid "I'm online now, so I've left setup mode."
 msgstr "Ik ben nu online, dus ik heb de verbindingsmodus verlaten."
+
+# The sessions' own lines: busy / engine-unavailable, consult progress and tool acks (tools.py, agent_session.py).
+
+msgid "Sorry, the voice assistant is busy with another session right now — please try again in a moment."
+msgstr "Sorry, de spraakassistent is nu bezig met een andere sessie. Probeer het zo nog een keer."
+
+msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
+msgstr "Sorry, ik versta je nu even niet, de spraakherkenning werkt niet. Probeer het zo nog een keer."
+
+msgid "Still working on that — {topic}."
+msgstr "Ik ben er nog mee bezig — {topic}."
+
+msgid "Still working on it."
+msgstr "Ik ben er nog mee bezig."
+
+msgid "Almost there — {topic}."
+msgstr "Bijna klaar — {topic}."
+
+msgid "Almost there — hang tight."
+msgstr "Bijna klaar, nog even geduld."
+
+msgid "Looking up {q}."
+msgstr "Ik zoek {q} op."
+
+msgid "Opening that page."
+msgstr "Ik open die pagina."
+
+msgid "I'll work on that — give me a moment."
+msgstr "Ik pak het op, een momentje."
+
+msgid "One moment, let me set that up."
+msgstr "Een momentje, ik zet het klaar."
