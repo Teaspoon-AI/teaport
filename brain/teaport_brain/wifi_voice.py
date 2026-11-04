@@ -59,6 +59,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from teaport_brain import display, i18n
+from teaport_brain.tasks import cancel_and_wait
 from teaport_brain.conversation_log import quoted
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS
@@ -514,11 +515,7 @@ class WifiSetupVoice(FrameProcessor):
 
     async def _stop_following(self) -> None:
         if self._poller and self._poller is not asyncio.current_task():
-            self._poller.cancel()
-            try:
-                await self._poller
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            await cancel_and_wait(self._poller)   # how the poller ended is not ours to raise
         self._poller = None
 
     # -- following the unit

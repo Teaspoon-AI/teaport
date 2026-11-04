@@ -590,9 +590,11 @@ async def test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks
     unavailable) and its bring-up tears it down, and A rings in during that teardown's
     0.3 s settle. cancel_setup abandoned the teardown there, before presence.end(), so B's
     claim still held the box when A asked: REPLACED -- B's release brought Talk back
-    and A's grant then overwrote it, two conversations live on one engine. Now the
-    abandoned teardown still lets go (a finally): Talk comes back, A is put through
-    like any call during a conversation (on hold again), and A holds the slot."""
+    and A's grant then overwrote it, two conversations live on one engine. Then the
+    abandoned teardown let go in a finally. Since #284 it is not abandoned at all: B's
+    bring-up ends it as a task (end_call_from_inside) that A's bring-up waits out, so
+    A asks only once B has let go: Talk comes back, A is put through like any call
+    during a conversation (on hold again), and A holds the slot."""
     _fresh()
     holds, resumes = [], []
 
@@ -615,7 +617,11 @@ async def test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks
         lc._FakeSession.cannot_hear = {"B"}
         await rig.h.call_state("B", "confirmed")
         await asyncio.wait_for(gate.entered.wait(), 5)           # B's own teardown settles
-        await rig.h.call_state("A", "confirmed")                 # and is abandoned there
+        await rig.h.call_state("A", "confirmed")                 # A rings in meanwhile
+        # As far as A gets while B's teardown is held: waiting it out (since #284), or
+        # asking the arbiter (before the claim fix). Only then does the settle end.
+        assert await lc.wait_until(lambda: gate.parked.is_set() or len(found) > 1, 5)
+        gate.released.set()
         assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5)
         assert not _replaced(found), f"A asked while {_replaced(found)} still held the box"
         assert await lc.wait_until(lambda: len(holds) == 2 and resumes == [1], 5), (

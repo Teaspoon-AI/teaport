@@ -26,6 +26,23 @@
 # a second one it does: a rejected design often violates several, and TLC reports
 # whichever its search reaches first, which varies with the seed, so a row listing two
 # falling properties would name a different one run to run.
+#
+# Each row runs under a time limit (#189: a TLC run can freeze with every thread asleep,
+# and would hang the job with no verdict for the rows after it). A row past its limit is
+# killed and reported as "<-- TIMED OUT", a failure of its own, distinct from NO VERDICT:
+#   TLC_ROW_TIMEOUT       seconds per default row (default 600; the slowest default rows,
+#                         sc_verdict and ss_shipped_freeze, take ~2 min on CI's runner,
+#                         and past 5 min on a desktop busy with other TLC runs)
+#   TLC_FULL_ROW_TIMEOUT  seconds per --full row (default 3600; the largest known,
+#                         ss_peek_freeze, takes ~18 min on the desktop)
+#   TLC_MIN_FREE_MB       a row is not started below this much free disk (default 400)
+#
+# Each run works in a private temp dir (mktemp under $TMPDIR, else /tmp), removed on any
+# exit -- success, failure, timeout, Ctrl-C or TERM: TLC's state pools go to a -metadir
+# there (emptied after every row), and its standard-module extraction to a
+# -Djava.io.tmpdir there. Leftover pools once filled the disk, and two runs sharing
+# /tmp's extracted Naturals.tla gave "Fatal errors while parsing" (#189), so two runs at
+# once, in one checkout or two, do not touch each other's files.
 set -u
 fails=0            # rows whose verdict did not match the expectation they declare
 case "${1:-}" in
@@ -35,19 +52,69 @@ case "${1:-}" in
 esac
 JAR="${TLA_TOOLS:-tla2tools.jar}"
 [ -f "$JAR" ] || { echo "tla2tools.jar not found; set TLA_TOOLS=/path/to/tla2tools.jar" >&2; exit 2; }
+JAR=$(cd "$(dirname "$JAR")" && pwd)/$(basename "$JAR")   # absolute: the cd below
+ROW_TIMEOUT="${TLC_ROW_TIMEOUT:-600}"
+FULL_ROW_TIMEOUT="${TLC_FULL_ROW_TIMEOUT:-3600}"
+MIN_FREE_MB="${TLC_MIN_FREE_MB:-400}"
+for v in ROW_TIMEOUT FULL_ROW_TIMEOUT MIN_FREE_MB; do
+  # Digits only, and above zero by value: "00" is zero too, and to timeout(1) zero means
+  # no limit at all -- the unbounded row this check exists to stop.
+  case "${!v}" in
+    ''|*[!0-9]*) echo "TLC_$v must be a positive whole number, got '${!v}'" >&2; exit 2 ;;
+  esac
+  if [ "$((10#${!v}))" -le 0 ]; then
+    echo "TLC_$v must be a positive whole number, got '${!v}'" >&2; exit 2
+  fi
+done
+command -v timeout >/dev/null || { echo "check.sh needs timeout(1) (GNU coreutils)" >&2; exit 2; }
 cd "$(dirname "$0")"
+
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/teaport-formal.XXXXXX") || exit 2
+mkdir -p "$RUN_DIR/tmp"
+child=             # the running row's timeout(1) pid, killed if the run is stopped
+cleanup() {
+  if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi
+  rm -rf "$RUN_DIR"
+}
+trap cleanup EXIT
+trap 'echo; echo "interrupted" >&2; exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+limit=$ROW_TIMEOUT # the current row's limit; the --full blocks raise it
 
 run() {  # run <module> <config> <expectation>
   printf '  %-12s %-32s %-26s ' "$1" "$2" "$3"
-  # -deadlock: a state with no successor is not a finding here. The bounds every model
-  # carries (stops, faults, the engine's closes) make terminal states ordinary, and
-  # the properties are invariants over the states reached -- except Owed.tla's liveness
-  # rows, whose fair spec reads a terminal state as stuttering, which is what they mean.
-  out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -deadlock -workers auto \
-          -config "$2.cfg" "$1" 2>&1)
+  local free start rc
+  verdict=
+  free=$(df -Pk "$RUN_DIR" | awk 'NR == 2 { print int($4 / 1024) }')
+  if [ "${free:-0}" -lt "$MIN_FREE_MB" ]; then
+    out=; verdict=lowdisk; label="not run: ${free:-?} MB free under $RUN_DIR (TLC_MIN_FREE_MB=$MIN_FREE_MB)"
+  else
+    # -deadlock: a state with no successor is not a finding here. The bounds every model
+    # carries (stops, faults, the engine's closes) make terminal states ordinary, and
+    # the properties are invariants over the states reached -- except Owed.tla's liveness
+    # rows, whose fair spec reads a terminal state as stuttering, which is what they mean.
+    # In the background so a trapped signal runs at once (bash defers traps until a
+    # foreground child exits) and cleanup can kill it; -k: KILL a JVM that ignores TERM.
+    timeout -k 10 "$limit" java -Djava.io.tmpdir="$RUN_DIR/tmp" -XX:+UseParallelGC \
+        -cp "$JAR" tlc2.TLC -nowarning -deadlock -workers auto \
+        -metadir "$RUN_DIR/states" -config "$2.cfg" "$1" >"$RUN_DIR/out" 2>&1 &
+    child=$!; start=$SECONDS
+    wait "$child"; rc=$?
+    child=
+    out=$(cat "$RUN_DIR/out")
+    rm -rf "$RUN_DIR/states"   # this row's pools: a finished row's are no use to the next
+    # 124: timeout sent TERM; 137 at the limit: and then KILL (-k), TERM ignored (137
+    # before it is a KILL from elsewhere, the OOM killer say: NO VERDICT, below).
+    if [ "$rc" -eq 124 ] || { [ "$rc" -eq 137 ] && [ $((SECONDS - start)) -ge "$limit" ]; }; then
+      verdict=timeout; label="timed out after ${limit}s"
+    fi
+  fi
 
   # The verdict TLC actually produced, and a human label for it.
-  if grep -qi "no error has been found" <<<"$out"; then
+  if [ "$verdict" = timeout ] || [ "$verdict" = lowdisk ]; then
+    :
+  elif grep -qi "no error has been found" <<<"$out"; then
     verdict=holds; label=holds
   elif grep -q "Temporal properties were violated" <<<"$out"; then
     # TLC does not name the temporal property that fell. A liveness row checks exactly
@@ -82,7 +149,9 @@ run() {  # run <module> <config> <expectation>
     printf '   <-- BAD EXPECTATION (needs holds/FAILS)\n'; fails=$((fails + 1))
   elif [ "$expect" = fails ] && [ -z "$want" ]; then
     printf '   <-- BAD EXPECTATION (FAILS must name its property)\n'; fails=$((fails + 1))
-  elif [ "$verdict" = error ]; then
+  elif [ "$verdict" = timeout ]; then
+    printf '   <-- TIMED OUT\n'; fails=$((fails + 1))
+  elif [ "$verdict" = error ] || [ "$verdict" = lowdisk ]; then
     printf '   <-- NO VERDICT\n'; fails=$((fails + 1))
   elif [ "$verdict" != "$expect" ]; then
     printf '   <-- MISMATCH (expected %s)\n' "$expect"; fails=$((fails + 1))
@@ -224,6 +293,7 @@ run UserTurn.tla ut_pause_shipped_all                 "(expected: holds — barg
 run UserTurn.tla ut_pause_shipped_timed               "(expected: holds — the shipped pause with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
 run UserTurn.tla ut_judge_noHold_resumeover           "(expected: FAILS NoResumeOverWords — the judge's gate without hold_resume: the pause resumes over a question still being judged)"
 run UserTurn.tla ut_judge_noReask_nomissedbargein     "(expected: FAILS NoMissedBargeIn — a CONTINUE on stale words drops the stop said while it was judged)"
+run UserTurn.tla ut_judge_quietWindow_nounjudged     "(expected: FAILS NoUnjudgedWords — the pause resumes on its quiet window before the engine returns the caller's word, which then cuts the playing reply unjudged, #275)"
 run UserTurn.tla ut_judge_shipped_reach               "(expected: FAILS NoJudging — witness: words held for a verdict are reachable as shipped)"
 run UserTurn.tla ut_judge_shipped_all                 "(expected: holds — the barge-in judge's gate as shipped, on the shipped pause, with every property)"
 run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
@@ -320,12 +390,14 @@ run SttCommit.tla sc_reset_owed          "(expected: FAILS NoStrandedTurn — BE
 run SttCommit.tla sc_reset_pays          "(expected: holds — AS SHIPPED: the reset is the close of every stop the STT had seen)"
 if [ "$FULL" = 1 ]; then
   echo "  --full: the environments too large for the default run"
+  limit=$FULL_ROW_TIMEOUT
   run SttCommit.tla sc_vadStop_sound_carry "(expected: holds — the fallback's rows, with the carry)"
   run SttCommit.tla sc_voice_carry         "(expected: holds — the caller's voice, with the carry)"
   run SttCommit.tla sc_voice_missed        "(expected: holds — the caller's voice, with a missed VAD stop too)"
   run SttCommit.tla sc_voice_final_carry   "(expected: holds — the final under the wait, as shipped, with the carry and a lost verdict)"
   run SttCommit.tla sc_final_receipts_full "(expected: holds — the shipped final with the backstop, a lost verdict, the engine's cut and the carry)"
   run SttCommit.tla sc_reset_pays_closes   "(expected: holds — the shipped reset, with the engine's own close)"
+  limit=$ROW_TIMEOUT
 fi
 echo
 echo "SttSlice.tla — sliced turn text: a turn is the words of one continuous transcript that end before its commit"
@@ -352,9 +424,11 @@ run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleDeliver — a late
 run SttSlice.tla ss_noOrder         "(expected: FAILS NoDoubleDeliver — a turn after one that put nothing with words on goes on at its preview: its words delivered twice, out of order)"
 run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed)"
 if [ "$FULL" = 1 ]; then
+  limit=$FULL_ROW_TIMEOUT
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
+  limit=$ROW_TIMEOUT
 fi
 echo
 echo "TurnText.tla — a sliced turn's final, from the STT through run control / the judge and the aggregator to the context"
