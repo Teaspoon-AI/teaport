@@ -273,6 +273,39 @@ async def check_a_reply_stamped_after_the_resume_is_on_time(rig):
     assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
 
 
+async def check_a_word_due_in_the_lag_waits_for_the_resume(rig):
+    # A word whose pts comes after the pause but inside its lag, while what was sent
+    # still plays: its audio, the caption lead later, is past the stop, so it waits for
+    # the resume -- released at its pts, it would be read as played while the voice
+    # stood still. (No other word queued: the clock task would hold it behind one.)
+    await rig.task.queue_frames(
+        [TTSStartedFrame(context_id="r1")]
+        + [TTSAudioRawFrame(_pcm(i), SR, 1, context_id="r1") for i in range(N_CHUNKS)]
+        + [TTSStoppedFrame(context_id="r1")])
+    while not rig.wire.times:
+        await asyncio.sleep(0.002)
+    rig.t0 = rig.wire.times[0]
+    await _at(rig, 0.4)
+    await rig.out.set_playout_paused(True)
+    assert rig.out.voice_clock._stop_at > rig.out.get_clock().get_time(), "no lag to test in"
+    seam = TTSTextFrame("seam", aggregated_by="word", context_id="r1")
+    seam.pts = rig.out.voice_clock.now_ns() + int(0.005e9)
+    await rig.task.queue_frames([seam])
+    await _at(rig, 1.0)
+    assert not [w for _, w in _words_out(rig) if w == "seam"], (
+        "released before its audio, which plays only after the resume")
+    t_resume = time.monotonic()
+    await rig.out.set_playout_paused(False)
+    await asyncio.sleep(0.2)
+    t = [t for t, w in _words_out(rig) if w == "seam"]
+    assert t and t[0] - t_resume <= 0.06, (t, t_resume)
+
+
+async def test_a_word_due_in_the_lag_waits_for_the_resume():
+    async with Rig(with_pauser=False) as rig:
+        await check_a_word_due_in_the_lag_waits_for_the_resume(rig)
+
+
 async def test_the_words_keep_the_voices_time_through_a_pause():
     async with Rig() as rig:
         await check_the_words_keep_the_voices_time_through_a_pause(rig)

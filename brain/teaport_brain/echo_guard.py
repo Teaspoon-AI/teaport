@@ -240,8 +240,12 @@ class PlayedWordsTap(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TTSTextFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._bot.played(frame.text, heard_at=self._heard_at(frame))
+            self.note(frame)
         await self.push_frame(frame, direction)
+
+    def note(self, frame: TTSTextFrame) -> None:
+        """`frame`'s word was released to play: into the bot's words."""
+        self._bot.played(frame.text, heard_at=self._heard_at(frame))
 
     def _heard_at(self, frame):
         voice = self._voice

@@ -90,7 +90,7 @@ def test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard():
     def release(text):
         f = TTSTextFrame(text, aggregated_by="word")
         f.pts = voice.now_ns()                    # released at its pts
-        g.bot.played(f.text, heard_at=tap._heard_at(f))
+        tap.note(f)
 
     def advance(secs):
         base.t += round(secs * 1e9)
