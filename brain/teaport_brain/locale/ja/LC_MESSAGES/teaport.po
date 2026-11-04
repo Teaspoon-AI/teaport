@@ -377,3 +377,132 @@ msgstr "今やりますね、少々お待ちください。"
 
 msgid "One moment, let me set that up."
 msgstr "少々お待ちください、準備します。"
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "AI アカウント"
+
+msgid "AI account (optional)"
+msgstr "AI アカウント（任意）"
+
+msgid "An account is connected."
+msgstr "アカウントは接続されています。"
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "「設定を開いて」と言って、Teaport に新しいコードをもらってください。"
+
+msgid "Checking the key…"
+msgstr "キーを確認しています…"
+
+msgid "Code"
+msgstr "コード"
+
+msgid "Continue"
+msgstr "続ける"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Teaport から伝えられたコードを入力してください。コードは1回だけ使えます。"
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "回答に使うアカウントがまだ設定されていないため、まだ質問にはお答えできません。設定するには「設定を開いて」と言ってください。"
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "入力された AI アカウントのキーが使えなかったため、保存しませんでした。もう一度試すには「設定を開いて」と言ってください。"
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "それにはオンラインになる必要があります。オンラインにするには「ワイファイを設定して」と言ってください。"
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "画面にコードを表示しました。スマートフォンのカメラで読み取り、表示されたリンクをタップして、設定ページに進んでください。"
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "接続が安全ではないという警告がスマートフォンに出る場合は、先に {certificate} をインストールしてから、Teaport に新しいコードをもらってください。"
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "このページが安全ではないという警告がスマートフォンに出る場合は、こちらの方法で Teaport を信頼済みにしてください。"
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "スマートフォンのブラウザで{address}を開いて、コード{code}を入力してください。このコードは1回だけ、これから5分間使えます。"
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "今の Teaport のアカウントを使い続ける場合は、空欄のままにしてください。ご自分の OpenRouter アカウントを使う場合は、そのキーをここに貼り付けてください。Teaport はオンラインになるとキーを確認し、うまくいったかどうかを声でお知らせします。"
+
+msgid "No account is connected yet."
+msgstr "まだアカウントが接続されていません。"
+
+msgid "OpenRouter key"
+msgstr "OpenRouter キー"
+
+msgid "Save anyway"
+msgstr "このまま保存"
+
+msgid "Settings"
+msgstr "設定"
+
+msgid "Show advanced"
+msgstr "詳細設定を表示"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "すみません、この機器では、スマートフォンから設定を開くことはできません。"
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "「続ける」をタップすると、このスマートフォンで Teaport の設定を開けます。コードは1回だけ使えます。"
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport はこのキーを確認できませんでした。{reason}。"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport は回答に OpenRouter のアカウントを使っています。ご自分のアカウントを使うには、OpenRouter アカウントのキーを貼り付けてください。"
+
+msgid "Teaport's certificate"
+msgstr "Teaport の証明書"
+
+msgid "Test and save"
+msgstr "テストして保存"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "そのコードは使えませんでした。確認するか、Teaport に新しいコードをもらってください。"
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "キーは有効で、保存されました。次の会話から Teaport がこのキーを使います。"
+
+msgid "This code has expired"
+msgstr "このコードは有効期限が切れています"
+
+msgid "This code was already used"
+msgstr "このコードはすでに使われています"
+
+msgid "This key didn't work: {reason}."
+msgstr "このキーは使えませんでした。{reason}。"
+
+msgid "Your AI account is connected."
+msgstr "AI アカウントが接続されています。"
+
+msgid "no AI service is set up on this box"
+msgstr "この機器には AI サービスが設定されていません"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?:^|[\\s、。,.!！])\\s*(?:ちょっと|じゃあ|ねえ|あの)?\\s*(?:(?:あなた|君|きみ|teaport|ティーポート)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|ほしい|欲しい)?\\s*(?:ね|よ)?\\s*(?:[。.!！、,…]|$)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "スラッシュ"
+
+msgid "that doesn't look like a key"
+msgstr "キーの形式ではないようです"
+
+msgid "the AI service didn't answer"
+msgstr "AI サービスから応答がありませんでした"
+
+msgid "the AI service refused this key"
+msgstr "AI サービスがこのキーを拒否しました"
+
+msgid "the key is empty"
+msgstr "キーが空欄です"
+
+msgid "this account has no credit left"
+msgstr "このアカウントには残高がありません"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "この機器のキーは設置時に決められているため、ここでは変更できません"

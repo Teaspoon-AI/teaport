@@ -385,3 +385,132 @@ msgstr "Ci lavoro subito, un attimo."
 
 msgid "One moment, let me set that up."
 msgstr "Un attimo, lo preparo."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "Account IA"
+
+msgid "AI account (optional)"
+msgstr "Account IA (facoltativo)"
+
+msgid "An account is connected."
+msgstr "È collegato un account."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Chiedine uno nuovo a Teaport: di' «apri le impostazioni»."
+
+msgid "Checking the key…"
+msgstr "Verifica della chiave…"
+
+msgid "Code"
+msgstr "Codice"
+
+msgid "Continue"
+msgstr "Continua"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Inserisci il codice che ti ha dato Teaport. Funziona una sola volta."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Non posso ancora rispondere alle domande, perché il mio account per le risposte non è configurato. Di' «apri le impostazioni» per configurarlo."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "Non è stato possibile usare la chiave inserita per il tuo account IA, quindi non è stata salvata. Di' «apri le impostazioni» per riprovare."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Per questo devo essere online. Di' «configura il Wi-Fi» per collegarmi a internet."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "Ho mostrato un codice sul mio schermo. Inquadralo con la fotocamera del telefono, poi tocca il link che compare per arrivare alle mie impostazioni."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Se il telefono avvisa che la connessione non è privata, installa prima {certificate}, poi chiedi a Teaport un nuovo codice."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Se il telefono avvisa che questa pagina non è privata, ecco come considerare attendibile Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "Nel browser del telefono, vai all'indirizzo {address} e inserisci il codice {code}. Funziona una sola volta, per i prossimi cinque minuti."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Lascia vuoto questo campo per mantenere l'account che Teaport usa ora. Per usare il tuo account OpenRouter, incolla qui la sua chiave. Teaport verifica la chiave appena è online e ti dice a voce se ha funzionato."
+
+msgid "No account is connected yet."
+msgstr "Nessun account ancora collegato."
+
+msgid "OpenRouter key"
+msgstr "Chiave OpenRouter"
+
+msgid "Save anyway"
+msgstr "Salva comunque"
+
+msgid "Settings"
+msgstr "Impostazioni"
+
+msgid "Show advanced"
+msgstr "Mostra opzioni avanzate"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Mi dispiace, su questo dispositivo le mie impostazioni non sono raggiungibili da un telefono."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Tocca “Continua” per aprire le impostazioni di Teaport su questo telefono. Il codice funziona una sola volta."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport non ha potuto verificare questa chiave: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport usa un account OpenRouter per le sue risposte. Per usare il tuo, incolla una chiave del tuo account OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "Il certificato di Teaport"
+
+msgid "Test and save"
+msgstr "Verifica e salva"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Il codice non ha funzionato. Controllalo, oppure chiedi a Teaport un nuovo codice."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "La chiave funziona ed è stata salvata. Teaport la userà dalla prossima conversazione."
+
+msgid "This code has expired"
+msgstr "Questo codice è scaduto"
+
+msgid "This code was already used"
+msgstr "Questo codice è già stato usato"
+
+msgid "This key didn't work: {reason}."
+msgstr "Questa chiave non ha funzionato: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Il tuo account IA è collegato."
+
+msgid "no AI service is set up on this box"
+msgstr "su questo dispositivo non è configurato nessun servizio di IA"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?<!non )\\b(?:apri(?:mi)?|apra|mostra(?:mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?= *(?:[.,!?;:…]|$)| (?:per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "barra"
+
+msgid "that doesn't look like a key"
+msgstr "non sembra una chiave"
+
+msgid "the AI service didn't answer"
+msgstr "il servizio di IA non ha risposto"
+
+msgid "the AI service refused this key"
+msgstr "il servizio di IA ha rifiutato questa chiave"
+
+msgid "the key is empty"
+msgstr "la chiave è vuota"
+
+msgid "this account has no credit left"
+msgstr "questo account non ha più credito"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "la chiave di questo dispositivo è impostata da chi l'ha installato, quindi non si può cambiare qui"

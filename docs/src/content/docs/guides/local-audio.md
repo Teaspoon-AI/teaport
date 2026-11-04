@@ -23,7 +23,7 @@ sudo systemctl disable --now teaport-local-audio
 
 A bridge you disabled stays off when the installer runs again without the flag.
 
-<!-- source: install.sh:46-47,2644-2647#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
+<!-- source: install.sh:46-47,2652-2655#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
 
 ## Talk to the agent
 

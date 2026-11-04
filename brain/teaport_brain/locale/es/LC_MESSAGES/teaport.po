@@ -377,3 +377,132 @@ msgstr "Voy a trabajar en ello, un momento."
 
 msgid "One moment, let me set that up."
 msgstr "Un momento, déjame prepararlo."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "Cuenta de IA"
+
+msgid "AI account (optional)"
+msgstr "Cuenta de IA (opcional)"
+
+msgid "An account is connected."
+msgstr "Hay una cuenta conectada."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Pídele uno nuevo a Teaport: di «abre los ajustes»."
+
+msgid "Checking the key…"
+msgstr "Comprobando la clave…"
+
+msgid "Code"
+msgstr "Código"
+
+msgid "Continue"
+msgstr "Continuar"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Escribe el código que te dio Teaport. Solo sirve una vez."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Todavía no puedo responder preguntas, porque la cuenta que uso para mis respuestas no está configurada. Di «abre los ajustes» para configurarla."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "No pude usar la clave de la cuenta de IA que escribiste, así que no la guardé. Di «abre los ajustes» para intentarlo de nuevo."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Para eso necesito internet. Di «configura el wifi» para conectarme a internet."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "Puse un código en mi pantalla. Escanéalo con la cámara de tu teléfono y luego toca el enlace que aparece para entrar a mis ajustes."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Si tu teléfono avisa de que la conexión no es privada, instala primero {certificate} y luego pídele a Teaport un código nuevo."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Si tu teléfono avisa de que esta página no es privada, aquí se explica cómo confiar en Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "En el navegador de tu teléfono, ve a {address} y escribe el código {code}. Solo sirve una vez, durante los próximos cinco minutos."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Deja esto vacío para seguir con la cuenta que Teaport tiene ahora. Para usar tu propia cuenta de OpenRouter, pega aquí su clave. Teaport comprueba la clave en cuanto tiene internet y te dice en voz alta si funcionó."
+
+msgid "No account is connected yet."
+msgstr "Todavía no hay ninguna cuenta conectada."
+
+msgid "OpenRouter key"
+msgstr "Clave de OpenRouter"
+
+msgid "Save anyway"
+msgstr "Guardar de todos modos"
+
+msgid "Settings"
+msgstr "Ajustes"
+
+msgid "Show advanced"
+msgstr "Mostrar opciones avanzadas"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Lo siento, en este dispositivo no se puede entrar a mis ajustes desde un teléfono."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Toca Continuar para entrar a los ajustes de Teaport en este teléfono. El código solo sirve una vez."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport no pudo comprobar esta clave: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport usa una cuenta de OpenRouter para sus respuestas. Para usar la tuya, pega una clave de tu cuenta de OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "el certificado de Teaport"
+
+msgid "Test and save"
+msgstr "Comprobar y guardar"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Ese código no funcionó. Revísalo o pídele uno nuevo a Teaport."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "La clave funciona y ya está guardada. Teaport la usará a partir de tu próxima conversación."
+
+msgid "This code has expired"
+msgstr "Este código expiró"
+
+msgid "This code was already used"
+msgstr "Este código ya se usó"
+
+msgid "This key didn't work: {reason}."
+msgstr "Esta clave no funcionó: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Tu cuenta de IA está conectada."
+
+msgid "no AI service is set up on this box"
+msgstr "este dispositivo no tiene ningún servicio de IA configurado"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?<!no )\\b(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?= *(?:[.,!?;:…]|$)| (?:por favor|porfa|ahora|ya|de teaport)\\b)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "barra"
+
+msgid "that doesn't look like a key"
+msgstr "eso no parece una clave"
+
+msgid "the AI service didn't answer"
+msgstr "el servicio de IA no respondió"
+
+msgid "the AI service refused this key"
+msgstr "el servicio de IA rechazó esta clave"
+
+msgid "the key is empty"
+msgstr "la clave está vacía"
+
+msgid "this account has no credit left"
+msgstr "a esta cuenta no le queda crédito"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "la clave de este dispositivo la puso quien lo instaló, así que no se puede cambiar aquí"

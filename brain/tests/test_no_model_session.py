@@ -607,6 +607,19 @@ async def test_end_to_end_a_talk_client_is_greeted_with_the_line_and_health_says
         await talk.close()
 
 
+async def test_end_to_end_with_a_front_door_the_line_says_open_my_settings():
+    """#279: a box with a front door hears "open my settings" on Talk, so its no-model
+    line says to; the phone line stays as it was (sip_server, the test above)."""
+    from test_call_experience import Rig as CxRig, TalkClient
+    rig = CxRig(**{"LLM_BASE_URL": "", "LLM_API_KEY": "", "HOME": _HOME,
+                   "TEAPORT_FRONTDOOR_HOST": "teaport-9e35.local"})
+    async with rig:
+        talk = await TalkClient(rig.port).connect()
+        await until(lambda: les.NO_MODEL_SETTINGS_TEXT in " ".join(rig.engine.tts_texts), 20)
+        assert rig.engine.llm_requests == []
+        await talk.close()
+
+
 def main():
     tests = [(k, v) for k, v in globals().items() if k.startswith("test_")]
     for name, fn in tests:

@@ -1947,14 +1947,17 @@ reissue_short_intermediate() {
 # silently if the CA were ever regenerated. The path matcher is
 # exact and rewrites to a fixed file, so root.key next to it stays unreachable.
 #
-# /p/* is the one brain path the front door serves: the short pairing links the OLED shows
-# as a QR code (#243), which redirect to OpenClaw's one-time owner handoff. Only that
-# prefix, and only over HTTPS (the code is a bearer secret until used); the rest of the
-# brain (the config page, /talk) stays off the front door, and the http block above never
-# matches it, so a cleartext /p/ hit is just redirected to https first. The brain's own
-# port is open to the LAN (the config page), so the brain itself answers /p/ only to a
-# loopback peer that says X-Forwarded-Proto https -- this proxy, which sets that header
-# itself -- and gives anything else a 404 (pairing.py _via_front_door).
+# Two brain prefixes go through the front door: /p/*, the short pairing links the OLED
+# shows as a QR code (#243), which redirect to OpenClaw's one-time owner handoff; and
+# /settings and /settings/*, the owner's Settings (#279): the code links "open my
+# settings" shows, and the config page with its routes, which take the session a code
+# opens in place of the token (settings_access.py). Only those, and only over HTTPS (a
+# code is a bearer secret until used, and the session cookie is Secure); the rest of the
+# brain (/talk, the config page at /config) stays off the front door, and the http block
+# above never matches them, so a cleartext hit is just redirected to https first. The
+# brain's own port is open to the LAN (the config page), so the brain itself answers
+# these only to a loopback peer that says X-Forwarded-Proto https -- this proxy, which
+# sets that header itself -- and gives anything else a 404 (pairing.py via_front_door).
 #
 # The global block names the local CA for this box (#251): every Caddy root is otherwise
 # "Caddy Local Authority", and a phone that trusts two boxes lists two identical entries.
@@ -1977,7 +1980,7 @@ write_caddyfile() {
   if [ -n "$TLS_CERT" ]; then tls=("    tls \"$TLS_CERT\" \"$TLS_KEY\""); fi
   if [ "$DRY_RUN" = 1 ]; then
     local how="local CA, leaf $LEAF_LIFETIME"; if [ -n "$TLS_CERT" ]; then how="own certificate $TLS_CERT"; fi
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* and /settings* -> brain 127.0.0.1:%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
@@ -2016,8 +2019,13 @@ write_caddyfile() {
     "$FRONTDOOR_HOST {" \
     "${tls[@]}" \
     "    import teaport_ca" \
-    "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
+    "    # Pairing short links (#243) and the owner's Settings (#279) go to the brain;" \
+    "    # nothing else of the brain is exposed." \
     "    handle /p/* {" \
+    "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
+    "    }" \
+    "    @settings path /settings /settings/*" \
+    "    handle @settings {" \
     "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
     "    }" \
     "    handle {" \

@@ -72,9 +72,11 @@
 # here and answered with one fixed line, on the vague line's clock (once per window,
 # whatever is said in between) -- one processor and one clock for "there is no answer",
 # whatever the reason. Which line (_no_model_line):
-#   * where spoken Wi-Fi setup is on and the box is offline, how to get it online;
-#   * anywhere else, that the account for its answers is not set up -- and no more: no
-#     way to set it up is within an owner's reach by voice yet (#279 brings one).
+#   * where spoken Wi-Fi setup is on and the box is offline, how to get it online (its
+#     page takes the AI account's key too, #279);
+#   * where "open my settings" is heard (settings_access.py, #279), that the account is
+#     not set up and how to set it up: that phrase;
+#   * anywhere else, that the account for its answers is not set up.
 # A phone call never asks: sip_server says NO_MODEL_CALL_TEXT through say_last_line,
 # heard in full, and hangs up.
 # A request that finds a model could be made now (a key written meanwhile: the key file
@@ -86,7 +88,6 @@
 # box would say nothing at all.
 #
 import math
-import re
 import time
 
 import httpx
@@ -105,6 +106,7 @@ from pipecat.services.llm_service import LLMService
 from pipecat.utils.errors import ErrorCategory, classify_http_exception
 
 from teaport_brain import i18n
+from teaport_brain.ai_account import clean_reason, redact  # noqa: F401 (redact: services)
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
 
@@ -130,10 +132,13 @@ ACCOUNT_TEXT = N_("Sorry, I can't answer right now: the account I use for my ans
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
 
-# No model at all (#277; the module note). The account, as the account line names it;
-# no "settings page": nothing tells a first-run owner where that is yet.
+# No model at all (#277; the module note). The account, as the account line names it.
 NO_MODEL_TEXT = N_("I can't answer questions yet, because the account I use for my "
                    "answers isn't set up.")
+# The same where "open my settings" is heard (#279). The quoted words are that phrase, in
+# each catalog one its own "settings" pattern hears (tests/test_i18n.py checks).
+NO_MODEL_SETTINGS_TEXT = N_("I can't answer questions yet, because the account I use for "
+                            "my answers isn't set up. Say \"open my settings\" to set it up.")
 # The quoted words are the start phrase, in each catalog one its own "start" pattern
 # hears (tests/test_i18n.py checks): said back to the box, they start setup mode.
 NO_MODEL_WIFI_TEXT = N_("I can't answer questions until I'm set up. Say \"set up Wi-Fi\" "
@@ -184,42 +189,19 @@ def is_account_problem(frame: ErrorFrame) -> bool:
     return category_of(frame) in ACCOUNT_CATEGORIES
 
 
-# What may not leave the brain: links (a provider's key-limit message can name the key's
-# management page, whose path carries the key's id) and anything key-shaped -- a key by
-# its prefix (sk-, pk-, rk-, whole token), a key the provider masked ("sk-proj-****abcd",
-# "****abcd": the visible tail is still part of a key), or a long opaque id.
-_URL = re.compile(r"(?:\b[a-z][a-z0-9+.-]*://|\bwww\.)\S+", re.IGNORECASE)
-_KEYLIKE = re.compile(r"\b(?:sk|pk|rk)[-_]\S*|\S*\*{3,}\S*|[A-Za-z0-9_-]{20,}")
-_LINK, _KEY = "<link>", "<key>"
-_STATUS_PREFIX = re.compile(r"^\s*error code:\s*\d+\s*-?\s*", re.IGNORECASE)
-_SENTENCES = re.compile(r"(?<=[.!?])\s+")
-_REASON_MAX = 120
-
-
-def redact(text: str) -> str:
-    """`text` with every link replaced by <link> and every key-shaped token by <key>:
-    the one redaction both the error log line (services.push_error_frame) and the shown
-    reason (failure_reason) go through."""
-    return _KEYLIKE.sub(_KEY, _URL.sub(_LINK, text))
-
-
 def failure_reason(exception: BaseException | None) -> str:
     """The provider's own first line about a failure, safe to show: the message from its
-    response body when there is one (the OpenAI SDK parses it into .body), redacted, with
-    every sentence that carried a link dropped, keys removed and no status code. The
-    exception's type name when nothing readable is left; "" for no exception."""
+    response body when there is one (the OpenAI SDK parses it into .body), cleaned as a
+    key check's reason is (ai_account.clean_reason: redacted, every sentence that carried
+    a link dropped, keys removed, no status code). The exception's type name when nothing
+    readable is left; "" for no exception."""
     if exception is None:
         return ""
     body = getattr(exception, "body", None)
     text = body.get("message") if isinstance(body, dict) else body
     if not isinstance(text, str) or not text.strip():
         text = str(exception)
-    text = redact(_STATUS_PREFIX.sub("", (text.strip().splitlines() or [""])[0]))
-    kept = [s for s in _SENTENCES.split(text) if _LINK not in s]
-    text = " ".join(" ".join(kept).replace(_KEY, "").split()).strip(" -:;,.")
-    if len(text) > _REASON_MAX:
-        text = text[:_REASON_MAX - 1].rstrip() + "…"
-    return text or type(exception).__name__
+    return clean_reason(text) or type(exception).__name__
 
 
 class AnswerHealth:
@@ -287,19 +269,24 @@ class LLMErrorSpeaker(FrameProcessor):
 
     no_model: the session has no LLM (#277; the module note): this processor answers
     every request for a reply in its place. Then also `wifi` (the session's
-    WifiSetupVoice, where spoken Wi-Fi setup is on), `gate` (the session's FollowupGate:
+    WifiSetupVoice, where spoken Wi-Fi setup is on), `phrases` (the session's fixed
+    phrases, wifi_voice.PhraseVoice: told what was said, which quotes a phrase),
+    `settings` ("open my settings" is heard here), `gate` (the session's FollowupGate:
     the request it took is not left claiming the window), `model_back` (True once a
     model could be made), `restarts` (the client restarts a session itself: the
     restart_session client tool) and `end` (an async callable that ends the session,
     set by the session builder)."""
 
     def __init__(self, lang_fn=None, *, no_model: bool = False, wifi=None, gate=None,
-                 model_back=None, end=None, restarts: bool = False):
+                 model_back=None, end=None, restarts: bool = False, phrases=None,
+                 settings: bool = False):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
         self.no_model = no_model
         self._restarts = restarts
         self._wifi = wifi
+        self._phrases = phrases if phrases is not None else wifi
+        self._settings = settings
         self._gate = gate
         self.model_back = model_back or (lambda: False)
         self.end = end
@@ -344,7 +331,7 @@ class LLMErrorSpeaker(FrameProcessor):
         self._said = now
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
-        return NO_MODEL_TEXT
+        return NO_MODEL_SETTINGS_TEXT if self._settings else NO_MODEL_TEXT
 
     async def _answer_without_model(self) -> None:
         text = await self._no_model_line()
@@ -361,9 +348,9 @@ class LLMErrorSpeaker(FrameProcessor):
                                   FrameDirection.DOWNSTREAM)
         t = i18n.for_espeak(self._lang_fn())
         line = t._(text)
-        if self._wifi is not None:
-            # Its start phrase is in the line: heard back, it is the box's own voice.
-            self._wifi.note_said(line)
+        if self._phrases is not None:
+            # A phrase is in the line: heard back, it is the box's own voice.
+            self._phrases.note_said(line)
         await self.push_frame(TTSSpeakFrame(line, append_to_context=False),
                               FrameDirection.DOWNSTREAM)
         if text is NO_MODEL_READY_NEW_TEXT and self.end is not None:

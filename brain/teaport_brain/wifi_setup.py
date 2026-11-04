@@ -20,6 +20,13 @@
 #   4. the user picks a network and types its password on the phone; the access point
 #      goes down and the box joins it. Internet confirmed: done. Otherwise the network's
 #      new profile is dropped, the access point comes back and the page says why.
+#      The page also takes the key of the owner's own AI account (an OpenRouter key,
+#      optional: left empty, the box keeps the account it has). It goes with the Wi-Fi
+#      choice, in memory only, and is checked once the box is online through the network
+#      picked -- setup mode itself has no internet -- by the one way every page takes a
+#      key (ai_account.adopt): saved only if the provider accepts it. How that went rides
+#      in the "connected" status, and the voice says it (wifi_voice.py); a key never
+#      leaves this process but to the provider and the brain's key file.
 #   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
@@ -58,7 +65,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import conversation_log, display, i18n
+from teaport_brain import ai_account, conversation_log, display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
@@ -179,6 +186,7 @@ PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="ut
 <label class="f" for="pw">{password}</label>
 <input type="password" id="pw" name="password" autocomplete="off" autocapitalize="none" spellcheck="false">
 <label class="show"><input type="checkbox" onclick="pw.type=this.checked?'text':'password'"> {show}</label>
+{account}
 <button type="submit">{connect}</button>
 </form></main></body></html>"""
 
@@ -206,8 +214,28 @@ def render_picker(t: i18n.T) -> str:
             f'<noscript><button type="submit">→</button></noscript></form>')
 
 
-def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) -> str:
-    """The page, in t's language. `error` is already in that language."""
+# What the account step says (render_account).
+ACCOUNT_HELP = N_("Leave this empty to keep the account Teaport has now. To use your own "
+                  "OpenRouter account, paste its key here. Teaport checks the key once it's "
+                  "online, and says out loud whether it worked.")
+
+
+def render_account(t: i18n.T) -> str:
+    """The AI account step: the owner's own key, optional, closed until tapped. A
+    "Connect OpenRouter" button (OAuth, #282) joins it above the field; pasting stays
+    the fallback."""
+    return (f'<details class="acct"><summary>{html.escape(t._("AI account (optional)"))}</summary>'
+            f'<p>{html.escape(t._(ACCOUNT_HELP))}</p>'
+            f'<label class="f" for="ai_key">{html.escape(t._("OpenRouter key"))}</label>'
+            '<input type="password" id="ai_key" name="ai_key" autocomplete="off" '
+            f'autocapitalize="none" spellcheck="false" maxlength="{ai_account.KEY_MAX_CHARS}">'
+            '</details>')
+
+
+def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
+                account: bool = False) -> str:
+    """The page, in t's language. `error` is already in that language. `account`: the AI
+    account step is offered (the box's endpoint is OpenRouter's: main)."""
     t = t or i18n.get(i18n.SOURCE_LANG)
     rows = []
     for i, n in enumerate(networks):
@@ -231,7 +259,8 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
         name=html.escape(t._("Network name"), quote=True),
         password=html.escape(t._("Password")),
         show=html.escape(t._("Show password")),
-        connect=html.escape(t._("Connect")))
+        connect=html.escape(t._("Connect")),
+        account=render_account(t) if account else "")
 
 
 def _isolate(text: str, names: list[str]) -> str:
@@ -266,6 +295,12 @@ def render_joining(ssid: str, t: i18n.T) -> str:
                              "back to {network}. Teaport will say out loud whether it "
                              "connected; if it could not, the setup network comes back and "
                              "you can try again.")).format(network=strong))
+
+
+def parse_key(body: bytes) -> str:
+    """The AI account key from the posted form, stripped; "" for none."""
+    form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+    return (form.get("ai_key") or [""])[0].strip()
 
 
 def parse_form(body: bytes) -> tuple[str, str, bool, str]:
@@ -343,9 +378,14 @@ class Setup:
     """One run: the access point, the page, and the join attempts."""
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
-                 bind: str | None = None, screen: display.Screen | None = None):
+                 bind: str | None = None, screen: display.Screen | None = None,
+                 account: str | None = None):
         self.nm, self.status, self.port = nm, status, port
         self.screen = screen
+        # The AI endpoint the account step's key is for (LLM_BASE_URL), when the step is
+        # offered (an OpenRouter endpoint: main); None, and the page has no such step.
+        self.account = account
+        self.key = ""  # the key posted with the last Wi-Fi choice (never logged)
         # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
         # its profile), never 0.0.0.0 — the box's other networks must not reach a page
         # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -406,7 +446,8 @@ class Setup:
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 t, remember = self._t()
-                self._send(200, render_page(setup.networks, setup.error_text(t), t), extra=remember)
+                self._send(200, render_page(setup.networks, setup.error_text(t), t,
+                                            account=setup.account is not None), extra=remember)
 
             def do_POST(self):
                 raw = (self.headers.get("Content-Length") or "0").strip()
@@ -421,8 +462,11 @@ class Setup:
                 ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
                 if error:
-                    return self._send(200, render_page(setup.networks, t._(error), t), extra=remember)
+                    return self._send(200, render_page(setup.networks, t._(error), t,
+                                                       account=setup.account is not None),
+                                      extra=remember)
                 self._send(200, render_joining(ssid, t), extra=remember)
+                setup.key = parse_key(body) if setup.account is not None else ""
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 
@@ -534,6 +578,19 @@ class Setup:
             time.sleep(0.2)
         return True
 
+    def _adopt_key(self) -> dict | None:
+        """The key typed with the Wi-Fi choice, checked now that the box is online and
+        saved if it works (ai_account.adopt): {"result": "saved" | "refused" | "unknown",
+        "reason": English, "ours": the reason is a msgid}, or None when none was typed.
+        The key is forgotten here either way."""
+        key, self.key = self.key, ""
+        if not key or self.account is None:
+            return None
+        check = ai_account.adopt(key, self.account)
+        log(f"the AI account key: {check.state}")
+        return {"result": "saved" if check.state == ai_account.WORKS else check.state,
+                "reason": check.reason, "ours": check.ours}
+
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
         network down, a half-done join undone, and the old connection back up. `quick`
@@ -613,7 +670,9 @@ class Setup:
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
-                self.status.set("connected", target=target)
+                account = self._adopt_key()
+                self.status.set("connected", target=target,
+                                **({"account": account} if account else {}))
                 self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS,
                            title=CONNECTED_TITLE)
                 return 0
@@ -651,8 +710,12 @@ def main(argv=None) -> int:
     status = Status(args.status_dir, run_id)
     log(f"run {run_id}: setup network {ssid}, page on port {args.port}, "
         f"{'flash-time' if PASSWORD.strip() == password else 'random'} password")
+    # The account step only for an OpenRouter endpoint (OpenRouter keys only, #283); the
+    # unit reads brain.env for it (teaport-wifi-setup.service).
+    base_url = setting("LLM_BASE_URL")
     setup = Setup(nm, status, port=args.port, minutes=args.minutes,
-                  screen=display.Screen("wifi-setup"))
+                  screen=display.Screen("wifi-setup"),
+                  account=base_url if ai_account.is_openrouter(base_url) else None)
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 

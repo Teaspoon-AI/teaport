@@ -74,9 +74,11 @@ elif st == "untried":
     text = "none asked for since the brain started"
 elif st == "unconfigured":
     text = ("not set up%s: no model is configured, so the box answers every question with"
-            " a fixed line — set LLM_BASE_URL in %s/brain.env (then restart the brain)"
-            " and write the key to ~/.config/teaport/llm_key, or set both on the"
-            " configuration page at :7861/config" % (why, sys.argv[1]))
+            " a fixed line — with a key missing, say \"open my settings\" to the box and"
+            " paste the key on the phone (or in setup mode: \"set up Wi-Fi\"); otherwise"
+            " set LLM_BASE_URL in %s/brain.env (then restart the brain) and write the key"
+            " to ~/.config/teaport/llm_key, or set both on the configuration page at"
+            " :7861/config" % (why, sys.argv[1]))
 elif st == "account":
     text = ("refused %s: the account behind the answers needs attention, and it will"
             " not pass by itself — check the key and its account on the settings page;"
@@ -258,7 +260,7 @@ cmd_doctor() {
     [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
     [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN | tr -d "\"' \t")" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
   fi
-  if grep -qs '[^[:space:]]' "$SECRETS/llm_key" || [[ "${LLM_API_KEY:-}" == *[![:space:]]* ]]; then ok "LLM API key present"; else warnc "no LLM key — set LLM_API_KEY or write $SECRETS/llm_key"; fi
+  if grep -qs '[^[:space:]]' "$SECRETS/llm_key" || [[ "${LLM_API_KEY:-}" == *[![:space:]]* ]]; then ok "LLM API key present"; else warnc "no LLM key — say \"open my settings\" to the box, or set LLM_API_KEY or write $SECRETS/llm_key"; fi
   local u st
   for u in teaport-engine teaport-brain; do
     st="$(active "$u")"

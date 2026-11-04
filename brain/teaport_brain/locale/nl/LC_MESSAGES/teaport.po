@@ -377,3 +377,132 @@ msgstr "Ik pak het op, een momentje."
 
 msgid "One moment, let me set that up."
 msgstr "Een momentje, ik zet het klaar."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "AI-account"
+
+msgid "AI account (optional)"
+msgstr "AI-account (optioneel)"
+
+msgid "An account is connected."
+msgstr "Er is een account gekoppeld."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Vraag Teaport om een nieuwe: zeg ‘open de instellingen’."
+
+msgid "Checking the key…"
+msgstr "Sleutel controleren…"
+
+msgid "Code"
+msgstr "Code"
+
+msgid "Continue"
+msgstr "Doorgaan"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Voer de code in die je van Teaport hebt gekregen. Hij werkt één keer."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Ik kan nog geen vragen beantwoorden, want het account dat ik voor mijn antwoorden gebruik is nog niet ingesteld. Zeg ‘open de instellingen’ om het in te stellen."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "Ik kon de sleutel voor het AI-account die je hebt ingevoerd niet gebruiken, dus ik heb hem niet opgeslagen. Zeg ‘open de instellingen’ om het opnieuw te proberen."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Daarvoor moet ik online zijn. Zeg ‘stel de wifi in’ om me online te krijgen."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "Ik heb een code op mijn scherm gezet. Scan hem met de camera van je telefoon en tik dan op de link die verschijnt om bij mijn instellingen te komen."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Als je telefoon waarschuwt dat de verbinding niet privé is, installeer dan eerst {certificate} en vraag Teaport daarna om een nieuwe code."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Als je telefoon waarschuwt dat deze pagina niet privé is, lees je hier hoe je Teaport kunt vertrouwen."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "Ga in de browser van je telefoon naar {address} en voer de code {code} in. Hij werkt één keer, de komende vijf minuten."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Laat dit leeg om het account te houden dat Teaport nu gebruikt. Wil je je eigen OpenRouter-account gebruiken, plak dan hier de sleutel ervan. Teaport controleert de sleutel zodra het online is en zegt hardop of hij werkt."
+
+msgid "No account is connected yet."
+msgstr "Er is nog geen account gekoppeld."
+
+msgid "OpenRouter key"
+msgstr "OpenRouter-sleutel"
+
+msgid "Save anyway"
+msgstr "Toch opslaan"
+
+msgid "Settings"
+msgstr "Instellingen"
+
+msgid "Show advanced"
+msgstr "Geavanceerd tonen"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Sorry, op dit apparaat zijn mijn instellingen niet bereikbaar vanaf een telefoon."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Tik op ‘Doorgaan’ om op deze telefoon naar de instellingen van Teaport te gaan. De code werkt één keer."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport kon deze sleutel niet controleren: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport gebruikt een OpenRouter-account voor zijn antwoorden. Wil je je eigen account gebruiken, plak dan een sleutel uit je OpenRouter-account."
+
+msgid "Teaport's certificate"
+msgstr "het certificaat van Teaport"
+
+msgid "Test and save"
+msgstr "Testen en opslaan"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Die code werkte niet. Controleer hem of vraag Teaport om een nieuwe."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "De sleutel werkt en is opgeslagen. Teaport gebruikt hem vanaf je volgende gesprek."
+
+msgid "This code has expired"
+msgstr "Deze code is verlopen"
+
+msgid "This code was already used"
+msgstr "Deze code is al gebruikt"
+
+msgid "This key didn't work: {reason}."
+msgstr "Deze sleutel werkte niet: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Je AI-account is gekoppeld."
+
+msgid "no AI service is set up on this box"
+msgstr "er is geen AI-dienst ingesteld op dit apparaat"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?<!ik )(?<!we )(?<!wij )(?<!jij )(?<!hij )(?<!zij )(?<!ze )(?<!niet )\\b(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)|(?<!ik )(?<!we )(?<!wij )(?<!jij )(?<!hij )(?<!zij )(?<!ze )\\blaat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)|^\\W*(?:teaport\\W+)?(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?=\\s*(?:[.,!?;:…]|$)|\\s+(?:alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "schuine streep"
+
+msgid "that doesn't look like a key"
+msgstr "dat lijkt geen sleutel"
+
+msgid "the AI service didn't answer"
+msgstr "de AI-dienst gaf geen antwoord"
+
+msgid "the AI service refused this key"
+msgstr "de AI-dienst weigerde deze sleutel"
+
+msgid "the key is empty"
+msgstr "de sleutel is leeg"
+
+msgid "this account has no credit left"
+msgstr "dit account heeft geen tegoed meer"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "de sleutel van dit apparaat is door de installateur ingesteld, dus hij kan hier niet worden gewijzigd"

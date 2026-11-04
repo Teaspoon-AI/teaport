@@ -37,6 +37,15 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
+    "ai_account.py": {
+        "t._(self.reason)",                  # a key check's reason: N_() there (#279)
+    },
+    "config_ui.py": {
+        "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
+    },
+    "settings_access.py": {                  # its lines: N_() there (#279)
+        "t._(SHOWN_TEXT)", "t._(SPOKEN_TEXT)", "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
+    },
     "llm_error_speaker.py": {
         "t._(text)",                         # its four notices: N_() there
     },
@@ -44,6 +53,7 @@ DYNAMIC = {
         "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
     },
     "wifi_setup.py": {
+        "t._(ACCOUNT_HELP)",                 # N_() there (#279)
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here
     },
@@ -56,6 +66,7 @@ DYNAMIC = {
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
         "self.t._(ONLINE_NOW_TEXT)",
+        "t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT)",  # N_() there (#279)
     },
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
@@ -187,29 +198,29 @@ def test_placeholders_survive_translation(lang):
 
 SAYS = {  # what a speaker of each language says for each meaning (from the translators)
     "es": {"start": "conéctate a otra red wifi", "yes": "sí, claro", "no": "ahora no",
-           "cancel": "detente", "repeat": "¿cuál era la contraseña?"},
+           "cancel": "detente", "repeat": "¿cuál era la contraseña?", "settings": "abre los ajustes"},
     "pt_BR": {"start": "quero configurar o wi-fi", "yes": "pode ser", "no": "deixa pra lá",
-              "cancel": "chega", "repeat": "repete"},
+              "cancel": "chega", "repeat": "repete", "settings": "abrir as configurações"},
     "fr": {"start": "Connecte-toi au Wi-Fi", "yes": "ouais vas-y", "no": "non merci, pas maintenant",
-           "cancel": "arrête la configuration", "repeat": "tu peux répéter ?"},
+           "cancel": "arrête la configuration", "repeat": "tu peux répéter ?", "settings": "ouvre les réglages"},
     "it": {"start": "Collegati al wi-fi", "yes": "sì grazie", "no": "no grazie, non ora",
-           "cancel": "fermati", "repeat": "puoi ripetere?"},
+           "cancel": "fermati", "repeat": "puoi ripetere?", "settings": "Apri le impostazioni"},
     "de": {"start": "Richte das WLAN ein", "yes": "Ja, mach das", "no": "Nein danke",
-           "cancel": "Brich ab", "repeat": "Wiederhole das bitte"},
+           "cancel": "Brich ab", "repeat": "Wiederhole das bitte", "settings": "Öffne die Einstellungen"},
     "nl": {"start": "Stel de wifi in", "yes": "Ja graag", "no": "Liever niet",
-           "cancel": "Annuleer", "repeat": "Nog een keer"},
+           "cancel": "Annuleer", "repeat": "Nog een keer", "settings": "Open de instellingen"},
     "ru": {"start": "Давай настроим вайфай", "yes": "да, давай", "no": "нет, не надо",
-           "cancel": "отмени настройку", "repeat": "повтори пароль"},
+           "cancel": "отмени настройку", "repeat": "повтори пароль", "settings": "Открой настройки"},
     "ar": {"start": "أريد إعداد الواي فاي", "yes": "نعم من فضلك", "no": "لا شكرا",
-           "cancel": "أوقف الإعداد", "repeat": "كرر من فضلك"},
+           "cancel": "أوقف الإعداد", "repeat": "كرر من فضلك", "settings": "افتح الإعدادات"},
     "hi": {"start": "मुझे वाई-फ़ाई सेट अप करना है", "yes": "हाँ, शुरू करो", "no": "नहीं, रहने दो",
-           "cancel": "कैंसल कर दो", "repeat": "पासवर्ड दोबारा बोलिए"},
+           "cancel": "कैंसल कर दो", "repeat": "पासवर्ड दोबारा बोलिए", "settings": "सेटिंग्स खोलो"},
     "zh": {"start": "帮我设置一下无线网络", "yes": "好的，开始吧", "no": "不用了",
-           "cancel": "取消设置", "repeat": "再说一遍密码"},
+           "cancel": "取消设置", "repeat": "再说一遍密码", "settings": "打开设置"},
     "ja": {"start": "Wi-Fiを設定して", "yes": "はい、お願いします", "no": "いいえ、やめておきます",
-           "cancel": "設定を中止して", "repeat": "もう一回言って"},
+           "cancel": "設定を中止して", "repeat": "もう一回言って", "settings": "設定を開いて"},
     "ko": {"start": "와이파이 설정해 줘", "yes": "네 해 주세요", "no": "아니요 됐어요",
-           "cancel": "취소해 주세요", "repeat": "다시 말해 줘"},
+           "cancel": "취소해 주세요", "repeat": "다시 말해 줘", "settings": "설정 열어 줘"},
 }
 
 
@@ -255,30 +266,90 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
     assert [s for s in talk if wifi_voice.heard("start", s, t)] == []
 
 
+# "open my settings" (settings_access.py, #279): ways to ask, and talk about settings that
+# is not a request -- heard as SettingsPhrase hears it (no question, at most
+# PHRASE_MAX_WORDS words).
+SETTINGS = {
+    "es": (["abre los ajustes", "Ábreme los ajustes, por favor.", "muéstrame tus ajustes", "abre la página de ajustes"],
+           ["los ajustes de mi teléfono son confusos", "¿cómo cambio los ajustes?", "ayer cambié los ajustes", "no abras los ajustes"]),
+    "pt_BR": (["abrir as configurações", "abre as configurações", "abra suas configurações, por favor", "me mostra as configurações"],
+           ["as configurações do meu celular são confusas", "como mudo as configurações?", "eu mudei as configurações ontem", "não abra as configurações"]),
+    "fr": (["ouvre les réglages", "Affichez vos réglages, svp.", "montre-moi tes réglages", "affiche la page des réglages"],
+           ["les réglages de mon téléphone sont compliqués", "comment je change les réglages ?", "j'ai changé les réglages hier", "n'ouvre pas les réglages"]),
+    "it": (["Apri le impostazioni", "apri le mie impostazioni", "Mostrami le tue impostazioni.", "apri la pagina delle impostazioni"],
+           ["le impostazioni del mio telefono sono complicate", "come si cambiano le impostazioni?", "ieri ho cambiato le impostazioni", "non aprire le impostazioni"]),
+    "de": (["Öffne die Einstellungen", "Öffne meine Einstellungen.", "Zeig mir deine Einstellungen", "Mach bitte die Einstellungen auf"],
+           ["Die Einstellungen auf meinem Handy sind verwirrend.", "Wie ändere ich die Einstellungen?", "Ich habe gestern die Einstellungen geändert.", "Öffne nicht die Einstellungen."]),
+    "nl": (["Open de instellingen", "Open mijn instellingen.", "Laat me je instellingen zien", "Toon de instellingen"],
+           ["De instellingen van mijn telefoon zijn verwarrend.", "Hoe verander ik de instellingen?", "Ik heb gisteren de instellingen veranderd.", "Open de instellingen niet."]),
+    "ru": (["Открой настройки", "Открой мои настройки.", "Покажи свои настройки", "Покажи мне настройки"],
+           ["Настройки на моём телефоне такие запутанные.", "Как поменять настройки?", "Я вчера поменял настройки.", "Не открывай настройки."]),
+    "ar": (["افتح الإعدادات", "افتح لي الإعدادات من فضلك", "اعرض إعداداتك", "افتح صفحة الإعدادات"],
+           ["إعدادات هاتفي معقدة", "كيف أغيّر الإعدادات؟", "غيّرت الإعدادات أمس", "لا تفتح الإعدادات"]),
+    "hi": (["सेटिंग्स खोलो", "मेरी सेटिंग्स खोलो", "अपनी सेटिंग्स दिखाओ", "सेटिंग्स का पेज खोलिए"],
+           ["मेरे फ़ोन की सेटिंग्स बहुत उलझी हुई हैं", "सेटिंग्स कैसे बदलते हैं?", "मैंने कल सेटिंग्स बदल दी थीं", "सेटिंग्स मत खोलो"]),
+    "zh": (["打开设置", "打开我的设置", "帮我打开设置页面", "请打开你的设置吧"],
+           ["我手机的设置好复杂", "我昨天改了设置", "不要打开设置", "别打开设置"]),
+    "ja": (["設定を開いて", "設定を開いてください", "設定画面を見せて", "設定ページを開いてください"],
+           ["スマホの設定がわかりにくい", "設定の変え方を教えて", "昨日設定を変えました", "設定は開かないで"]),
+    "ko": (["설정 열어 줘", "설정 열어줘", "설정 좀 열어 주세요", "설정 페이지 열어 줘"],
+           ["내 휴대폰 설정이 너무 복잡해", "설정은 어떻게 바꿔", "어제 설정을 바꿨어", "설정 열지 마"]),
+}
+
+
+def _settings_heard(text: str, t) -> bool:
+    from teaport_brain import settings_access
+    return (wifi_voice.heard("settings", text, t) and not wifi_voice._QUESTION.search(text)
+            and wifi_voice.words(text) <= settings_access.PHRASE_MAX_WORDS)
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_the_settings_pattern_hears_requests_not_talk(lang):
+    t = i18n.get(lang)
+    asks, talk = SETTINGS[lang]
+    assert [s for s in asks if not _settings_heard(s, t)] == []
+    assert [s for s in talk if _settings_heard(s, t)] == []
+    assert _settings_heard("open my settings", t)                # English works too
+    # Neither phrase is the other's.
+    assert [s for s in asks if wifi_voice.heard("start", s, t)] == []
+
+
 # The quotation marks the catalogs put round a phrase to say, opening -> closing.
 _QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": "'", "「": "」"}
 
 
 def _quoting_lines():
-    from teaport_brain.llm_error_speaker import NO_MODEL_WIFI_TEXT
-    return {"no model": NO_MODEL_WIFI_TEXT, "again": wifi_voice.AGAIN_TEXT}
+    from teaport_brain import settings_access
+    from teaport_brain.llm_error_speaker import NO_MODEL_SETTINGS_TEXT, NO_MODEL_WIFI_TEXT
+    return {"no model": ("start", NO_MODEL_WIFI_TEXT), "again": ("start", wifi_voice.AGAIN_TEXT),
+            "offline": ("start", settings_access.OFFLINE_TEXT),
+            "no account": ("settings", NO_MODEL_SETTINGS_TEXT),
+            "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
+            "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".')}
 
 
-@pytest.mark.parametrize("which", ["no model", "again"])
+@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
+                                   "new code"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
 def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
-    """The no-model line (llm_error_speaker.NO_MODEL_WIFI_TEXT, #277) and the first-boot
-    setup's last line (wifi_voice.AGAIN_TEXT, #278) tell the user what to say: those
-    exact words, said back, must start setup mode in that language."""
+    """The lines that tell the user what to say -- the no-model lines
+    (llm_error_speaker.py, #277, #279), the first-boot setup's last line
+    (wifi_voice.AGAIN_TEXT, #278), the settings phrase's own (settings_access.py,
+    wifi_voice.ACCOUNT_NOT_SAVED_TEXT, #279): those exact words, said back, must be the
+    phrase they name in that language (setup mode's start, or "open my settings")."""
     t = i18n.get(lang)
-    line = t._(_quoting_lines()[which])
+    meaning, msgid = _quoting_lines()[which]
+    line = t._(msgid)
     # English: the apostrophes of "can't"/"I'm" before the quote are not quotes.
     sentence = line[line.index('"'):] if lang == "en" else line
     quoted = [m.group(2) for m in re.finditer(
         "(" + "|".join(map(re.escape, _QUOTES)) + r")\s*(.+?)\s*(?:"
         + "|".join(map(re.escape, set(_QUOTES.values()))) + ")", sentence)]
     assert len(quoted) == 1, (lang, line, quoted)
-    assert wifi_voice.heard("start", quoted[0], t), (lang, quoted[0])
+    if meaning == "settings":
+        assert _settings_heard(quoted[0], t), (lang, quoted[0])
+    else:
+        assert wifi_voice.heard("start", quoted[0], t), (lang, quoted[0])
 
 
 def test_arabic_is_heard_with_or_without_its_diacritics():

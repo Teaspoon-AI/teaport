@@ -377,3 +377,132 @@ msgstr "Vou trabalhar nisso, um momento."
 
 msgid "One moment, let me set that up."
 msgstr "Um momento, vou preparar isso."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "Conta de IA"
+
+msgid "AI account (optional)"
+msgstr "Conta de IA (opcional)"
+
+msgid "An account is connected."
+msgstr "Há uma conta conectada."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Peça um novo ao Teaport: diga “abrir as configurações”."
+
+msgid "Checking the key…"
+msgstr "Verificando a chave…"
+
+msgid "Code"
+msgstr "Código"
+
+msgid "Continue"
+msgstr "Continuar"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Digite o código que o Teaport passou para você. Ele só funciona uma vez."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Ainda não consigo responder perguntas, porque a conta que uso para as minhas respostas não está configurada. Diga “abrir as configurações” para configurá-la."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "Não consegui usar a chave da conta de IA que você digitou, então não a salvei. Diga “abrir as configurações” para tentar de novo."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Para isso, preciso estar na internet. Diga “configurar o wi-fi” para me colocar na internet."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "Coloquei um código na minha tela. Escaneie com a câmera do celular e depois toque no link que aparecer para chegar às minhas configurações."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Se o celular avisar que a conexão não é particular, instale primeiro {certificate} e depois peça um novo código ao Teaport."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Se o celular avisar que esta página não é particular, veja como confiar no Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "No navegador do celular, acesse {address} e digite o código {code}. Ele só funciona uma vez, nos próximos cinco minutos."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Deixe em branco para manter a conta que o Teaport usa agora. Para usar a sua própria conta do OpenRouter, cole a chave dela aqui. O Teaport verifica a chave assim que estiver na internet e avisa em voz alta se deu certo."
+
+msgid "No account is connected yet."
+msgstr "Nenhuma conta conectada ainda."
+
+msgid "OpenRouter key"
+msgstr "Chave do OpenRouter"
+
+msgid "Save anyway"
+msgstr "Salvar mesmo assim"
+
+msgid "Settings"
+msgstr "Configurações"
+
+msgid "Show advanced"
+msgstr "Mostrar opções avançadas"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Desculpe, neste aparelho não dá para acessar as minhas configurações pelo celular."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Toque em Continuar para acessar as configurações do Teaport neste celular. O código só funciona uma vez."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "O Teaport não conseguiu verificar esta chave: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "O Teaport usa uma conta do OpenRouter para as respostas. Para usar a sua, cole uma chave da sua conta do OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "o certificado do Teaport"
+
+msgid "Test and save"
+msgstr "Testar e salvar"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Esse código não funcionou. Confira ou peça um novo ao Teaport."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "A chave funciona e foi salva. O Teaport vai usá-la a partir da sua próxima conversa."
+
+msgid "This code has expired"
+msgstr "Este código expirou"
+
+msgid "This code was already used"
+msgstr "Este código já foi usado"
+
+msgid "This key didn't work: {reason}."
+msgstr "Esta chave não funcionou: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Sua conta de IA está conectada."
+
+msgid "no AI service is set up on this box"
+msgstr "nenhum serviço de IA está configurado neste aparelho"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?<!n[aã]o )\\b(?:abr(?:e|a|ir)(?:-?(?:me|nos))?|me abr(?:e|a)|mostr(?:a|e|ar)(?:-?(?:me|nos))?|me mostr(?:a|e)|v(?:ai|[aá]|ou)|ir|entr(?:a|e|ar)|(?:me )?lev(?:a|e)(?:-?me)?)(?: (?:pras?|pros|para|n?as|n?os|n?a|n?o|em|[aà]s|aos))? (?:(?:as|os|suas|seus|minhas|meus|tuas|teus|a|o|sua|minha|tua|nas|nos) )?(?:(?:p[aá]gina|tela|menu) (?:de|das|dos|do|da) (?:(?:minhas|suas|tuas) )?)?(?:configura[cç](?:[oõ]es|[aã]o)|ajustes|prefer[eê]ncias)(?= *(?:[.,!?;:…]|$)| (?:por favor|agora|j[aá]|a[ií]|do teaport)\\b)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "barra"
+
+msgid "that doesn't look like a key"
+msgstr "isso não parece uma chave"
+
+msgid "the AI service didn't answer"
+msgstr "o serviço de IA não respondeu"
+
+msgid "the AI service refused this key"
+msgstr "o serviço de IA recusou esta chave"
+
+msgid "the key is empty"
+msgstr "a chave está vazia"
+
+msgid "this account has no credit left"
+msgstr "esta conta está sem crédito"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "a chave deste aparelho é definida por quem o instalou, então não dá para mudá-la aqui"

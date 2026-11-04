@@ -50,7 +50,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import conversation_log, first_boot, host_context
-from teaport_brain import pairing
+from teaport_brain import pairing, settings_access
 from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain.tasks import cancel_and_wait
@@ -650,12 +650,17 @@ app = FastAPI(lifespan=_lifespan)
 # own: on the 8 GB box a second Python service is memory the engine reserve
 # wants. They share /talk's GATEWAY_TOKEN. See config_ui.py.
 app.include_router(config_ui.router)
+# The same page and routes for the owner's phone on the front door, which routes
+# /settings/* here (settings_access.py, #279): a Settings session stands in for the
+# token there. First, so /settings/config is the page and not a code.
+app.include_router(config_ui.router, prefix="/settings")
 # /p/<code>, the short link a pairing QR code holds (pairing.py): unauthenticated, as a
 # fresh browser has no token; Caddy routes /p/* here.
 app.include_router(pairing.router)
 
 
 @app.get("/health")
+@app.get("/settings/health")  # the page asks it, on the front door too
 async def health():
     # "sip": the SIP front-end's state (sip_server.status): off, waiting for a gateway,
     # or connected to one. `teaport sip status` and `teaport doctor` read it.
@@ -670,6 +675,12 @@ async def health():
     # and `teaport doctor` print it.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
             "tts_pacing": pacing_status(), "answers": answers_status()}
+
+
+# /settings/<code>, the short link "open my settings" shows, and /settings, where a code
+# read aloud is typed: unauthenticated, as a fresh phone has no session yet. After every
+# other /settings/ route (the page's, /settings/health): a code is whatever is left.
+app.include_router(settings_access.router)
 
 
 @app.get("/talk/status")
@@ -751,8 +762,10 @@ class _ReadyServer(uvicorn.Server):
 # What a request line uvicorn logs must not carry: a ?token= (the access line of an
 # HTTP request, the "WebSocket /talk?...&token=..." [accepted] line of every Talk
 # connect), and a pairing code, the path segment after /p/ (pairing.py: a live one is
-# the owner's access until it is used).
-_SECRETS_IN_URL = re.compile(r"(token=|(?:^|(?<=[\s\"']))/p/)[^&/?#\s\"']+")
+# the owner's access until it is used), or a Settings code after /settings/
+# (settings_access.py) -- not the page's own paths there.
+_SECRETS_IN_URL = re.compile(r"(token=|(?:^|(?<=[\s\"']))/(?:p|settings(?!/(?:config|api|health"
+                             r"|trust)\b))/)[^&/?#\s\"']+")
 
 
 def _redact(text: str) -> str:

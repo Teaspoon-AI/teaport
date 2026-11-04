@@ -28,6 +28,10 @@ After=NetworkManager.service
 [Service]
 Type=simple
 User=@USER@
+# The brain's settings first: the AI key typed on the setup page is checked against the
+# brain's endpoint (LLM_BASE_URL) once the box is online, and saved where the brain reads
+# it (brain/teaport_brain/ai_account.py, #279). Then the setup network's own.
+EnvironmentFile=-@ETC@/brain.env
 EnvironmentFile=-@ETC@/wifi-setup.env
 # status.json for the brain; kept after the run so it can read how it ended.
 RuntimeDirectory=teaport-wifi-setup

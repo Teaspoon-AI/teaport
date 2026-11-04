@@ -382,3 +382,132 @@ msgstr "Je m'en occupe, un instant."
 
 msgid "One moment, let me set that up."
 msgstr "Un instant, je prépare cela."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "Compte IA"
+
+msgid "AI account (optional)"
+msgstr "Compte IA (facultatif)"
+
+msgid "An account is connected."
+msgstr "Un compte est connecté."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "Demandez-en un nouveau à Teaport : dites « ouvre les réglages »."
+
+msgid "Checking the key…"
+msgstr "Vérification de la clé…"
+
+msgid "Code"
+msgstr "Code"
+
+msgid "Continue"
+msgstr "Continuer"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "Saisissez le code que Teaport vous a donné. Il ne fonctionne qu'une fois."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "Je ne peux pas encore répondre aux questions : le compte qui me sert pour mes réponses reste à configurer. Dites « ouvre les réglages » pour le configurer."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "La clé de compte IA que vous avez saisie ne fonctionne pas, je ne la garde donc pas. Dites « ouvre les réglages » pour réessayer."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "Pour cela, il me faut Internet. Dites « configure le Wi-Fi » pour me connecter à Internet."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "J'ai affiché un code sur mon écran. Scannez-le avec l'appareil photo de votre téléphone, puis touchez le lien qui apparaît pour accéder à mes réglages."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "Si votre téléphone indique que la connexion n'est pas privée, installez d'abord {certificate}, puis demandez un nouveau code à Teaport."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "Si votre téléphone indique que cette page n'est pas privée, voici comment faire confiance à Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "Dans le navigateur de votre téléphone, allez à l'adresse {address} et saisissez le code {code}. Il ne fonctionne qu'une fois, pendant les cinq prochaines minutes."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "Laissez ce champ vide pour garder le compte que Teaport utilise actuellement. Pour utiliser votre propre compte OpenRouter, collez sa clé ici. Teaport vérifie la clé dès qu'il est en ligne et vous dit à voix haute si elle fonctionne."
+
+msgid "No account is connected yet."
+msgstr "Aucun compte n'est encore connecté."
+
+msgid "OpenRouter key"
+msgstr "Clé OpenRouter"
+
+msgid "Save anyway"
+msgstr "Enregistrer quand même"
+
+msgid "Settings"
+msgstr "Réglages"
+
+msgid "Show advanced"
+msgstr "Afficher les options avancées"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "Désolé, sur cet appareil, mes réglages ne sont pas accessibles depuis un téléphone."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "Touchez Continuer pour accéder aux réglages de Teaport sur ce téléphone. Le code ne fonctionne qu'une fois."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "Teaport n'a pas pu vérifier cette clé : {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "Teaport utilise un compte OpenRouter pour ses réponses. Pour utiliser le vôtre, collez une clé de votre compte OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "le certificat de Teaport"
+
+msgid "Test and save"
+msgstr "Tester et enregistrer"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "Ce code n'a pas fonctionné. Vérifiez-le, ou demandez-en un nouveau à Teaport."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "La clé fonctionne et elle est enregistrée. Teaport l'utilisera dès votre prochaine conversation."
+
+msgid "This code has expired"
+msgstr "Ce code a expiré"
+
+msgid "This code was already used"
+msgstr "Ce code a déjà été utilisé"
+
+msgid "This key didn't work: {reason}."
+msgstr "Cette clé n'a pas fonctionné : {reason}."
+
+msgid "Your AI account is connected."
+msgstr "Votre compte IA est connecté."
+
+msgid "no AI service is set up on this box"
+msgstr "aucun service d'IA n'est configuré sur cet appareil"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "\\b(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?= *(?:[.,!?;:…]|$)| (?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "slash"
+
+msgid "that doesn't look like a key"
+msgstr "cela ne ressemble pas à une clé"
+
+msgid "the AI service didn't answer"
+msgstr "le service d'IA n'a pas répondu"
+
+msgid "the AI service refused this key"
+msgstr "le service d'IA a refusé cette clé"
+
+msgid "the key is empty"
+msgstr "la clé est vide"
+
+msgid "this account has no credit left"
+msgstr "ce compte n'a plus de crédit"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "la clé de cet appareil est définie par son installateur, elle ne peut donc pas être modifiée ici"

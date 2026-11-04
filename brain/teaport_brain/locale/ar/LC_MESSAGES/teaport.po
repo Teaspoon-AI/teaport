@@ -388,3 +388,132 @@ msgstr "سأعمل على ذلك، لحظة."
 
 msgid "One moment, let me set that up."
 msgstr "لحظة، سأجهّز ذلك."
+
+# Settings from the phone and the AI account (settings_access.py, ai_account.py, config_ui.py, wifi_setup.py, #279).
+msgid "AI account"
+msgstr "حساب الذكاء الاصطناعي"
+
+msgid "AI account (optional)"
+msgstr "حساب الذكاء الاصطناعي (اختياري)"
+
+msgid "An account is connected."
+msgstr "تم ربط حساب."
+
+msgid "Ask Teaport for a new one: say \"open my settings\"."
+msgstr "اطلب رمزًا جديدًا من Teaport: قل «افتح الإعدادات»."
+
+msgid "Checking the key…"
+msgstr "جارٍ التحقق من المفتاح…"
+
+msgid "Code"
+msgstr "الرمز"
+
+msgid "Continue"
+msgstr "متابعة"
+
+msgid "Enter the code Teaport gave you. It works once."
+msgstr "أدخل الرمز الذي أعطاك إياه Teaport. يعمل مرة واحدة فقط."
+
+msgid "I can't answer questions yet, because the account I use for my answers isn't set up. Say \"open my settings\" to set it up."
+msgstr "لا أستطيع الإجابة عن الأسئلة بعد، لأن الحساب الذي أستخدمه لإجاباتي لم تتم تهيئته. يُرجى قول «افتح الإعدادات» لتهيئته."
+
+msgid "I couldn't use the AI account key you entered, so I didn't save it. Say \"open my settings\" to try again."
+msgstr "تعذّر استخدام مفتاح حساب الذكاء الاصطناعي الذي أُدخل، لذا لم يتم حفظه. يُرجى قول «افتح الإعدادات» للمحاولة مرة أخرى."
+
+msgid "I need to be online for that. Say \"set up Wi-Fi\" to get me online."
+msgstr "يلزمني الاتصال بالإنترنت لذلك. يُرجى قول «إعداد الواي فاي» لتوصيلي بالإنترنت."
+
+msgid "I've put a code on my screen. Scan it with your phone's camera, then tap the link that appears to get to my settings."
+msgstr "عرضتُ رمزًا على شاشتي. يُرجى مسحه بكاميرا هاتفك، ثم النقر على الرابط الذي يظهر للوصول إلى إعداداتي."
+
+msgid "If your phone warns that the connection is not private, install {certificate} first, then ask Teaport for a new code."
+msgstr "إذا نبّهك هاتفك إلى أن الاتصال ليس خاصًا، فثبّت {certificate} أولًا، ثم اطلب رمزًا جديدًا من Teaport."
+
+msgid "If your phone warns that this page is not private, here is how to trust Teaport."
+msgstr "إذا نبّهك هاتفك إلى أن هذه الصفحة ليست خاصة، فإليك طريقة الوثوق بـ Teaport."
+
+msgid "In your phone's browser, go to {address}, and enter the code {code}. It works once, for the next five minutes."
+msgstr "في متصفح هاتفك، يُرجى الانتقال إلى {address} وإدخال الرمز {code}. يعمل الرمز مرة واحدة فقط، خلال الدقائق الخمس القادمة."
+
+msgid "Leave this empty to keep the account Teaport has now. To use your own OpenRouter account, paste its key here. Teaport checks the key once it's online, and says out loud whether it worked."
+msgstr "اترك هذا الحقل فارغًا للإبقاء على الحساب الذي يستخدمه Teaport حاليًا. لاستخدام حسابك الخاص على OpenRouter، الصق مفتاحه هنا. يتحقق Teaport من المفتاح بمجرد اتصاله بالإنترنت، ويُعلن بصوت مسموع ما إذا نجح."
+
+msgid "No account is connected yet."
+msgstr "لم يتم ربط أي حساب بعد."
+
+msgid "OpenRouter key"
+msgstr "مفتاح OpenRouter"
+
+msgid "Save anyway"
+msgstr "حفظ على أي حال"
+
+msgid "Settings"
+msgstr "الإعدادات"
+
+msgid "Show advanced"
+msgstr "إظهار الإعدادات المتقدمة"
+
+msgid "Sorry, my settings can't be reached from a phone on this box."
+msgstr "عذرًا، لا يمكن الوصول إلى إعداداتي من هاتف على هذا الجهاز."
+
+msgid "Tap Continue to get to Teaport's settings on this phone. The code works once."
+msgstr "انقر على «متابعة» للوصول إلى إعدادات Teaport على هذا الهاتف. يعمل الرمز مرة واحدة فقط."
+
+msgid "Teaport couldn't check this key: {reason}."
+msgstr "تعذّر على Teaport التحقق من هذا المفتاح: {reason}."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, paste a key from your OpenRouter account."
+msgstr "يستخدم Teaport حسابًا على OpenRouter لإجاباته. لاستخدام حسابك الخاص، الصق مفتاحًا من حسابك على OpenRouter."
+
+msgid "Teaport's certificate"
+msgstr "شهادة Teaport"
+
+msgid "Test and save"
+msgstr "اختبار وحفظ"
+
+msgid "That code didn't work. Check it, or ask Teaport for a new one."
+msgstr "لم ينجح هذا الرمز. تحقّق منه، أو اطلب رمزًا جديدًا من Teaport."
+
+msgid "The key works, and it's saved. Teaport uses it from your next conversation."
+msgstr "المفتاح يعمل، وتم حفظه. سيستخدمه Teaport بدءًا من محادثتك التالية."
+
+msgid "This code has expired"
+msgstr "انتهت صلاحية هذا الرمز"
+
+msgid "This code was already used"
+msgstr "تم استخدام هذا الرمز من قبل"
+
+msgid "This key didn't work: {reason}."
+msgstr "لم ينجح هذا المفتاح: {reason}."
+
+msgid "Your AI account is connected."
+msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك."
+
+msgid "no AI service is set up on this box"
+msgstr "لا توجد خدمة ذكاء اصطناعي مُهيّأة على هذا الجهاز"
+
+msgctxt "pattern"
+msgid "\\b(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "(?:(?<![^\\s.,!،؛:])[وف]?(?:افتح(?:ي|وا)?(?:\\s?لي)?|اعرض(?:ي|وا)?(?:\\s?لي)?|[اأ]ظهر(?:ي|وا)?(?:\\s?لي)?|ور(?:ي)?ني|فرجيني|خذني\\s+[اإ]لى|روح\\s+على|اذهب\\s+[اإ]لى|انتقل\\s+[اإ]لى)|^\\W*(?:من فضلك\\s+|لو سمحت\\s+|يرجى\\s+)?(?:فتح|عرض))\\s+(?:صفح[ةه]\\s+)?(?:ال[اإأ]عدادات|[اإأ]عدادات(?:ك|ي)|الضبط|settings)(?:\\s+(?:الخاص[ةه]\\s+بك|الخاص[ةه]\\s+بي|teaport|تيبورت))?(?=\\s*(?:[.,!?؟؛:…،]|$)|\\s+(?:من فضلك|لو سمحت|الآن|الان|رجاء)(?:\\s|$|[.,!،]))"
+
+msgctxt "spell"
+msgid "slash"
+msgstr "شرطة مائلة"
+
+msgid "that doesn't look like a key"
+msgstr "لا يبدو هذا مفتاحًا"
+
+msgid "the AI service didn't answer"
+msgstr "لم تستجب خدمة الذكاء الاصطناعي"
+
+msgid "the AI service refused this key"
+msgstr "رفضت خدمة الذكاء الاصطناعي هذا المفتاح"
+
+msgid "the key is empty"
+msgstr "المفتاح فارغ"
+
+msgid "this account has no credit left"
+msgstr "لا يوجد رصيد متبقٍ في هذا الحساب"
+
+msgid "this box's key is set by its installer, so it can't be changed here"
+msgstr "مفتاح هذا الجهاز يحدده من قام بتثبيته، لذا لا يمكن تغييره هنا"
