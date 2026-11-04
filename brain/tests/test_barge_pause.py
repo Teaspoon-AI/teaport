@@ -287,9 +287,12 @@ async def check_a_word_due_in_the_lag_waits_for_the_resume(rig):
     rig.t0 = rig.wire.times[0]
     await _at(rig, 0.4)
     await rig.out.set_playout_paused(True)
-    assert rig.out.voice_clock._stop_at > rig.out.get_clock().get_time(), "no lag to test in"
+    # The lag as frozen at the pause, not a later read: a loop stall after it would
+    # leave none, and the word would test nothing (review round 3).
+    assert rig.out._pause_lag > 0.005, f"no lag to test in: {rig.out._pause_lag:.3f}s"
+    voice = rig.out.voice_clock
     seam = TTSTextFrame("seam", aggregated_by="word", context_id="r1")
-    seam.pts = rig.out.voice_clock.now_ns() + int(0.005e9)
+    seam.pts = voice._stop_at - voice._stood - int(0.001e9)   # just before the stop
     await rig.task.queue_frames([seam])
     await _at(rig, 1.0)
     assert not [w for _, w in _words_out(rig) if w == "seam"], (
