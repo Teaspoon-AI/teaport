@@ -510,3 +510,28 @@ msgstr "de sleutel van dit apparaat is door de installateur ingesteld, dus hij k
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Ik kon de sleutel voor het AI-account die je hebt ingevoerd niet gebruiken, dus ik heb hem niet opgeslagen."
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Even tussendoor: ik heb de helft van mijn proeftegoed gebruikt. Als je even tijd hebt, zeg dan ‘open de instellingen’ om je eigen account te koppelen."
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "Even tussendoor: mijn proeftegoed is bijna op. Als je even tijd hebt, zeg dan ‘open de instellingen’ om je eigen account te koppelen."
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "Mijn proeftegoed is op, dus ik kan geen vragen beantwoorden tot je je eigen account koppelt. Zeg ‘open de instellingen’ om dat te doen."
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "Mijn proeftegoed is op, dus ik kan geen vragen beantwoorden tot je eigen account gekoppeld is."
+
+msgid "Teaport is using its included trial credit."
+msgstr "Teaport gebruikt het meegeleverde proeftegoed."
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "De helft van het proeftegoed is gebruikt. Koppel je eigen account zodat Teaport blijft antwoorden."
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "Het proeftegoed is bijna op: nog ongeveer {amount} over. Koppel je eigen account zodat Teaport blijft antwoorden."
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "Het proeftegoed is op. Koppel je eigen account zodat Teaport weer kan antwoorden."

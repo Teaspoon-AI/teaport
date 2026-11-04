@@ -61,7 +61,7 @@ from loguru import logger
 
 from teaport_brain.i18n import N_
 
-from teaport_brain import ai_account, config_schema, i18n, settings, settings_access
+from teaport_brain import ai_account, config_schema, credit, i18n, settings, settings_access
 
 ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts (install.sh
@@ -669,16 +669,21 @@ ACCOUNT_TEXT = {
 @router.get("/api/account")
 async def account(request: Request):
     """The owner's AI account step: whether it is offered here (the box's endpoint is
-    OpenRouter's: OpenRouter keys only, #283), whether a key is set, and the step's
-    words. The key itself is never returned."""
+    OpenRouter's: OpenRouter keys only, #283), whether a key is set, how the trial
+    credit stands (credit.py, #280), and the step's words. The key itself is never
+    returned."""
     _authorize(request)
+    credit.MONITOR.poke()  # the owner looks at the account: read the credit again, soon
     t = _reader(request)
     rows = _rows()
     text = await asyncio.to_thread(_read_text, _store_path("brain_env"))
     stored = parse_env(text or "")
     base = stored.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
+    state = credit.MONITOR.state()
     return {"offered": ai_account.is_openrouter(base),
             "key_set": _secret_is_set(rows["LLM_API_KEY"], stored),
+            # The trial credit (#280): its state, and the page's line about it (None off it).
+            "credit": {"state": state, "line": credit.MONITOR.page_line(t)},
             "trusted_cert": settings_access.pairing.TRUSTED_CERT,
             "lang": t.lang.replace("_", "-"), "dir": t.dir,
             "text": {k: t._(v) for k, v in ACCOUNT_TEXT.items()}}

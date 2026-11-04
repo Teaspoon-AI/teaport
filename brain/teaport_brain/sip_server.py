@@ -105,6 +105,7 @@ from teaport_brain import host_context
 from teaport_brain.settings import setting
 from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
+from teaport_brain import credit
 from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.tasks import cancel_and_wait, wait_ended
@@ -407,6 +408,7 @@ class CallClaim:
             if claim is not None:
                 logger.info(f"call {cid}: lets the box go")
                 arb.ARBITER.release(claim)
+                credit.MONITOR.poke()  # a call ended: read the trial credit again (#280)
 
 
 class _Ring:
@@ -867,6 +869,7 @@ async def run_connection(sock, on_ready=None):
         # The owner's recording of the call (TEAPORT_CALL_RECORDING, off by default).
         recording = (call_recording.CallRecording(call_id, ring.caller, resumed=resumed)
                      if call_recording.ENABLED else None)
+        await credit.MONITOR.settled()  # the trial credit's first read (credit.py, #280)
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,

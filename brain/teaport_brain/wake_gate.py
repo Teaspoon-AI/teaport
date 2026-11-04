@@ -36,6 +36,7 @@
 # with no note). A consult still running when the session ends cannot report back: its
 # placeholder becomes its failure record first (owed.Owed.close_session).
 #
+import asyncio
 import time
 
 from loguru import logger
@@ -118,6 +119,12 @@ class WakeGate:
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
         self.owed = None      # the session's owed records (owed.Owed), likewise
+        # The conversation-start notice (build_agent_session, #280): notice_due() says
+        # whether one is due, and start_with_notice() says it, heard in full, then asks
+        # for the greeting (AgentSession.start_with_notice). None: there is none.
+        self.notice_due = None
+        self.start_with_notice = None
+        self._starting: set = set()  # its task, held while it runs
         # Awaited once, at the wake: a session built without OpenClaw's voice context
         # (the gateway could not answer when it opened) asks for it again
         # (build_agent_session's refresh_host). None: nothing to ask.
@@ -187,11 +194,27 @@ class WakeGate:
         await push(OutputTransportMessageUrgentFrame(message=message))
         if greet and self.greeting and self.context is not None:
             self.context.add_message({"role": "user", "content": self.greeting})
-            if run_greeting:
+            if run_greeting and self.notice_due is not None and self.notice_due():
+                # A new conversation with a notice due (#280): it plays first, heard in
+                # full, then the greeting -- from a task, as the line has to pass this
+                # STT. Not when words followed the wake phrase: they are the turn, and
+                # the notice waits for the next conversation.
+                task = asyncio.ensure_future(self.start_with_notice())
+                self._starting.add(task)
+                task.add_done_callback(self._starting.discard)
+            elif run_greeting:
                 await push(LLMRunFrame())
+
+    def cancel_start(self) -> None:
+        """Drop a conversation-start notice still running (start_with_notice): the
+        session ended, or went on hold for a phone call."""
+        for task in list(self._starting):
+            task.cancel()
+        self._starting.clear()
 
     def ended(self) -> None:
         """The session is over: what it said is the mic conversation, to be continued."""
+        self.cancel_start()
         if self.woke and self.remembers and self.context is not None:
             records = []
             if self.owed is not None:

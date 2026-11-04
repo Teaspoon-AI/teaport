@@ -415,6 +415,8 @@ class SettingsPhrase:
             logger.info("settings: asked for, but the box is on no network")
             await voice.say(t._(OFFLINE_TEXT))
             return
+        from teaport_brain import credit
+        credit.MONITOR.poke()  # the owner is at the account (a top-up): read again soon
         if not available():
             logger.warning("settings: no Settings site on this box (TEAPORT_SETTINGS_PORT "
                            "unset) -- run install.sh without --only to set it up")

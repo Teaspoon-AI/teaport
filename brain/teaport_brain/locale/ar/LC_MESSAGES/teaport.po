@@ -521,3 +521,28 @@ msgstr "مفتاح هذا الجهاز يحدده من قام بتثبيته، �
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "تعذّر استخدام مفتاح حساب الذكاء الاصطناعي الذي أُدخل، لذا لم يتم حفظه."
+
+# The trial credit (credit.py, llm_error_speaker.py, #280).
+msgid "Quick note: I've used half of my trial credit. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "ملاحظة سريعة: استُخدم نصف رصيدي التجريبي. عندما يتسع وقتك، يُرجى قول «افتح الإعدادات» لربط حسابك الخاص."
+
+msgid "Quick note: my trial credit is almost used up. When you have a minute, say \"open my settings\" to connect your own account."
+msgstr "ملاحظة سريعة: رصيدي التجريبي يكاد ينفد. عندما يتسع وقتك، يُرجى قول «افتح الإعدادات» لربط حسابك الخاص."
+
+msgid "My trial credit has run out, so I can't answer questions until you connect your own account. Say \"open my settings\" to do that."
+msgstr "نفد رصيدي التجريبي، لذا لا أستطيع الإجابة عن الأسئلة حتى يتم ربط حسابك الخاص. يُرجى قول «افتح الإعدادات» لربطه."
+
+msgid "My trial credit has run out, so I can't answer questions until your own account is connected."
+msgstr "نفد رصيدي التجريبي، لذا لا أستطيع الإجابة عن الأسئلة حتى يتم ربط حسابك الخاص."
+
+msgid "Teaport is using its included trial credit."
+msgstr "يستخدم Teaport الرصيد التجريبي المضمّن معه."
+
+msgid "Half of the trial credit is used. Connect your own account to keep Teaport answering."
+msgstr "تم استخدام نصف الرصيد التجريبي. اربط حسابك الخاص ليواصل Teaport الإجابة."
+
+msgid "The trial credit is almost used up: about {amount} left. Connect your own account to keep Teaport answering."
+msgstr "الرصيد التجريبي يكاد ينفد: يتبقى نحو {amount}. اربط حسابك الخاص ليواصل Teaport الإجابة."
+
+msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
+msgstr "نفد الرصيد التجريبي. اربط حسابك الخاص ليعود Teaport إلى الإجابة."

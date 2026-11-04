@@ -77,6 +77,8 @@
 #   * where "open my settings" is heard (settings_access.py, #279), that the account is
 #     not set up and how to set it up: that phrase;
 #   * anywhere else, that the account for its answers is not set up.
+#   * Whatever the place, when the box's own trial credit is spent (credit.py, #280):
+#     that it has run out, and (where it is heard) to say "open my settings".
 # A phone call never asks: sip_server says NO_MODEL_CALL_TEXT through say_last_line,
 # heard in full, and hangs up.
 # A request that finds a model could be made now (a key written meanwhile: the key file
@@ -105,7 +107,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
 from pipecat.utils.errors import ErrorCategory, classify_http_exception
 
-from teaport_brain import i18n
+from teaport_brain import credit, i18n
 from teaport_brain.ai_account import clean_reason, redact  # noqa: F401 (redact: services)
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
@@ -232,6 +234,10 @@ class AnswerHealth:
             self._since = now
         self._last, self._count = now, self._count + 1
         self._category, self._reason = category, failure_reason(frame.exception)
+        if category in ACCOUNT_CATEGORIES:
+            # On the trial credit this is most likely the credit running out: read it
+            # again now, not at the next poll (credit.py, #280).
+            credit.MONITOR.poke()
         if category in ACCOUNT_CATEGORIES and not was_account:
             logger.error(f"answers: the provider refused this account ({category.value}): "
                          f"{self._reason} -- every request will fail until the key or "
@@ -271,7 +277,8 @@ class LLMErrorSpeaker(FrameProcessor):
     every request for a reply in its place. Then also `wifi` (the session's
     WifiSetupVoice, where spoken Wi-Fi setup is on), `phrases` (the session's fixed
     phrases, wifi_voice.PhraseVoice: told what was said, which quotes a phrase),
-    `settings` ("open my settings" is heard here), `gate` (the session's FollowupGate:
+    `settings` ("open my settings" is heard here), `why` (why no model can be made:
+    services.model_missing, read as the request comes), `gate` (the session's FollowupGate:
     the request it took is not left claiming the window), `model_back` (True once a
     model could be made), `restarts` (the client restarts a session itself: the
     restart_session client tool) and `end` (an async callable that ends the session,
@@ -279,7 +286,7 @@ class LLMErrorSpeaker(FrameProcessor):
 
     def __init__(self, lang_fn=None, *, no_model: bool = False, wifi=None, gate=None,
                  model_back=None, end=None, restarts: bool = False, phrases=None,
-                 settings: bool = False):
+                 settings: bool = False, why=None, owner: bool = False):
         super().__init__()
         self._lang_fn = lang_fn or (lambda: None)
         self.no_model = no_model
@@ -287,6 +294,10 @@ class LLMErrorSpeaker(FrameProcessor):
         self._wifi = wifi
         self._phrases = phrases if phrases is not None else wifi
         self._settings = settings
+        self._why = why or (lambda: None)
+        # The owner's own surface (the room, Talk; not a bridge, not a phone call): only
+        # there is the box's trial credit anyone's business (#280).
+        self._owner = owner
         self._gate = gate
         self.model_back = model_back or (lambda: False)
         self.end = end
@@ -298,6 +309,9 @@ class LLMErrorSpeaker(FrameProcessor):
         # a duplicate of an utterance that never happened.
         self._said = -math.inf          # the vague line
         self._said_account = -math.inf  # the full account line
+        # The last line was the trial credit running out on a refusal (#280): the
+        # session ends after it, so the next is built without a model.
+        self._end_after = False
 
     def _notice(self, frame: ErrorFrame, now: float) -> str | None:
         """The line for this failure, or None for none; moves the clocks."""
@@ -307,6 +321,14 @@ class LLMErrorSpeaker(FrameProcessor):
             if in_account_window:
                 return ACCOUNT_STILL_TEXT
             self._said_account = now
+            # On the owner's surface, a refusal that is the trial credit running out -- the
+            # provider said so (402, QUOTA), or nothing is left -- says so (#280). A
+            # revoked key or a policy 403 with credit left is the usual account line.
+            state = credit.MONITOR.state()
+            if self._owner and state not in (credit.NONE, credit.OWN) and (
+                    category_of(frame) is ErrorCategory.QUOTA or state == credit.EMPTY):
+                self._end_after = True
+                return self._spent_text()
             return ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
             return None
@@ -315,6 +337,10 @@ class LLMErrorSpeaker(FrameProcessor):
         # may have been topped up meanwhile, with the clock still running), but not
         # "try again", which would contradict the account line.
         return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
+
+    def _spent_text(self) -> str:
+        """The trial credit is spent (#280): with "open my settings" where it is heard."""
+        return credit.EMPTY_TEXT if self._settings else credit.EMPTY_PLAIN_TEXT
 
     # -- no model (#277)
     async def _no_model_line(self) -> str | None:
@@ -331,6 +357,12 @@ class LLMErrorSpeaker(FrameProcessor):
         self._said = now
         if self._wifi is not None and not await self._wifi.box_online():
             return NO_MODEL_WIFI_TEXT
+        if self._why() == credit.SPENT_REASON:
+            # Asked for an answer while it is spent: read again (spaced: MIN_READ_SECS),
+            # so a top-up is found within a minute, not at the next poll (#280).
+            credit.MONITOR.poke()
+            if self._owner:
+                return self._spent_text()
         return NO_MODEL_SETTINGS_TEXT if self._settings else NO_MODEL_TEXT
 
     async def _answer_without_model(self) -> None:
@@ -346,16 +378,26 @@ class LLMErrorSpeaker(FrameProcessor):
                         "session, so the next one is built with it")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=dict(RESTART_CALL)),
                                   FrameDirection.DOWNSTREAM)
+        await self._say(text)
+        if text is NO_MODEL_READY_NEW_TEXT:
+            await self._end_for_the_next("no model: one can be made now")
+
+    async def _say(self, text: str) -> None:
+        """`text` (a msgid) in the session's language, the pipeline talking: out of the
+        context, noted as the box's own voice (a phrase may be in it)."""
         t = i18n.for_espeak(self._lang_fn())
         line = t._(text)
         if self._phrases is not None:
-            # A phrase is in the line: heard back, it is the box's own voice.
             self._phrases.note_said(line)
         await self.push_frame(TTSSpeakFrame(line, append_to_context=False),
                               FrameDirection.DOWNSTREAM)
-        if text is NO_MODEL_READY_NEW_TEXT and self.end is not None:
-            logger.info("no model: one can be made now -- ending this session, so the "
-                        "next one is built with it")
+
+    async def _end_for_the_next(self, why: str) -> None:
+        """End this session after the line just pushed (drained, so it plays), so the next
+        one is built afresh: with a model once one can be made (#277), without one once
+        the trial credit has run out (#280)."""
+        if self.end is not None:
+            logger.info(f"{why} -- ending this session, so the next one is built anew")
             await self.end()
 
     def _spawn(self, coro):
@@ -380,11 +422,15 @@ class LLMErrorSpeaker(FrameProcessor):
                 logger.warning(
                     f"LLMErrorSpeaker: speaking {text[:40]!r} ({category_of(frame).value}:"
                     f" {failure_reason(frame.exception) or 'no exception'})")
-                t = i18n.for_espeak(self._lang_fn())
                 # DOWNSTREAM: the TTS is below this processor, and the error itself
                 # still continues upstream to the task on the push below.
-                await self.push_frame(TTSSpeakFrame(t._(text), append_to_context=False),
-                                      FrameDirection.DOWNSTREAM)
+                await self._say(text)
+                if self._end_after:
+                    # The trial credit ran out mid-conversation (#280): it counts as
+                    # spent now, and this session ends, so the next has no model.
+                    self._end_after = False
+                    credit.MONITOR.refused_for_credit()
+                    await self._end_for_the_next("the trial credit ran out")
             else:
                 logger.debug("LLMErrorSpeaker: notice debounced")
         await self.push_frame(frame, direction)

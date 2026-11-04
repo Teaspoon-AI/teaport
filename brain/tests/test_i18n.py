@@ -37,6 +37,9 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
+    "credit.py": {
+        "t._(msgid)",                        # PAGE_LINES: N_() there (#280)
+    },
     "ai_account.py": {
         "t._(self.reason)",                  # a key check's reason: N_() there (#279)
     },
@@ -71,6 +74,7 @@ DYNAMIC = {
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
         "t._(self._UNAVAILABLE_MESSAGE)",    # the same, at both push sites
+        "i18n.for_espeak(voice_lang())._(self.msgid)",  # credit.MONITOR.notice: N_() in credit.py (#280)
     },
 }
 
@@ -327,17 +331,19 @@ _QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": 
 
 
 def _quoting_lines():
-    from teaport_brain import settings_access
+    from teaport_brain import credit, settings_access
     from teaport_brain.llm_error_speaker import NO_MODEL_SETTINGS_TEXT, NO_MODEL_WIFI_TEXT
     return {"no model": ("start", NO_MODEL_WIFI_TEXT), "again": ("start", wifi_voice.AGAIN_TEXT),
             "offline": ("start", settings_access.OFFLINE_TEXT),
             "no account": ("settings", NO_MODEL_SETTINGS_TEXT),
             "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
-            "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".')}
+            "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
+            "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
+            "credit empty": ("settings", credit.EMPTY_TEXT)}
 
 
 @pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
-                                   "new code"])
+                                   "new code", "credit half", "credit low", "credit empty"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
 def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
     """The lines that tell the user what to say -- the no-model lines

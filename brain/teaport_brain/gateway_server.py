@@ -49,7 +49,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
-from teaport_brain import conversation_log, first_boot, host_context
+from teaport_brain import conversation_log, credit, first_boot, host_context
 from teaport_brain import pairing, settings_access
 from teaport_brain import run_control
 from teaport_brain import sip_server
@@ -435,6 +435,9 @@ async def run_relay_bot(websocket: WebSocket):
         input_procs = [audio_dump.CallerAudioTap(
             "talk-" + time.strftime("%Y%m%d%H%M%S", time.gmtime()) + f"{time.time() % 1:.6f}"[2:],
             sample_rate=PIPELINE_SAMPLE_RATE)]
+    # A box just started on its trial credit: its first read decides whether this
+    # session gets a model (credit.py, #280; at most a few seconds, once).
+    await credit.MONITOR.settled()
     session = build_agent_session(
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
@@ -545,6 +548,7 @@ async def run_relay_bot(websocket: WebSocket):
         await PipelineRunner(handle_sigint=False).run(session.task)
     finally:
         arb.ARBITER.release(claim)
+        credit.MONITOR.poke()  # after each conversation: read the trial credit again
         if gate is not None:
             gate.ended()  # the mic conversation, kept for the next wake (wake_gate.py)
 
@@ -638,10 +642,12 @@ async def _lifespan(_app):
     # While a new box has never been online: write the marker the first time it is
     # (first_boot.watch; nothing without TEAPORT_SETUP_ON_FIRST_BOOT).
     watcher = asyncio.create_task(first_boot.watch())
+    # The trial credit's reader (credit.py, #280): beside the sessions, never in a turn.
+    monitor = asyncio.create_task(credit.MONITOR.run())
     try:
         yield
     finally:
-        for t in (lamp, watcher):
+        for t in (lamp, watcher, monitor):
             await cancel_and_wait(t)
 
 
@@ -674,8 +680,11 @@ async def health():
     # spent account), with since/reason -- or unconfigured: no model can be made at all,
     # no key or no endpoint address (services.answers_status, #277). `teaport status`
     # and `teaport doctor` print it.
+    # "credit": the box's included trial credit (credit.MONITOR.status, #280): none (no
+    # key), own (the owner's key), unknown, ok, half, low or empty, with what is left.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
-            "tts_pacing": pacing_status(), "answers": answers_status()}
+            "tts_pacing": pacing_status(), "answers": answers_status(),
+            "credit": credit.MONITOR.status()}
 
 
 # /settings/<code>, the short link "open my settings" shows, and /settings, where a code

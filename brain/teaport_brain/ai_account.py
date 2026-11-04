@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from teaport_brain.i18n import N_
-from teaport_brain.settings import ROWS, write_secret
+from teaport_brain.settings import ROWS, secret_file, setting, write_secret
 
 WORKS, REFUSED, UNKNOWN = "works", "refused", "unknown"
 CHECK_TIMEOUT_SECS = 10.0
@@ -250,6 +250,12 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
 
 
 # ------------------------------------------------------------------ keeping it
+
+def current_key() -> str | None:
+    """The key the brain uses now: LLM_API_KEY from the environment, else its file (read
+    each time: a key saved meanwhile counts at once). None when there is none."""
+    return setting("LLM_API_KEY") or secret_file("LLM_API_KEY")
+
 
 def key_path() -> str:
     """The file the brain reads LLM_API_KEY from (its schema row's `file`)."""

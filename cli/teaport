@@ -79,6 +79,10 @@ if st == "ok":
     text = "working"
 elif st == "untried":
     text = "none asked for since the brain started"
+elif st == "unconfigured" and a.get("reason") == "the trial credit has run out":
+    text = ("stopped: the trial credit has run out, so the box answers every question with"
+            " a fixed line until an own account is connected — say \"open my settings\" to"
+            " the box and paste an OpenRouter key on the phone (teaport status: trial credit)")
 elif st == "unconfigured":
     phone = (" say \"open my settings\" to the box and paste the key on the phone, or"
              if sys.argv[2] == "1" else "")
@@ -101,6 +105,40 @@ answers_line() {  # the answers, as a status line
   case "$st" in ok) col="$GREEN" ;; account|unconfigured) col="$RED" ;; failing) col="$YEL" ;; *) col="0" ;; esac
   [ "$st" = unknown ] && line=$'unknown\tunknown (the brain does not say)'
   printf '  %-28s %s\n' "answers (brain)" "$(c "$col" "${line#*$'\t'}")"
+}
+# The box's included trial credit (/health "credit", issue #280), as "<state>\t<text>":
+# none | own | unknown | ok | half | low | empty, or "unknown" when the brain does not say.
+# Plain words, as the owner's view of it.
+brain_credit() {
+  brain_health | python3 -c 'import json, sys
+c = json.load(sys.stdin).get("credit")
+if not isinstance(c, dict) or c.get("state") not in ("none", "own", "unknown", "ok", "half",
+                                                     "low", "empty"):
+    raise SystemExit(1)
+st = c["state"]
+left = c.get("remaining")
+of = c.get("limit")
+amount = ("$%.2f left" % left + (" of $%.2f" % of if isinstance(of, (int, float)) else "")
+          if isinstance(left, (int, float)) else "")
+stale = "" if c.get("fresh", True) else " (last read failed; this is the last known)"
+text = {
+    "none": "no key",
+    "own": "not in use: the box runs on an own key",
+    "unknown": "on the trial credit, not read yet" + stale,
+    "ok": "on the trial credit, %s%s" % (amount, stale),
+    "half": "half used, %s%s — say \"open my settings\" to connect an own account" % (amount, stale),
+    "low": "almost used up, %s%s — say \"open my settings\" to connect an own account" % (amount, stale),
+    "empty": "run out%s — the box has stopped answering until an own account is connected"
+             " (say \"open my settings\")" % stale,
+}[st]
+print("%s\t%s" % (st, text))' 2>/dev/null || printf 'unknown\t'
+}
+credit_line() {  # the trial credit, as a status line; nothing off it (an own key, no key)
+  local line st col; line="$(brain_credit)"; st="${line%%$'\t'*}"
+  # Nothing for an own key or none, nor when the brain does not say (an empty text).
+  case "$line" in none$'\t'*|own$'\t'*|unknown$'\t') return 0 ;; esac
+  case "$st" in ok) col="$GREEN" ;; half|low) col="$YEL" ;; empty) col="$RED" ;; *) col="0" ;; esac
+  printf '  %-28s %s\n' "trial credit (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
 # Not `grep -q`: under pipefail, grep leaving at its first match can SIGPIPE ss and
@@ -146,6 +184,7 @@ cmd_status() {
   # A capped or revoked key passes every other line here: the units run, the ports
   # listen, and only real turns find out (#205).
   answers_line
+  credit_line
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
@@ -220,6 +259,17 @@ else:
 # checks above only see that a key is present; a capped, revoked or wrong one passes
 # them, and a live probe would cost money per run. Nothing when the brain does not say.
 # Uses doctor's ok/warnc/failc.
+# credit_check — the trial credit (brain_credit, #280): a warning from half used on, a
+# failure once it has run out; nothing for an own key. Uses doctor's ok/warnc/failc.
+credit_check() {
+  local line; line="$(brain_credit)"
+  case "$line" in
+    ok$'\t'*)       ok "trial credit: ${line#*$'\t'}" ;;
+    half$'\t'*|low$'\t'*) warnc "trial credit: ${line#*$'\t'}" ;;
+    empty$'\t'*)    failc "trial credit: ${line#*$'\t'}" ;;
+  esac
+}
+
 answers_check() {
   local line; line="$(brain_answers)"
   case "$line" in
@@ -286,6 +336,7 @@ cmd_doctor() {
   listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
   brain_pacing_check
   answers_check
+  credit_check
   # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no
   # line to check, and `sip disable` without --purge keeps the conf while the operator
   # means the line to be off, so "conf present" alone must NOT make --fix bring it back.
