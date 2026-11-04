@@ -40,8 +40,9 @@
 # What keeps a session to the owner's phone:
 #   - the code: shown on the box's screen or said aloud in the room, five minutes, once;
 #   - only what came through the Settings site over HTTPS is answered here at all
-#     (on_settings_site: Caddy over loopback saying https, for the Settings port): the
-#     brain's own port, open to the LAN, gets a 404 that is no guess, and a Secure cookie
+#     (on_settings_site: Caddy over loopback saying https, for the Settings port; every
+#     /settings route, whoever mounted it, through SettingsGuard): the brain's own port,
+#     open to the LAN, gets a 404 -- the page shell too -- that is no guess, and a Secure cookie
 #     is never sent to it in cleartext;
 #   - another origin cannot use the cookie: SameSite=Strict keeps the browser from
 #     sending it on any cross-site request; a request that changes anything must carry
@@ -286,9 +287,13 @@ FRAME_GUARD = ((b"content-security-policy", b"frame-ancestors 'none'"),
                (b"x-frame-options", b"DENY"))
 
 
-class FrameGuard:
-    """ASGI middleware (gateway_server adds it): every answer under /settings carries
-    FRAME_GUARD, whatever Caddyfile fronts it (Caddy's Settings site adds them too)."""
+class SettingsGuard:
+    """ASGI middleware (gateway_server adds it), for everything under /settings, whichever
+    router mounted it (this one, config_ui's routes and its page shell, /settings/health):
+    a request that did not come through the Settings site (on_settings_site) gets a 404 --
+    the brain's own port, open to the LAN, serves nothing there, the page shell included
+    (operators have /config); and every answer carries FRAME_GUARD, whatever Caddyfile
+    fronts it (Caddy's Settings site adds them too)."""
 
     def __init__(self, app):
         self.app = app
@@ -297,6 +302,8 @@ class FrameGuard:
         path = scope.get("path", "") if scope["type"] == "http" else ""
         if not (path == "/settings" or path.startswith(PREFIX)):
             return await self.app(scope, receive, send)
+        if not on_settings_site(Request(scope)):
+            return await _NOT_FOUND(scope, receive, send)
 
         async def guarded(message):
             if message["type"] == "http.response.start":

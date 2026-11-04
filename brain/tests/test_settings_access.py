@@ -151,7 +151,7 @@ def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fet
     app.include_router(config_ui.router)
     app.include_router(config_ui.router, prefix="/settings")
     app.include_router(settings_access.router)
-    app.add_middleware(settings_access.FrameGuard)
+    app.add_middleware(settings_access.SettingsGuard)
     headers = {"X-Forwarded-Proto": proto} if proto else {}
     headers["Host"] = f"{HOST}:{port}" if port != 443 else HOST
     if fetch_site:
@@ -281,7 +281,7 @@ def test_the_session_cannot_be_used_from_another_origin_or_outside_its_bounds():
             assert (await c.put("/settings/api/config", json=body)).status_code == 401
             assert (await c.get("/settings/api/config")).status_code == 200  # a read needs no origin
         async with _client(cookie=session, proto=None) as c:  # the brain's own port
-            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.get("/settings/api/config")).status_code == 404  # not served there
         async with _client(cookie=session) as c:
             assert (await c.put("/settings/api/config", json=body)).status_code == 200
         expiry, nonce, sig = session.split(".")
@@ -461,6 +461,38 @@ def test_no_token_does_not_open_the_front_door():
     asyncio.run(run())
 
 
+def test_the_brains_own_port_serves_nothing_under_settings():
+    """Every /settings route, whoever mounted it, answers only through the Settings site:
+    on the brain's LAN port the page shell, its API, /settings/health and the code pages
+    are a 404, while /config there is the operator's page as before (a live check found
+    /settings/config served the shell there)."""
+    async def run():
+        _setup()
+        app = gateway_server.app  # the brain's own app: every router it mounts, the guard
+        lan = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.50", 40000)),
+                                base_url="http://teaport.local:7861")
+        site = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 40000)),
+                                 base_url="http://box",
+                                 headers={"X-Forwarded-Proto": "https", "Host": f"{HOST}:{PORT}"})
+        async with lan, site:
+            for path in ("/settings/config", "/settings/config/logo.svg", "/settings/api/config",
+                         "/settings/api/account", "/settings/health", "/settings/trust",
+                         "/settings", "/settings/AB3CD9"):
+                r = await lan.get(path)
+                assert r.status_code == 404 and "<html" not in r.text.lower(), (path, r.status_code)
+            r = await lan.get("/config")
+            assert r.status_code == 200 and "<html" in r.text.lower()
+            # A loopback peer that does not say https (no Caddy) is no Settings site either.
+            r = await lan.get("/settings/config", headers={"Host": f"{HOST}:{PORT}"})
+            assert r.status_code == 404
+            # Through the Settings site: the shell, and the API wants a session.
+            r = await site.get("/settings/config")
+            assert r.status_code == 200 and "<html" in r.text.lower()
+            assert r.headers["x-frame-options"] == "DENY"
+            assert (await site.get("/settings/api/config")).status_code == 401
+    asyncio.run(run())
+
+
 def test_settings_answers_only_on_its_own_origin():
     """The gateway's origin (443) shares the site, not the origin: a request Caddy handed
     over from there, or one a browser marks cross-origin, gets nothing."""
@@ -474,7 +506,7 @@ def test_settings_answers_only_on_its_own_origin():
         async with _client() as c:
             session = await _signed_in(c, code)
         async with _client(cookie=session, port=443, origin=f"https://{HOST}") as c:
-            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.get("/settings/api/config")).status_code == 404  # another site
         async with _client(cookie=session, fetch_site="same-site", origin=f"https://{HOST}") as c:
             assert (await c.get("/settings/api/config")).status_code == 401
             assert (await c.put("/settings/api/config", json={"store": "brain_env", "values": {

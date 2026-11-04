@@ -665,7 +665,7 @@ app.include_router(config_ui.router)
 # /settings/* here (settings_access.py, #279): a Settings session stands in for the
 # token there. First, so /settings/config is the page and not a code.
 app.include_router(config_ui.router, prefix="/settings")
-app.add_middleware(settings_access.FrameGuard)  # nothing frames Settings
+app.add_middleware(settings_access.SettingsGuard)  # /settings only via the Settings site; nothing frames it
 # /p/<code>, the short link a pairing QR code holds (pairing.py): unauthenticated, as a
 # fresh browser has no token; Caddy routes /p/* here.
 app.include_router(pairing.router)
