@@ -236,10 +236,13 @@ class ReplyHoldGate(FrameProcessor):
         self._discard_to_end = False
         # A session end has reached the gate: no new hold starts behind it.
         self._ending = False
-        # Queue arrival (voice clock, ns: _clock_ns) of every frame, the per-context pts shift,
-        # the context last seen (for frames that carry none), when the last hold was
-        # released (a frame that arrived before it was held), and the shift the first
-        # context it let through fixed (every context held behind it takes the same).
+        # Queue arrival of every frame, the per-context pts shift, the context last seen
+        # (for frames that carry none), when the last hold was released (a frame that
+        # arrived before it was held), and the shift the first context it let through
+        # fixed (every context held behind it takes the same). Arrival and release are
+        # each (pipeline clock, voice clock) in ns (_instant): which came first is read on
+        # the pipeline clock, which never stands still, and how long a frame waited on the
+        # voice clock, which the pts are on.
         self._arrivals: dict = {}
         self._shift: dict = {}
         # The output transport's voice clock (agent_session hands it over); None: the
@@ -317,7 +320,7 @@ class ReplyHoldGate(FrameProcessor):
             self._call_frames[frame.id] = self._drops
         if not isinstance(frame, SystemFrame):
             try:
-                self._arrivals[frame.id] = self._clock_ns()
+                self._arrivals[frame.id] = self._instant()
             except Exception:  # noqa: BLE001 -- no clock before setup; nothing to hold then
                 pass
             if isinstance(frame, (EndFrame, StopFrame)):
@@ -331,11 +334,14 @@ class ReplyHoldGate(FrameProcessor):
                     await self._end_hold(released=False, why="the session is ending")
         await super().queue_frame(frame, direction, callback)
 
-    def _clock_ns(self) -> int:
-        """Now on the clock the pts are on (raises before setup, as get_clock does)."""
+    def _instant(self) -> tuple:
+        """Now, as (pipeline clock, voice clock) ns: the voice clock, the one the pts
+        are on, is the pipeline clock without a pausable transport. Raises before setup,
+        as get_clock does."""
+        now = self.get_clock().get_time()
         if self.voice_clock is not None and self.voice_clock.attached:
-            return self.voice_clock.now_ns()
-        return self.get_clock().get_time()
+            return now, self.voice_clock.now_ns()
+        return now, now
 
     def _restamp(self, frame) -> None:
         """Move a held TTS context's playout times by how long it waited here."""
@@ -346,10 +352,10 @@ class ReplyHoldGate(FrameProcessor):
         else:
             ctx = self._last_ctx
         if (arrived is not None and ctx is not None and self._released_ns is not None
-                and arrived <= self._released_ns):
+                and arrived[0] <= self._released_ns[0]):
             # It arrived before the last release: the hold caught it. (A frame that came
             # through later did not wait here, but plays after the ones that did.)
-            waited = self._clock_ns() - arrived
+            waited = self._instant()[1] - arrived[1]
             if (waited >= _HELD_NS and ctx not in self._shift
                     and isinstance(frame, (TTSAudioRawFrame, TTSTextFrame))):
                 # The context's first held AUDIO or WORD fixes its shift: the TTS anchors
@@ -479,7 +485,7 @@ class ReplyHoldGate(FrameProcessor):
         self._cancel_cap()
         if released:
             self.released += 1
-            self._released_ns = self._clock_ns()
+            self._released_ns = self._instant()
             self._release_shift = None
         else:
             self.dropped += 1

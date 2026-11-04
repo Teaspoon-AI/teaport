@@ -64,6 +64,54 @@ def _echo_of(word_index, at=0.0):
     return at + word_index * GAP + LAG
 
 
+def test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard():
+    # #255 review: each word is released the caption lead ahead of its audio. "wait",
+    # released just before a pause, is heard only after the resume, and so is its echo.
+    # Dated by its release, it had fallen out of the lookback by then after a 1.5 s
+    # pause, and a lone "Wait" echo cut the reply. Dated by its audio (less the lead), it
+    # is the bot's.
+    from pipecat.frames.frames import TTSTextFrame
+    from teaport_brain.playout_pause import VoiceClock
+    from teaport_brain.tts_text import CAPTION_LEAD_SECS as LEAD
+
+    class Pipeline:
+        t = 50_000_000_000
+
+        def get_time(self):
+            return self.t
+
+    base, voice, clock = Pipeline(), VoiceClock(), Clock()
+    voice.attach(base)
+    clock.t = base.t / 1e9
+    g = echo_guard.EchoGuard(clock=clock)
+    tap = g.tap(voice_clock=voice)
+    tap.get_clock = lambda: base
+
+    def release(text):
+        f = TTSTextFrame(text, aggregated_by="word")
+        f.pts = voice.now_ns()                    # released at its pts
+        g.bot.played(f.text, heard_at=tap._heard_at(f))
+
+    def advance(secs):
+        base.t += round(secs * 1e9)
+        clock.t = base.t / 1e9
+
+    for w in "you might want to".split():
+        release(w)
+        advance(GAP)
+    release("wait")
+    advance(0.05)
+    voice.stop()                                  # the pause: before "wait" is heard
+    advance(1.5)
+    voice.start()
+    advance(LEAD - 0.05)                          # "wait" plays
+    assert g.strip("Wait.", final=False, since=clock.t - 0.1) == "Wait.", (
+        "a word is in no echo before it is heard")
+    advance(LAG)                                  # its echo's first interim
+    assert g.strip("Wait.", final=False, since=clock.t) == "", (
+        "the bot's own 'wait', heard after the pause, passed as the user's")
+
+
 # ---------------------------------------------------------------- what is taken
 
 def test_the_bots_words_heard_back_are_nothing():

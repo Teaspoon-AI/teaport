@@ -769,13 +769,16 @@ class EngineTTSService(TTSService):
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         # pipecat stamps a spoken segment's announcement with max(last word pts, the
         # clock's now) so it rides the transport's clock queue just ahead of its first
-        # word (tts_service.push_frame). On the voice clock here, as its words are: on
-        # the pipeline clock it would sort after them once a pause has stood the voice
-        # clock behind.
+        # word (tts_service.push_frame). Here on the clock its words are on: the voice
+        # clock -- on the pipeline clock it would sort after them once a pause has stood
+        # the voice clock behind -- or, while a reply hold holds anchored audio back, the
+        # frozen schedule its words are anchored on (start_word_timestamps).
         if (isinstance(frame, AggregatedTextFrame) and frame.will_be_spoken
-                and frame.pts is None and not self._push_text_frames
-                and self.voice_clock is not None and self.voice_clock.attached):
-            frame.pts = max(self._word_last_pts, self.voice_clock.now_ns())
+                and frame.pts is None and not self._push_text_frames):
+            if self._frozen_at is not None and self._frozen_from is not None:
+                frame.pts = max(self._word_last_pts, self._frozen_from)
+            elif self.voice_clock is not None and self.voice_clock.attached:
+                frame.pts = max(self._word_last_pts, self.voice_clock.now_ns())
         await super().push_frame(frame, direction)
 
     def get_clock(self):

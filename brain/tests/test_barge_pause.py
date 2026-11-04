@@ -200,14 +200,30 @@ async def check_the_words_keep_the_voices_time_through_a_pause(rig):
     await rig.pauser.on_onset(False)
     await _at(rig, 3.4)
     (t_pause, pause), (t_resume, _) = _pauses_out(rig)
-    held = t_resume - t_pause - pause.lag_secs   # what was sent before the pause played on
+    stop = t_pause + pause.lag_secs              # what was sent before the pause played on
+    held = t_resume - stop
+    stood = (rig.out.get_clock().get_time() - rig.out.voice_clock.now_ns()) / 1e9
+    assert abs(stood - held) <= 0.01, (
+        f"the voice clock stood {stood:.3f}s; the voice stood {held:.3f}s, from the end "
+        f"of the pause's {pause.lag_secs:.3f}s lag to the resume")
     words = _words_out(rig)
     assert [w for _, w in words] == WORDS, words
-    assert not [w for t, w in words if t_pause + pause.lag_secs + 0.03 < t < t_resume - 0.01], (
+    assert not [w for t, w in words if stop + 0.03 < t < t_resume - 0.01], (
         f"words released while the voice stood still: {words}")
     for i, (t, w) in enumerate(words):
-        due = rig.t0 + i * CHUNK_S - CAPTION_LEAD_SECS
-        if due > t_pause + pause.lag_secs + 0.03:
+        due = rig.t0 + i * CHUNK_S - CAPTION_LEAD_SECS   # its pts: the lead ahead of its audio
+        if due + CAPTION_LEAD_SECS < stop - 0.03:
+            # Played before the pause. (The rig queues the words once the audio is out,
+            # so the first ones go at once, their pts already past.)
+            assert t <= due + CAPTION_LEAD_SECS + 0.06, (
+                f"{w!r} came {t - due:.2f}s after its pts, after its audio")
+        elif due < stop - 0.03:
+            # Its audio after the stop, its pts before it (the seam, review 1): held to
+            # the resume, nobody having heard it before then -- unless it was out before
+            # the pause began (the echo guard dates it by its audio: test_echo_guard).
+            assert t < t_pause + 0.005 or t_resume - 0.01 <= t <= t_resume + 0.06, (
+                f"{w!r}, heard only after the resume, came {t - t_resume:+.2f}s from it")
+        elif due > stop + 0.03:
             assert abs(t - (due + held)) <= 0.06, (
                 f"{w!r} came {t - due:.2f}s after its pts; the voice stood {held:.2f}s")
 
@@ -222,6 +238,17 @@ async def check_a_cut_drops_the_words_a_pause_held(rig):
     (t_pause, pause), = _pauses_out(rig)
     late = [w for t, w in _words_out(rig) if t > t_pause + pause.lag_secs + 0.06]
     assert not late, f"words of the cut reply released after the pause: {late}"
+    # The cut ended the pause: the voice clock runs again, and the next reply's words
+    # come on time (review 4: left standing, every later word waited for good).
+    word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
+    word.pts = rig.out.voice_clock.now_ns() + int(0.3e9)
+    t_queued = time.monotonic()
+    await rig.task.queue_frames([TTSStartedFrame(context_id="r2"),
+                                 TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r2"),
+                                 word, TTSStoppedFrame(context_id="r2")])
+    await asyncio.sleep(0.6)
+    t_next = [t for t, w in _words_out(rig) if w == "next"]
+    assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
 
 
 async def check_a_reply_stamped_after_the_resume_is_on_time(rig):
@@ -766,6 +793,13 @@ def test_the_tts_stamps_on_the_voice_clock():
         tts._word_last_pts = 0
         await tts.push_frame(seg)
         assert seg.pts == voice.now_ns(), (seg.pts, voice.now_ns(), base.t)
+        # A reply hold holding anchored audio back: its words are on the frozen schedule
+        # (the baseline pin), and so is its announcement, just ahead of them (review 5).
+        tts._frozen_at, tts._frozen_from = tts._now(), voice.now_ns() - 400_000_000
+        held = AggregatedTextFrame("Then this.", AggregationType.SENTENCE)
+        held.will_be_spoken = True
+        await tts.push_frame(held)
+        assert held.pts == tts._frozen_from, (held.pts, tts._frozen_from)
 
     asyncio.run(run())
 

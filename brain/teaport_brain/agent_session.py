@@ -1377,7 +1377,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         barge_pauser,
         transport_output,
         # Directly below the transport: each word's text frame passes here as it plays.
-        guard.tap() if guard is not None else None,
+        guard.tap(voice_clock) if guard is not None else None,
         # The owner's call recording (call_recording.py): below the transport, where
         # the bot's audio passes as it plays and the caller's on its way down.
         *(recording.processors if recording is not None else []),

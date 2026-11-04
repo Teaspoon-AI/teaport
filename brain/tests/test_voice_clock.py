@@ -90,6 +90,36 @@ def test_an_instant_just_before_a_start_reads_where_the_voice_stood():
     assert voice.at(base.t) == t0 + 100 * MS
 
 
+def test_an_instant_behind_two_stops_still_maps_right():
+    # Review nit 2: an observer that has fallen behind more than one pause.
+    base, voice = _clock()
+    t0 = base.t
+    for stop, start in ((1000, 1500), (2000, 2300)):
+        base.t = t0 + stop * MS
+        voice.stop()
+        base.t = t0 + start * MS
+        voice.start()
+    assert voice.at(t0 + 1200 * MS) == t0 + 1000 * MS, "inside the first stop"
+    assert voice.at(t0 + 900 * MS) == t0 + 900 * MS, "before both"
+    assert voice.at(t0 + 1800 * MS) == t0 + 1300 * MS, "between them"
+    assert voice.at(t0 + 2100 * MS) == t0 + 1500 * MS, "inside the second"
+    assert voice.now_ns() == t0 + 1500 * MS
+
+
+def test_when_maps_a_voice_instant_back_to_the_pipeline_clock():
+    base, voice = _clock()
+    t0 = base.t
+    base.t = t0 + 1000 * MS
+    voice.stop()
+    base.t = t0 + 1500 * MS
+    voice.start()
+    base.t = t0 + 2000 * MS
+    assert voice.when(t0 + 800 * MS) == t0 + 800 * MS, "before the stop: as it ran"
+    assert voice.when(t0 + 1000 * MS) == t0 + 1000 * MS, "the instant it stopped"
+    assert voice.when(t0 + 1200 * MS) == t0 + 1700 * MS, "after it: the stop later"
+    assert voice.when(t0 + 1600 * MS) is None, "not reached yet: not played"
+
+
 def test_it_reads_zero_until_it_is_attached():
     voice = VoiceClock()
     assert not voice.attached and voice.now_ns() == 0
@@ -152,6 +182,21 @@ async def test_a_stop_ahead_wakes_the_wait_at_the_stop():
     await asyncio.sleep(0.05)
     assert not w.done(), "released before the rest of its time on the voice clock"
     await asyncio.wait_for(w, 0.2)
+
+
+async def test_a_word_whose_audio_is_past_a_stop_waits_for_the_start():
+    # Review should-fix 1: every word is stamped the caption lead ahead of its audio. One
+    # due just before a stop has its audio after it: it waits for the start, though its
+    # pts comes first -- nobody hears it before then (the echo guard stamps it then).
+    voice = _loop_voice()
+    voice.stop(after_secs=0.1)
+    seam = asyncio.create_task(voice.wait_until(50 * MS, lead_ns=200 * MS))
+    early = asyncio.create_task(voice.wait_until(30 * MS, lead_ns=50 * MS))
+    await asyncio.sleep(0.3)
+    assert early.done(), "a word whose audio plays before the stop is released at its pts"
+    assert not seam.done(), "released before the stop, its audio after it"
+    voice.start()
+    await asyncio.wait_for(seam, 0.05)
 
 
 def main():

@@ -3312,8 +3312,13 @@ at that very tick. `ChartIsHeard`: at a cut, the words placed before the voice c
 now are exactly what the listener heard. `vc_wall_nopause` is the control: with nothing
 stopping the voice the two clocks are one, and the model of the stamps is right.
 
-What is not modelled: the caption lead (every pts early by one constant the ledger takes
-back); the lag's measurement (`_heard_until`, tested); the frame of lead a resumed write
+What is not modelled: the caption lead, every pts early by one constant. The ledger takes
+it back in its cut; the transport holds a frame whose audio (pts plus the lead) is past a
+stop until the start (`VoiceClock.wait_until`); a word released before the pause began
+has its audio after it all the same, so the room's echo guard dates each word by when
+its audio played, less the lead (`VoiceClock.when`; `test_echo_guard.py::
+test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard`). Nor the lag's
+measurement (`_heard_until`, tested); the frame of lead a resumed write
 keeps; a unit is one word and one tick. The premises — that MediaSender releases exactly
 the frames `playout_pause._UNTIMED` leaves out through the transport's own `push_frame`,
 and re-chunks a reply's audio in the reply's frame class — are pinned in
