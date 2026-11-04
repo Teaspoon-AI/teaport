@@ -1324,6 +1324,17 @@ help = "Unset: this box has no Settings site yet (an install.sh --only brain upd
 note = "Changing it means re-running the installer (Caddy listens on it). The port must be reachable from phones on the LAN."
 
 [[settings]]
+name = "TEAPORT_OPENROUTER_CONNECT_URL"
+store = "brain_env"
+group = "agent"
+type = "url"
+default = "https://get.teaspoon.tech/connect/"
+read = "session"
+tier = "tuning"
+help = "The page OpenRouter's sign-in returns to when the owner taps \"Connect your OpenRouter account\" in Settings (openrouter_connect.py, #282): a static HTTPS page (web/connect/index.html in the repo) that sends the phone on to this box's Settings with the sign-in's one-time code. OpenRouter returns to localhost, which on a phone is not the box, or to a public page. The button shows only while the page answers as that page (checked from the box, at most every few minutes when it does not); pasting a key works either way. A value that is not an https:// address turns the button off."
+note = "The page holds no secret: the code is useless without the verifier the box keeps. It forwards only to an HTTPS address on the home network (a .local name or a private IP)."
+
+[[settings]]
 name = "TEAPORT_FRONTDOOR_CERT"
 store = "brain_env"
 group = "agent"

@@ -269,12 +269,17 @@ def _expired(t: i18n.T) -> Response:
     return _page(t, t._("This code has expired"), _again(t) + _trust(t), 410)
 
 
-def _signed_in() -> Response:
-    """The code is spent: the session, and on to the page."""
-    answer = RedirectResponse(PAGE_PATH, status_code=303, headers=pairing.NO_STORE)
+def keep_session(answer: Response) -> Response:
+    """`answer` with a new session cookie, SESSION_SECS from now: a code spent, or a
+    sign-in started (openrouter_connect.py), which must not outlast the session."""
     answer.set_cookie(COOKIE, session_cookie(), max_age=SESSION_SECS, path="/settings",
                       secure=True, httponly=True, samesite="strict")
     return answer
+
+
+def _signed_in() -> Response:
+    """The code is spent: the session, and on to the page."""
+    return keep_session(RedirectResponse(PAGE_PATH, status_code=303, headers=pairing.NO_STORE))
 
 
 _NOT_FOUND = PlainTextResponse("Not Found", status_code=404)

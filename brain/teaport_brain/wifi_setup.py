@@ -231,12 +231,29 @@ ACCOUNT_HELP = N_("Leave this empty to keep the account Teaport has now. To use 
                   "online, and says out loud whether it worked.")
 
 
+# Signing in with OpenRouter instead (#282) cannot happen here: the phone on the setup
+# network has no internet to reach OpenRouter, and the box none to finish the sign-in.
+# Settings can, once both are back on the home network.
+SIGN_IN_LATER = N_("To connect your OpenRouter account by signing in instead, finish "
+                   "setting up Wi-Fi, then say \"open my settings\".")
+
+
+def sign_in_later() -> bool:
+    """Whether the account step points at Settings for OpenRouter's sign-in: the box has
+    a Settings site (settings_access.available's two settings, read here without its
+    import, which this unit cannot afford) and the sign-in is not turned off
+    (openrouter_connect.callback_url's setting)."""
+    return (bool((setting("TEAPORT_FRONTDOOR_HOST") or "").strip())
+            and bool(setting("TEAPORT_SETTINGS_PORT"))
+            and (setting("TEAPORT_OPENROUTER_CONNECT_URL") or "").lower().startswith("https://"))
+
+
 def render_account(t: i18n.T) -> str:
-    """The AI account step: the owner's own key, optional, closed until tapped. A
-    "Connect OpenRouter" button (OAuth, #282) joins it above the field; pasting stays
-    the fallback."""
+    """The AI account step: the owner's own key, optional, closed until tapped. OpenRouter's
+    sign-in is for later, in Settings (SIGN_IN_LATER)."""
+    later = f'<p>{html.escape(t._(SIGN_IN_LATER))}</p>' if sign_in_later() else ""
     return (f'<details class="acct"><summary>{html.escape(t._("AI account (optional)"))}</summary>'
-            f'<p>{html.escape(t._(ACCOUNT_HELP))}</p>'
+            f'<p>{html.escape(t._(ACCOUNT_HELP))}</p>{later}'
             f'<label class="f" for="ai_key">{html.escape(t._("OpenRouter key"))}</label>'
             '<input type="password" id="ai_key" name="ai_key" autocomplete="off" '
             f'autocapitalize="none" spellcheck="false" maxlength="{ai_account.KEY_MAX_CHARS}">'

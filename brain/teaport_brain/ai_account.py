@@ -15,8 +15,9 @@
 #     internet). Nobody is on that page by then to say "save anyway", so only a key that
 #     works is saved; the voice says how it went (wifi_voice.py).
 #
-# Connecting with OpenRouter's OAuth (#282) ends the same way: whatever hands over a key
-# calls adopt(), which is check_key() then save_key().
+# Connecting with OpenRouter's sign-in (OAuth PKCE, #282, openrouter_connect.py) ends the
+# same way: the key exchange_code() gets for the sign-in is saved as Settings saves a
+# pasted one (config_ui.save_values: check_key, then save_key).
 #
 # save_key is the one save, whichever page: it writes the brain's key file (store_key) and,
 # on a box with OpenClaw, hands OpenClaw the same key (agent_key.give, #281: one key, one
@@ -237,10 +238,17 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirects)
 
 
-def _request(url: str, key: str, timeout: float) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}",
-                                               "Accept": "application/json",
-                                               "User-Agent": "teaport"})
+def _request(url: str, key: str | None, timeout: float,
+             body: bytes | None = None) -> tuple[int, bytes]:
+    """One request: a GET with `key` as its bearer, or with `body` a JSON POST (no key:
+    the sign-in's exchange, exchange_code)."""
+    headers = {"Accept": "application/json", "User-Agent": "teaport"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers,
+                                 method="GET" if body is None else "POST")
     try:
         with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
             return r.status, r.read(65536)
@@ -249,16 +257,27 @@ def _request(url: str, key: str, timeout: float) -> tuple[int, bytes]:
 
 
 def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
-    """(status, body) of an authenticated GET, within `timeout` overall: urllib's own
-    timeout bounds each socket wait but not the name lookup, and a router's DNS stall has
-    held this box before. Raises OSError for no answer (TimeoutError past the deadline:
-    the stuck lookup is left to finish on a daemon thread). Replaced in tests: no test
-    talks to a provider."""
+    """(status, body) of an authenticated GET, within `timeout` overall (_deadline).
+    Replaced in tests: no test talks to a provider."""
+    return _deadline(lambda: _request(url, key, timeout), timeout)
+
+
+def _post(url: str, body: bytes, timeout: float) -> tuple[int, bytes]:
+    """(status, body) of a JSON POST with no key, within `timeout` overall (_deadline).
+    Replaced in tests: no test talks to a provider."""
+    return _deadline(lambda: _request(url, None, timeout, body), timeout)
+
+
+def _deadline(call, timeout: float) -> tuple[int, bytes]:
+    """`call()`'s answer within `timeout` overall: urllib's own timeout bounds each socket
+    wait but not the name lookup, and a router's DNS stall has held this box before.
+    Raises OSError for no answer (TimeoutError past the deadline: the stuck lookup is
+    left to finish on a daemon thread)."""
     done: dict = {}
 
     def run():
         try:
-            done["answer"] = _request(url, key, timeout)
+            done["answer"] = call()
         except BaseException as e:  # noqa: BLE001 -- handed to the caller below
             done["error"] = e
 
@@ -305,6 +324,52 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
     return Check(WORKS, data=record)
+
+
+# ------------------------------------------------------------------ the sign-in (#282)
+# OpenRouter's OAuth PKCE (https://openrouter.ai/docs/use-cases/oauth-pkce): the code its
+# sign-in hands back, with the verifier only this box holds, is exchanged for a key, once:
+# POST /api/v1/auth/keys {code, code_verifier, code_challenge_method}, the answer's "key".
+# A code is single-use and lasts ten minutes. The flow around it is openrouter_connect.py;
+# the key goes the way every key goes: checked, then saved.
+EXCHANGE_URL = f"https://{OPENROUTER_HOST}/api/v1/auth/keys"
+CODE_MAX_CHARS = 512
+SIGN_IN_REFUSED = N_("OpenRouter didn't accept the sign-in")
+
+
+def exchange_code(code: str, verifier: str, timeout: float = CHECK_TIMEOUT_SECS
+                  ) -> tuple[str | None, str]:
+    """(the key, "") for a sign-in code and the verifier it was asked with, or (None, a
+    reason msgid): SIGN_IN_REFUSED for a code OpenRouter does not take (wrong, used or
+    expired: a 400 or 403), UNREACHABLE for no answer, or an answer without a key. Never
+    raises. The key is kept out of the journal from here on (never_log)."""
+    code = (code or "").strip()
+    if not code or len(code) > CODE_MAX_CHARS or not code.isprintable() or " " in code:
+        return None, SIGN_IN_REFUSED
+    body = json.dumps({"code": code, "code_verifier": verifier,
+                       "code_challenge_method": "S256"}).encode()
+    try:
+        status, raw = _post(EXCHANGE_URL, body, timeout)
+    except (OSError, ValueError) as e:
+        logger.info(f"ai account: the sign-in exchange got no answer ({type(e).__name__})")
+        return None, UNREACHABLE
+    if status in (400, 401, 403):
+        logger.info(f"ai account: OpenRouter refused the sign-in code ({status})")
+        return None, SIGN_IN_REFUSED
+    if not 200 <= status < 300:
+        logger.info(f"ai account: the sign-in exchange got HTTP {status}")
+        return None, UNREACHABLE
+    try:
+        key = json.loads(raw.decode("utf-8", "replace")).get("key")
+    except (ValueError, AttributeError):
+        key = None
+    if not isinstance(key, str) or not key.strip():
+        logger.info("ai account: the sign-in exchange answered without a key")
+        return None, UNREACHABLE
+    key = key.strip()
+    conversation_log.never_log(key, secs=3600.0)
+    logger.info("ai account: OpenRouter gave a key for the sign-in")
+    return key, ""
 
 
 # ------------------------------------------------------------------ keeping it
@@ -514,7 +579,7 @@ def forget_env_copy() -> None:
 
 async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
     """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
-    where nobody is left to say "save anyway" (and #282's, once OAuth hands over a key).
+    where nobody is left to say "save anyway".
     With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
     key that works but that OpenClaw did not take: UNKNOWN, with NotSaved's reason."""
     if shadowed(None) is not None:

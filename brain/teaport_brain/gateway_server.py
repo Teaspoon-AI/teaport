@@ -50,7 +50,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import agent_key, ai_account, conversation_log, credit, first_boot, host_context
-from teaport_brain import pairing, settings_access
+from teaport_brain import openrouter_connect, pairing, settings_access
 from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain.tasks import cancel_and_wait
@@ -700,6 +700,10 @@ async def health():
             "credit": credit.MONITOR.status(), "agent_key": ai_account.agent_key_status()}
 
 
+# "Connect your OpenRouter account" (openrouter_connect.py, #282): its start and code
+# routes under /settings/api, and /settings/openrouter, where the sign-in comes back.
+app.include_router(openrouter_connect.router)
+
 # /settings/<code>, the short link "open my settings" shows, and /settings, where a code
 # read aloud is typed: unauthenticated, as a fresh phone has no session yet. After every
 # other /settings/ route (the page's, /settings/health): a code is whatever is left.
@@ -786,9 +790,10 @@ class _ReadyServer(uvicorn.Server):
 # HTTP request, the "WebSocket /talk?...&token=..." [accepted] line of every Talk
 # connect), and a pairing code, the path segment after /p/ (pairing.py: a live one is
 # the owner's access until it is used), or a Settings code after /settings/
-# (settings_access.py) -- not the page's own paths there.
-_SECRETS_IN_URL = re.compile(r"(token=|(?:^|(?<=[\s\"']))/(?:p|settings(?!/(?:config|api|health"
-                             r"|trust)\b))/)[^&/?#\s\"']+")
+# (settings_access.py) -- not the page's own paths there -- and OpenRouter's sign-in code
+# and its state, ?code=..&state=.. on /settings/openrouter (openrouter_connect.py).
+_SECRETS_IN_URL = re.compile(r"(\b(?:token|code|state)=|(?:^|(?<=[\s\"']))/(?:p|settings(?!/(?:"
+                             r"config|api|health|trust|openrouter)\b))/)[^&/?#\s\"']+")
 
 
 def _redact(text: str) -> str:

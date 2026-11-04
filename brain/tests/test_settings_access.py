@@ -51,8 +51,8 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 import appliance  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 from teaport_brain import (  # noqa: E402
-    agent_key, ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
-    wifi_voice,
+    agent_key, ai_account, config_ui, i18n, llm_error_speaker, openrouter_connect, pairing,
+    settings_access, wifi_setup, wifi_voice,
 )
 from teaport_brain import gateway_server  # noqa: E402
 
@@ -141,6 +141,11 @@ def _setup(host=HOST, port=PORT):
     # A saved key is not handed to an OpenClaw on the machine running the tests
     # (test_agent_key.py has that path, with a fake CLI).
     agent_key.SHARES = False
+    # OpenRouter's sign-in page is not asked for over the network (test_openrouter_connect.py
+    # has that path): here it is not there, so the AI account step offers the paste field.
+    openrouter_connect._fetch = lambda url: (404, b"")
+    openrouter_connect._probe = None
+    openrouter_connect._pending = None
     return home, check, checks
 
 

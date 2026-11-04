@@ -543,3 +543,60 @@ msgstr "试用额度快用完了：大约还剩 {amount}。连接你自己的账
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "试用额度已用完。连接你自己的账户，Teaport 就能重新回答问题。"
+
+msgid "Back to settings"
+msgstr "返回设置"
+
+msgid "Code from OpenRouter"
+msgstr "OpenRouter 给的代码"
+
+msgid "Connect your OpenRouter account"
+msgstr "连接你的 OpenRouter 账户"
+
+msgid "Connecting…"
+msgstr "正在连接…"
+
+msgid "Finish"
+msgstr "完成"
+
+msgid "If the page after OpenRouter showed you a code, paste it here."
+msgstr "如果 OpenRouter 之后的页面给你显示了一个代码，请把它粘贴到这里。"
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter 没有接受这次登录"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter 没有连接账户。你可以在 Teaport 的设置里再试一次，或者在那里粘贴密钥。"
+
+msgid "Signing in with OpenRouter isn't available on this box right now. Paste a key instead."
+msgstr "现在这台设备上还不能通过 OpenRouter 登录，请改为粘贴密钥。"
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "点按“完成”，把你的 OpenRouter 账户连接到 Teaport。"
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport 没能连接你的 OpenRouter 账户"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport 没能连接你的 OpenRouter 账户：{reason}。你可以在 Teaport 的设置里再试一次，或者在那里粘贴密钥。"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport 使用一个 OpenRouter 账户来回答问题。如果要使用你自己的账户，可以在这里连接，或者粘贴它的密钥。"
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "Teaport 会从你的下一次对话开始使用你的 OpenRouter 账户。"
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "这部手机上的 Teaport 设置已经关闭。说“打开设置”，然后重新连接。"
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "这次连接已经过期。请回到 Teaport 的设置，重新连接。"
+
+msgid "To connect your OpenRouter account by signing in instead, finish setting up Wi-Fi, then say \"open my settings\"."
+msgstr "如果想改为登录来连接你的 OpenRouter 账户，请先完成 Wi-Fi 设置，然后说“打开设置”。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport, then come back to this page."
+msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问，然后回到这个页面。"
+
+msgid "Your OpenRouter account is connected"
+msgstr "你的 OpenRouter 账户已连接"

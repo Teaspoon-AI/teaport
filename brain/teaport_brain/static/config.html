@@ -193,6 +193,8 @@
   .account .acct-msg { margin: 14px 0 0; }
   .account .acct-msg.err { color: var(--err-ink); }
   .account .acct-msg.ok { color: var(--ok-ink); }
+  .account .acct-connect { display: grid; gap: 8px; max-width: 640px; margin: 16px 0 0; }
+  .account .acct-connect .btn-primary { justify-self: start; }
   .adv-toggle { margin: 0 0 24px; }
 </style>
 </head>
@@ -585,9 +587,44 @@
     forceBtn.onclick = () => send(true);
     const form = h('form', { class: 'acct-form', onsubmit: (e) => { e.preventDefault(); send(false); } },
       key, h('div', { class: 'acct-actions' }, saveBtn, forceBtn));
+    // OpenRouter's sign-in (#282, openrouter_connect.py): the button takes this tab to
+    // OpenRouter, which sends it back through Teaspoon's page to /settings/openrouter.
+    // While a sign-in waits, the code that page shows (when it could not send the phone
+    // on) can be pasted here. Only on the front door: the sign-in comes back there.
+    const connect = a.connect || {};
+    let connectPart = null;
+    if (connect.offered) {
+      const connectBtn = h('button', { class: 'btn-primary', type: 'button' }, T.connect);
+      connectBtn.onclick = async () => {
+        connectBtn.disabled = true; out.className = 'acct-msg'; out.textContent = '';
+        try {
+          const res = await api('/api/openrouter/start', { method: 'POST', body: '{}' });
+          location.assign(res.body.url);
+        } catch (e) { out.className = 'acct-msg err'; out.textContent = T.connect_off; connectBtn.disabled = false; }
+      };
+      let codeForm = null;
+      if (connect.pending) {
+        const code = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.code, placeholder: T.code });
+        const codeBtn = h('button', { class: 'btn-ghost', type: 'submit' }, h('span', { class: 'btn-label' }, T.code_send));
+        codeForm = h('form', { class: 'acct-form', onsubmit: async (e) => {
+          e.preventDefault();
+          if (!code.value.trim()) { code.focus(); return; }
+          codeBtn.disabled = true; out.className = 'acct-msg'; out.textContent = T.connecting;
+          try {
+            const res = await api('/api/openrouter/code', { method: 'POST', body: JSON.stringify({ code: code.value.trim() }) });
+            out.className = 'acct-msg ' + (res.body.ok ? 'ok' : 'err'); out.textContent = res.body.message || '';
+            if (res.body.ok) { codeForm.remove(); state.replaceWith(h('p', { class: 'group-blurb' }, T.connected)); }
+          } catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }
+          finally { codeBtn.disabled = false; }
+        } }, h('p', { class: 'note' }, T.code_help), code, h('div', { class: 'acct-actions' }, codeBtn));
+      }
+      connectPart = h('div', { class: 'acct-connect' }, connectBtn, h('p', { class: 'note' }, T.connect_note), codeForm);
+    } else if (BASE) {
+      connectPart = h('p', { class: 'note' }, T.connect_off);
+    }
     sec.replaceChildren(
       h('div', { class: 'group-head' }, h('h2', {}, T.title)),
-      h('p', { class: 'group-blurb' }, T.intro), state, form, out,
+      h('p', { class: 'group-blurb' }, connect.offered ? T.intro_connect : T.intro), state, connectPart, form, out,
       BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null);
     sec.hidden = false;
   };

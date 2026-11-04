@@ -554,3 +554,60 @@ msgstr "الرصيد التجريبي يكاد ينفد: يتبقى نحو {amou
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "نفد الرصيد التجريبي. اربط حسابك الخاص ليعود Teaport إلى الإجابة."
+
+msgid "Back to settings"
+msgstr "العودة إلى الإعدادات"
+
+msgid "Code from OpenRouter"
+msgstr "الرمز من OpenRouter"
+
+msgid "Connect your OpenRouter account"
+msgstr "اربط حسابك على OpenRouter"
+
+msgid "Connecting…"
+msgstr "جارٍ الربط…"
+
+msgid "Finish"
+msgstr "إنهاء"
+
+msgid "If the page after OpenRouter showed you a code, paste it here."
+msgstr "إذا عرضت لك الصفحة التي تلي OpenRouter رمزًا، فالصقه هنا."
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "لم يقبل OpenRouter تسجيل الدخول"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "لم يربط OpenRouter الحساب. يمكنك المحاولة مرة أخرى من إعدادات Teaport، أو لصق مفتاح هناك بدلًا من ذلك."
+
+msgid "Signing in with OpenRouter isn't available on this box right now. Paste a key instead."
+msgstr "تسجيل الدخول عبر OpenRouter غير متاح على هذا الجهاز الآن. الصق مفتاحًا بدلًا من ذلك."
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "اضغط على إنهاء لربط حسابك على OpenRouter بـ Teaport."
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "لم يتمكن Teaport من ربط حسابك على OpenRouter"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "لم يتمكن Teaport من ربط حسابك على OpenRouter: {reason}. يمكنك المحاولة مرة أخرى من إعدادات Teaport، أو لصق مفتاح هناك بدلًا من ذلك."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "يستخدم Teaport حسابًا على OpenRouter لإجاباته. لاستخدام حسابك الخاص، اربطه هنا، أو الصق مفتاحًا منه."
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "سيستخدم Teaport حسابك على OpenRouter بدءًا من محادثتك التالية."
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "أُغلقت إعدادات Teaport على هذا الهاتف. قل «افتح الإعدادات»، ثم اربط الحساب مرة أخرى."
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "انتهت صلاحية عملية الربط هذه. ارجع إلى إعدادات Teaport واربط الحساب مرة أخرى."
+
+msgid "To connect your OpenRouter account by signing in instead, finish setting up Wi-Fi, then say \"open my settings\"."
+msgstr "لربط حسابك على OpenRouter بتسجيل الدخول بدلًا من ذلك، أكمل إعداد شبكة Wi-Fi، ثم قل «افتح الإعدادات»."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport, then come back to this page."
+msgstr "ستسجّل الدخول إلى OpenRouter على هذا الهاتف وتوافق على Teaport، ثم تعود إلى هذه الصفحة."
+
+msgid "Your OpenRouter account is connected"
+msgstr "تم ربط حسابك على OpenRouter"

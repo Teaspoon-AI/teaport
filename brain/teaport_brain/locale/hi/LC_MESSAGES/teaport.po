@@ -648,3 +648,60 @@ msgstr "ट्रायल क्रेडिट लगभग ख़त्म �
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "ट्रायल क्रेडिट ख़त्म हो गया है। Teaport फिर से जवाब दे सके, इसके लिए अपना खाता जोड़ें।"
+
+msgid "Back to settings"
+msgstr "सेटिंग्स पर वापस जाएँ"
+
+msgid "Code from OpenRouter"
+msgstr "OpenRouter से मिला कोड"
+
+msgid "Connect your OpenRouter account"
+msgstr "अपना OpenRouter खाता कनेक्ट करें"
+
+msgid "Connecting…"
+msgstr "कनेक्ट हो रहा है…"
+
+msgid "Finish"
+msgstr "पूरा करें"
+
+msgid "If the page after OpenRouter showed you a code, paste it here."
+msgstr "अगर OpenRouter के बाद वाले पेज ने आपको कोई कोड दिखाया था, तो उसे यहाँ पेस्ट करें।"
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter ने साइन-इन स्वीकार नहीं किया"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter ने खाता कनेक्ट नहीं किया। आप Teaport की सेटिंग्स से फिर से कोशिश कर सकते हैं, या वहाँ कोई कुंजी पेस्ट कर सकते हैं।"
+
+msgid "Signing in with OpenRouter isn't available on this box right now. Paste a key instead."
+msgstr "OpenRouter से साइन इन करना अभी इस डिवाइस पर उपलब्ध नहीं है। इसके बजाय कोई कुंजी पेस्ट करें।"
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "अपना OpenRouter खाता Teaport से कनेक्ट करने के लिए पूरा करें पर टैप करें।"
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport आपका OpenRouter खाता कनेक्ट नहीं कर सका"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport आपका OpenRouter खाता कनेक्ट नहीं कर सका: {reason}। आप Teaport की सेटिंग्स से फिर से कोशिश कर सकते हैं, या वहाँ कोई कुंजी पेस्ट कर सकते हैं।"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport अपने जवाबों के लिए एक OpenRouter खाते का इस्तेमाल करता है। अपना खाता इस्तेमाल करने के लिए उसे यहाँ कनेक्ट करें, या उसकी कोई कुंजी पेस्ट करें।"
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "Teaport आपकी अगली बातचीत से आपके OpenRouter खाते का इस्तेमाल करेगा।"
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "इस फ़ोन पर Teaport की सेटिंग्स बंद हो गई हैं। “सेटिंग्स खोलो” बोलें, फिर दोबारा कनेक्ट करें।"
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "यह कनेक्शन खत्म हो गया है। Teaport की सेटिंग्स पर वापस जाएँ और दोबारा कनेक्ट करें।"
+
+msgid "To connect your OpenRouter account by signing in instead, finish setting up Wi-Fi, then say \"open my settings\"."
+msgstr "साइन इन करके अपना OpenRouter खाता कनेक्ट करने के लिए, पहले Wi-Fi सेटअप पूरा करें, फिर “सेटिंग्स खोलो” बोलें।"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport, then come back to this page."
+msgstr "आप इस फ़ोन पर OpenRouter में साइन इन करके Teaport को मंज़ूरी देंगे, फिर इस पेज पर वापस आ जाएँगे।"
+
+msgid "Your OpenRouter account is connected"
+msgstr "आपका OpenRouter खाता कनेक्ट हो गया है"

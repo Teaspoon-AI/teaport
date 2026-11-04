@@ -648,3 +648,60 @@ msgstr "お試し用クレジットがもうすぐなくなります（残り約
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "お試し用クレジットを使い切りました。Teaport がまたお答えできるように、ご自分のアカウントを接続してください。"
+
+msgid "Back to settings"
+msgstr "設定に戻る"
+
+msgid "Code from OpenRouter"
+msgstr "OpenRouter のコード"
+
+msgid "Connect your OpenRouter account"
+msgstr "OpenRouter アカウントを接続"
+
+msgid "Connecting…"
+msgstr "接続しています…"
+
+msgid "Finish"
+msgstr "完了"
+
+msgid "If the page after OpenRouter showed you a code, paste it here."
+msgstr "OpenRouter のあとのページにコードが表示された場合は、ここに貼り付けてください。"
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter がサインインを受け付けませんでした"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter でアカウントが接続されませんでした。Teaport の設定からもう一度試すか、そこでキーを貼り付けてください。"
+
+msgid "Signing in with OpenRouter isn't available on this box right now. Paste a key instead."
+msgstr "この端末では、今は OpenRouter でのサインインを使えません。代わりにキーを貼り付けてください。"
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "「完了」をタップすると、OpenRouter アカウントが Teaport に接続されます。"
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport は OpenRouter アカウントを接続できませんでした"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport は OpenRouter アカウントを接続できませんでした：{reason}。Teaport の設定からもう一度試すか、そこでキーを貼り付けてください。"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport は回答に OpenRouter のアカウントを使っています。ご自分のアカウントを使うには、ここで接続するか、そのアカウントのキーを貼り付けてください。"
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "次の会話から Teaport がお使いの OpenRouter アカウントを使います。"
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "この電話で Teaport の設定が閉じられました。「設定を開いて」と言ってから、もう一度接続してください。"
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "この接続は期限切れです。Teaport の設定に戻って、もう一度接続してください。"
+
+msgid "To connect your OpenRouter account by signing in instead, finish setting up Wi-Fi, then say \"open my settings\"."
+msgstr "代わりにサインインで OpenRouter アカウントを接続するには、Wi-Fi の設定を済ませてから「設定を開いて」と言ってください。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport, then come back to this page."
+msgstr "この電話で OpenRouter にサインインして Teaport を承認すると、このページに戻ります。"
+
+msgid "Your OpenRouter account is connected"
+msgstr "OpenRouter アカウントが接続されました"
