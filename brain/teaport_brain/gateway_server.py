@@ -644,11 +644,14 @@ async def _lifespan(_app):
     watcher = asyncio.create_task(first_boot.watch())
     # The trial credit's reader (credit.py, #280): beside the sessions, never in a turn.
     monitor = asyncio.create_task(credit.MONITOR.run())
-    # OpenClaw's restart for a key it was given (agent_key.py, #281): only while nothing
-    # is live -- a call asking for the engine counts as live already.
+    # OpenClaw's restart for a key it was given, and the first look at whether it already
+    # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
+    # the engine counts as live already.
     restarter = asyncio.create_task(agent_key.RESTARTER.run(
         live=lambda: arb.ARBITER.anything_live() or arb.ARBITER.status()["call"],
-        listeners=arb.ARBITER.listeners))
+        listeners=arb.ARBITER.listeners,
+        brain=lambda: (ai_account.current_key(),
+                       ai_account.is_openrouter(setting("LLM_BASE_URL")))))
     try:
         yield
     finally:
@@ -688,8 +691,9 @@ async def health():
     # "credit": the box's included trial credit (credit.MONITOR.status, #280): none (no
     # key), own (the owner's key), unknown, ok, half, low or empty, with what is left.
     # "agent_key": whether OpenClaw uses the brain's key (agent_key.status, #281): off,
-    # absent, other, none, separate, shared, restart (owed, once nobody is talking) or
-    # mismatch (a failed change left the two on different keys), with a reason.
+    # absent, other, none, unsynced (not known yet), separate, shared, restart (owed, once
+    # nobody is talking) or mismatch (a failed change left the two on different keys),
+    # with a reason.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
             "tts_pacing": pacing_status(), "answers": answers_status(),
             "credit": credit.MONITOR.status(), "agent_key": ai_account.agent_key_status()}

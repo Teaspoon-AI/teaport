@@ -6,11 +6,11 @@
 # page, the setup-mode page, and #282's OAuth through adopt), the same key is handed to
 # OpenClaw as its OpenRouter key, so the box has one key and one balance and the owner
 # swaps it once. Nothing else here starts a change: a key written by hand or by the
-# installer is not copied (status says "separate").
+# installer is not copied.
 #
 # How OpenClaw is told, its own supported way (OpenClaw 2026.9.7):
 #
-#     openclaw models auth paste-api-key --provider openrouter --agent <id>   (key on stdin)
+#     openclaw models auth paste-api-key --provider openrouter [--agent <id>]   (key on stdin)
 #
 # docs/cli/models.md ("paste-api-key ... In automation, pipe the key on stdin"), and the
 # code behind it (src/commands/models/auth.ts modelsAuthPasteApiKeyCommand ->
@@ -24,6 +24,23 @@
 # that is the one case a restart is needed -- auth.profiles and models hot-apply
 # otherwise (docs/gateway/configuration/hot-reload.md). A gateway that is not running
 # (connection refused) is no warning: it reads the store when it starts.
+#
+# Which agent: OPENCLAW_AGENT_ID when the operator set it (the agent this box talks to,
+# openclaw_client.AGENT_ID); else no --agent at all, and OpenClaw picks it its own way --
+# for an auth change, its sole configured agent (models/shared.ts resolveModelsTargetAgent
+# -> resolveSoleAgentId: `main` on a box with no agent list). No guess from directory
+# names. A box with several agents and none named here makes the CLI fail ("Pass --agent
+# <id>"), and the save is rolled back like any other failure.
+#
+# Already the same key, with no save recorded (provisioning gave both the starter key):
+# the Restarter looks once per brain, while nobody is talking, at what OpenClaw itself
+# shows -- `openclaw models status --json`, auth.providers[].profiles.labels (docs/cli/
+# models.md "Auth overview"), where each api-key profile appears as
+# "<profile>=<masked key>", masked by OpenClaw's maskApiKey (src/security/secret-mask.ts:
+# the first and last 8 characters of a long key). OpenClaw offers no hash of a saved key
+# and its state files are its own, never read here. Every OpenRouter profile showing the
+# brain key's mask: recorded as shared. A different mask: "separate". No answer, or
+# nothing to compare: "unsynced" (not known yet; the first save records it).
 #
 # The restart (Restarter, in the brain): `openclaw gateway restart --safe`, which lets the
 # gateway's own running work drain first, and only once no conversation is live on any
@@ -72,8 +89,9 @@ POLL_SECS = 30.0              # how often the Restarter reads the state file
 RETRY_SECS = 600.0            # after a failed restart
 
 # What status() says (/health "agent_key"; `teaport status` words them).
-OFF, ABSENT, OTHER, NONE, SEPARATE, SHARED, RESTART, MISMATCH = (
-    "off", "absent", "other", "none", "separate", "shared", "restart", "mismatch")
+OFF, ABSENT, OTHER, NONE, UNSYNCED, SEPARATE, SHARED, RESTART, MISMATCH = (
+    "off", "absent", "other", "none", "unsynced", "separate", "shared", "restart", "mismatch")
+STATUS_TIMEOUT_SECS = 60.0    # `openclaw models status --json`: a cold CLI, no model call
 # What the CLI says when it has written the key, whatever went wrong after.
 _WROTE = "API key saved"
 _RESTART_HINT = "openclaw gateway restart"
@@ -82,6 +100,24 @@ _REMOTE_HINT = "does not share this auth state"
 
 def fingerprint(key: str) -> str:
     return hashlib.sha256(key.strip().encode("utf-8")).hexdigest()
+
+
+def agent_args() -> list[str]:
+    """--agent for an auth change: the one named (OPENCLAW_AGENT_ID), else none -- OpenClaw
+    resolves its own (the module note)."""
+    return ["--agent", openclaw_client.AGENT_ID] if openclaw_client.AGENT_ID else []
+
+
+def mask(key: str) -> str:
+    """`key` as OpenClaw shows a saved one (maskApiKey, src/security/secret-mask.ts)."""
+    k = key.strip()
+    if not k:
+        return "missing"
+    if len(k) <= 6:
+        return f"{k[:1]}...{k[-1:]}"
+    if len(k) <= 16:
+        return f"{k[:2]}...{k[-2:]}"
+    return f"{k[:8]}...{k[-8:]}"
 
 
 def cli_installed() -> bool:
@@ -168,7 +204,7 @@ async def _paste(key: str) -> Told:
     try:
         rc, _, err = await openclaw_client._run_openclaw(
             ["models", "auth", "paste-api-key", "--provider", PROVIDER,
-             *openclaw_client.agent_args()],
+             *agent_args()],
             timeout=PASTE_TIMEOUT_SECS, capture=True, stdin=(key + "\n").encode("utf-8"))
     except asyncio.TimeoutError:
         return Told(False, wrote=True, detail="the openclaw command took too long")
@@ -229,6 +265,82 @@ def mismatch(reason: str) -> None:
     logger.warning(f"agent key: {reason}")
 
 
+# ------------------------------------------------------------------ the first look
+
+SAME, DIFFERENT = "same", "different"
+
+
+def compare_labels(status_json: dict | None, key: str) -> str | None:
+    """From `openclaw models status --json`: SAME when OpenClaw's OpenRouter credential is
+    saved profiles and every one shows `key`'s mask, DIFFERENT when none does, None when
+    it cannot be told (no answer, no OpenRouter row, another kind of credential, a mix)."""
+    auth = status_json.get("auth") if isinstance(status_json, dict) else None
+    rows = auth.get("providers") if isinstance(auth, dict) else None
+    if not isinstance(rows, list):
+        return None
+    row = next((r for r in rows if isinstance(r, dict) and r.get("provider") == PROVIDER), None)
+    if row is None or (row.get("effective") or {}).get("kind") != "profiles":
+        return None
+    labels = (row.get("profiles") or {}).get("labels")
+    if not isinstance(labels, list) or not labels:
+        return None
+    shown = []
+    for label in labels:
+        if not isinstance(label, str) or "=" not in label:
+            return None
+        shown.append(label.split("=", 1)[1].split(" [", 1)[0].strip())  # " [cooldown ...]"
+    want = mask(key)
+    if all(m == want for m in shown):
+        return SAME
+    if all(m != want for m in shown):
+        return DIFFERENT
+    return None
+
+
+async def _shown() -> dict | None:
+    """`openclaw models status --json`; replaced in tests."""
+    try:
+        rc, out, _ = await openclaw_client._run_openclaw(
+            ["models", "status", "--json", *agent_args()],
+            timeout=STATUS_TIMEOUT_SECS, capture=True)
+    except (asyncio.TimeoutError, OSError):
+        return None
+    if rc not in (0, 1):  # 1: a route has an auth issue, and the JSON is still written
+        return None
+    return openclaw_client.cli_json(out, lambda d: "auth" in d)
+
+
+def unlooked(current: str | None, openrouter: bool) -> bool:
+    """Is there a first look to take: OpenClaw shares keys here, the brain has one, and
+    nothing is recorded about OpenClaw holding it (no save, no look at this key)?"""
+    if not current or skipped(openrouter) is not None:
+        return False
+    data = load()
+    fp = fingerprint(current)
+    return not data.get("mismatch") and data.get("sha256") != fp and data.get("looked") != fp
+
+
+async def look(current: str) -> str | None:
+    """The first look (the module note): record SAME as shared, DIFFERENT as separate;
+    nothing when it cannot be told. Returns what was seen."""
+    seen = compare_labels(await _shown(), current)
+    fp = fingerprint(current)
+    with _locked():
+        data = load()
+        if data.get("sha256") == fp or data.get("mismatch"):
+            return seen  # a save got there first
+        if seen == SAME:
+            data.update(sha256=fp, looked=fp, restart=False, at=time.time())
+        elif seen == DIFFERENT:
+            data.update(looked=fp, at=time.time())
+        else:
+            return seen
+        _write(data)
+    logger.info(f"agent key: OpenClaw shows {'the same key as' if seen == SAME else 'another key than'} "
+                f"the brain")
+    return seen
+
+
 # ------------------------------------------------------------------ status
 
 def status(current: str | None, openrouter: bool) -> dict:
@@ -243,8 +355,12 @@ def status(current: str | None, openrouter: bool) -> dict:
     if not current:
         return {"state": NONE, "reason": "the brain has no key"}
     if data.get("sha256") != fingerprint(current):
-        return {"state": SEPARATE,
-                "reason": "OpenClaw keeps its own key: the brain's was not saved from Settings"}
+        if data.get("looked") == fingerprint(current):
+            return {"state": SEPARATE,
+                    "reason": "OpenClaw shows another OpenRouter key than the brain's"}
+        return {"state": UNSYNCED,
+                "reason": "not known yet whether OpenClaw has the brain's key; the next key "
+                          "saved in Settings gives it the same one"}
     if data.get("restart"):
         out = {"state": RESTART, "reason": "OpenClaw restarts to use the key once nobody is talking",
                "since": data.get("at")}
@@ -258,7 +374,8 @@ def status(current: str | None, openrouter: bool) -> dict:
 
 class Restarter:
     """Restarts the OpenClaw gateway when a key it was given needs one (the state file's
-    "restart"), once no conversation has been live for IDLE_SECS. One per brain
+    "restart"), once no conversation has been live for IDLE_SECS; and, as quietly, takes
+    the first look (look) once per brain where nothing is recorded. One per brain
     (RESTARTER), run beside the sessions (gateway_server's lifespan)."""
 
     def __init__(self, clock=time.monotonic):
@@ -290,21 +407,30 @@ class Restarter:
             return False, f"rc {rc}: {_last_line(err)}"
         return True, ""
 
-    async def run(self, live, listeners: list | None = None) -> None:
+    async def run(self, live, listeners: list | None = None, brain=None) -> None:
         """`live()`: is a conversation live anywhere (or a call asking for the engine)?
-        `listeners`: the session arbiter's, which tell it a holder changed."""
+        `listeners`: the session arbiter's, which tell it a holder changed. `brain()`: the
+        brain's key and whether its endpoint is OpenRouter's (for the first look; None:
+        no look)."""
         self._loop, self._wake = asyncio.get_running_loop(), asyncio.Event()
         wake = self._wake
         if listeners is not None:
             listeners.append(self.poke)
         last_live = self._clock()  # a brain that just started waits IDLE_SECS too
         retry_at = 0.0
+        looked = brain is None
         try:
             while True:
                 if live():
                     last_live = self._clock()
                 owed = load()
                 quiet_for = self._clock() - last_live
+                if not looked and quiet_for >= IDLE_SECS and not live():
+                    looked = True  # once per brain, whatever it shows
+                    current, openrouter = brain()
+                    if unlooked(current, openrouter):
+                        await look(current)
+                    continue
                 if (owed.get("restart") and owed.get("sha256") and not owed.get("mismatch")
                         and quiet_for >= IDLE_SECS and self._clock() >= retry_at
                         and not live()):  # again, right before
@@ -323,7 +449,7 @@ class Restarter:
                                        f"trying again in {RETRY_SECS:.0f} s")
                     continue
                 timeout = POLL_SECS
-                if owed.get("restart") and quiet_for < IDLE_SECS:
+                if (owed.get("restart") or not looked) and quiet_for < IDLE_SECS:
                     timeout = min(timeout, IDLE_SECS - quiet_for + 0.1)
                 try:
                     await asyncio.wait_for(wake.wait(), timeout)

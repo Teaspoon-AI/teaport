@@ -141,7 +141,7 @@ credit_line() {  # the trial credit, as a status line; nothing off it (an own ke
   printf '  %-28s %s\n' "trial credit (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
 # Whether OpenClaw pays with the brain's key (/health "agent_key", issue #281), as
-# "<state>\t<text>": off | absent | other | none | separate | shared | restart | mismatch,
+# "<state>\t<text>": off | absent | other | none | unsynced | separate | shared | restart | mismatch,
 # or "unknown" when the brain does not say.
 brain_agent_key() {
   brain_health | python3 -c 'import json, sys
@@ -154,7 +154,8 @@ text = {
     "absent": "not shared: " + why,
     "other": "not shared: " + why,
     "none": "nothing to share: the brain has no key",
-    "separate": "OpenClaw has a key of its own (the key of the brain was not saved from Settings)",
+    "unsynced": "unknown, not yet synced: the next key saved in Settings gives OpenClaw the same one",
+    "separate": "OpenClaw has a key of its own (save the key in Settings to give it the same one)",
     "shared": "OpenClaw uses the same key as the brain",
     "restart": "OpenClaw has the same key as the brain, and restarts to use it once nobody is talking"
                + (" (last try: %s)" % k["last_error"] if k.get("last_error") else ""),

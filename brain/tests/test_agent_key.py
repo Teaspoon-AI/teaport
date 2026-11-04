@@ -50,7 +50,7 @@ n=$(( $(cat "$d/n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/n"
 printf '%s\n' "$*" >> "$d/argv"
 mode=$(sed -n "${n}p" "$d/modes" 2>/dev/null); [ -n "$mode" ] || mode=ok
 key=""
-if [ "$1" = models ]; then key=$(cat); printf '%s\n' "$key" >> "$d/keys"; fi
+if [ "$1 $2" = "models auth" ]; then key=$(cat); printf '%s\n' "$key" >> "$d/keys"; fi
 case "$mode" in
   ok) echo "Auth profile: openrouter:manual (openrouter/api_key)" ;;
   restart) echo 'Warning: Model auth changes were saved, but the running Gateway could not refresh them. Run `openclaw gateway restart` to apply the saved changes.' >&2 ;;
@@ -58,6 +58,8 @@ case "$mode" in
   wrote) echo "Error: API key saved, but provider settings could not be applied: busy. Reopen Models and save the key again." >&2; exit 1 ;;
   echo) echo "Error: not accepted: $key" >&2; exit 1 ;;
   slow) sleep 20 ;;
+  agents) echo 'Error: the model command needs an agent: main, work. Pass --agent <id>.' >&2; exit 1 ;;
+  status) echo "[plugins] loaded"; cat "$d/status.json" ;;
 esac
 """
 
@@ -123,10 +125,11 @@ def _save(key):
 
 def test_a_save_hands_openclaw_the_key_on_stdin():
     box = Fake(["ok"], key_file=OLD)
-    assert _status()["state"] == agent_key.SEPARATE  # set by the installer: not copied
+    assert _status()["state"] == agent_key.UNSYNCED  # set by the installer: not known yet
     _save(NEW)
     assert _key_file() == NEW + "\n"
-    assert box.argv == ["models auth paste-api-key --provider openrouter --agent main"], box.argv
+    # No agent named here: no --agent, OpenClaw picks its own (its sole agent).
+    assert box.argv == ["models auth paste-api-key --provider openrouter"], box.argv
     assert box.keys == [NEW]
     assert _status()["state"] == agent_key.SHARED
     state = open(os.path.join(box.home, ".local/state/teaport", agent_key.STATE_FILE)).read()
@@ -374,6 +377,114 @@ def test_a_restart_is_owed_and_waits_until_nobody_is_talking():
     assert box.argv == ["gateway restart --safe"], box.argv
 
 
+def test_with_several_agents_and_none_named_the_save_is_rolled_back():
+    """OpenClaw resolves the agent itself (no --agent); where it cannot -- several agents,
+    none named -- the CLI fails before writing and nothing changes."""
+    box = Fake(["agents"], key_file=OLD)
+    try:
+        _save(NEW)
+        raise AssertionError("saved")
+    except ai_account.NotSaved:
+        pass
+    assert box.argv == ["models auth paste-api-key --provider openrouter"]
+    assert _key_file() == OLD + "\n" and _status()["state"] == agent_key.UNSYNCED
+
+
+def test_every_cli_run_gets_the_users_runtime_dir():
+    run_dir = tempdir("agent-key-run-")
+    real = os.path.isdir
+    os.path.isdir = lambda p: p == "/run/user/4242" or real(p)
+    try:
+        env = openclaw_client.child_env({"PATH": "/usr/bin", "OPENCLAW_GATEWAY_URL": "x"}, uid=4242)
+        assert env["XDG_RUNTIME_DIR"] == "/run/user/4242" and "OPENCLAW_GATEWAY_URL" not in env
+        assert env["PATH"].startswith(os.path.dirname(openclaw_client.OPENCLAW_BIN))
+        kept = openclaw_client.child_env({"XDG_RUNTIME_DIR": run_dir}, uid=4242)
+        assert kept["XDG_RUNTIME_DIR"] == run_dir  # one already set is kept
+        assert "XDG_RUNTIME_DIR" not in openclaw_client.child_env({}, uid=4243)  # no such dir
+    finally:
+        os.path.isdir = real
+    # And the CLI really gets it (the fake prints its environment's value to argv's log).
+    box = Fake(["ok"], key_file=OLD)
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write('printf "XDG=%s\\n" "$XDG_RUNTIME_DIR" >> "$FAKE_OPENCLAW_DIR/env"\n')
+    saved = os.environ.pop("XDG_RUNTIME_DIR", None)
+    try:
+        _save(NEW)
+    finally:
+        if saved is not None:
+            os.environ["XDG_RUNTIME_DIR"] = saved
+    want = f"/run/user/{os.getuid()}" if os.path.isdir(f"/run/user/{os.getuid()}") else ""
+    assert open(os.path.join(box.dir, "env")).read() == f"XDG={want}\n"
+
+
+def _status_json(labels, kind="profiles", provider="openrouter"):
+    return {"auth": {"providers": [
+        {"provider": "anthropic", "effective": {"kind": "env"}, "profiles": {"labels": []}},
+        {"provider": provider, "effective": {"kind": kind, "detail": "~/.openclaw/state"},
+         "profiles": {"count": len(labels), "labels": labels}}]}}
+
+
+def test_openclaws_masked_key_is_compared_with_the_brains():
+    m = agent_key.mask(OLD)
+    assert m == OLD[:8] + "..." + OLD[-8:]
+    assert agent_key.mask("abcdefghij") == "ab...ij" and agent_key.mask("abc") == "a...c"
+    same = agent_key.compare_labels(_status_json([f"openrouter:manual={m}"]), OLD)
+    assert same == agent_key.SAME
+    assert agent_key.compare_labels(
+        _status_json([f"openrouter:manual={m} [cooldown 4m]"]), OLD) == agent_key.SAME
+    assert agent_key.compare_labels(
+        _status_json([f"openrouter:manual={agent_key.mask(NEW)}"]), OLD) == agent_key.DIFFERENT
+    for unknown in (None, {}, {"auth": {"providers": "x"}},
+                    _status_json([f"openrouter:manual={m}"], kind="env"),
+                    _status_json([f"x={m}"], provider="openai"),
+                    _status_json([]), _status_json(["openrouter:work=OAuth", 3]),
+                    _status_json([f"openrouter:a={m}", f"openrouter:b={agent_key.mask(NEW)}"])):
+        assert agent_key.compare_labels(unknown, OLD) is None, unknown
+
+
+def test_the_first_look_records_a_key_openclaw_already_has():
+    """Provisioning gave both the same key, and no save recorded it: one look, while
+    nobody is talking, at `openclaw models status --json` settles it."""
+    for labels, state in (([f"openrouter:manual={agent_key.mask(OLD)}"], agent_key.SHARED),
+                          ([f"openrouter:manual={agent_key.mask(NEW)}"], agent_key.SEPARATE),
+                          (None, agent_key.UNSYNCED)):
+        box = Fake(["status"], key_file=OLD)
+        if labels is not None:
+            with open(os.path.join(box.dir, "status.json"), "w") as f:
+                json.dump(_status_json(labels), f, indent=2)
+        else:
+            box.modes("fail")
+        assert agent_key.unlooked(OLD, True)
+        agent_key.IDLE_SECS, agent_key.POLL_SECS = 0.2, 0.05
+        live = {"now": True}
+
+        async def run():
+            r = agent_key.Restarter()
+            task = asyncio.create_task(r.run(live=lambda: live["now"], brain=lambda: (OLD, True)))
+            await asyncio.sleep(0.4)
+            assert box.argv == [], "looked while a conversation was live"
+            live["now"] = False
+            r.poke()
+            await asyncio.sleep(1.5)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            asyncio.run(run())
+        finally:
+            agent_key.IDLE_SECS, agent_key.POLL_SECS = 30.0, 30.0
+        assert box.argv == ["models status --json"], box.argv  # once, read-only
+        assert _status()["state"] == state, (labels, _status())
+        assert agent_key.unlooked(OLD, True) == (state == agent_key.UNSYNCED)
+    # A different key seen, then saved: the save records it as shared.
+    box.modes("ok")
+    _save(OLD)
+    assert _status()["state"] == agent_key.SHARED
+
+
 def test_health_status_and_doctor_say_where_it_stands():
     Fake(["ok"], key_file=OLD)
     _save(NEW)
@@ -394,6 +505,7 @@ def test_health_status_and_doctor_say_where_it_stands():
         ({"state": "off", "reason": "no OpenClaw on this box (TEAPORT_AGENT=none)"},
          "not shared: no OpenClaw on this box", None),
         ({"state": "separate", "reason": "x"}, "OpenClaw has a key of its own", None),
+        ({"state": "unsynced", "reason": "x"}, "unknown, not yet synced", None),
     )
     for health, words, mark in cases:
         status = [ln for ln in _cli("cmd_status", {"ok": True, "agent_key": health}).splitlines()

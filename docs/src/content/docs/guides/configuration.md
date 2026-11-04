@@ -200,17 +200,17 @@ When nothing is left, the device stops answering questions. It does not switch t
 
 ## One key for OpenClaw too
 
-On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page or on the setup page, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice.
+On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page or on the setup page, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice. Unless `OPENCLAW_AGENT_ID` names an agent, OpenClaw chooses the agent itself, its only configured agent; with several agents and none named, the save fails and nothing changes.
 
-<!-- source: brain/teaport_brain/agent_key.py:11-26#de5e45b2 -->
+<!-- source: brain/teaport_brain/agent_key.py:11-26#97637f79; brain/teaport_brain/agent_key.py:28-43#379ed46d -->
 
 Both take the key, or neither does. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, `teaport status` says that the two might be on different keys until a save goes through.
 
-<!-- source: brain/teaport_brain/agent_key.py:35-41#dd31cc19 -->
+<!-- source: brain/teaport_brain/agent_key.py:52-58#dd31cc19 -->
 
-When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds: not in the room, in Talk, or on a phone call. A key that you write to the key file by hand, or that the installer writes, is not copied. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
+When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds: not in the room, in Talk, or on a phone call. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:28-33#a7602a4e; cli/teaport:143-171#77393e19 -->
+<!-- source: brain/teaport_brain/agent_key.py:45-50#a7602a4e; brain/teaport_brain/agent_key.py:28-43#379ed46d; cli/teaport:143-172#4e6fe598 -->
 
 ## What's next
 
