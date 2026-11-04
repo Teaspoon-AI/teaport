@@ -366,24 +366,39 @@ class Saved:
 
     async def undo(self) -> None:
         """The key file as it was, and OpenClaw back on the brain's previous key, as one
-        more save (save_lock). Where OpenClaw cannot follow (the brain had no key before,
-        or OpenClaw does not take it), the state says the two may differ (MISMATCH)."""
+        more save (save_lock, with its marker). Nothing when another save has landed since
+        (the key file no longer holds this one: that save stands). Where OpenClaw cannot
+        follow (the brain had no key before, or OpenClaw does not take it), the state says
+        the two may differ (MISMATCH)."""
         async with agent_key.save_lock():
-            _put_back(self.prev_file)
-            logger.info("ai account: the new key was taken back")
-            if agent_key.skipped(self.openrouter) is not None:
+            # The key file still holding this save's key: nothing saved since. (Not
+            # current_key(): an environment copy -- brain.env's, the one config_ui failed to
+            # drop -- shadows the file, and the file is what this save wrote.)
+            if (_read_file() or "").strip() != self.key:
+                logger.info("ai account: not taking the key back: another key was saved since")
                 return
-            taken_back = "a key change was taken back, but OpenClaw kept the new key"
-            if not self.prev:
-                agent_key.mismatch(taken_back)
-                return
+            sharing = agent_key.skipped(self.openrouter) is None
+            if sharing:
+                agent_key.begin(self.prev, self.key)
             try:
-                gave = await agent_key.give(self.prev, self.key, self.openrouter)
-            except BaseException:
-                agent_key.mismatch(taken_back)
-                raise
-            if gave is not None and not gave.halfway:  # halfway: give recorded it
-                agent_key.mismatch(taken_back)
+                _put_back(self.prev_file)
+                logger.info("ai account: the new key was taken back")
+                if not sharing:
+                    return
+                taken_back = "a key change was taken back, but OpenClaw kept the new key"
+                if not self.prev:
+                    agent_key.mismatch(taken_back)
+                    return
+                try:
+                    gave = await agent_key.give(self.prev, self.key, self.openrouter)
+                except BaseException:
+                    agent_key.mismatch(taken_back)
+                    raise
+                if gave is not None and not gave.halfway:  # halfway: give recorded it
+                    agent_key.mismatch(taken_back)
+            finally:
+                if sharing:
+                    agent_key.end()
 
 
 async def save_key(key: str, base_url: str | None) -> Saved:
@@ -397,44 +412,58 @@ async def save_key(key: str, base_url: str | None) -> Saved:
     it. A save that breaks or is cancelled midway puts the file back too, and, once
     OpenClaw may have been told, records a mismatch, before the exception goes on; one torn
     by a crash leaves its marker (agent_key.begin), which the brain turns into a
-    mismatch."""
+    mismatch.
+
+    The file and marker writes are synchronous, on the event loop, like the clean-up: a
+    few hundred bytes each, and a write in a thread that a cancellation left running could
+    land after the clean-up put the file back. Waiting for another save is capped
+    (agent_key.SAVE_WAIT_SECS): past it, NotSaved(NOT_SHARED) and nothing changed."""
     key = key.strip()
     openrouter = is_openrouter(base_url)
     sharing = agent_key.skipped(openrouter) is None
-    async with agent_key.save_lock():
-        prev = current_key()
-        for k in (key, prev):
-            if k:
-                conversation_log.never_log(k, secs=3600.0)
-        prev_file = _read_file()
-        if sharing:
-            await asyncio.to_thread(agent_key.begin, key, prev)
-        told = False
-        try:
-            await asyncio.to_thread(store_key, key)
-            told = sharing
-            gave = await agent_key.give(key, prev, openrouter)
-            if gave is not None:
-                _put_back(prev_file)
-                logger.info("ai account: the new key was not saved, as OpenClaw did not take it")
-                raise NotSaved(NOT_FINISHED if gave.halfway else NOT_SHARED, gave.detail)
-        except NotSaved:
-            if sharing:
-                agent_key.end()
-            raise
-        except BaseException as e:
-            # Cancelled (the brain or the setup unit stopping) or broken: synchronous from
-            # here, so a second cancellation cannot cut the clean-up short.
+    try:
+        async with agent_key.save_lock():
+            return await _save_locked(key, openrouter, sharing)
+    except agent_key.Busy:
+        logger.warning("ai account: the new key was not saved: another key change is still running")
+        raise NotSaved(NOT_SHARED, "another key change is still running") from None
+
+
+async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
+    """save_key's work, under the save lock."""
+    prev = current_key()
+    for k in (key, prev):
+        if k:
+            conversation_log.never_log(k, secs=3600.0)
+    prev_file = _read_file()
+    if sharing:
+        agent_key.begin(key, prev)
+    told = False
+    try:
+        store_key(key)
+        told = sharing
+        gave = await agent_key.give(key, prev, openrouter)
+        if gave is not None:
             _put_back(prev_file)
-            if told:
-                agent_key.mismatch(f"a key change stopped midway ({type(e).__name__}): OpenClaw "
-                                   "may hold the new key while the brain kept the previous one")
-            if sharing:
-                agent_key.end()
-            logger.warning(f"ai account: the new key was not saved ({type(e).__name__})")
-            raise
+            logger.info("ai account: the new key was not saved, as OpenClaw did not take it")
+            raise NotSaved(NOT_FINISHED if gave.halfway else NOT_SHARED, gave.detail)
+    except NotSaved:
         if sharing:
-            await asyncio.to_thread(agent_key.end)
+            agent_key.end()
+        raise
+    except BaseException as e:
+        # Cancelled (the brain or the setup unit stopping) or broken: synchronous from
+        # here, so a second cancellation cannot cut the clean-up short.
+        _put_back(prev_file)
+        if told:
+            agent_key.mismatch(f"a key change stopped midway ({type(e).__name__}): OpenClaw "
+                               "may hold the new key while the brain kept the previous one")
+        if sharing:
+            agent_key.end()
+        logger.warning(f"ai account: the new key was not saved ({type(e).__name__})")
+        raise
+    if sharing:
+        agent_key.end()
     return Saved(key, prev_file, prev, openrouter)
 
 

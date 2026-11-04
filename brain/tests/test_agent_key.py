@@ -865,6 +865,195 @@ def test_the_restarter_outlives_a_bad_pass():
     assert any("pass failed" in ln and "a bug" in ln for ln in lines), lines
 
 
+# ------------------------------------------------------------------ review round 2
+
+def test_a_save_that_ends_while_the_torn_check_runs_is_no_torn_save():
+    """(repro torn_race.py) A live save holds the lock and its marker; it ends right after
+    the check read the marker. The check takes the lock first, so it sees nothing torn."""
+    import fcntl
+    Fake([])
+    os.makedirs(agent_key.state_dir(), exist_ok=True)
+    fd = os.open(agent_key._path("agent_key.save.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    agent_key.begin(NEW, None)
+    agent_key.update(sha256=agent_key.fingerprint(NEW), mismatch=None)
+    real_load = agent_key.load
+    fired = []
+
+    def load():
+        data = real_load()
+        if data.get("saving") and not fired:
+            fired.append(1)
+            agent_key.load = real_load
+            agent_key.end()
+            os.close(fd)
+        return data
+
+    agent_key.load = load
+    try:
+        assert agent_key.settle_torn() is False
+    finally:
+        agent_key.load = real_load
+        if not fired:
+            os.close(fd)
+    assert not agent_key.load().get("mismatch")
+    # Held by a save under way: never torn, and its marker is left alone.
+    fd = os.open(agent_key._path("agent_key.save.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    agent_key.begin(OLD, NEW)
+    try:
+        assert agent_key.settle_torn() is False and agent_key.load()["saving"]
+    finally:
+        os.close(fd)
+    assert agent_key.settle_torn() is True  # nobody holds it now: torn
+    assert agent_key.load()["mismatch"] and not agent_key.load()["saving"]
+
+
+def test_a_room_falling_asleep_counts_as_the_end_of_a_conversation():
+    """(repro idle_room.py) The room mic falling asleep tells the arbiter's listeners
+    nothing; the pass that first sees it idle stamps the time."""
+    Fake([])
+    agent_key.update(sha256="x" * 64, restart=True, mismatch=None)
+    agent_key.IDLE_SECS = agent_key.POLL_SECS = 0.3
+    live = {"now": True}
+    r = agent_key.Restarter()
+    at = []
+
+    async def restart():
+        at.append(time.monotonic())
+        return True, ""
+
+    r._restart = restart
+
+    async def main():
+        t = asyncio.create_task(r.run(live=lambda: live["now"], listeners=[]))
+        await asyncio.sleep(1.0)
+        live["now"] = False  # asleep: no listener call
+        end = time.monotonic()
+        await asyncio.sleep(0.9)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        return end
+
+    try:
+        end = asyncio.run(main())
+    finally:
+        agent_key.IDLE_SECS, agent_key.POLL_SECS = 30.0, 30.0
+    assert len(at) == 1 and at[0] - end >= 0.3, [a - end for a in at]
+
+
+def _remote_cli(box, back_ok=True):
+    """The fake CLI: the first paste says the gateway shares no store here; the second
+    (the host store put back) works, or fails."""
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write("[ \"$(cat $FAKE_OPENCLAW_DIR/n)\" = 1 ] && echo 'Warning: Model auth changes were "
+                "saved on this host, but the configured Gateway does not share this auth state. "
+                "Run the auth command on the Gateway host.' >&2\n"
+                + ("" if back_ok else "[ \"$(cat $FAKE_OPENCLAW_DIR/n)\" = 2 ] && "
+                   "{ echo 'Error: busy' >&2; exit 1; }\n") + "exit 0\n")
+
+
+def test_remote_puts_the_host_store_back_whenever_the_paste_wrote_it():
+    # Never given from here (no recorded sync): the host store gets the previous key back.
+    box = Fake(["ok", "ok"], key_file=OLD)
+    _remote_cli(box)
+    _save(NEW)
+    assert box.keys == [NEW, OLD] and _key_file() == NEW + "\n"
+    s = _status()
+    assert s["state"] == agent_key.REMOTE and "kept the new key" not in s["reason"], s
+    # The put-back fails: said as it is.
+    box = Fake(["ok", "ok"], key_file=OLD)
+    _remote_cli(box, back_ok=False)
+    _save(NEW)
+    s = _status()
+    assert s["state"] == agent_key.REMOTE and "kept the new key" in s["reason"], s
+    assert "putting the previous one back failed" in s["reason"]
+    # A mismatch is what it says, whatever was recorded before.
+    agent_key.mismatch("test")
+    assert _status()["state"] == agent_key.MISMATCH and not agent_key.load().get("unshareable")
+
+
+def test_remote_is_looked_at_again_when_the_brain_starts():
+    for mode, state in (("local", agent_key.UNSYNCED), ("remote", agent_key.REMOTE),
+                        (None, agent_key.REMOTE)):
+        Fake([], key_file=OLD)
+        agent_key.update(unshareable=agent_key.REMOTE_REASON)
+
+        async def gateway_mode(mode=mode):
+            return mode
+
+        async def shown():
+            return None
+
+        real_mode = agent_key._gateway_mode
+        agent_key._gateway_mode = gateway_mode
+        real = _patched(shown=shown)
+        try:
+            asyncio.run(agent_key.look(lambda: (OLD, True)))
+        finally:
+            agent_key._gateway_mode = real_mode
+            _restore(real)
+        assert _status()["state"] == state, (mode, _status())
+    # The real read: `openclaw config get gateway.mode`, and an unset one is local.
+    box = Fake([], key_file=OLD)
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write('[ "$1 $2 $3" = "config get gateway.mode" ] && { echo "[plugins] x"; echo remote; }\n')
+    assert asyncio.run(agent_key._gateway_mode()) == "remote"
+    assert box.argv[-1] == "config get gateway.mode"
+    box.modes("fail")  # exit 1: unset, the runtime default
+    assert asyncio.run(agent_key._gateway_mode()) == "local"
+
+
+def test_undo_leaves_a_key_saved_since_alone():
+    box = Fake(["ok", "ok"], key_file=OLD)
+    _save(OLD)
+    saved = _save(NEW)
+    _save(A_KEY)  # another save lands before the undo
+    keys_before = list(box.keys)
+    asyncio.run(saved.undo())
+    assert _key_file() == A_KEY + "\n" and box.keys == keys_before
+    assert _status()["state"] == agent_key.SHARED and not agent_key.load().get("saving")
+
+
+def test_a_save_waits_for_another_only_so_long():
+    box = Fake(["ok"], key_file=OLD)
+    real_wait = agent_key.SAVE_WAIT_SECS
+    agent_key.SAVE_WAIT_SECS = 0.3
+
+    async def main():
+        async def hold():
+            async with agent_key.save_lock():
+                await asyncio.sleep(1.0)
+
+        holder = asyncio.create_task(hold())
+        await asyncio.sleep(0.05)
+        try:
+            await ai_account.save_key(NEW, OPENROUTER)
+            raise AssertionError("saved")
+        except ai_account.NotSaved as e:
+            assert e.reason == ai_account.NOT_SHARED and "still running" in e.detail
+        await holder
+
+    try:
+        asyncio.run(main())
+    finally:
+        agent_key.SAVE_WAIT_SECS = real_wait
+    assert _key_file() == OLD + "\n" and box.keys == []
+
+
+def test_a_stopped_gateway_is_told_from_all_of_its_output():
+    box = Fake([])
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write('[ "$1" = gateway ] && { echo "Error: Gateway not reachable at ws://127.0.0.1:18789 '
+                '(ECONNREFUSED)." >&2; echo "Hint: start it with openclaw gateway start" >&2; '
+                'exit 1; }\n')
+    ok, why = asyncio.run(agent_key.Restarter()._restart())
+    assert not ok and agent_key._REFUSED in why, why
+
+
 def test_health_status_and_doctor_say_where_it_stands():
     Fake(["ok"], key_file=OLD)
     _save(NEW)

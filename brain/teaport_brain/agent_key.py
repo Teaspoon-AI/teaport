@@ -24,8 +24,10 @@
 # warning means a restart is owed -- auth.profiles and models hot-apply otherwise
 # (docs/gateway/configuration/hot-reload.md). One warning is not that: "the configured
 # Gateway does not share this auth state" (a gateway on another host) means sharing
-# cannot apply on this setup at all: the brain's key is saved, OpenClaw keeps its own, and
-# status says so (REMOTE) until a later save finds the gateway sharing this host's store.
+# cannot apply on this setup at all: the brain's key is saved, OpenClaw keeps its own
+# (this host's own store gets its previous key back; recorded when that fails), and status
+# says so (REMOTE) until a later save finds the gateway sharing this host's store, or the
+# first look after a brain start reads `gateway.mode` as local again (recheck_remote).
 # A gateway that is not running (connection refused) is no warning: it reads the store
 # when it starts.
 #
@@ -109,6 +111,7 @@ POLL_SECS = 30.0              # how often the Restarter reads the state file
 RETRY_SECS = 600.0            # after a failed restart
 ERROR_BACKOFF_SECS = 60.0     # after the Restarter's own pass failed
 LOCK_RETRY_SECS = 0.1         # the save lock's flock, tried without blocking the loop
+SAVE_WAIT_SECS = 180.0        # past a whole other save (two pastes and their settling)
 
 # What status() says (/health "agent_key"; `teaport status` words them).
 OFF, ABSENT, OTHER, REMOTE, NONE, UNSYNCED, SEPARATE, SHARED, RESTART, MISMATCH = (
@@ -188,7 +191,10 @@ def load() -> dict:
 def _locked():
     """The state file's read-modify-write, one at a time across processes (the brain and
     the setup-mode unit both write it). Held only around a JSON read and write, never
-    across an await; the async paths take it in a thread (aupdate)."""
+    across an await. The async paths take it in a thread (aupdate); save_key's marker
+    writes and its clean-up take it on the event loop, on purpose -- a write in a thread
+    that a cancellation leaves running could land after the clean-up -- for a few
+    milliseconds at most, as nothing holds it longer."""
     os.makedirs(state_dir(), mode=0o700, exist_ok=True)
     fd = os.open(_path() + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
@@ -229,8 +235,9 @@ async def aupdate(change=None, **values) -> dict:
 
 def mismatch(reason: str) -> None:
     """Record that OpenClaw and the brain may be on different keys, until a save goes
-    through: status() says so (MISMATCH). Sync: a save being cancelled records it."""
-    update(sha256=None, mismatch=reason, restart=False)
+    through: status() says so (MISMATCH), whatever else was recorded (a "remote" setup
+    included). Sync: a save being cancelled records it."""
+    update(sha256=None, mismatch=reason, restart=False, unshareable=None)
     logger.warning(f"agent key: {reason}")
 
 
@@ -247,29 +254,46 @@ def _try_flock(fd: int) -> bool:
         return False
 
 
+class Busy(Exception):
+    """Another key change held the save lock for longer than SAVE_WAIT_SECS."""
+
+
 @contextlib.asynccontextmanager
-async def save_lock():
+async def save_lock(wait: float | None = None):
     """One save at a time on the box: an asyncio lock for this process's saves (in order),
     and a flock on agent_key.save.lock for the other processes' (the setup-mode unit). The
     flock is tried without blocking and retried, so the event loop never waits on it and
-    a cancelled waiter holds nothing."""
+    a cancelled waiter holds nothing. Raises Busy after `wait` (SAVE_WAIT_SECS) seconds."""
+    deadline = time.monotonic() + (SAVE_WAIT_SECS if wait is None else wait)
     loop = asyncio.get_running_loop()
     lock = _LOOP_LOCKS.setdefault(loop, asyncio.Lock())
-    async with lock:
-        os.makedirs(state_dir(), mode=0o700, exist_ok=True)
-        fd = os.open(_path("agent_key.save.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        await asyncio.wait_for(lock.acquire(), max(0.0, deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        raise Busy() from None
+    try:
+        fd = _open_save_lock()
         try:
             while not _try_flock(fd):
+                if time.monotonic() >= deadline:
+                    raise Busy()
                 await asyncio.sleep(LOCK_RETRY_SECS)
             yield
         finally:
             os.close(fd)  # releases the flock
+    finally:
+        lock.release()
+
+
+def _open_save_lock() -> int:
+    os.makedirs(state_dir(), mode=0o700, exist_ok=True)
+    return os.open(_path("agent_key.save.lock"), os.O_RDWR | os.O_CREAT, 0o600)
 
 
 def saving_now() -> bool:
     """Does any process hold the save lock right now?"""
     try:
-        fd = os.open(_path("agent_key.save.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = _open_save_lock()
     except OSError:
         return False
     try:
@@ -278,10 +302,11 @@ def saving_now() -> bool:
         os.close(fd)
 
 
-def begin(new: str, prev: str | None) -> None:
-    """The save in progress, before the brain's file is written: torn() finds it if the
-    save never ends."""
-    update(saving={"new": fingerprint(new), "prev": fingerprint(prev) if prev else None})
+def begin(new: str | None, prev: str | None) -> None:
+    """The save in progress, before the brain's file is written: settle_torn() finds it if
+    the save never ends."""
+    update(saving={"new": fingerprint(new) if new else None,
+                   "prev": fingerprint(prev) if prev else None})
 
 
 def end() -> None:
@@ -290,12 +315,24 @@ def end() -> None:
 
 def settle_torn() -> bool:
     """A save marker with no save holding the lock is a save torn by a crash: what the
-    brain's file and OpenClaw hold is not known. Recorded as a mismatch (True)."""
-    if not load().get("saving") or saving_now():
+    brain's file and OpenClaw hold is not known. Recorded as a mismatch (True). The save
+    lock is taken first (without waiting: a save under way holds it, and this is no torn
+    save), and the marker is read and cleared only while it is held, so a save that ends
+    or begins meanwhile is never mistaken for one."""
+    try:
+        fd = _open_save_lock()
+    except OSError:
         return False
-    update(saving=None)
-    mismatch("a key change was interrupted: OpenClaw and the brain may hold different keys")
-    return True
+    try:
+        if not _try_flock(fd):
+            return False
+        if not load().get("saving"):
+            return False
+        mismatch("a key change was interrupted: OpenClaw and the brain may hold different keys")
+        update(saving=None)
+        return True
+    finally:
+        os.close(fd)
 
 
 # ------------------------------------------------------------------ the CLI
@@ -383,9 +420,15 @@ async def give(key: str, prev: str | None, openrouter: bool) -> Gave | None:
         # Sharing cannot apply here: put this host's own store back where it was (it is
         # not the gateway's), and save the brain's key alone.
         logger.info(f"agent key: {REMOTE_REASON} ({told.detail})")
-        if prev and load().get("sha256") == fingerprint(prev):
-            await _paste(prev)
-        await aupdate(unshareable=REMOTE_REASON)
+        reason = REMOTE_REASON
+        back = await _paste(prev) if prev else None
+        if back is None or not back.ok:
+            # This host's own store keeps the new key: not the gateway's, so nothing that
+            # answers uses it, but said as it is.
+            reason += ("; this host's own OpenClaw store kept the new key" +
+                       (f" (putting the previous one back failed: {back.detail})" if back else ""))
+            logger.warning(f"agent key: {reason}")
+        await aupdate(unshareable=reason)
         return None
     if told.ok:
         def took(data):
@@ -476,12 +519,38 @@ def unlooked(current: str | None, openrouter: bool) -> bool:
             and data.get("sha256") != fp and data.get("looked") != fp)
 
 
+async def _gateway_mode() -> str | None:
+    """`openclaw config get gateway.mode` (docs/cli/config.md): "remote" for a gateway on
+    another host (call.ts isImplicitLocalGatewayTarget: the CLI's own test), "local" when
+    unset (exit 1: the runtime default applies); None when it could not be read.
+    Replaced in tests."""
+    ran = await _cli(["config", "get", "gateway.mode"], STATUS_TIMEOUT_SECS)
+    if ran.rc == 1:
+        return "local"
+    if ran.rc != 0:
+        return None
+    words = ran.out.decode("utf-8", "replace").split()
+    return words[-1] if words else "local"
+
+
+async def recheck_remote(openrouter: bool) -> None:
+    """A "remote" setup recorded by an earlier save, looked at again (the first look, once
+    per brain): a gateway no longer in remote mode clears it, and the next save shares the
+    key again; one still remote, or that cannot be read, keeps it."""
+    if not load().get("unshareable") or skipped(openrouter) is not None:
+        return
+    if await _gateway_mode() not in (None, "remote"):
+        await aupdate(unshareable=None)
+        logger.info("agent key: the OpenClaw gateway is local again: the next save shares the key")
+
+
 async def look(brain) -> str | None:
     """The first look (the module note), for the key `brain()` gives ((key, openrouter)):
     SAME recorded as shared, DIFFERENT as separate; nothing when it cannot be told. Writes
     only if the state and the brain's key are as they were before the CLI ran: a save
     that landed meanwhile is never overwritten. Returns what was seen."""
     current, openrouter = brain()
+    await recheck_remote(openrouter)
     if not unlooked(current, openrouter):
         return None
     before = load()
@@ -572,13 +641,21 @@ class Restarter:
         if ran.rc is None:
             return False, ran.detail
         if ran.rc != 0:
+            if _REFUSED in ran.text:  # anywhere in its output, not only the last line
+                return False, f"the gateway is not running ({_REFUSED})"
             return False, f"rc {ran.rc}: {_last_line(ran.err)}"
         return True, ""
 
     async def _pass(self, live, brain, state: dict) -> float:
-        """One look at what is owed; how long to wait before the next."""
-        if live():
+        """One look at what is owed; how long to wait before the next. Quiet is counted
+        from the last moment anything was live: a pass that sees it live stamps it, and so
+        does the first pass that sees it idle again -- every way of going idle (a call
+        hung up, Talk closed, a room mic falling asleep, which tells the arbiter's
+        listeners nothing) -- as does poke() on any holder change."""
+        now_live = live()
+        if now_live or state.get("was_live"):
             self._last_live = self._clock()
+        state["was_live"] = now_live
         await asyncio.to_thread(settle_torn)
         quiet_for = self._clock() - self._last_live
         if not state["looked"] and quiet_for >= IDLE_SECS and not live():
