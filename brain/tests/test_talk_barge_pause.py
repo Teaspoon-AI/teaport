@@ -49,6 +49,9 @@ from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTrans
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 from test_barge_pause import (  # noqa: E402
+    check_a_cut_drops_the_words_a_pause_held,
+    check_a_reply_stamped_after_the_resume_is_on_time,
+    check_the_words_keep_the_voices_time_through_a_pause,
     RESUME_S,
     SPEECH,
     SR,
@@ -412,6 +415,21 @@ async def test_the_room_and_talk_pause_by_their_own_switches():
     finally:
         bp.ENABLED, bp.TALK_ENABLED, bp.ROOM_ENABLED = saved
         gs.TalkWebsocketTransport, gs.host_context.fetch, gs.arb.ARBITER = saved_gs
+
+
+async def test_talk_words_keep_the_voices_time_through_a_pause():
+    async with TalkRig() as rig:
+        await check_the_words_keep_the_voices_time_through_a_pause(rig)
+
+
+async def test_talk_a_cut_drops_the_words_a_pause_held():
+    async with TalkRig() as rig:
+        await check_a_cut_drops_the_words_a_pause_held(rig)
+
+
+async def test_talk_a_reply_stamped_after_the_resume_is_on_time():
+    async with TalkRig() as rig:
+        await check_a_reply_stamped_after_the_resume_is_on_time(rig)
 
 
 def _pause_times(rig):

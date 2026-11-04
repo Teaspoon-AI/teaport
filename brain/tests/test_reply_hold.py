@@ -822,6 +822,41 @@ async def test_words_placed_after_the_release_move_with_the_held_ones():
             "the End (no context of its own) must move with its context's words")
 
 
+async def test_a_pause_during_a_hold_is_no_part_of_the_held_reply_s_shift():
+    # The gate measures its holds on the transport's voice clock, the clock the pts are
+    # on (formal/VoiceClock.tla, vc_holdWall): a playout pause during the hold (a filler
+    # playing over the held reply, paused for the caller) stood that clock still, and the
+    # held reply's words must not carry the pause on top of it.
+    from teaport_brain.playout_pause import VoiceClock
+    async with GateRig() as rig:
+        voice = VoiceClock()
+        voice.attach(rig.gate.get_clock())
+        rig.gate.voice_clock = voice
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        frames = reply("c1", rig)
+        base = frames[2].pts
+        t_sent = time.monotonic()
+        await rig.send(*frames)                          # held
+        await asyncio.sleep(0.1)
+        voice.stop()
+        await asyncio.sleep(0.3)
+        voice.start()
+        await rig.send(VADUserStoppedSpeakingFrame())
+        while rig.gate.released < 1:
+            await asyncio.sleep(0.005)
+        t_released = time.monotonic()
+        await asyncio.sleep(0.1)
+        got = {getattr(f, "text", None): f.pts for _, f in rig.bottom.down
+               if isinstance(f, TTSTextFrame)}
+        moved = nanoseconds_to_seconds(got["Sure,"] - base)
+        want = t_released - t_sent - 0.3
+        assert abs(moved - want) <= 0.05, (
+            f"moved {moved:.2f}s; held {t_released - t_sent:.2f}s of which the voice "
+            f"clock stood 0.30s")
+
+
 async def test_a_hang_up_during_a_hold_ends_at_once_and_plays_nothing():
     from pipecat.frames.frames import EndFrame
     rig = GateRig()

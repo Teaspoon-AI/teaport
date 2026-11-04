@@ -45,9 +45,9 @@
 # What it gets wrong: the user repeating the bot's last words straight back while it is
 # still talking. That costs those words, not the turn -- and a "wait" the user says
 # within LOOKBACK_SECS of the bot saying "wait" is taken as its echo: they say it again,
-# or more than it. And after a barge-in pause longer than about half a second the resumed
-# reply's echo can pass (the "played" stamps run on through the pause, #255): one such
-# "wait" now cuts the reply.
+# or more than it. A barge-in pause moves nothing here: the transport holds a paused
+# reply's words until their audio plays (playout_pause.py, THE VOICE CLOCK), so a word is
+# stamped when it was heard, pause or not.
 #
 import collections
 import time

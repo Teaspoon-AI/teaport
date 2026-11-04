@@ -1560,6 +1560,85 @@ async def check_the_brain_never_speculates():
     assert not offenders, f"the brain speculates now: {offenders}"
 
 
+async def check_timed_frames_come_back_through_the_transports_push():
+    """The voice clock (playout_pause.py): MediaSender releases a frame with a pts from
+    its clock task at that pts, through the output transport's own push_frame, unless it
+    routes it elsewhere -- a SystemFrame (pushed at once) or what _handle_frame sends to
+    the audio, image and mixer paths. PausablePlayout holds exactly the frames it counts
+    as timed (playout_pause._UNTIMED) until the voice clock reaches them, so its count
+    must be pipecat's.
+
+    If it goes: words come out of a pause early (the room's echo guard misses the
+    resumed reply's echo, captions run ahead of the voice), or a frame the transport
+    waits on is one that never came from the clock, and blocks the path it did come on."""
+    from pipecat.frames.frames import SystemFrame, TextFrame
+    from pipecat.transports.base_output import BaseOutputTransport
+    from pipecat.transports.base_transport import TransportParams
+    from teaport_brain.playout_pause import _UNTIMED
+
+    class _Sys(SystemFrame):
+        pass
+
+    pushed = []
+
+    class Probe(BaseOutputTransport):
+        async def start(self, frame):
+            await super().start(frame)
+            await self.set_transport_ready(frame)
+
+        async def push_frame(self, frame, direction=DOWN):
+            if direction == DOWN:
+                pushed.append((time.monotonic(), frame))
+            await super().push_frame(frame, direction)
+
+    out = Probe(TransportParams(audio_out_enabled=False))
+    async with Run(out) as run:
+        clock = out.get_clock()
+        t0, due = time.monotonic(), clock.get_time() + int(0.3e9)
+        frames = [TextFrame("w"), TTSStartedFrame(context_id="c"), _Sys()]
+        for f in frames:
+            f.pts = due
+        for f in frames:
+            await run.send(f)
+        await _until(lambda: all(any(p is f for _, p in pushed) for f in frames), timeout=2.0)
+    for f in frames:
+        t = next(t for t, p in pushed if p is f)
+        late = t - t0 >= 0.2
+        assert late == (not isinstance(f, _UNTIMED)), (
+            f"{type(f).__name__}: {'at its pts' if late else 'at once'}, but "
+            f"playout_pause counts it {'untimed' if isinstance(f, _UNTIMED) else 'timed'}")
+
+
+async def check_the_transport_writes_a_reply_in_the_class_it_was_handed():
+    """PausablePlayout counts only a reply's audio against what is left of the reply
+    (_track_tail, _wrote: TTSAudioRawFrame, not the thinking sound's plain audio), and
+    learns which frame it writes from the chunk MediaSender hands its write: pipecat
+    re-chunks audio into frames of the class it was given. If it goes (plain frames
+    for everything): a reply's remaining playout never comes down, and the pauser's
+    near-end rule and a pause's tail read a reply as longer than it is."""
+    from pipecat.frames.frames import OutputAudioRawFrame
+    from pipecat.transports.base_output import BaseOutputTransport
+    from pipecat.transports.base_transport import TransportParams
+
+    written = []
+
+    class Probe(BaseOutputTransport):
+        async def start(self, frame):
+            await super().start(frame)
+            await self.set_transport_ready(frame)
+
+        async def write_audio_frame(self, frame):
+            written.append(type(frame))
+            return True
+
+    out = Probe(TransportParams(audio_out_enabled=True, audio_out_sample_rate=16000))
+    async with Run(out) as run:
+        await run.send(TTSAudioRawFrame(b"\x01\x00" * 1600, 16000, 1, context_id="c"))
+        await run.send(OutputAudioRawFrame(b"\x01\x00" * 1600, 16000, 1))
+        await _until(lambda: len(written) >= 4, timeout=2.0)
+    assert written[0] is TTSAudioRawFrame and OutputAudioRawFrame in written[2:], written
+
+
 async def check_the_websocket_transport_builds_its_output_from_its_own_parts():
     """talk_transport.TalkWebsocketTransport rebuilds pipecat's FastAPI websocket output
     from the transport's _client, _params and _output_name, after the base __init__ built

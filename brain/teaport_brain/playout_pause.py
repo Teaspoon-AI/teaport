@@ -30,7 +30,7 @@
 #     boundary, with one deadline for the whole write (write_deadline()), and
 #     drops what it was about to write when that returns False (an interruption dropped
 #     the pause: the audio it held is the cut reply's); and reports each frame as it
-#     sends it with _wrote(secs). That is the listener's playout, as the listener's end
+#     sends it with _wrote(secs, frame). That is the listener's playout, as the listener's end
 #     plays it (back to back, from when each frame arrives): a pause's lag is how much of
 #     what was sent is still to play (the ledger credits playout up to there), and
 #     playout_tail_secs() what is left of the reply.
@@ -38,9 +38,22 @@
 # The pause is announced both ways (PlayoutPauseFrame): the TranscriptLedger, the TTS's
 # playout model and the start strategy key off it (barge_pause.py, BOOKKEEPING).
 #
-# Not here: pipecat's clock releases each word (TTSTextFrame, its caption progress, a
-# reply's End) at its pts on the wall clock, pause or not -- a known limit (barge_pause.py,
-# Known limits), kept for one design of the playout timing across a pause.
+# THE VOICE CLOCK (#255). Every word of a reply carries a playout time (pts): the TTS
+# stamps it as it synthesizes, and pipecat's MediaSender releases the word downstream
+# when its clock reaches it. Whatever reads a released word as "played now" -- the room
+# echo guard, the Talk captions, the assistant's running text -- and the ledger's heard
+# cut, which reads pts against the clock, are right only if that clock runs exactly
+# while the listener hears the bot. The pipeline clock does not stop for a pause, so
+# this transport keeps one that does: VoiceClock, the pipeline clock less every moment
+# the voice stood still. It stops once what was sent before a pause has played (the
+# pause's lag) and runs again at the resume, and only this transport moves it. Every
+# pts is on it: the TTS stamps on it (engine_tts), the reply hold measures its holds on
+# it (reply_hold), the ledger cuts on it (transcript_ledger), and the transport
+# releases each timed frame when it reaches the frame's pts (push_frame). A word of a
+# paused reply then waits through the pause, and a reply queued behind it, or anchored
+# after it, needs nothing moved: the clock it was placed on stood still too. What runs
+# on wall time -- call recording, observers, timeouts -- keeps the pipeline clock
+# (formal/VoiceClock.tla).
 #
 import asyncio
 import time
@@ -52,7 +65,12 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InterruptionFrame,
+    MixerControlFrame,
     OutputAudioRawFrame,
+    OutputImageRawFrame,
+    SpriteFrame,
+    SystemFrame,
+    TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
@@ -66,6 +84,96 @@ from teaport_brain.barge_pause import PAUSE_GUARD_S, PlayoutPauseFrame
 # being dead for the rest of the session, so this stays under it whatever the pauser
 # asks for (the pauser's own bounds are under this: barge_pause.MAX_CAP_S).
 _PAUSE_GUARD_S = PAUSE_GUARD_S
+# What never reaches MediaSender's clock queue, whatever its pts: a SystemFrame
+# (BaseOutputTransport.process_frame pushes it at once), and what _handle_frame routes
+# elsewhere. Every other downstream frame with a pts is timed, and comes back through
+# this transport's push_frame from the clock task. Pinned against pipecat by
+# test_pipecat_premises (check_timed_frames_come_back_through_the_transports_push).
+_UNTIMED = (SystemFrame, InterruptionFrame, OutputAudioRawFrame, OutputImageRawFrame,
+            SpriteFrame, MixerControlFrame, TTSStoppedFrame)
+
+
+class VoiceClock:
+    """The pipeline clock less every moment the voice stood still (module header):
+    nanoseconds, the pipeline clock's own unit. Moved only by the transport that owns it
+    (stop / start); read by everything that stamps or reads a pts. Before attach() it
+    reads 0, as the pipeline clock does before it starts."""
+
+    def __init__(self):
+        self._base = None
+        # ns the voice stood still in stops that have ended; the stop in force, if any:
+        # when the voice stops (it may be ahead: what was sent still plays).
+        self._stood = 0
+        self._stop_at = None
+        # The last stop that ended, as (stopped at, started at, stood before it): an
+        # instant read just after a start (an observer's timestamp) still maps right.
+        self._last = None
+        self._changed = asyncio.Event()
+
+    def attach(self, clock) -> None:
+        """The pipeline clock (pipecat BaseClock) this one runs on."""
+        self._base = clock
+
+    @property
+    def attached(self) -> bool:
+        return self._base is not None
+
+    def _pipeline_ns(self) -> int:
+        return self._base.get_time() if self._base is not None else 0
+
+    def at(self, t_ns: int) -> int:
+        """The voice clock at pipeline instant `t_ns`: now, or just before."""
+        if self._last is not None and t_ns < self._last[1]:
+            stopped, _, stood = self._last
+            return min(t_ns, stopped) - stood
+        if self._stop_at is not None:
+            t_ns = min(t_ns, self._stop_at)
+        return t_ns - self._stood
+
+    def now_ns(self) -> int:
+        return self.at(self._pipeline_ns())
+
+    @property
+    def standing(self) -> bool:
+        """The voice is stopped now (not just about to: its lag is played)."""
+        return self._stop_at is not None and self._pipeline_ns() >= self._stop_at
+
+    def stop(self, after_secs: float = 0.0) -> None:
+        """The voice stops `after_secs` from now: what was sent plays until then."""
+        if self._stop_at is None:
+            self._stop_at = self._pipeline_ns() + max(0, round(after_secs * 1e9))
+            self._kick()
+
+    def start(self) -> None:
+        """The voice goes on from where it stood."""
+        if self._stop_at is None:
+            return
+        now = self._pipeline_ns()
+        self._last = (self._stop_at, now, self._stood)
+        self._stood += max(0, now - self._stop_at)
+        self._stop_at = None
+        self._kick()
+
+    def _kick(self) -> None:
+        self._changed.set()
+        self._changed = asyncio.Event()
+
+    async def wait_until(self, pts_ns: int) -> None:
+        """Until the voice clock reaches `pts_ns`: through any stop on the way."""
+        while True:
+            changed = self._changed
+            ahead = pts_ns - self.now_ns()
+            if ahead <= 0:
+                return
+            if self.standing:
+                await changed.wait()
+                continue
+            if self._stop_at is not None:
+                ahead = min(ahead, max(0, self._stop_at - self._pipeline_ns()))
+            try:
+                await asyncio.wait_for(changed.wait(), timeout=ahead / 1e9)
+            except asyncio.TimeoutError:
+                pass
 
 
 class PausablePlayout:
@@ -93,6 +201,12 @@ class PausablePlayout:
         # When the audio sent so far finishes playing at the listener's end (_wrote).
         self._heard_until = 0.0
         self._synth_done = False
+        # When the bot's voice plays (module header): the pts clock of this session.
+        self.voice_clock = VoiceClock()
+
+    async def setup(self, setup):
+        await super().setup(setup)
+        self.voice_clock.attach(self.get_clock())
 
     @property
     def playout_paused(self) -> bool:
@@ -112,8 +226,10 @@ class PausablePlayout:
             # the reply that much later (the frame playing and the one queued behind it).
             lag = max(0.0, self._heard_until - time.monotonic())
             self._pause_lag = lag
+            self.voice_clock.stop(after_secs=lag)
         else:
             self._playing.set()
+            self.voice_clock.start()
             # Restart the send clock where it keeps its one frame of lead. The writers
             # send first and then sleep to _next_send_time, so the held write goes out
             # one slot before what was sent before the pause has played
@@ -176,6 +292,7 @@ class PausablePlayout:
         if not self._playing.is_set():
             self._pause_epoch += 1
         self._playing.set()
+        self.voice_clock.start()
 
     def playout_tail_secs(self):
         """How much of the reply is left to play, if it is all here -- its synthesis is
@@ -189,20 +306,35 @@ class PausablePlayout:
             return self._unplayed_s + self._pause_lag
         return self._unplayed_s + max(0.0, self._heard_until - time.monotonic())
 
-    def _wrote(self, secs: float):
-        """`secs` of the bot's audio went to the listener just now."""
+    def _wrote(self, secs: float, frame: Frame = None):
+        """`secs` of the bot's audio went to the listener just now, out of `frame`.
+        All of it plays on (a pause's lag); only a reply's counts against what is left
+        of the reply (_track_tail)."""
         self._heard_until = max(self._heard_until, time.monotonic()) + secs
-        self._unplayed_s = max(0.0, self._unplayed_s - secs)
+        if isinstance(frame, TTSAudioRawFrame):
+            self._unplayed_s = max(0.0, self._unplayed_s - secs)
 
     def _track_tail(self, frame: Frame, direction: FrameDirection):
         if direction != FrameDirection.DOWNSTREAM:
             return
-        if isinstance(frame, OutputAudioRawFrame) and frame.sample_rate:
+        if isinstance(frame, TTSAudioRawFrame) and frame.sample_rate:
+            # A reply's audio. Not the thinking sound's typing (plain audio): it is no
+            # part of the reply's end, for the pauser's near-end rule or a pause's tail.
             self._unplayed_s += frame.num_frames / frame.sample_rate
         elif isinstance(frame, TTSStartedFrame):
             self._synth_done = False
         elif isinstance(frame, TTSStoppedFrame):
             self._synth_done = True
+
+    async def push_frame(self, frame: Frame,
+                         direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if (direction == FrameDirection.DOWNSTREAM and frame.pts
+                and not isinstance(frame, _UNTIMED)):
+            # Released by MediaSender's clock task on the pipeline clock: on to its time
+            # on the voice clock, through a pause (the task awaits this, so the frames
+            # behind it keep their order).
+            await self.voice_clock.wait_until(frame.pts)
+        await super().push_frame(frame, direction)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         self._track_tail(frame, direction)

@@ -3183,6 +3183,12 @@ line still playing at the commit) plays on — as before the fix.
 A sibling of `PlayoutClock.tla`, for the same reason: the question is the layout's
 seconds and the pts cut, which `LedgerPlayout.tla` abstracts away.
 
+**Since #255** the words' half of this is the voice clock's (`VoiceClock.tla`, below):
+the ledger no longer moves its pts cut by a pause (part 1's `shipped` shift), and the
+TTS no longer freezes for one (a pause was a source in part 2; only the reply hold is
+now). The layout's seconds (part 1) are as shipped. The rows stay as the record of the
+design before.
+
 **Part 1, the ledger.** A reply of `A` units plays a unit per tick from the window's
 start; word *k* is scheduled at pts *k*. The transport can pause and resume (up to
 `MaxPauses` times) and the caller can cut the reply at any tick; at the cut the ledger
@@ -3226,8 +3232,9 @@ fewer words than the played fraction implies, so the chart fell back to that est
 off by a word or so — instead of the exact cut. The fix moves `_play_end` by every stop,
 even one that began after playout ran dry (a model already in the past stays in the past,
 so the pacing is unchanged). `test_barge_pause.py::
-test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well` is the trace on the real TTS:
-before the fix, the next clause after a 0.3 s pause started 0.3 s late.
+test_a_pause_in_an_underrun_is_not_a_playout_gap` is the trace on the real TTS (since
+#255 on the voice clock): before the fix, the next clause after a 0.3 s pause started
+0.3 s late.
 
 **Part 2, the TTS.** A reply hold and a playout pause each stop playout; the two can
 overlap. `engine_tts._freeze_playout` freezes the TTS's playout model through them and,
@@ -3263,6 +3270,58 @@ is the trace: a reply anchored 0.3 s into a 0.7 s hold ended at 12.0 s instead o
 
 The anchor's own value is tested on the real TTS in `test_reply_hold.py` and
 `test_barge_pause.py`.
+
+## `VoiceClock.tla` — one clock for when the words play, across a pause and a hold (#255)
+
+Every word of a reply carries a playout time (pts): the TTS stamps it as it synthesizes,
+and pipecat's output transport releases the word downstream when its clock reaches it.
+What reads a released word as "played now" — the room's echo guard, the Talk captions,
+the assistant's running text — and the ledger's cut, which reads pts against the clock,
+are right only if that clock runs exactly while the listener hears the bot. Before #255
+the pts were on the pipeline clock, which runs on through a playout pause: the transport
+released a paused reply's words while nobody heard them, and every later word of it the
+pause early, and the TTS's anchors and the ledger's cut each corrected for the pause on
+their own (20-80 ms apart). The room's echo guard then took the resumed reply's echo for
+the user and the bot cut itself off (#255, live 2026-11-02).
+
+The **voice clock** is the pipeline clock less every tick the voice stood still: it
+stops when what was sent before a pause has played (the lag) and runs again at the
+resume, and only the transport moves it (`playout_pause.VoiceClock`). The TTS stamps on
+it, the reply hold measures its holds on it, the ledger cuts on it, and the transport
+releases each timed frame when it reaches the frame's pts.
+
+The model: a reply R — its first clause emitted at 0, a second clause (`LATE`) emitted at
+any tick (an underrun if R has played out by then), and a context Q (`QN`) queued behind
+it. The TTS places a clause after what it emitted before, or at its clock's now if that
+has played out. With `HOLD` the gate holds R from 0 until a release at any tick and moves
+R's pts by the hold; the TTS's model of R stands still through it and moves at its end.
+Pauses (up to `MaxPauses`, lag `LAG`) come and go at any tick, during the hold too (a
+filler playing over the held reply).
+
+| row | RELEASE / HOLDCLOCK / STAMP | `WordsOnVoice` | `ChartIsHeard` |
+|---|---|---|---|
+| `vc_wall_nopause` | wall / wall / voice, no pauses | ✓ (2.5k states) | — |
+| `vc_wall` | **before #255**: released on the pipeline clock | ✗ (a word stamped before a pause comes out the pause early) | — |
+| `vc_holdWall` | voice / **wall** / voice | ✗ (a pause during the hold counts twice in the held reply's shift) | — |
+| `vc_stampWall` | voice / voice / **wall** | ✗ (a clause after a gap placed at the pipeline clock's now) | — |
+| `vc_voice` | **as shipped**, with the hold | ✓ (540k states) | ✓ |
+| `vc_voice_nohold` | as shipped, no hold | ✓ (600k states) | ✓ |
+
+`WordsOnVoice`: every unit, when the listener starts hearing it, has its word released
+at that very tick. `ChartIsHeard`: at a cut, the words placed before the voice clock's
+now are exactly what the listener heard. `vc_wall_nopause` is the control: with nothing
+stopping the voice the two clocks are one, and the model of the stamps is right.
+
+What is not modelled: the caption lead (every pts early by one constant the ledger takes
+back); the lag's measurement (`_heard_until`, tested); the frame of lead a resumed write
+keeps; a unit is one word and one tick. The premises — that MediaSender releases exactly
+the frames `playout_pause._UNTIMED` leaves out through the transport's own `push_frame`,
+and re-chunks a reply's audio in the reply's frame class — are pinned in
+`test_pipecat_premises.py` (`check_timed_frames_come_back_through_the_transports_push`,
+`check_the_transport_writes_a_reply_in_the_class_it_was_handed`). The transports' release
+through a pause is tested on SIP and Talk (`test_barge_pause.py`,
+`test_talk_barge_pause.py`: `..._the_words_keep_the_voices_time_through_a_pause`), the
+clock itself in `test_voice_clock.py`.
 
 ## `SttCommit.tla` — when the STT closes the engine's transcript segment (#43)
 
@@ -3871,6 +3930,8 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | A context that timed out mid-reply is re-created under the SAME id | LedgerPlayout (`TtsRestart`; `ledger_split` settled) | `check_a_timed_out_context_resumes_under_its_own_id` | `services/tts_service.py:1277-1282` (`_turn_context_id`) | ✓ | ✓ |
 | `start_word_timestamps` takes its baseline from its first `get_clock()` read | PlayoutClock (`pc_second_realClock`) | guard `engine_tts._require_baseline_clock_read` (behavioural); `test_tts_streaming.py::test_a_moved_baseline_clock_read_fails_the_session_build` | `services/tts_service.py:1381-1398` | ✓ (that test) | ✓ (main's suite) |
 | The output transport releases timed frames by (pts, arrival), not arrival order | PlayoutClock (`Pop`, `pc_release_words`) | `check_the_transport_releases_timed_frames_by_pts_then_arrival` | `transports/base_output.py:640-649, 1079-1100` | ✓ | ✓ |
+| A frame with a pts reaches the clock task and comes back through the transport's own `push_frame`, unless it is a `SystemFrame` or one `_handle_frame` routes to audio, image or mixer (`playout_pause._UNTIMED`) | VoiceClock (`RELEASE = "voice"`) | `check_timed_frames_come_back_through_the_transports_push` | 1.12: `transports/base_output.py:375-404, 1138-1159` | -- (new with #255) | ✓ |
+| MediaSender re-chunks audio into frames of the class it was handed, so a reply's chunks reach `write_audio_frame` as `TTSAudioRawFrame` | -- (`PausablePlayout._wrote`: the reply's remaining playout) | `check_the_transport_writes_a_reply_in_the_class_it_was_handed` | 1.12: `transports/base_output.py:604-627` | -- (new with #255) | ✓ |
 | `FastAPIWebsocketTransport` builds its output from `_client`, `_params` and `_output_name` and wires it to nothing else, so `TalkWebsocketTransport` can replace it | -- (the brain's: the /talk pause) | `check_the_websocket_transport_builds_its_output_from_its_own_parts` | -- | -- | `transports/websocket/fastapi.py:670` ✓ |
 | What the transport pushes on after writing a chunk carries no `context_id` | Ledger, LedgerPlayout (the untagged rebuild) | `check_the_transport_repushes_played_audio_untagged` | `transports/base_output.py:896-923` | ✓ | ✓ |
 | The assistant aggregator commits a cut reply at the interruption and a reply at its End; words after the End go to the next message | UserTurn (`CutLands`), PlayoutClock (`Pop`) | `check_the_assistant_aggregator_commits_at_the_interruption_and_the_end` | `llm_response_universal.py:1748-1750, 2053-2061, 2076-2097` | ✓ | ✓ |

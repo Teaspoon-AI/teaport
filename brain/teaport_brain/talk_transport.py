@@ -37,7 +37,7 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
         # writes directly (the end's silence).
         if self.sample_rate:
             self._wrote(len(frame.audio) / 2 / max(1, self._params.audio_out_channels)
-                        / self.sample_rate)
+                        / self.sample_rate, frame)
         return await super().write_audio_frame(frame)
 
 
