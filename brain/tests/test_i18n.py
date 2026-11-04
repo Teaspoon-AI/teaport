@@ -37,9 +37,6 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
-    "agent_session.py": {
-        "i18n.for_espeak(voice_lang())._(self.msgid)",  # credit.MONITOR.notice: N_() in credit.py (#280)
-    },
     "credit.py": {
         "t._(msgid)",                        # PAGE_LINES: N_() there (#280)
     },
@@ -77,6 +74,7 @@ DYNAMIC = {
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
         "t._(self._UNAVAILABLE_MESSAGE)",    # the same, at both push sites
+        "i18n.for_espeak(voice_lang())._(self.msgid)",  # credit.MONITOR.notice: N_() in credit.py (#280)
     },
 }
 

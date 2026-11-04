@@ -65,7 +65,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
-from teaport_brain import call_recording, credit, echo_guard, i18n
+from teaport_brain import call_recording, credit, echo_guard
 from teaport_brain import endpoint_debug
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
