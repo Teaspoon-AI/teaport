@@ -120,6 +120,23 @@ def test_when_maps_a_voice_instant_back_to_the_pipeline_clock():
     assert voice.when(t0 + 1600 * MS) is None, "not reached yet: not played"
 
 
+def test_a_start_inside_the_lag_leaves_no_stop_behind():
+    # Review round 2, N1: the voice never reached the stop it would have taken. A later
+    # stop before that instant must map on its own.
+    base, voice = _clock()
+    t0 = base.t
+    voice.stop(after_secs=0.5)                      # due at +500 ms...
+    base.t = t0 + 100 * MS
+    voice.start()                                   # ...never reached
+    base.t = t0 + 200 * MS
+    voice.stop()                                    # a stop that takes hold at +200
+    base.t = t0 + 700 * MS
+    voice.start()
+    base.t = t0 + 1000 * MS
+    assert voice.when(t0 + 300 * MS) == t0 + 800 * MS, voice.when(t0 + 300 * MS)
+    assert voice.at(t0 + 400 * MS) == t0 + 200 * MS
+
+
 def test_it_reads_zero_until_it_is_attached():
     voice = VoiceClock()
     assert not voice.attached and voice.now_ns() == 0

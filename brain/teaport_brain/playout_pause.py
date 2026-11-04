@@ -100,7 +100,9 @@ _UNTIMED = (SystemFrame, InterruptionFrame, OutputAudioRawFrame, OutputImageRawF
 # places each word early by it, tts_text.CAPTION_LEAD_SECS), so a word released at its
 # pts just before a stop has its audio after it (VoiceClock.wait_until).
 _LEAD_NS = round(CAPTION_LEAD_SECS * 1e9)
-# Stops that have ended, kept for an instant read a little late (VoiceClock.at).
+# Stops that have ended, kept for an instant read a little late (VoiceClock.at, .when).
+# An instant older than the oldest is mapped as if no stop came before it: up to that
+# much off, far outside the echo guard's lookback (its words are kept longer, unread).
 _STOPS_KEPT = 8
 
 
@@ -176,7 +178,9 @@ class VoiceClock:
         if self._stop_at is None:
             return
         now = self._pipeline_ns()
-        self._stops.append((self._stop_at, now, self._stood))
+        # A start inside the lag: the voice never stopped, and the stop it would have
+        # taken is no instant it reached (when() reads them in order).
+        self._stops.append((min(self._stop_at, now), now, self._stood))
         self._stood += max(0, now - self._stop_at)
         self._stop_at = None
         self._kick()
