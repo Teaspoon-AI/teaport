@@ -1143,6 +1143,29 @@ def test_a_failed_last_state_write_keeps_the_save():
     assert agent_key.settle_torn() is True and _status()["state"] == agent_key.MISMATCH
 
 
+def test_an_unreadable_key_file_with_a_leftover_marker_is_a_plain_mismatch():
+    """settle_torn reads the key file as the brain does (settings.secret_file): one it
+    cannot read -- no permission, not UTF-8 -- is no key, so the marker is a torn save,
+    never an exception that would hold the Restarter in its back-off."""
+    for spoil in ("mode", "bytes"):
+        Fake(["ok"], key_file=OLD)
+        _save(NEW)
+        agent_key.begin(NEW, OLD)  # its last write failed: the marker is left behind
+        path = ai_account.key_path()
+        if spoil == "mode":
+            os.chmod(path, 0)
+        else:
+            with open(path, "wb") as f:
+                f.write(b"sk-or-v1-\xff\xfe\n")
+        try:
+            if spoil == "mode" and os.access(path, os.R_OK):
+                continue  # root reads it anyway: nothing to test here
+            assert agent_key.settle_torn() is True, spoil
+            assert _status()["state"] == agent_key.MISMATCH and not agent_key.load().get("saving")
+        finally:
+            os.chmod(path, 0o600)
+
+
 def test_undo_leaves_a_key_saved_since_alone():
     box = Fake(["ok", "ok"], key_file=OLD)
     _save(OLD)

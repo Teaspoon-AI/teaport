@@ -327,13 +327,6 @@ def store_key(key: str) -> None:
     logger.info("ai account: the key file was written")
 
 
-def file_key() -> str | None:
-    """The key the brain's key file holds (the file alone, whatever the environment says):
-    what a save wrote. None when there is none."""
-    text = _read_file()
-    return text.strip() or None if text is not None else None
-
-
 def _read_file() -> str | None:
     """The key file as it is (to put it back), None when there is none."""
     try:
