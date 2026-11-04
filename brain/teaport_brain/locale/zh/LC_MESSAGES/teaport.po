@@ -511,6 +511,10 @@ msgstr "这台设备的密钥由安装者设置，所以不能在这里更改"
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "Teaport 无法把所有内容都切换到这个密钥，所以保留了原来的密钥。请一分钟后再试。"
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport 没能完成切换到这个密钥。请再保存一次。"
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "你输入的 AI 账户密钥我用不了，所以没有保存。"

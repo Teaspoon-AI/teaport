@@ -522,6 +522,10 @@ msgstr "مفتاح هذا الجهاز يحدده من قام بتثبيته، �
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "لم يتمكن Teaport من تحويل كل شيء إلى هذا المفتاح، لذا احتفظ بالمفتاح الذي كان لديه. حاول مرة أخرى بعد دقيقة."
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "لم يتمكن Teaport من إكمال التحويل إلى هذا المفتاح. حاول حفظه مرة أخرى."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "تعذّر استخدام مفتاح حساب الذكاء الاصطناعي الذي أُدخل، لذا لم يتم حفظه."

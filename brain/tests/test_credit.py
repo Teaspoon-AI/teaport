@@ -153,6 +153,9 @@ def test_only_the_old_fields_or_a_malformed_budget_judge_as_before():
     old = {"limit": 5, "limit_remaining": 2.5, "usage": 2.5}
     want = j(old)
     assert want == (credit.HALF, {"limit": 5.0, "remaining": 2.5, "usage": 2.5})
+    # A budget limit of 0 or less is no budget set: the key's own limit decides.
+    for unset in (0, 0.0, -1):
+        assert j({**old, "effective_budget": _budget(unset, 0.0, 0.0)}) == want, unset
     for bad in (None, "4.0", [], {}, {"limit_usd": "4", "remaining_usd": "0.1"},
                 {"limit_usd": 4.0}, {"remaining_usd": 0.1}, {"limit_usd": True, "remaining_usd": 0.1},
                 {"limit_usd": 4.0, "remaining_usd": None, "spend_usd": 3.9}):

@@ -649,14 +649,15 @@ async def _lifespan(_app):
     # the engine counts as live already.
     restarter = asyncio.create_task(agent_key.RESTARTER.run(
         live=lambda: arb.ARBITER.anything_live() or arb.ARBITER.status()["call"],
-        listeners=arb.ARBITER.listeners,
-        brain=lambda: (ai_account.current_key(),
-                       ai_account.is_openrouter(setting("LLM_BASE_URL")))))
+        listeners=arb.ARBITER.listeners, brain=ai_account.brain_key))
     try:
         yield
     finally:
-        for t in (lamp, watcher, monitor, restarter):
-            await cancel_and_wait(t)
+        for name, t in (("busy lamp", lamp), ("first-boot watcher", watcher),
+                        ("credit monitor", monitor), ("agent key restarter", restarter)):
+            err = await cancel_and_wait(t)
+            if err is not None:  # it had ended on its own, with this
+                logger.warning(f"{name} had stopped: {err!r}")
 
 
 app = FastAPI(lifespan=_lifespan)

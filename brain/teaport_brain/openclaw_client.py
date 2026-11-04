@@ -436,7 +436,8 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool,
     names, as it does when an operator runs it.
     XDG_RUNTIME_DIR is set to the run user's /run/user/<uid> when it is missing and that
     directory exists (child_env): the brain is a system unit with no user session, and
-    the CLI's own systemd calls (`gateway restart`) need the user manager it finds there."""
+    the user's runtime directory is where a user-session tool looks for it (on the box,
+    `systemctl --user` from the brain's environment fails without it)."""
     proc = await asyncio.create_subprocess_exec(
         OPENCLAW_BIN, *args,
         stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,

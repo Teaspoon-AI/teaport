@@ -38,6 +38,12 @@ from loguru import logger
 import appliance
 from tempdirs import tempdir
 from teaport_brain import agent_backend, agent_key, ai_account, config_ui, i18n, openclaw_client
+from test_llm_account_error import _cli  # `teaport status` / `doctor` with /health stubbed
+
+# That module sets an LLM key and endpoint in this process's environment for its own tests;
+# the brain's key here is the key file's.
+for _name in ("LLM_API_KEY", "LLM_BASE_URL", "TEAPORT_URL"):
+    os.environ.pop(_name, None)
 
 OPENROUTER = "https://openrouter.ai/api/v1"
 OLD = "sk-or-v1-" + "1" * 64
@@ -330,7 +336,8 @@ def test_a_restart_is_owed_and_waits_until_nobody_is_talking():
     agent_key.IDLE_SECS, agent_key.POLL_SECS, agent_key.RETRY_SECS = 0.4, 0.05, 100.0
     live = {"now": True}
     restarts = []
-    r = agent_key.Restarter()
+    later = {"s": 0.0}
+    r = agent_key.Restarter(clock=lambda: time.monotonic() + later["s"])
 
     async def restart():
         restarts.append(live["now"])
@@ -355,8 +362,7 @@ def test_a_restart_is_owed_and_waits_until_nobody_is_talking():
         assert s["state"] == agent_key.RESTART and "busy" in s["last_error"], s
         await asyncio.sleep(0.3)
         assert len(restarts) == 1, "retried before RETRY_SECS"
-        r._clock = lambda: time.monotonic() + 1000.0  # RETRY_SECS later
-        r.poke()
+        later["s"] = 1000.0  # RETRY_SECS later, nobody talking meanwhile
         await asyncio.sleep(0.3)
         assert restarts == [False, False], restarts
         task.cancel()
@@ -485,6 +491,380 @@ def test_the_first_look_records_a_key_openclaw_already_has():
     assert _status()["state"] == agent_key.SHARED
 
 
+# ------------------------------------------------------------------ review round 1
+
+A_KEY = "sk-or-v1-" + "a" * 64
+B_KEY = "sk-or-v1-" + "b" * 64
+
+
+class Held:
+    """agent_key._paste faked in-process: what OpenClaw holds, and a script per key."""
+
+    def __init__(self, held, script):
+        self.held, self.script, self.calls = held, script, []
+
+    async def __call__(self, key):
+        self.calls.append(key)
+        delay, told = self.script(key)
+        await asyncio.sleep(delay)
+        if told.ok or told.wrote:
+            self.held = key
+        return told
+
+
+def _patched(paste=None, shown=None):
+    real = (agent_key._paste, agent_key._shown)
+    if paste is not None:
+        agent_key._paste = paste
+    if shown is not None:
+        agent_key._shown = shown
+    return real
+
+
+def _restore(real):
+    agent_key._paste, agent_key._shown = real
+
+
+def test_two_saves_at_once_never_interleave():
+    """(repro race.py) Tab A's paste fails slowly before writing while tab B's succeeds:
+    one save at a time, so A's put-back can never land after B's save."""
+    Fake([], key_file=OLD)
+    agent_key.update(sha256=agent_key.fingerprint(OLD), mismatch=None, restart=False)
+    held = Held(OLD, lambda k: (0.2, agent_key.Told(False, detail="busy")) if k == A_KEY
+                else (0.05, agent_key.Told(True)))
+    real = _patched(paste=held)
+
+    async def one(k, wait):
+        await asyncio.sleep(wait)
+        try:
+            await ai_account.save_key(k, OPENROUTER)
+            return "saved"
+        except ai_account.NotSaved:
+            return "not saved"
+
+    async def main():
+        return await asyncio.gather(one(A_KEY, 0), one(B_KEY, 0.05))
+
+    try:
+        assert asyncio.run(main()) == ["not saved", "saved"]
+    finally:
+        _restore(real)
+    assert held.calls == [A_KEY, B_KEY], "B's paste ran inside A's save"
+    assert ai_account.current_key() == B_KEY and held.held == B_KEY
+    assert _status()["state"] == agent_key.SHARED
+
+
+def test_saves_in_two_processes_take_turns():
+    """The flock: a save in another process (the setup-mode unit) holds the lock; this
+    one waits for it rather than interleaving."""
+    import subprocess
+    import sys
+    box = Fake(["ok"], key_file=OLD)
+    script = ("import asyncio, sys, time\n"
+              "from teaport_brain import agent_key\n"
+              "async def main():\n"
+              "    async with agent_key.save_lock():\n"
+              "        print('held', flush=True); time.sleep(0.8)\n"
+              "asyncio.run(main())\n")
+    other = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True,
+                             env=dict(os.environ))
+    try:
+        assert other.stdout.readline().strip() == "held"
+        assert agent_key.saving_now()
+        t0 = time.monotonic()
+        _save(NEW)
+        assert time.monotonic() - t0 >= 0.5, "the save did not wait for the other process"
+    finally:
+        other.wait(10)
+    assert box.keys == [NEW] and not agent_key.saving_now()
+
+
+def test_write_secret_from_two_threads_at_once():
+    import threading
+    from teaport_brain import settings
+    Fake([])
+    path = os.path.join(tempdir("agent-key-secret-"), "llm_key")
+    errors = []
+
+    def write(v):
+        try:
+            for _ in range(200):
+                settings.write_secret(path, v)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=write, args=(k,)) for k in (A_KEY, B_KEY)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [], errors
+    assert open(path).read() in (A_KEY + "\n", B_KEY + "\n")
+    assert sorted(os.listdir(os.path.dirname(path))) == ["llm_key"]  # no temp files left
+    assert oct(os.stat(path).st_mode)[-3:] == "600"
+
+
+def test_the_first_look_never_overwrites_a_save_that_landed_meanwhile():
+    """(repro look_race.py) OpenClaw still shows K1 when asked; a save of K2, owing a
+    restart, lands while the look's CLI runs: the look writes nothing."""
+    Fake([], key_file=OLD)
+
+    async def shown():
+        await asyncio.sleep(0.2)
+        return _status_json([f"openrouter:manual={agent_key.mask(OLD)}"])
+
+    held = Held(OLD, lambda k: (0.05, agent_key.Told(True, restart=True)))
+    real = _patched(paste=held, shown=shown)
+
+    async def main():
+        await asyncio.gather(agent_key.look(ai_account.brain_key),
+                             ai_account.save_key(NEW, OPENROUTER))
+
+    os.environ["LLM_BASE_URL"] = OPENROUTER
+    try:
+        asyncio.run(main())
+    finally:
+        _restore(real)
+        os.environ.pop("LLM_BASE_URL", None)
+    data = agent_key.load()
+    assert data["sha256"] == agent_key.fingerprint(NEW) and data["restart"] is True, data
+    assert _status()["state"] == agent_key.RESTART
+
+
+def test_a_restart_waits_idle_secs_after_the_conversation_ends():
+    """(repro idle.py) With POLL_SECS == IDLE_SECS, as in production, and a conversation
+    longer than both: the restart comes IDLE_SECS after it ended, not at once."""
+    Fake([])
+    agent_key.update(sha256="x" * 64, restart=True, mismatch=None)
+    agent_key.IDLE_SECS = agent_key.POLL_SECS = 0.3
+    live = {"now": True}
+    r = agent_key.Restarter()
+    listeners, at = [], []
+
+    async def restart():
+        at.append(time.monotonic())
+        return True, ""
+
+    r._restart = restart
+
+    async def main():
+        t = asyncio.create_task(r.run(live=lambda: live["now"], listeners=listeners))
+        await asyncio.sleep(1.0)
+        live["now"] = False
+        end = time.monotonic()
+        for fn in listeners:
+            fn()  # the arbiter: the holder changed
+        await asyncio.sleep(0.8)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        return end
+
+    try:
+        end = asyncio.run(main())
+    finally:
+        agent_key.IDLE_SECS, agent_key.POLL_SECS = 30.0, 30.0
+    assert len(at) == 1 and at[0] - end >= 0.3, [a - end for a in at]
+
+
+def test_a_save_cancelled_or_broken_midway_is_put_back():
+    """A cancellation during the paste (the brain or the setup unit stopping), or an
+    error in the save's own steps: the key file as it was, the marker cleared, and a
+    mismatch recorded once OpenClaw may have been told."""
+    for boom in (asyncio.CancelledError, OSError):
+        Fake([], key_file=OLD)
+
+        async def paste(key, boom=boom):
+            await asyncio.sleep(0.05)
+            raise boom()
+
+        real = _patched(paste=paste)
+        try:
+            asyncio.run(ai_account.save_key(NEW, OPENROUTER))
+            raise AssertionError("saved")
+        except (asyncio.CancelledError, OSError):
+            pass
+        finally:
+            _restore(real)
+        assert _key_file() == OLD + "\n", boom
+        data = agent_key.load()
+        assert not data.get("saving") and "stopped midway" in data["mismatch"], data
+        assert _status()["state"] == agent_key.MISMATCH
+    # Cancelled from outside while the CLI runs: the same.
+    Fake([], key_file=OLD)
+
+    async def slow(key):
+        await asyncio.sleep(5)
+        return agent_key.Told(True)
+
+    real = _patched(paste=slow)
+
+    async def main():
+        t = asyncio.create_task(ai_account.save_key(NEW, OPENROUTER))
+        await asyncio.sleep(0.2)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        asyncio.run(main())
+    finally:
+        _restore(real)
+    assert _key_file() == OLD + "\n" and _status()["state"] == agent_key.MISMATCH
+    # A save torn by a crash leaves its marker: a mismatch once no save holds the lock.
+    Fake([], key_file=OLD)
+    agent_key.begin(NEW, OLD)
+    assert agent_key.settle_torn() and _status()["state"] == agent_key.MISMATCH
+    assert not agent_key.load().get("saving")
+
+
+def test_any_warning_after_a_clean_exit_owes_a_restart():
+    """OpenClaw's "the configured Gateway could not be identified or refreshed" warning
+    carries no restart command: written, not applied, so a restart is owed all the same."""
+    box = Fake(["ok"], key_file=OLD)
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write("echo 'Warning: Model auth changes were saved, but the configured Gateway could not "
+                "be identified or refreshed. Apply the auth change on the Gateway host, or restart "
+                "it there.' >&2\n")
+    _save(NEW)
+    assert _status()["state"] == agent_key.RESTART
+
+
+def test_a_gateway_that_shares_no_store_here_saves_the_brains_key_alone():
+    """Structural, not OpenClaw failing: the brain's key is saved, this host's store is put
+    back, and status says OpenClaw keeps its own key here; a later save that the gateway
+    takes clears it."""
+    box = Fake(["ok"], key_file=OLD)
+    _save(OLD)
+    with open(os.path.join(box.dir, "openclaw"), "a") as f:
+        f.write("[ \"$(cat $FAKE_OPENCLAW_DIR/n)\" = 1 ] && echo 'Warning: Model auth changes were "
+                "saved on this host, but the configured Gateway does not share this auth state. "
+                "Run the auth command on the Gateway host.' >&2\nexit 0\n")
+    box.modes("ok", "ok")
+    _save(NEW)  # saved, no NotSaved
+    assert _key_file() == NEW + "\n" and box.keys == [NEW, OLD]  # this host's store put back
+    s = _status()
+    assert s["state"] == agent_key.REMOTE and "does not share" in s["reason"], s
+    out = _cli("cmd_doctor", {"ok": True, "agent_key": s})
+    assert "model key:" not in out  # informational: nothing in doctor
+    assert "not shared" in _cli("cmd_status", {"ok": True, "agent_key": s})
+    with open(os.path.join(box.dir, "openclaw"), "w") as f:
+        f.write(FAKE_CLI)
+    box.modes("ok")
+    _save(OLD)
+    assert _status()["state"] == agent_key.SHARED
+
+
+def test_a_halfway_failure_says_so_in_its_own_words():
+    Fake(["wrote"], key_file=OLD)  # never given from here: cannot be given back
+    try:
+        _save(NEW)
+        raise AssertionError("saved")
+    except ai_account.NotSaved as e:
+        assert e.reason == ai_account.NOT_FINISHED
+    Fake(["fail"], key_file=OLD)
+    try:
+        _save(NEW)
+        raise AssertionError("saved")
+    except ai_account.NotSaved as e:
+        assert e.reason == ai_account.NOT_SHARED
+
+
+def test_anything_but_a_mask_is_not_compared():
+    m = agent_key.mask(OLD)
+    for value in ("ref(env:OPENROUTER_API_KEY)", "token:sk-or-v1...abcdefgh", "OAuth",
+                  "missing", "marker(local)", "sk-or-v1-whole-key-shown"):
+        assert agent_key.compare_labels(_status_json([f"openrouter:manual={value}"]), OLD) is None, value
+    assert agent_key.compare_labels(_status_json([f"openrouter:manual={m}"]), OLD) == agent_key.SAME
+
+
+def test_the_restart_flag_follows_the_state_now():
+    """A restart owed for the key OpenClaw had is not carried over to a new key that
+    applied cleanly; one owed for the same key stands."""
+    box = Fake(["restart"], key_file=OLD)
+    _save(OLD)
+    assert _status()["state"] == agent_key.RESTART
+    box.modes("ok")
+    _save(NEW)
+    assert _status()["state"] == agent_key.SHARED
+    box.modes("restart", "ok")
+    _save(NEW)
+    _save(NEW)
+    assert _status()["state"] == agent_key.RESTART
+
+
+def test_a_stopped_gateway_is_not_restarted_again_and_again():
+    Fake([])
+    agent_key.update(sha256="y" * 64, restart=True, mismatch=None)
+    agent_key.IDLE_SECS, agent_key.POLL_SECS = 0.1, 0.05
+    calls = []
+    r = agent_key.Restarter()
+
+    async def restart():
+        calls.append(1)
+        return False, "rc 1: Gateway not reachable at ws://127.0.0.1:18789 (ECONNREFUSED)."
+
+    r._restart = restart
+
+    async def main():
+        t = asyncio.create_task(r.run(live=lambda: False))
+        await asyncio.sleep(0.6)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        asyncio.run(main())
+    finally:
+        agent_key.IDLE_SECS, agent_key.POLL_SECS = 30.0, 30.0
+    assert calls == [1] and not agent_key.load()["restart"]
+
+
+def test_the_restarter_outlives_a_bad_pass():
+    Fake([])
+    agent_key.update(sha256="z" * 64, restart=True, mismatch=None)
+    agent_key.IDLE_SECS, agent_key.POLL_SECS = 0.05, 0.05
+    real_backoff = agent_key.ERROR_BACKOFF_SECS
+    agent_key.ERROR_BACKOFF_SECS = 0.1
+    calls = []
+    r = agent_key.Restarter()
+
+    async def restart():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("a bug")
+        return True, ""
+
+    r._restart = restart
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+
+    async def main():
+        t = asyncio.create_task(r.run(live=lambda: False))
+        await asyncio.sleep(0.6)
+        assert not t.done()
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        asyncio.run(main())
+    finally:
+        logger.remove(sink)
+        agent_key.IDLE_SECS, agent_key.POLL_SECS = 30.0, 30.0
+        agent_key.ERROR_BACKOFF_SECS = real_backoff
+    assert len(calls) == 2 and not agent_key.load()["restart"]
+    assert any("pass failed" in ln and "a bug" in ln for ln in lines), lines
+
+
 def test_health_status_and_doctor_say_where_it_stands():
     Fake(["ok"], key_file=OLD)
     _save(NEW)
@@ -494,7 +874,6 @@ def test_health_status_and_doctor_say_where_it_stands():
         shown = asyncio.run(gateway_server.health())["agent_key"]
     finally:
         os.environ.pop("LLM_BASE_URL", None)
-    from test_llm_account_error import _cli
     label = "model key (OpenClaw)"
     cases = (
         (shown, "OpenClaw uses the same key as the brain", "✓"),

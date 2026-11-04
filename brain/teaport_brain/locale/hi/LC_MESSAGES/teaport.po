@@ -511,6 +511,10 @@ msgstr "इस डिवाइस की कुंजी इसे इंस्�
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "Teaport सब कुछ इस कुंजी पर नहीं बदल सका, इसलिए उसने पहले वाली कुंजी ही रखी। एक मिनट बाद फिर से कोशिश करें।"
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport इस कुंजी पर पूरी तरह नहीं बदल सका। इसे फिर से सहेजें।"
+
 # Letter names, for spelling a password aloud (wifi_voice.spell): the voice reads a bare Latin letter poorly.
 msgctxt "letter"
 msgid "A"

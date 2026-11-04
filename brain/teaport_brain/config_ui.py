@@ -605,6 +605,8 @@ async def put_config(request: Request):
     failed = check_constraints(rows, merged, touched=set(env_updates))
     if failed and not body.get("force"):
         return JSONResponse(status_code=400, content={"constraints": failed})
+    # The endpoint a key is checked and saved for: this save's, else the file's.
+    base = merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
     if "LLM_API_KEY" in secret_updates:
         # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
         # saving the file would change nothing, so nothing is saved.
@@ -612,9 +614,7 @@ async def put_config(request: Request):
             check = ai_account.Check(ai_account.REFUSED, ai_account.SET_ELSEWHERE)
             return JSONResponse(status_code=400,
                                 content={"key_check": check.public(_reader(request))})
-        # Checked against the endpoint it will be used with: this save's, else the file's.
-        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"],
-                                        merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"))
+        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base)
         logger.info(f"config: the new LLM key: {check.state}")
         if check.state != ai_account.WORKS and not body.get("force_key"):
             return JSONResponse(status_code=400,
@@ -625,9 +625,7 @@ async def put_config(request: Request):
     saved = None
     if "LLM_API_KEY" in secret_updates:
         try:
-            saved = await ai_account.save_key(
-                secret_updates["LLM_API_KEY"],
-                merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL"))
+            saved = await ai_account.save_key(secret_updates["LLM_API_KEY"], base)
         except ai_account.NotSaved as e:
             return JSONResponse(status_code=400, content={
                 "errors": {"LLM_API_KEY": _reader(request)._(e.reason)}})  # N_() in ai_account
@@ -637,9 +635,15 @@ async def put_config(request: Request):
             if new_text != current:
                 await _privileged("write", STORE_FILES[store], stdin=new_text)
                 logger.info(f"config: {STORE_FILES[store]} updated — {', '.join(sorted(env_updates))}")
-    except BaseException:
+    except BaseException as e:
+        # Failed or cancelled: the key goes back too (Saved.undo records a mismatch where
+        # OpenClaw cannot follow), and this exception, not undo's, is what goes on.
         if saved is not None:
-            await saved.undo()
+            try:
+                await saved.undo()
+            except Exception as undo_error:  # noqa: BLE001
+                logger.warning(f"config: taking the new key back failed: {undo_error!r} "
+                               f"(after {e!r})")
         raise
     for name, value in secret_updates.items():
         if name == "LLM_API_KEY":

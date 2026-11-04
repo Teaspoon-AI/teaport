@@ -620,6 +620,10 @@ msgstr "이 기기의 키는 설치할 때 정해져서 여기서 바꿀 수 없
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "Teaport가 모든 것을 이 키로 바꾸지 못해서 기존 키를 그대로 두었습니다. 1분 후에 다시 시도해 주세요."
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport가 이 키로 바꾸는 작업을 끝내지 못했습니다. 다시 저장해 주세요."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "입력하신 AI 계정 키를 쓸 수 없어서 저장하지 않았어요."

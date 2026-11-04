@@ -511,6 +511,10 @@ msgstr "la clave de este dispositivo la puso quien lo instaló, así que no se p
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "Teaport no pudo pasar todo a esta clave, así que se quedó con la que tenía. Vuelve a intentarlo en un minuto."
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport no pudo terminar de pasar a esta clave. Vuelve a guardarla."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "No pude usar la clave de la cuenta de IA que escribiste, así que no la guardé."

@@ -511,6 +511,10 @@ msgstr "この機器のキーは設置時に決められているため、ここ
 msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
 msgstr "Teaport はすべてをこのキーに切り替えられなかったため、これまでのキーをそのまま使っています。1 分ほどしてからもう一度お試しください。"
 
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport はこのキーへの切り替えを完了できませんでした。もう一度保存してください。"
+
 # Letter names, for spelling a password aloud (wifi_voice.spell): the voice reads a bare Latin letter poorly.
 msgctxt "letter"
 msgid "A"

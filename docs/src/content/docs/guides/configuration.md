@@ -144,7 +144,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:138-148#7532ad3d; brain/teaport_brain/config_ui.py:608-621#19132cdd -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:140-150#7532ad3d; brain/teaport_brain/config_ui.py:608-621#0c2a4295 -->
 
 ### In the configuration files
 
@@ -188,7 +188,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:208-214#1b6deadd; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:210-216#1b6deadd; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
@@ -202,15 +202,15 @@ When nothing is left, the device stops answering questions. It does not switch t
 
 On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page or on the setup page, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice. Unless `OPENCLAW_AGENT_ID` names an agent, OpenClaw chooses the agent itself, its only configured agent; with several agents and none named, the save fails and nothing changes.
 
-<!-- source: brain/teaport_brain/agent_key.py:11-26#97637f79; brain/teaport_brain/agent_key.py:28-43#379ed46d -->
+<!-- source: brain/teaport_brain/agent_key.py:11-30#f32f2534; brain/teaport_brain/agent_key.py:32-37#688a246f -->
 
-Both take the key, or neither does. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, `teaport status` says that the two might be on different keys until a save goes through.
+Both take the key, or neither does, and one save runs at a time, even when the setup page and the configuration page save at the same time. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, or a save stops midway, the page asks you to save the key again, and `teaport status` says that the two might be on different keys until a save goes through. When OpenClaw's gateway runs on another host and does not share this device's auth store, sharing does not apply: the brain saves the key alone, and `teaport status` says that OpenClaw keeps its own key there.
 
-<!-- source: brain/teaport_brain/agent_key.py:52-58#dd31cc19 -->
+<!-- source: brain/teaport_brain/agent_key.py:63-73#2758bddd; brain/teaport_brain/agent_key.py:11-30#f32f2534 -->
 
-When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds: not in the room, in Talk, or on a phone call. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
+When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:45-50#a7602a4e; brain/teaport_brain/agent_key.py:28-43#379ed46d; cli/teaport:143-172#4e6fe598 -->
+<!-- source: brain/teaport_brain/agent_key.py:51-61#78e2d9ae; brain/teaport_brain/agent_key.py:39-50#7d213413; cli/teaport:143-173#a609a6f5 -->
 
 ## What's next
 
