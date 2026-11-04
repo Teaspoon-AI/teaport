@@ -515,6 +515,14 @@ msgstr "на этом аккаунте не осталось средств"
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "ключ этого устройства задан при установке, поэтому изменить его здесь нельзя"
 
+# A key the agent (OpenClaw) did not take: nothing changed (ai_account.save_key, #281).
+msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
+msgstr "Teaport не смог перевести всё на этот ключ, поэтому оставил прежний. Попробуйте ещё раз через минуту."
+
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport не смог до конца перейти на этот ключ. Сохраните его ещё раз."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Не получилось использовать введённый вами ключ аккаунта ИИ, поэтому он не сохранён."

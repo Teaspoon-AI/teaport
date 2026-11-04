@@ -65,6 +65,7 @@ import json
 import math
 import os
 import re
+import tempfile
 
 from loguru import logger
 
@@ -238,11 +239,19 @@ def write_secret(path: str, value: str) -> None:
     replaced atomically, its directory made 700 if missing. The config page's secrets
     and the AI account's key (ai_account.store_key) are written here."""
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    tmp = f"{path}.tmp{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(value + "\n")
-    os.replace(tmp, path)
+    # A name of its own (mkstemp, mode 600): two writers in one process -- threads -- never
+    # share a temporary file, as a pid-only name did.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(value + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def out_of_bounds(row: dict, n) -> str | None:

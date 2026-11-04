@@ -114,6 +114,54 @@ def test_both_record_shapes_and_the_thresholds():
     assert (credit.HALF_USED, credit.LOW_USD) == (0.5, 1.0)
 
 
+def _budget(limit, spend, remaining, **more):
+    return {"limit_usd": limit, "spend_usd": spend, "remaining_usd": remaining,
+            "reset_interval": "monthly", "resets_at": "2026-12-01T00:00:00Z",
+            "scope": "key", "include_byok": False, **more}
+
+
+def test_the_tighter_of_the_key_limit_and_its_effective_budget_decides():
+    """OpenRouter's newer record carries effective_budget beside the key's own limit
+    (shapes from a live read, made-up amounts): whichever has less left is judged, the
+    half mark by its own usage."""
+    j = lambda r: credit.judge(ai_account.key_record({"data": r}), half=0.5, low=1.0)  # noqa: E731
+    key = {"limit": 5, "limit_remaining": 4.5, "usage": 0.5}  # roomy on its own
+    # The budget is tighter: it decides, each state in turn.
+    for b, state in ((_budget(10.0, 4.0, 4.0), credit.OK),     # 4 left of 10, 40% spent
+                     (_budget(4.0, 2.5, 1.5), credit.HALF),    # 62% of the budget spent
+                     (_budget(4.0, 3.2, 0.8), credit.LOW),
+                     (_budget(4.0, 4.0, 0.0), credit.EMPTY)):
+        got, numbers = j({**key, "effective_budget": b, "budgets": [b]})
+        assert got == state and numbers == {"limit": b["limit_usd"], "remaining": b["remaining_usd"],
+                                            "usage": b["spend_usd"]}, (b, got, numbers)
+    # The key's own limit is tighter: it decides, the budget's roomier numbers aside.
+    tight = {"limit": 5, "limit_remaining": 0.6, "usage": 4.4}
+    got, numbers = j({**tight, "effective_budget": _budget(100.0, 1.0, 99.0)})
+    assert got == credit.LOW and numbers == {"limit": 5.0, "remaining": 0.6, "usage": 4.4}
+    half_key = {"limit": 5, "limit_remaining": 2.4, "usage": 2.6}
+    assert j({**half_key, "effective_budget": _budget(10.0, 1.0, 9.0)})[0] == credit.HALF
+    # The budget alone bounds a key with no limit of its own.
+    assert j({"limit": None, "limit_remaining": None, "usage": 3,
+              "effective_budget": _budget(2.0, 1.2, 0.8)})[0] == credit.LOW
+    # No spend_usd: the budget's usage is what its limit and remainder imply.
+    got, numbers = j({**key, "effective_budget": {"limit_usd": 4.0, "remaining_usd": 1.5}})
+    assert got == credit.HALF and numbers["usage"] == 2.5
+
+
+def test_only_the_old_fields_or_a_malformed_budget_judge_as_before():
+    j = lambda r: credit.judge(ai_account.key_record({"data": r}), half=0.5, low=1.0)  # noqa: E731
+    old = {"limit": 5, "limit_remaining": 2.5, "usage": 2.5}
+    want = j(old)
+    assert want == (credit.HALF, {"limit": 5.0, "remaining": 2.5, "usage": 2.5})
+    # A budget limit of 0 or less is no budget set: the key's own limit decides.
+    for unset in (0, 0.0, -1):
+        assert j({**old, "effective_budget": _budget(unset, 0.0, 0.0)}) == want, unset
+    for bad in (None, "4.0", [], {}, {"limit_usd": "4", "remaining_usd": "0.1"},
+                {"limit_usd": 4.0}, {"remaining_usd": 0.1}, {"limit_usd": True, "remaining_usd": 0.1},
+                {"limit_usd": 4.0, "remaining_usd": None, "spend_usd": 3.9}):
+        assert j({**old, "effective_budget": bad, "budgets": "nonsense"}) == want, bad
+
+
 def test_only_the_marked_key_is_the_starter():
     _box(key=OWN)
     m, fetch = _monitor({"limit": 5, "limit_remaining": 0.5, "usage": 4.5})

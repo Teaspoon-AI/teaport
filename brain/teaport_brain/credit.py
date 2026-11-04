@@ -20,7 +20,10 @@
 # the last answer. A request that fails is "unknown" for that read, never a warning: the
 # last state known stays, marked not fresh. The record's fields are read tolerantly
 # (ai_account.key_record: "data" or the top level; limit_remaining, or limit minus usage)
-# -- the docs show two shapes.
+# -- the docs show two shapes. A newer record also carries effective_budget {limit_usd,
+# spend_usd, remaining_usd, ...}: whichever of it and the key's own limit has less left is
+# the one judged. ai_account.credit_left is that reading, the one the save-time key check
+# uses too; a missing or malformed block changes nothing.
 #
 # Three states warn (owner decision on #283), judged from the record (judge):
 #   - half: HALF_USED of the limit is used (TEAPORT_STARTER_HALF_USED, default half);
@@ -139,27 +142,22 @@ def on_starter(key: str | None) -> bool:
                     hashlib.sha256((stripped + "\n").encode()).hexdigest())
 
 
-def _number(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
 def judge(record: dict, half: float = None, low: float = None) -> tuple[str, dict]:
-    """(state, {"limit", "remaining", "usage"}) from the key's record. UNKNOWN when it
-    says nothing about what is left (no limit, no remaining)."""
+    """(state, {"limit", "remaining", "usage"}) from the key's record, as
+    ai_account.credit_left reads it (the key's own limit or its effective budget,
+    whichever has less left). UNKNOWN when it says nothing about what is left (no limit,
+    no remaining)."""
     half = HALF_USED if half is None else half
     low = LOW_USD if low is None else low
-    limit, usage = _number(record.get("limit")), _number(record.get("usage"))
-    remaining = _number(record.get("limit_remaining"))
-    if remaining is None and limit is not None and usage is not None:
-        remaining = max(0.0, limit - usage)
-    numbers = {"limit": limit, "remaining": remaining, "usage": usage}
-    if remaining is None:
+    left = ai_account.credit_left(record)
+    numbers = {"limit": left.limit, "remaining": left.remaining, "usage": left.usage}
+    if left.remaining is None:
         return UNKNOWN, numbers
-    if remaining <= EMPTY_USD:
+    if left.remaining <= EMPTY_USD:
         return EMPTY, numbers
-    if remaining <= low:
+    if left.remaining <= low:
         return LOW, numbers
-    if limit and (limit - remaining) / limit >= half:
+    if left.limit and left.spent / left.limit >= half:
         return HALF, numbers
     return OK, numbers
 

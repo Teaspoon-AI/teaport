@@ -37,7 +37,7 @@ import os
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from teaport_brain import ai_account, config_ui, settings
+from teaport_brain import agent_key, ai_account, config_ui, settings
 import appliance
 from tempdirs import tempdir
 
@@ -97,6 +97,9 @@ def setup():
         return ai_account.Check(ai_account.WORKS)
 
     config_ui.check_key = works
+    # A saved key is not handed to an OpenClaw on the machine running the tests
+    # (test_agent_key.py has that path, with a fake CLI).
+    agent_key.SHARES = False
 
     # The secret file the schema names for LLM_API_KEY, relative to $HOME.
     rows = config_ui._rows()

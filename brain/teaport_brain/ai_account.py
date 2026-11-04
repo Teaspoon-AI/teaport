@@ -16,7 +16,12 @@
 #     works is saved; the voice says how it went (wifi_voice.py).
 #
 # Connecting with OpenRouter's OAuth (#282) ends the same way: whatever hands over a key
-# calls adopt(), which is check_key() then store_key().
+# calls adopt(), which is check_key() then save_key().
+#
+# save_key is the one save, whichever page: it writes the brain's key file (store_key) and,
+# on a box with OpenClaw, hands OpenClaw the same key (agent_key.give, #281: one key, one
+# balance). Both or neither: if OpenClaw does not take it, the key file is put back and
+# the save says why (NotSaved); agent_key.py says what is done when even that fails.
 #
 # The check is one cheap authenticated request. OpenRouter: GET /api/v1/key, the key's own
 # record (free, no tokens spent); it also carries the key's limit and usage, which the
@@ -32,6 +37,7 @@
 # echoes masked keys and links to the key's own page). The same cleaning serves the
 # brain's record of failed answers (llm_error_speaker.failure_reason, #205).
 #
+import asyncio
 import json
 import os
 import re
@@ -43,6 +49,7 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from teaport_brain import agent_key, conversation_log
 from teaport_brain.i18n import N_
 from teaport_brain.settings import ROWS, secret_file, setting, write_secret
 
@@ -60,6 +67,11 @@ UNREACHABLE = N_("the AI service didn't answer")
 REFUSED_BARE = N_("the AI service refused this key")
 NO_CREDIT = N_("this account has no credit left")
 SET_ELSEWHERE = N_("this box's key is set by its installer, so it can't be changed here")
+# A save the agent (OpenClaw) did not take: nothing changed (save_key).
+NOT_SHARED = N_("Teaport couldn't switch everything over to this key, so it kept the one "
+                "it had. Try again in a minute.")
+# One that OpenClaw may have taken all the same: the state records a mismatch.
+NOT_FINISHED = N_("Teaport couldn't finish switching to this key. Try saving it again.")
 
 
 @dataclass(frozen=True)
@@ -168,6 +180,52 @@ def key_record(body) -> dict:
     return data if isinstance(data, dict) else body
 
 
+@dataclass(frozen=True)
+class Left:
+    """What a key has left, from its record (credit_left). Any field None: not said.
+    `usage` is what the record calls spent (for a page); `spent` is what is measured
+    against `limit` for a share used (the half mark)."""
+    limit: float | None = None
+    remaining: float | None = None
+    usage: float | None = None
+    spent: float | None = None
+
+
+def _budget_left(record: dict) -> Left | None:
+    """The record's newer budget block, effective_budget {limit_usd, spend_usd,
+    remaining_usd, reset_interval, resets_at, scope, include_byok} -- None unless limit_usd
+    and remaining_usd are both numbers and the limit is above 0 (anything else in it is
+    ignored; budgets[] is not read). Spent is spend_usd, else what the limit and the remainder imply."""
+    block = record.get("effective_budget")
+    if not isinstance(block, dict):
+        return None
+    limit, remaining = _number(block.get("limit_usd")), _number(block.get("remaining_usd"))
+    if limit is None or remaining is None or limit <= 0:
+        return None  # no budget set (a limit of 0 or less is none): the key's limit decides
+    spent = _number(block.get("spend_usd"))
+    spent = spent if spent is not None else max(0.0, limit - remaining)
+    return Left(limit, remaining, spent, spent)
+
+
+def credit_left(record: dict) -> Left:
+    """How much a key has left, from its GET /api/v1/key record (key_record): the one
+    reading the save-time check (check_key) and the trial credit's monitor (credit.judge)
+    share. Two things can bound it: the key's own limit (limit, limit_remaining -- or
+    limit minus usage -- and usage) and, in a newer record, its effective budget
+    (_budget_left). Whichever has less left decides: its limit, what is left and what is
+    spent. Malformed or missing fields are not read; Left() when nothing is said."""
+    limit, usage = _number(record.get("limit")), _number(record.get("usage"))
+    remaining = _number(record.get("limit_remaining"))
+    if remaining is None and limit is not None and usage is not None:
+        remaining = max(0.0, limit - usage)
+    spent = None if limit is None or remaining is None else limit - remaining
+    left = Left(limit, remaining, usage, spent)
+    budget = _budget_left(record)
+    if budget is not None and (remaining is None or budget.remaining < remaining):
+        return budget
+    return left
+
+
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """A redirect is answered as it is, never followed: following one would send the
     key's Authorization header to wherever it points (another host, plain http)."""
@@ -243,8 +301,8 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
         record = key_record(json.loads(body.decode("utf-8", "replace")))
     except ValueError:
         record = {}
-    remaining = _number(record.get("limit_remaining"))
-    if remaining is not None and remaining <= 0:
+    remaining = credit_left(record).remaining
+    if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
     return Check(WORKS, data=record)
 
@@ -263,10 +321,170 @@ def key_path() -> str:
 
 
 def store_key(key: str) -> None:
-    """Write `key` where the brain reads it, read again by the next session. The caller
-    has checked it (or the owner said to save it anyway)."""
+    """Write `key` where the brain reads it, read again by the next session: save_key's
+    first step (every page saves through save_key)."""
     write_secret(key_path(), key.strip())
-    logger.info("ai account: a new key was saved")
+    logger.info("ai account: the key file was written")
+
+
+def _read_file() -> str | None:
+    """The key file as it is (to put it back), None when there is none."""
+    try:
+        with open(key_path(), encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def _put_back(text: str | None) -> None:
+    if text is None:
+        try:
+            os.unlink(key_path())
+        except FileNotFoundError:
+            pass
+    else:
+        write_secret(key_path(), text.rstrip("\n"))
+
+
+class NotSaved(Exception):
+    """save_key did not save: `reason` is a msgid -- NOT_SHARED (nothing changed) or
+    NOT_FINISHED (OpenClaw may hold the new key: the state records the mismatch)."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(detail or reason)
+        self.reason, self.detail = reason, detail
+
+
+@dataclass
+class Saved:
+    """A save that went through, and what undo() puts back: for a caller whose own next
+    step failed (config_ui: brain.env's copy could not be dropped)."""
+    key: str
+    prev_file: str | None
+    prev: str | None
+    openrouter: bool
+    gen: int = 0    # the save generation it made (agent_key.end)
+
+    async def undo(self) -> None:
+        """The key file as it was, and OpenClaw back on the brain's previous key, as one
+        more save (save_lock, with its marker). Nothing when another save has gone through
+        since -- the save generation has moved on, even for the same key again: that save
+        stands. Where OpenClaw cannot follow (the brain had no key before, or OpenClaw does
+        not take it), the state says the two may differ (MISMATCH)."""
+        async with agent_key.save_lock():
+            if agent_key.generation() != self.gen:
+                logger.info("ai account: not taking the key back: another key was saved since")
+                return
+            sharing = agent_key.skipped(self.openrouter) is None
+            if sharing:
+                agent_key.begin(self.prev, self.key)
+            undone = False
+            try:
+                _put_back(self.prev_file)
+                logger.info("ai account: the new key was taken back")
+                if not sharing:
+                    return
+                taken_back = "a key change was taken back, but OpenClaw kept the new key"
+                if not self.prev:
+                    agent_key.mismatch(taken_back)
+                    return
+                try:
+                    gave = await agent_key.give(self.prev, self.key, self.openrouter)
+                except BaseException:
+                    agent_key.mismatch(taken_back)
+                    raise
+                if gave is not None and not gave.halfway:  # halfway: give recorded it
+                    agent_key.mismatch(taken_back)
+                undone = True
+            finally:
+                agent_key.end(saved=undone or not sharing)
+
+    def unfinished(self, why: str, env_copy: bool) -> None:
+        """The caller's next step failed and the key could not be taken back either (undo
+        itself failed, or waited past SAVE_WAIT_SECS for another save). The key file and
+        OpenClaw hold the new key. With `env_copy` -- brain.env held a copy of the key,
+        which the brain reads first and which that failed step was to drop -- the brain
+        still reads the old one: said in the state (MISMATCH) where OpenClaw shares it.
+        Without one, all three agree on the new key: logged only."""
+        if env_copy and agent_key.skipped(self.openrouter) is None:
+            agent_key.mismatch(f"the key was saved but brain.env still holds the previous one "
+                               f"({why}): save the key again")
+        else:
+            logger.warning(f"ai account: the key could not be taken back ({why}); it stays "
+                           "saved, the same in the key file and OpenClaw")
+
+
+async def save_key(key: str, base_url: str | None) -> Saved:
+    """The one save (the module note): `key` into the brain's key file, and to OpenClaw as
+    its OpenRouter key where the box has one and the brain's endpoint is OpenRouter's
+    (`base_url`). The caller has checked it, or the owner said to save it anyway.
+
+    One save at a time on the box (agent_key.save_lock), from reading the previous key to
+    the last state write, so two pages (or the setup-mode unit and a page) never
+    interleave. Raises NotSaved, with the key file as it was, when OpenClaw did not take
+    it. A save that breaks or is cancelled midway puts the file back too, and, once
+    OpenClaw may have been told, records a mismatch, before the exception goes on; one torn
+    by a crash leaves its marker (agent_key.begin), which the brain turns into a
+    mismatch.
+
+    The file and marker writes are synchronous, on the event loop, like the clean-up: a
+    few hundred bytes each, and a write in a thread that a cancellation left running could
+    land after the clean-up put the file back. Waiting for another save is capped
+    (agent_key.SAVE_WAIT_SECS): past it, NotSaved(NOT_SHARED) and nothing changed."""
+    key = key.strip()
+    openrouter = is_openrouter(base_url)
+    sharing = agent_key.skipped(openrouter) is None
+    try:
+        async with agent_key.save_lock():
+            return await _save_locked(key, openrouter, sharing)
+    except agent_key.Busy:
+        logger.warning("ai account: the new key was not saved: another key change is still running")
+        raise NotSaved(NOT_SHARED, "another key change is still running") from None
+
+
+async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
+    """save_key's work, under the save lock."""
+    prev = current_key()
+    for k in (key, prev):
+        if k:
+            conversation_log.never_log(k, secs=3600.0)
+    prev_file = _read_file()
+    if sharing:
+        agent_key.begin(key, prev)
+    told = False
+    try:
+        store_key(key)
+        told = sharing
+        gave = await agent_key.give(key, prev, openrouter)
+        if gave is not None:
+            _put_back(prev_file)
+            logger.info("ai account: the new key was not saved, as OpenClaw did not take it")
+            raise NotSaved(NOT_FINISHED if gave.halfway else NOT_SHARED, gave.detail)
+    except NotSaved:
+        if sharing:
+            agent_key.end()
+        raise
+    except BaseException as e:
+        # Cancelled (the brain or the setup unit stopping) or broken: synchronous from
+        # here, so a second cancellation cannot cut the clean-up short.
+        _put_back(prev_file)
+        if told:
+            agent_key.mismatch(f"a key change stopped midway ({type(e).__name__}): OpenClaw "
+                               "may hold the new key while the brain kept the previous one")
+        if sharing:
+            agent_key.end()
+        logger.warning(f"ai account: the new key was not saved ({type(e).__name__})")
+        raise
+    # The save went through in both places. Its last state write -- the marker cleared,
+    # the generation moved on -- failing (a full disk) must not turn it into a 500: it is
+    # logged, and the marker it leaves is one settle_torn recognises as a finished save
+    # (OpenClaw's fingerprint and the key file both the new key) and closes, not a torn one.
+    try:
+        gen = agent_key.end(saved=True)
+    except OSError as e:
+        logger.warning(f"ai account: the key was saved, but its state could not be written ({e!r})")
+        gen = agent_key.generation()
+    return Saved(key, prev_file, prev, openrouter, gen)
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it
@@ -294,13 +512,38 @@ def forget_env_copy() -> None:
     os.environ.pop("LLM_API_KEY", None)
 
 
-def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
-    """Check `key`, and save it only if it works: the setup-mode page's way, where nobody
-    is left to say "save anyway" (and #282's, once OAuth hands over a key). With an
-    environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved."""
+async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
+    """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
+    where nobody is left to say "save anyway" (and #282's, once OAuth hands over a key).
+    With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
+    key that works but that OpenClaw did not take: UNKNOWN, with NotSaved's reason."""
     if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
-    result = check_key(key, base_url, timeout)
+    result = await asyncio.to_thread(check_key, key, base_url, timeout)
     if result.state == WORKS:
-        store_key(key)
+        try:
+            await save_key(key, base_url)
+        except NotSaved as e:
+            return Check(UNKNOWN, e.reason, data=result.data)
     return result
+
+
+def adopt_blocking(key: str, base_url: str | None) -> Check:
+    """adopt() for a caller with no event loop (the setup-mode unit's thread)."""
+    async def run():
+        try:
+            return await adopt(key, base_url)
+        finally:
+            await agent_key.settle()  # a stopped CLI's end, before the loop goes
+    return asyncio.run(run())
+
+
+def brain_key() -> tuple[str | None, bool]:
+    """The brain's key now, and whether its endpoint (LLM_BASE_URL) is OpenRouter's: what
+    agent_key's status and first look are about."""
+    return current_key(), is_openrouter(setting("LLM_BASE_URL"))
+
+
+def agent_key_status() -> dict:
+    """/health "agent_key": whether OpenClaw is on the brain's key (agent_key.status)."""
+    return agent_key.status(*brain_key())

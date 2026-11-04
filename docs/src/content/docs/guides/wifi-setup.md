@@ -33,7 +33,7 @@ you plug in a network cable, it leaves setup mode by itself.
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1732-1739#389fa64a; brain/teaport_brain/wifi_voice.py:845-849#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1742-1749#389fa64a; brain/teaport_brain/wifi_voice.py:845-849#e2d218b7 -->
 
 ## Join the setup network
 
@@ -49,15 +49,15 @@ Say "repeat" to hear the network's name, the password, and the address read out.
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-12,87-94#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2699#c8f9533e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-12,87-94#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2699-2703#0fa4dad8 -->
 
 ## Connect your AI account
 
 When the device's language model endpoint is OpenRouter, the setup page also has an **AI account** section, which you can skip. Leave it closed to keep the account the device has now. To use your own OpenRouter account, open it and paste a key from that account before you tap **Connect**.
 
-The setup network has no internet, so the device checks the key after it joins your network and is online. It saves the key only if OpenRouter accepts it, and when it says that it is connected, it also says whether your AI account is connected. If the key did not work, the device keeps the account it had; say "open my settings" to try again from your phone, as [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone) shows.
+The setup network has no internet, so the device checks the key after it joins your network and is online. It saves the key only if OpenRouter accepts it and, on a device with OpenClaw, OpenClaw takes it too, as [One key for OpenClaw too](/guides/configuration/#one-key-for-openclaw-too) describes. When it says that it is connected, it also says whether your AI account is connected. If the key did not work, the device keeps the account it had; say "open my settings" to try again from your phone, as [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone) shows.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:228-231#85aa669c; brain/teaport_brain/wifi_setup.py:604-616#bc734151; brain/teaport_brain/wifi_setup.py:737-741#9432370e; brain/teaport_brain/wifi_voice.py:112-117#48b27b3c; systemd/teaport-wifi-setup.service.in:31-35#ddd3d10e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:228-231#85aa669c; brain/teaport_brain/wifi_setup.py:604-616#26e73012; brain/teaport_brain/wifi_setup.py:737-741#9432370e; brain/teaport_brain/wifi_voice.py:112-117#48b27b3c; systemd/teaport-wifi-setup.service.in:31-35#ddd3d10e -->
 
 ## If the device connects
 

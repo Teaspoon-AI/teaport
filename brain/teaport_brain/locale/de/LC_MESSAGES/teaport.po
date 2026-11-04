@@ -507,6 +507,14 @@ msgstr "dieses Konto hat kein Guthaben mehr"
 msgid "this box's key is set by its installer, so it can't be changed here"
 msgstr "der Schlüssel dieses Geräts wird bei der Installation festgelegt und kann hier nicht geändert werden"
 
+# A key the agent (OpenClaw) did not take: nothing changed (ai_account.save_key, #281).
+msgid "Teaport couldn't switch everything over to this key, so it kept the one it had. Try again in a minute."
+msgstr "Teaport konnte nicht alles auf diesen Schlüssel umstellen und hat deshalb den bisherigen behalten. Versuch es in einer Minute noch einmal."
+
+# One OpenClaw may have taken all the same: a mismatch is recorded (ai_account.save_key, #281).
+msgid "Teaport couldn't finish switching to this key. Try saving it again."
+msgstr "Teaport konnte den Wechsel zu diesem Schlüssel nicht abschließen. Speichere ihn bitte noch einmal."
+
 # The same without its pointer, where "open my settings" is not heard (wifi_voice.py).
 msgid "I couldn't use the AI account key you entered, so I didn't save it."
 msgstr "Ich konnte den Schlüssel für das KI-Konto, den du eingegeben hast, nicht verwenden, deshalb habe ich ihn nicht gespeichert."

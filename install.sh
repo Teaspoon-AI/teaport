@@ -2696,9 +2696,11 @@ phase_sip() {
 #     one connection. A tmpfiles.d line removes a copy a power cut left behind. Known
 #     limit: another shared network started while setup runs answers 10.42.0.1 too.
 # The setup network's password is the flash-time one in $ETC/wifi-setup.env
-# (WIFI_SETUP_PASSWORD=<digits>, printed on the paper insert) — written by the image /
-# flashing step, never by this installer, so a repair leaves it alone. Without that file
-# each setup speaks fresh random digits.
+# (WIFI_SETUP_PASSWORD=<password>, printed on the paper insert; 8-63 letters, digits and
+# a few symbols, e.g. k7mq-x4tn-p9wr) — written by the image / flashing step, never by
+# this installer, so a repair leaves it alone. Without that file each setup makes a fresh
+# random one, twelve characters in three groups of four like that example
+# (wifi_setup.setup_password).
 phase_wifi_setup() {
   if ! have nmcli || [ ! -x /usr/sbin/iptables ]; then
     log "wifi setup: needs NetworkManager (nmcli) and iptables (/usr/sbin/iptables) — skipped"

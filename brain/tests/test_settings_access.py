@@ -51,7 +51,7 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 import appliance  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 from teaport_brain import (  # noqa: E402
-    ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
+    agent_key, ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
     wifi_voice,
 )
 from teaport_brain import gateway_server  # noqa: E402
@@ -138,6 +138,9 @@ def _setup(host=HOST, port=PORT):
 
     check.answer = ai_account.Check(ai_account.WORKS)
     config_ui.check_key = check
+    # A saved key is not handed to an OpenClaw on the machine running the tests
+    # (test_agent_key.py has that path, with a fake CLI).
+    agent_key.SHARES = False
     return home, check, checks
 
 
@@ -148,7 +151,7 @@ def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fet
     app.include_router(config_ui.router)
     app.include_router(config_ui.router, prefix="/settings")
     app.include_router(settings_access.router)
-    app.add_middleware(settings_access.FrameGuard)
+    app.add_middleware(settings_access.SettingsGuard)
     headers = {"X-Forwarded-Proto": proto} if proto else {}
     headers["Host"] = f"{HOST}:{port}" if port != 443 else HOST
     if fetch_site:
@@ -278,7 +281,7 @@ def test_the_session_cannot_be_used_from_another_origin_or_outside_its_bounds():
             assert (await c.put("/settings/api/config", json=body)).status_code == 401
             assert (await c.get("/settings/api/config")).status_code == 200  # a read needs no origin
         async with _client(cookie=session, proto=None) as c:  # the brain's own port
-            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.get("/settings/api/config")).status_code == 404  # not served there
         async with _client(cookie=session) as c:
             assert (await c.put("/settings/api/config", json=body)).status_code == 200
         expiry, nonce, sig = session.split(".")
@@ -386,6 +389,44 @@ def test_the_check_reads_the_providers_answer():
         ai_account._get = real
 
 
+def test_a_key_whose_effective_budget_is_used_up_is_not_saved():
+    """The save check reads what is left the way the trial-credit monitor does
+    (ai_account.credit_left): a key with room under its own limit but none in its
+    effective budget is refused, on the page and in setup mode, and nothing is saved.
+    A budget with room left, or a malformed one, changes nothing (shapes from a live
+    read, made-up amounts)."""
+    def record(budget):
+        return {"data": {"label": "made-up", "limit": 5, "limit_remaining": 4.0, "usage": 1.0,
+                         "effective_budget": budget, "budgets": [budget]}}
+
+    spent = {"limit_usd": 2.0, "spend_usd": 2.0, "remaining_usd": 0.0, "reset_interval": "monthly",
+             "resets_at": "2026-12-01T00:00:00Z", "scope": "key", "include_byok": False}
+    real = ai_account._get
+
+    async def run():
+        home, _, _ = _setup()
+        config_ui.check_key = ai_account.check_key  # the real check, its request faked
+        ai_account._get = Provider((200, record(spent)))
+        auth = {"authorization": f"Bearer {TOKEN}"}
+        async with _client(proto=None, origin=None, port=7861) as c:
+            r = await c.put("/api/config", headers=auth,
+                            json={"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}})
+        assert r.status_code == 400 and r.json()["key_check"] == {
+            "state": ai_account.REFUSED, "reason": ai_account.NO_CREDIT}, r.text
+        assert not os.path.exists(os.path.join(home, "llm_key"))
+        got = await ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1")
+        assert got.state == ai_account.REFUSED and got.reason == ai_account.NO_CREDIT, got
+        assert not os.path.exists(os.path.join(home, "llm_key"))
+        for budget in ({**spent, "spend_usd": 0.5, "remaining_usd": 1.5}, {"limit_usd": "2", "remaining_usd": "0"}):
+            ai_account._get = Provider((200, record(budget)))
+            assert ai_account.check_key(FAKE_KEY, "https://openrouter.ai/api/v1").state == ai_account.WORKS, budget
+
+    try:
+        asyncio.run(run())
+    finally:
+        ai_account._get = real
+
+
 # ------------------------------------------------------------------ the voice's other ways
 
 def test_without_a_screen_the_address_and_code_are_read_out():
@@ -458,6 +499,38 @@ def test_no_token_does_not_open_the_front_door():
     asyncio.run(run())
 
 
+def test_the_brains_own_port_serves_nothing_under_settings():
+    """Every /settings route, whoever mounted it, answers only through the Settings site:
+    on the brain's LAN port the page shell, its API, /settings/health and the code pages
+    are a 404, while /config there is the operator's page as before (a live check found
+    /settings/config served the shell there)."""
+    async def run():
+        _setup()
+        app = gateway_server.app  # the brain's own app: every router it mounts, the guard
+        lan = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("192.168.1.50", 40000)),
+                                base_url="http://teaport.local:7861")
+        site = httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 40000)),
+                                 base_url="http://box",
+                                 headers={"X-Forwarded-Proto": "https", "Host": f"{HOST}:{PORT}"})
+        async with lan, site:
+            for path in ("/settings/config", "/settings/config/logo.svg", "/settings/api/config",
+                         "/settings/api/account", "/settings/health", "/settings/trust",
+                         "/settings", "/settings/AB3CD9"):
+                r = await lan.get(path)
+                assert r.status_code == 404 and "<html" not in r.text.lower(), (path, r.status_code)
+            r = await lan.get("/config")
+            assert r.status_code == 200 and "<html" in r.text.lower()
+            # A loopback peer that does not say https (no Caddy) is no Settings site either.
+            r = await lan.get("/settings/config", headers={"Host": f"{HOST}:{PORT}"})
+            assert r.status_code == 404
+            # Through the Settings site: the shell, and the API wants a session.
+            r = await site.get("/settings/config")
+            assert r.status_code == 200 and "<html" in r.text.lower()
+            assert r.headers["x-frame-options"] == "DENY"
+            assert (await site.get("/settings/api/config")).status_code == 401
+    asyncio.run(run())
+
+
 def test_settings_answers_only_on_its_own_origin():
     """The gateway's origin (443) shares the site, not the origin: a request Caddy handed
     over from there, or one a browser marks cross-origin, gets nothing."""
@@ -471,7 +544,7 @@ def test_settings_answers_only_on_its_own_origin():
         async with _client() as c:
             session = await _signed_in(c, code)
         async with _client(cookie=session, port=443, origin=f"https://{HOST}") as c:
-            assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.get("/settings/api/config")).status_code == 404  # another site
         async with _client(cookie=session, fetch_site="same-site", origin=f"https://{HOST}") as c:
             assert (await c.get("/settings/api/config")).status_code == 401
             assert (await c.put("/settings/api/config", json={"store": "brain_env", "values": {
@@ -501,7 +574,7 @@ def test_a_key_in_the_environment_is_handled_the_same_on_both_pages():
             os.environ["LLM_API_KEY"] = "sk-from-a-drop-in"  # not brain.env's
             r = await c.put("/api/config", json={**put, "force_key": True}, headers=auth)
             assert r.status_code == 400 and r.json()["key_check"]["reason"] == ai_account.SET_ELSEWHERE
-        assert ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
+        assert (await ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1")).reason == ai_account.SET_ELSEWHERE
         os.environ.pop("LLM_API_KEY")
     asyncio.run(run())
 
@@ -699,7 +772,7 @@ def test_the_setup_page_takes_the_key_and_adopts_it_once_online():
     # An env-file copy of the key wins over the file: setup mode does not pretend.
     os.environ["LLM_API_KEY"] = "sk-set-by-the-installer"
     try:
-        assert ai_account.adopt(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
+        assert ai_account.adopt_blocking(FAKE_KEY, "https://openrouter.ai/api/v1").reason == ai_account.SET_ELSEWHERE
     finally:
         os.environ.pop("LLM_API_KEY")
 

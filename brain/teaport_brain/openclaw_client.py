@@ -402,10 +402,27 @@ def _end_cli(proc) -> None:
     t.add_done_callback(_ENDING.discard)
 
 
-async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tuple[int, bytes, bytes]:
+def child_env(environ=None, uid: int | None = None) -> dict:
+    """The environment every `openclaw` CLI run gets (_run_openclaw): this process's,
+    without OPENCLAW_GATEWAY_URL, with the CLI's own directory first on PATH, and
+    XDG_RUNTIME_DIR=/run/user/<uid> when it is unset and that directory exists."""
+    env = {k: v for k, v in (os.environ if environ is None else environ).items()
+           if k != "OPENCLAW_GATEWAY_URL"}
+    env["PATH"] = os.path.dirname(OPENCLAW_BIN) + os.pathsep + env.get("PATH", "")
+    if not env.get("XDG_RUNTIME_DIR"):
+        run_dir = f"/run/user/{os.getuid() if uid is None else uid}"
+        if os.path.isdir(run_dir):
+            env["XDG_RUNTIME_DIR"] = run_dir
+    return env
+
+
+async def _run_openclaw(args: list[str], *, timeout: float, capture: bool,
+                        stdin: bytes | None = None) -> tuple[int, bytes, bytes]:
     """Run the `openclaw` CLI as a subprocess, returning (returncode, stdout, stderr).
     Every openclaw CLI run in the brain comes through here (the cold consult, the memory
-    reindex, pairing's device and setup-code calls).
+    reindex, pairing's device and setup-code calls, the shared model key: agent_key.py).
+    `stdin`: what the CLI reads on its standard input -- a secret goes this way, never as
+    an argument (an argument is in every process listing).
     Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — on
     CancelledError, as on the timeout, it stops the CLI's whole process tree, the
     respawned CLI with it, so a barge-in can abort an in-flight consult (_end_cli).
@@ -416,23 +433,34 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tu
     own setting (the HTTP lane, brain.env), but the CLI reads the same name as a gateway
     override and then refuses its configured credentials ("gateway url override requires
     explicit credentials", rc 1). Without it the CLI talks to the gateway its own config
-    names, as it does when an operator runs it."""
-    env = {k: v for k, v in os.environ.items() if k != "OPENCLAW_GATEWAY_URL"}
-    env["PATH"] = os.path.dirname(OPENCLAW_BIN) + os.pathsep + env.get("PATH", "")
+    names, as it does when an operator runs it.
+    XDG_RUNTIME_DIR is set to the run user's /run/user/<uid> when it is missing and that
+    directory exists (child_env): the brain is a system unit with no user session, and
+    the user's runtime directory is where a user-session tool looks for it (on the box,
+    `systemctl --user` from the brain's environment fails without it)."""
     proc = await asyncio.create_subprocess_exec(
         OPENCLAW_BIN, *args,
         stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
-        env=env,
+        **({"stdin": asyncio.subprocess.PIPE} if stdin is not None else {}),
+        env=child_env(),
         start_new_session=True,  # its own process group (_signal_tree)
     )
     _not_voice(proc.pid)
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        out, err = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         _end_cli(proc)
         raise
     return proc.returncode, (out or b""), (err or b"")
+
+
+async def settle() -> None:
+    """Wait out the ends of stopped CLI runs (_end_cli) still under way: for a caller
+    whose event loop is about to close (asyncio.run in a thread), which would otherwise
+    cancel an end before it signalled anything."""
+    while _ENDING:
+        await asyncio.gather(*list(_ENDING), return_exceptions=True)
 
 
 def _completions_sync(message: str, token: str, timeout: float) -> str | None:

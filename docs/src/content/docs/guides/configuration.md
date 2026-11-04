@@ -5,7 +5,7 @@ description: Change teaport settings in the configuration page or in the configu
 
 Each teaport service reads its settings once, at startup. To change a setting, edit it, then restart the service that reads it. Nothing hot-reloads.
 
-<!-- source: brain/teaport_brain/config_ui.py:35-36#433b1e87 -->
+<!-- source: brain/teaport_brain/config_ui.py:37-38#433b1e87 -->
 
 You can make the edit in two places: the brain's configuration page, or the configuration files over SSH. The page edits the same files you edit by hand; the two paths differ only in convenience. For every setting, its default, and the file that holds it, see the [Settings reference](/reference/settings/).
 
@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2167-2176#38d9c1ca; install.sh:2087#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2177-2186#38d9c1ca; install.sh:2087#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:8-12,27-33#a24a491a; brain/teaport_brain/config_schema.toml:2142-2152#39346419; brain/teaport_brain/static/config.html:283-293#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2152-2162#39346419; brain/teaport_brain/static/config.html:283-293#2b63b6f7 -->
 
 To change a setting there:
 
@@ -44,19 +44,19 @@ On a device with a front door, the owner can reach the same page from a phone wi
 2. Tap **Continue**. You can use the code one time, within five minutes. Asking again replaces it.
 3. The phone shows the **AI account** step at the top: paste a key from your OpenRouter account and tap **Test and save**. Tap **Show advanced** for every other setting on the page.
 
-<!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:87-90#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
+<!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:88-91#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
 
 The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session nothing on that port opens, whether or not `GATEWAY_TOKEN` is set. The token keeps working on `http://DEVICE_IP:7861/config`.
 
-<!-- source: brain/teaport_brain/settings_access.py:75#2e08b20b; brain/teaport_brain/settings_access.py:271-276#251d20e7; brain/teaport_brain/settings_access.py:206-215#f38a8411 -->
+<!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:272-277#251d20e7; brain/teaport_brain/settings_access.py:207-216#f38a8411 -->
 
 Until the phone trusts the device's certificate, the browser warns that the connection is not private. The pages link to the steps that install the device's certificate on each kind of phone and computer.
 
-<!-- source: brain/teaport_brain/settings_access.py:352-361#35429dc2 -->
+<!-- source: brain/teaport_brain/settings_access.py:359-368#35429dc2 -->
 
 If the device is on no network at all and spoken Wi-Fi setup is on, the device asks you to get it online first: a phone cannot reach it yet. A home network without internet is enough. In setup mode the setup page takes the key too, as [Connect the device to Wi-Fi](/guides/wifi-setup/#connect-your-ai-account) shows.
 
-<!-- source: brain/teaport_brain/settings_access.py:92#fd6140cc -->
+<!-- source: brain/teaport_brain/settings_access.py:93#fd6140cc -->
 
 ## Change a setting in a configuration file
 
@@ -102,11 +102,11 @@ You edit `persona.md` whenever you like. A repair writes the starter persona onl
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 
-<!-- source: brain/teaport_brain/config_ui.py:41-46#bb168482; brain/teaport_brain/settings.py:45#e8179f7f -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/settings.py:45#e8179f7f -->
 
 A new value in a secret file takes hold on its own schedule. The brain reads the large language model (LLM) key once per session, so the next conversation uses it and no restart is needed; the Discord bridge reads its token once at startup, so a new token there needs the usual restart.
 
-<!-- source: brain/teaport_brain/config_ui.py:37-40#b15d56cc -->
+<!-- source: brain/teaport_brain/config_ui.py:39-42#b15d56cc -->
 
 ## Apply the change
 
@@ -144,7 +144,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:41-46#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:128-138#7532ad3d; brain/teaport_brain/config_ui.py:606-619#19132cdd -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:140-150#7532ad3d; brain/teaport_brain/config_ui.py:608-621#0c2a4295 -->
 
 ### In the configuration files
 
@@ -178,7 +178,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 
 A device can ship with a starter key: an OpenRouter key with a small spending limit, so that the device answers before you connect your own account. Provisioning marks which key that is in `~/.local/state/teaport/starter_key_sha256`, the run user's state directory: the SHA-256 of the key in hexadecimal, alone on one line. The file holds the hash only, never the key. Write it with `printf %s "$KEY" | sha256sum | cut -d' ' -f1 > ~/.local/state/teaport/starter_key_sha256`, where `$KEY` holds the key without a newline; the hash of the key followed by one newline, which `sha256sum` of a key file gives, also counts. Any other key that you save later is your own, and everything in this section stops.
 
-<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:56#cb5b8dc8 -->
+<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:59#cb5b8dc8 -->
 
 While the device runs on the starter key, the brain reads the key's limit and what is left from OpenRouter, `GET /api/v1/key`, every 30 minutes and after each conversation. The read never holds up a reply, and a read that fails changes nothing. The device warns you at three points:
 
@@ -186,15 +186,31 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 - When $1 or less is left, set by `TEAPORT_STARTER_LOW_USD`.
 - When nothing is left.
 
-<!-- source: brain/teaport_brain/credit.py:16-28#e96849ac; brain/teaport_brain/config_schema.toml:1752-1788#3b64f06d -->
+When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
+
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:210-216#1b6deadd; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
-<!-- source: brain/teaport_brain/credit.py:29-39#bd581a1c; brain/teaport_brain/credit.py:95-98#5b43489c -->
+<!-- source: brain/teaport_brain/credit.py:32-42#bd581a1c; brain/teaport_brain/credit.py:98-101#5b43489c -->
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:101-102#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
+
+## One key for OpenClaw too
+
+On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page or on the setup page, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice. Unless `OPENCLAW_AGENT_ID` names an agent, OpenClaw chooses the agent itself, its only configured agent; with several agents and none named, the save fails and nothing changes.
+
+<!-- source: brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:34-39#688a246f -->
+
+Both take the key, or neither does, and one save runs at a time, even when the setup page and the configuration page save at the same time. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, or a save stops midway, the page asks you to save the key again, and `teaport status` says that the two might be on different keys until a save goes through. When OpenClaw's gateway runs on another host and does not share this device's auth store, sharing does not apply: the brain saves the key alone, and `teaport status` says that OpenClaw keeps its own key there. Each time the brain starts, it reads OpenClaw's `gateway.mode` again, so a save shares the key again after the gateway is local.
+
+<!-- source: brain/teaport_brain/agent_key.py:65-75#2758bddd; brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:563-571#c05312bd -->
+
+When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
+
+<!-- source: brain/teaport_brain/agent_key.py:53-63#78e2d9ae; brain/teaport_brain/agent_key.py:41-52#7d213413; cli/teaport:143-173#a609a6f5 -->
 
 ## What's next
 

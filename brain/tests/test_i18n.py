@@ -45,6 +45,7 @@ DYNAMIC = {
     },
     "config_ui.py": {
         "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
+        "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
         "t._(SHOWN_TEXT)", "t._(SPOKEN_TEXT)", "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
