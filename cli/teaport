@@ -83,7 +83,7 @@ elif st == "unconfigured":
     phone = (" say \"open my settings\" to the box and paste the key on the phone, or"
              if sys.argv[2] == "1" else "")
     text = ("not set up%s: no model is configured, so the box answers every question with"
-            " a fixed line — with a key missing,%s in setup mode (\"set up Wi-Fi\") type"
+            " a fixed line — with only an OpenRouter key missing,%s in setup mode (\"set up Wi-Fi\") type"
             " it on the setup page; otherwise set LLM_BASE_URL in %s/brain.env (then"
             " restart the brain) and write the key to ~/.config/teaport/llm_key, or set"
             " both on the configuration page at :7861/config" % (why, phone, sys.argv[1]))
