@@ -1003,8 +1003,68 @@ def test_remote_is_looked_at_again_when_the_brain_starts():
         f.write('[ "$1 $2 $3" = "config get gateway.mode" ] && { echo "[plugins] x"; echo remote; }\n')
     assert asyncio.run(agent_key._gateway_mode()) == "remote"
     assert box.argv[-1] == "config get gateway.mode"
-    box.modes("fail")  # exit 1: unset, the runtime default
-    assert asyncio.run(agent_key._gateway_mode()) == "local"
+    # Exit 1 is "local" only when the path is valid but unset (the runtime default):
+    # any other exit 1 (an invalid config, a read failure) cannot be read, so the
+    # recorded state stays.
+    for line, want in (("Config path is valid but unset: gateway.mode. The runtime default "
+                        "applies until you set an authored value.", "local"),
+                       ("Config invalid: gateway.port: expected number", None),
+                       ("Error: EACCES: permission denied, open openclaw.json", None)):
+        with open(os.path.join(box.dir, "openclaw"), "w") as f:
+            f.write(f"#!/bin/bash\necho '{line}' >&2\nexit 1\n")
+        assert asyncio.run(agent_key._gateway_mode()) == want, line
+    # An unreadable mode keeps a recorded "remote".
+    agent_key.update(unshareable=agent_key.REMOTE_REASON)
+    asyncio.run(agent_key.recheck_remote(True))
+    assert _status()["state"] == agent_key.REMOTE
+
+
+def test_undo_leaves_a_newer_save_of_the_same_key_alone():
+    """The save generation, not the file's content: the same key saved again between a
+    save and its undo is a save of its own, and stands."""
+    box = Fake(["ok", "ok", "ok"], key_file=OLD)
+    _save(OLD)
+    saved = _save(NEW)
+    again = _save(NEW)
+    assert again.gen == saved.gen + 1
+    keys_before = list(box.keys)
+    asyncio.run(saved.undo())
+    assert _key_file() == NEW + "\n" and box.keys == keys_before
+    # Its own undo, while nothing else was saved, takes it back to what it replaced (the
+    # same key, saved before it) and is a save itself.
+    box.modes("ok")
+    asyncio.run(again.undo())
+    assert again.prev == NEW and _key_file() == NEW + "\n" and box.keys[-1] == NEW
+    assert agent_key.generation() == again.gen + 1
+
+
+def test_an_undo_that_cannot_run_says_brain_env_still_differs():
+    """The env-file write fails and the undo meets another save for SAVE_WAIT_SECS: the
+    page reports the failed save; the state says brain.env's copy still holds the old
+    key."""
+    box = Fake(["ok", "ok"], key_file=OLD)
+
+    async def privileged(action, target, stdin=None):
+        raise RuntimeError("the helper failed")
+
+    async def busy(self):
+        raise agent_key.Busy()
+
+    config_ui._privileged = privileged
+    client, etc = _page(box)
+    os.environ["LLM_API_KEY"] = OLD
+    real = ai_account.Saved.undo
+    ai_account.Saved.undo = busy
+    try:
+        r = TestClient(client.app, raise_server_exceptions=False).put(
+            "/api/config", headers={"authorization": "Bearer t0k3n"},
+            json={"store": "brain_env", "values": {"LLM_API_KEY": NEW}})
+        assert r.status_code == 500
+        s = _status()
+        assert s["state"] == agent_key.MISMATCH and "brain.env still holds" in s["reason"], s
+    finally:
+        ai_account.Saved.undo = real
+        os.environ.pop("LLM_API_KEY", None)
 
 
 def test_undo_leaves_a_key_saved_since_alone():

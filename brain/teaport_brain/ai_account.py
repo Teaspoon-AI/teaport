@@ -363,23 +363,22 @@ class Saved:
     prev_file: str | None
     prev: str | None
     openrouter: bool
+    gen: int = 0    # the save generation it made (agent_key.end)
 
     async def undo(self) -> None:
         """The key file as it was, and OpenClaw back on the brain's previous key, as one
-        more save (save_lock, with its marker). Nothing when another save has landed since
-        (the key file no longer holds this one: that save stands). Where OpenClaw cannot
-        follow (the brain had no key before, or OpenClaw does not take it), the state says
-        the two may differ (MISMATCH)."""
+        more save (save_lock, with its marker). Nothing when another save has gone through
+        since -- the save generation has moved on, even for the same key again: that save
+        stands. Where OpenClaw cannot follow (the brain had no key before, or OpenClaw does
+        not take it), the state says the two may differ (MISMATCH)."""
         async with agent_key.save_lock():
-            # The key file still holding this save's key: nothing saved since. (Not
-            # current_key(): an environment copy -- brain.env's, the one config_ui failed to
-            # drop -- shadows the file, and the file is what this save wrote.)
-            if (_read_file() or "").strip() != self.key:
+            if agent_key.generation() != self.gen:
                 logger.info("ai account: not taking the key back: another key was saved since")
                 return
             sharing = agent_key.skipped(self.openrouter) is None
             if sharing:
                 agent_key.begin(self.prev, self.key)
+            undone = False
             try:
                 _put_back(self.prev_file)
                 logger.info("ai account: the new key was taken back")
@@ -396,9 +395,18 @@ class Saved:
                     raise
                 if gave is not None and not gave.halfway:  # halfway: give recorded it
                     agent_key.mismatch(taken_back)
+                undone = True
             finally:
-                if sharing:
-                    agent_key.end()
+                agent_key.end(saved=undone or not sharing)
+
+    def unfinished(self, why: str) -> None:
+        """The caller's next step failed and the key could not be taken back either (undo
+        itself failed, or waited past SAVE_WAIT_SECS for another save): the key file and
+        OpenClaw hold the new key while brain.env's copy, which the brain reads first,
+        still holds the old one. Said in the state (MISMATCH) where OpenClaw shares it."""
+        if agent_key.skipped(self.openrouter) is None:
+            agent_key.mismatch(f"the key was saved but brain.env still holds the previous one "
+                               f"({why}): save the key again")
 
 
 async def save_key(key: str, base_url: str | None) -> Saved:
@@ -462,9 +470,7 @@ async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
             agent_key.end()
         logger.warning(f"ai account: the new key was not saved ({type(e).__name__})")
         raise
-    if sharing:
-        agent_key.end()
-    return Saved(key, prev_file, prev, openrouter)
+    return Saved(key, prev_file, prev, openrouter, agent_key.end(saved=True))
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it

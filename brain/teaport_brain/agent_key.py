@@ -122,6 +122,7 @@ _WROTE = "API key saved"
 _WARNING = "Warning:"
 _REMOTE_HINT = "does not share this auth state"
 _REFUSED = "ECONNREFUSED"
+_UNSET = "Config path is valid but unset"
 REMOTE_REASON = ("the OpenClaw gateway this host talks to does not share its auth store, "
                  "so OpenClaw keeps its own key")
 
@@ -309,8 +310,19 @@ def begin(new: str | None, prev: str | None) -> None:
                    "prev": fingerprint(prev) if prev else None})
 
 
-def end() -> None:
-    update(saving=None)
+def end(saved: bool = False) -> int:
+    """The save is over: its marker cleared, and, for one that went through, the save
+    generation moved on (a Saved's undo applies only while it is still its own). Returns
+    the generation now."""
+    def over(data):
+        data["saving"] = None
+        if saved:
+            data["gen"] = int(data.get("gen") or 0) + 1
+    return int(update(over).get("gen") or 0)
+
+
+def generation() -> int:
+    return int(load().get("gen") or 0)
 
 
 def settle_torn() -> bool:
@@ -522,15 +534,16 @@ def unlooked(current: str | None, openrouter: bool) -> bool:
 async def _gateway_mode() -> str | None:
     """`openclaw config get gateway.mode` (docs/cli/config.md): "remote" for a gateway on
     another host (call.ts isImplicitLocalGatewayTarget: the CLI's own test), "local" when
-    unset (exit 1: the runtime default applies); None when it could not be read.
-    Replaced in tests."""
+    unset -- exit 1 with "Config path is valid but unset" (config-cli.ts: the runtime
+    default applies) -- and None when it could not be read: any other exit 1 (an invalid
+    config, a read failure) or failure. Replaced in tests."""
     ran = await _cli(["config", "get", "gateway.mode"], STATUS_TIMEOUT_SECS)
-    if ran.rc == 1:
+    if ran.rc == 1 and _UNSET in ran.text:
         return "local"
     if ran.rc != 0:
         return None
     words = ran.out.decode("utf-8", "replace").split()
-    return words[-1] if words else "local"
+    return words[-1] if words else None
 
 
 async def recheck_remote(openrouter: bool) -> None:
