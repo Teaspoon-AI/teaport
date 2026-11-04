@@ -325,12 +325,16 @@ def generation() -> int:
     return int(load().get("gen") or 0)
 
 
-def settle_torn() -> bool:
-    """A save marker with no save holding the lock is a save torn by a crash: what the
-    brain's file and OpenClaw hold is not known. Recorded as a mismatch (True). The save
-    lock is taken first (without waiting: a save under way holds it, and this is no torn
-    save), and the marker is read and cleared only while it is held, so a save that ends
-    or begins meanwhile is never mistaken for one."""
+def settle_torn(file_key=None) -> bool:
+    """A save marker with no save holding the lock is a save that never got to its end.
+    Recorded as a mismatch (True) -- unless the save had in fact gone through in both
+    places, its end-of-save bookkeeping alone failing (a full disk): OpenClaw was given the
+    marker's key (the state's fingerprint) and the brain's key file holds it (`file_key()`,
+    ai_account's reader). That one is closed as the save it was. Either way the save
+    generation moves on, so no Saved from before it can undo over it. The save lock is
+    taken first (without waiting: a save under way holds it, and this is no torn save),
+    and the marker is read and cleared only while it is held, so a save that ends or
+    begins meanwhile is never mistaken for one."""
     try:
         fd = _open_save_lock()
     except OSError:
@@ -338,10 +342,21 @@ def settle_torn() -> bool:
     try:
         if not _try_flock(fd):
             return False
-        if not load().get("saving"):
+        data = load()
+        marker = data.get("saving")
+        if not marker:
+            return False
+        if file_key is None:
+            from teaport_brain.ai_account import file_key  # ai_account imports this module
+        on_file = file_key()
+        if (marker.get("new") and data.get("sha256") == marker["new"] and on_file
+                and fingerprint(on_file) == marker["new"]):
+            end(saved=True)
+            logger.info("agent key: a save's last state write had failed; it went through, "
+                        "and is closed now")
             return False
         mismatch("a key change was interrupted: OpenClaw and the brain may hold different keys")
-        update(saving=None)
+        end(saved=True)
         return True
     finally:
         os.close(fd)

@@ -327,6 +327,13 @@ def store_key(key: str) -> None:
     logger.info("ai account: the key file was written")
 
 
+def file_key() -> str | None:
+    """The key the brain's key file holds (the file alone, whatever the environment says):
+    what a save wrote. None when there is none."""
+    text = _read_file()
+    return text.strip() or None if text is not None else None
+
+
 def _read_file() -> str | None:
     """The key file as it is (to put it back), None when there is none."""
     try:
@@ -399,14 +406,19 @@ class Saved:
             finally:
                 agent_key.end(saved=undone or not sharing)
 
-    def unfinished(self, why: str) -> None:
+    def unfinished(self, why: str, env_copy: bool) -> None:
         """The caller's next step failed and the key could not be taken back either (undo
-        itself failed, or waited past SAVE_WAIT_SECS for another save): the key file and
-        OpenClaw hold the new key while brain.env's copy, which the brain reads first,
-        still holds the old one. Said in the state (MISMATCH) where OpenClaw shares it."""
-        if agent_key.skipped(self.openrouter) is None:
+        itself failed, or waited past SAVE_WAIT_SECS for another save). The key file and
+        OpenClaw hold the new key. With `env_copy` -- brain.env held a copy of the key,
+        which the brain reads first and which that failed step was to drop -- the brain
+        still reads the old one: said in the state (MISMATCH) where OpenClaw shares it.
+        Without one, all three agree on the new key: logged only."""
+        if env_copy and agent_key.skipped(self.openrouter) is None:
             agent_key.mismatch(f"the key was saved but brain.env still holds the previous one "
                                f"({why}): save the key again")
+        else:
+            logger.warning(f"ai account: the key could not be taken back ({why}); it stays "
+                           "saved, the same in the key file and OpenClaw")
 
 
 async def save_key(key: str, base_url: str | None) -> Saved:
@@ -470,7 +482,16 @@ async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
             agent_key.end()
         logger.warning(f"ai account: the new key was not saved ({type(e).__name__})")
         raise
-    return Saved(key, prev_file, prev, openrouter, agent_key.end(saved=True))
+    # The save went through in both places. Its last state write -- the marker cleared,
+    # the generation moved on -- failing (a full disk) must not turn it into a 500: it is
+    # logged, and the marker it leaves is one settle_torn recognises as a finished save
+    # (OpenClaw's fingerprint and the key file both the new key) and closes, not a torn one.
+    try:
+        gen = agent_key.end(saved=True)
+    except OSError as e:
+        logger.warning(f"ai account: the key was saved, but its state could not be written ({e!r})")
+        gen = agent_key.generation()
+    return Saved(key, prev_file, prev, openrouter, gen)
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it

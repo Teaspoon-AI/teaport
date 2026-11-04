@@ -647,7 +647,8 @@ async def put_config(request: Request):
                 # still differs (Saved.unfinished), which `teaport status` shows.
                 logger.warning(f"config: taking the new key back failed: {undo_error!r} "
                                f"(after {e!r})")
-                saved.unfinished(type(undo_error).__name__)
+                saved.unfinished(type(undo_error).__name__,
+                                 env_copy="LLM_API_KEY" in superseded)
         raise
     for name, value in secret_updates.items():
         if name == "LLM_API_KEY":

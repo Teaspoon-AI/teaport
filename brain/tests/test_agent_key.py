@@ -1067,6 +1067,82 @@ def test_an_undo_that_cannot_run_says_brain_env_still_differs():
         os.environ.pop("LLM_API_KEY", None)
 
 
+def test_an_undo_that_cannot_run_without_a_brain_env_copy_is_only_logged():
+    """No key copy in brain.env: the key file, OpenClaw and what the brain reads all agree
+    on the new key, so nothing is recorded as a mismatch (another setting's write failed)."""
+    box = Fake(["ok", "ok"], key_file=OLD)
+
+    async def privileged(action, target, stdin=None):
+        raise RuntimeError("the helper failed")
+
+    async def busy(self):
+        raise agent_key.Busy()
+
+    config_ui._privileged = privileged
+    client, etc = _page(box)
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write(f"LLM_BASE_URL={OPENROUTER}\n")  # no copy of the key
+    real = ai_account.Saved.undo
+    ai_account.Saved.undo = busy
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        r = TestClient(client.app, raise_server_exceptions=False).put(
+            "/api/config", headers={"authorization": "Bearer t0k3n"},
+            json={"store": "brain_env", "values": {"LLM_API_KEY": NEW, "TTS_VOICE": "af_bella"}})
+        assert r.status_code == 500
+    finally:
+        ai_account.Saved.undo = real
+        logger.remove(sink)
+    assert _key_file() == NEW + "\n" and _status()["state"] == agent_key.SHARED, _status()
+    assert any("could not be taken back" in ln for ln in lines), lines
+
+
+def test_a_torn_save_moves_the_generation_on():
+    """An outstanding Saved from before a torn save cannot undo over it."""
+    Fake(["ok"], key_file=OLD)
+    saved = _save(NEW)
+    agent_key.begin(A_KEY, NEW)  # a later save that never got to its end
+    assert agent_key.settle_torn() is True
+    assert agent_key.generation() == saved.gen + 1
+    asyncio.run(saved.undo())
+    assert _key_file() == NEW + "\n"  # the undo stood aside
+    assert _status()["state"] == agent_key.MISMATCH
+
+
+def test_a_failed_last_state_write_keeps_the_save():
+    """The save went through in both places and only its end-of-save write failed (a full
+    disk): no 500, the save stands, and the marker it leaves is closed as a finished save,
+    not a torn one."""
+    box = Fake(["ok"], key_file=OLD)
+    real_end = agent_key.end
+
+    def end(saved=False):
+        if saved:
+            raise OSError(28, "No space left on device")
+        return real_end(saved)
+
+    agent_key.end = end
+    try:
+        saved = _save(NEW)
+    finally:
+        agent_key.end = real_end
+    assert _key_file() == NEW + "\n" and box.keys == [NEW]
+    assert agent_key.load().get("saving")  # left behind
+    gen = agent_key.generation()
+    assert saved.gen == gen
+    assert agent_key.settle_torn() is False
+    data = agent_key.load()
+    assert not data.get("saving") and not data.get("mismatch") and data["gen"] == gen + 1
+    assert _status()["state"] == agent_key.SHARED
+    # One whose key file does not hold the marker's key is torn all the same.
+    Fake(["ok"], key_file=OLD)
+    _save(NEW)
+    agent_key.begin(A_KEY, NEW)
+    agent_key.update(sha256=agent_key.fingerprint(A_KEY))  # OpenClaw got it; the file did not
+    assert agent_key.settle_torn() is True and _status()["state"] == agent_key.MISMATCH
+
+
 def test_undo_leaves_a_key_saved_since_alone():
     box = Fake(["ok", "ok"], key_file=OLD)
     _save(OLD)
