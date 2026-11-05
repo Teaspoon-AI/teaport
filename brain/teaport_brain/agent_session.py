@@ -93,6 +93,7 @@ from teaport_brain.mood_tag import MoodTag
 from teaport_brain.memory_hygiene import MemoryReclaim
 from teaport_brain.memory_recall import MemoryRecall
 from teaport_brain.persona import HOST_CONTEXT, HOST_RULES, build_system_prompt, load_persona
+from teaport_brain.playout_pause import PauseNotice
 from teaport_brain.raw_llm_capture import RawLLMCapture
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
@@ -1409,6 +1410,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         # Bot{Started,Stopped}SpeakingFrames and pauses the transport itself.
         barge_pauser,
         transport_output,
+        # Tells a client that asked (?features=pause: the room bridge) when a barge-in
+        # pause stops the voice and when it goes on (playout_pause.PauseNotice).
+        (PauseNotice() if voice_clock is not None and "pause" in client_features
+         else None),
         # Directly below the transport: each word's text frame passes here as it plays.
         guard.tap(voice_clock) if guard is not None else None,
         # The owner's call recording (call_recording.py): below the transport, where

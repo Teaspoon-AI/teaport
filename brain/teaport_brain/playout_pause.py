@@ -71,6 +71,7 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     MixerControlFrame,
     OutputAudioRawFrame,
+    OutputTransportMessageUrgentFrame,
     OutputImageRawFrame,
     SpriteFrame,
     SystemFrame,
@@ -78,7 +79,7 @@ from pipecat.frames.frames import (
     TTSStartedFrame,
     TTSStoppedFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.barge_pause import PAUSE_GUARD_S, PlayoutPauseFrame
 from teaport_brain.tts_text import CAPTION_LEAD_SECS
@@ -396,3 +397,27 @@ class PausablePlayout:
     async def cancel(self, frame: CancelFrame):
         self._drop_pause()
         await super().cancel(frame)
+
+
+class PauseNotice(FrameProcessor):
+    """Below a pausable transport, for a client that announced ?features=pause: tells it
+    {"type": "pause", "on": true|false} as playout pauses and goes on. A client that reads
+    "the speaker went quiet" as "the reply is over" -- the room bridge's goodbye heard
+    out, its idle timer -- otherwise takes a barge-in pause for the end (#255). It needs
+    no message for a pause an interruption drops: the "clear" that comes with it ends the
+    pause there too."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._on = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if (isinstance(frame, PlayoutPauseFrame) and direction == FrameDirection.DOWNSTREAM
+                and frame.paused != self._on):
+            self._on = frame.paused
+            await self.push_frame(OutputTransportMessageUrgentFrame(
+                message={"type": "pause", "on": frame.paused}), FrameDirection.UPSTREAM)
+        elif isinstance(frame, InterruptionFrame):
+            self._on = False
+        await self.push_frame(frame, direction)

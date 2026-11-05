@@ -377,6 +377,21 @@ async def test_a_talk_session_builds_the_pauser():
     # The room's echo guard dates the words on the transport's voice clock (echo_guard.py).
     room = build_agent_session(_talk_transport(_Socket()), front_end="room",
                                client_features=frozenset({"local"}))
+    from teaport_brain.playout_pause import PauseNotice
+
+    def below(session):
+        p, out = session.ledger._output.next, []
+        while p is not None:
+            out.append(p)
+            p = p.next
+        return out
+    assert not any(isinstance(p, PauseNotice) for p in below(room)), "not asked for"
+    told = build_agent_session(_talk_transport(_Socket()), front_end="room",
+                               client_features=frozenset({"local", "pause"}))
+    assert isinstance(told.ledger._output.next, PauseNotice), told.ledger._output.next
+    unpaused = build_agent_session(_talk_transport(_Socket(), pausable=False),
+                                   front_end="room", client_features=frozenset({"pause"}))
+    assert not any(isinstance(p, PauseNotice) for p in below(unpaused)), "nothing pauses"
     out = room.ledger._output
     p, taps = out, []
     while p is not None:
@@ -446,6 +461,46 @@ async def test_talk_a_cut_drops_the_words_a_pause_held():
 async def test_talk_a_reply_stamped_after_the_resume_is_on_time():
     async with TalkRig() as rig:
         await check_a_reply_stamped_after_the_resume_is_on_time(rig)
+
+
+class NoticeRig(TalkRig):
+    """TalkRig with playout_pause.PauseNotice below the transport, as a session builds it
+    for a client that announced ?features=pause (the room bridge)."""
+
+    def __init__(self):
+        from teaport_brain.playout_pause import PauseNotice
+        super().__init__()
+        self.notice = PauseNotice()
+        self.task = PipelineTask(
+            Pipeline([self.top, self.pauser, self.out, self.notice, self.bottom]),
+            observers=[self.ledger], cancel_on_idle_timeout=False)
+
+
+async def test_a_client_that_asked_is_told_the_pause_and_its_end():
+    # #255 part 2: the room bridge reads a quiet speaker as the reply's end (a goodbye
+    # heard out, its idle timer); told of the pause, it waits it out.
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.pauser.on_onset(False)
+        await _at(rig, 3.4)
+        said = [m for m in rig.wire.texts if m.get("type") == "pause"]
+        assert said == [{"type": "pause", "on": True}, {"type": "pause", "on": False}], said
+
+
+async def test_a_cut_pause_says_nothing_more_the_clear_ends_it():
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.task.queue_frame(InterruptionFrame())
+        await _at(rig, 1.6)
+        types = [m.get("type") for m in rig.wire.texts]
+        assert types.count("pause") == 1 and "clear" in types, rig.wire.texts
+        assert types.index("pause") < types.index("clear")
 
 
 def _pause_times(rig):
