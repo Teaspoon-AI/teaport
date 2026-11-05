@@ -140,7 +140,7 @@
 #     captions are short of what was heard by the same amount -- the same assumption
 #     the ledger already made on Talk for every cut, pause or not.
 #   * A client that reads a quiet speaker as the reply's end must be told of a pause:
-#     the room bridge asks to be (?features=pause, playout_pause.PauseNotice), so its
+#     the room bridge asks to be (?features=pause, talk_transport's pause_notice), so its
 #     goodbye "heard out" and its idle timer wait one out; its mouth follows the audio
 #     stream, not the card. The reply's words wait out a pause on the transport's voice
 #     clock (playout_pause.py). Another client that ends on silence would need the same.

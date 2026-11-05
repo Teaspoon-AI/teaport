@@ -377,21 +377,14 @@ async def test_a_talk_session_builds_the_pauser():
     # The room's echo guard dates the words on the transport's voice clock (echo_guard.py).
     room = build_agent_session(_talk_transport(_Socket()), front_end="room",
                                client_features=frozenset({"local"}))
-    from teaport_brain.playout_pause import PauseNotice
-
-    def below(session):
-        p, out = session.ledger._output.next, []
-        while p is not None:
-            out.append(p)
-            p = p.next
-        return out
-    assert not any(isinstance(p, PauseNotice) for p in below(room)), "not asked for"
+    # Only a client that asked is told of a pause (talk_transport's pause_notice).
+    assert not room.ledger._output.pause_notice, "not asked for"
     told = build_agent_session(_talk_transport(_Socket()), front_end="room",
                                client_features=frozenset({"local", "pause"}))
-    assert isinstance(told.ledger._output.next, PauseNotice), told.ledger._output.next
+    assert told.ledger._output.pause_notice
     unpaused = build_agent_session(_talk_transport(_Socket(), pausable=False),
                                    front_end="room", client_features=frozenset({"pause"}))
-    assert not any(isinstance(p, PauseNotice) for p in below(unpaused)), "nothing pauses"
+    assert not getattr(unpaused.ledger._output, "pause_notice", False), "nothing pauses"
     out = room.ledger._output
     p, taps = out, []
     while p is not None:
@@ -464,16 +457,15 @@ async def test_talk_a_reply_stamped_after_the_resume_is_on_time():
 
 
 class NoticeRig(TalkRig):
-    """TalkRig with playout_pause.PauseNotice below the transport, as a session builds it
-    for a client that announced ?features=pause (the room bridge)."""
+    """TalkRig whose transport tells its client of a pause, as a session builds it for one
+    that announced ?features=pause (the room bridge)."""
 
     def __init__(self):
-        from teaport_brain.playout_pause import PauseNotice
         super().__init__()
-        self.notice = PauseNotice()
-        self.task = PipelineTask(
-            Pipeline([self.top, self.pauser, self.out, self.notice, self.bottom]),
-            observers=[self.ledger], cancel_on_idle_timeout=False)
+        self.out.pause_notice = True
+
+    def told(self):
+        return [m["on"] for m in self.wire.texts if m.get("type") == "pause"]
 
 
 async def test_a_client_that_asked_is_told_the_pause_and_its_end():
@@ -486,8 +478,22 @@ async def test_a_client_that_asked_is_told_the_pause_and_its_end():
         await _at(rig, 1.0)
         await rig.pauser.on_onset(False)
         await _at(rig, 3.4)
-        said = [m for m in rig.wire.texts if m.get("type") == "pause"]
-        assert said == [{"type": "pause", "on": True}, {"type": "pause", "on": False}], said
+        assert rig.told() == [True, False], rig.wire.texts
+
+
+async def test_a_pause_is_told_once_though_announced_again():
+    # The reply's synthesis ending while paused says the pause again, with its tail
+    # (PausablePlayout.process_frame): the client is not told twice.
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.out.set_playout_paused(True)
+        await rig.task.queue_frame(TTSStoppedFrame(context_id="r1"))
+        await asyncio.sleep(0.1)
+        assert rig.pause_frames(FrameDirection.DOWNSTREAM).count(True) >= 2, "no re-announce"
+        await rig.out.set_playout_paused(False)
+        await asyncio.sleep(0.1)
+        assert rig.told() == [True, False], rig.wire.texts
 
 
 async def test_a_cut_pause_says_nothing_more_the_clear_ends_it():
@@ -501,6 +507,15 @@ async def test_a_cut_pause_says_nothing_more_the_clear_ends_it():
         types = [m.get("type") for m in rig.wire.texts]
         assert types.count("pause") == 1 and "clear" in types, rig.wire.texts
         assert types.index("pause") < types.index("clear")
+        # The next reply's pause is told again: the cut ended the last one.
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        for _ in range(100):
+            if len(rig.told()) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert rig.told() == [True, True], rig.wire.texts
 
 
 def _pause_times(rig):

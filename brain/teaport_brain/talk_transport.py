@@ -7,19 +7,45 @@
 # own mic (local_audio.py) -- is fed by the same output transport, which sends one audio
 # block per block's worth of time (one block ahead of playout at most), so what the
 # listener has not heard yet is still here and a pause in the writes is a pause in the
-# voice, a block and a client's jitter margin later. Nothing about pausing goes on the
-# wire: the client plays what it has and then whatever it plays when no audio comes.
+# voice, a block and a client's jitter margin later. The client plays what it has and
+# then whatever it plays when no audio comes; only one that asks (?features=pause) is
+# told of a pause (pause_notice).
 #
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketOutputTransport,
     FastAPIWebsocketTransport,
 )
 
+from pipecat.frames.frames import OutputTransportMessageUrgentFrame
+
 from teaport_brain.playout_pause import PausablePlayout
 
 
 class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     """pipecat's websocket output, held at a block boundary while playout is paused."""
+
+    # Set by build_agent_session for a client that asked (?features=pause: the room
+    # bridge): it is told {"type": "pause", "on": ...} as playout pauses and goes on, so
+    # it does not take the quiet speaker for the reply's end (#255). Sent here, on the
+    # transport's own socket as the pause is set, so it can never come after the "clear"
+    # of the barge-in that drops the pause -- which ends it on the client too.
+    pause_notice = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._told_paused = False
+
+    async def _announce_pause(self, *, lag: float, tail: float, paused: bool = True,
+                              upstream: bool = True):
+        if self.pause_notice and paused != self._told_paused:
+            self._told_paused = paused
+            await self.send_message(OutputTransportMessageUrgentFrame(
+                message={"type": "pause", "on": paused}))
+        await super()._announce_pause(lag=lag, tail=tail, paused=paused, upstream=upstream)
+
+    def _drop_pause(self):
+        super()._drop_pause()
+        self._told_paused = False            # the "clear" with it ends it on the client
 
     async def write_audio_frame(self, frame) -> bool:
         # One audio block per call (MediaSender's audio_chunk_size, 40 ms at pipecat's

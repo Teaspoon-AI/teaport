@@ -321,6 +321,38 @@ def test_face_follows_a_turn():
     ]
 
 
+def test_the_face_speaks_again_when_a_paused_reply_goes_on():
+    """#255 review: the speaker is quiet through a barge-in pause, so the face goes idle
+    (or listening to the user's words); at the pause's end it speaks again, so the
+    resumed audio's mouth is drawn -- not after a cut."""
+    clock = _Clock()
+    face, sent = _face(clock)
+    face.state("speaking")
+    face.paused(True)
+    face.user("hold on", False)                     # the user, over the paused reply
+    face.quiet()
+    face.paused(False)
+    sent.clear()
+    face.mouth(0.8)
+    assert sent and sent[0] == {"mouth": 0.8}, sent
+    face.paused(True)
+    face.interrupted()                              # the reply was cut meanwhile
+    face.paused(False)
+    assert face._state == "listening", "a cut reply does not come back"
+
+
+def test_a_pause_message_reaches_the_restart_and_the_face():
+    clock = _Clock()
+    face, sent = _face(clock)
+    pause = la.Pause(clock)
+    face.state("speaking")
+    la.paused({"type": "pause", "on": True}, pause, face)
+    face.quiet()
+    assert pause.on
+    la.paused({"type": "pause", "on": False}, pause, face)
+    assert not pause.on and face._state == "speaking"
+
+
 def test_face_mouth_sends_only_real_moves_and_keeps_an_open_mouth_alive():
     clock = _Clock()
     face, sent = _face(clock)
@@ -1828,6 +1860,7 @@ def test_key_presses_come_due_on_the_typing_they_ride_or_after_their_message():
     play.pump()                                              # all played: nothing queued
     play.keys([["a", 50]], anchor="now")                     # typing not played...
     play.keys([["b", 50]])                                   # ...and the same press played
+    play.push(_tone(24000, 0.2).tobytes())                   # (the typing it rides)
     (a, at), (b, bt) = play.keys_due(clock.t + 1)
     assert (a, b) == ("a", "b") and abs(at - bt) < 0.002     # line up
     # (after the card's lead, and what the resampler still holds: its ~35 ms of delay)
@@ -2035,6 +2068,66 @@ def test_key_presses_of_played_typing_after_a_gap_come_with_their_clicks():
     assert [k for k, _ in play.keys_due(resumed + 0.13)] == ["b"]
     play.keys([["n", 0]], anchor="now")                       # not played: as if now
     assert [k for k, _ in play.keys_due(clock.t + 0.3)] == ["n"]
+
+
+def test_a_mark_is_not_due_before_its_audio_is_on_the_card():
+    """#255 review: LOCAL_AUDIO_FACE_ADVANCE_MS may reach past the card's lead: a phoneme
+    of audio not written yet would come due on a pause's silence. It waits for its
+    audio."""
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50]])                # its audio has not come
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t + 0.3) == [], "due on silence"
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    play.pump()
+    assert play.phonemes_due(clock.t + 0.3) == ["h"]
+
+
+def test_phonemes_across_two_gaps_in_a_clause_keep_their_audio():
+    """Two pauses in one clause: the pad breakpoints a pinned mark still needs are kept
+    (_prune_pads), so the third part's phoneme lands on the third part's audio."""
+    play, clock, sunk = _playback()
+    t0 = clock.t
+    play.phonemes(0, [["h", 0, 50], ["a", 300, 350], ["o", 500, 550]])
+    for secs in (0.2, 0.2, 0.2):                    # three parts, a gap after the first two
+        play.push(_tone(24000, secs).tobytes(), voiced=True)
+        for _ in range(int(0.6 / 0.02)):
+            play.pump()
+            clock.t += 0.02
+    starts, prev = [], True
+    for i, c in enumerate(sunk):
+        silent = c == bytes(len(c))
+        if prev and not silent:
+            starts.append(t0 + i * la.CHUNK_MS / 1000)
+        prev = silent
+    assert len(starts) == 3, starts
+    got = {}
+    for t in [t0 + k * 0.005 for k in range(400)]:
+        for sym in play.phonemes_due(t):
+            got[sym] = t
+    # Each part leaves the resampler's ~16 ms to play at the start of the next, so "a"
+    # (300 ms in) is ~116 ms into the second part and "o" (500 ms in) ~116 into the third.
+    assert abs(got["a"] - (starts[1] + 0.116)) <= 0.03, (got, starts)
+    assert abs(got["o"] - (starts[2] + 0.116)) <= 0.03, (got, starts)
+
+
+def test_the_end_of_a_session_drops_marks_past_its_audio():
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50], ["a", 900, 950]])  # "a" past the audio that comes
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    play.end_stream()
+    for _ in range(30):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["h"]
+    play.phonemes(0, [["n", 0, 50]])                 # the next session's first
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["n"], "held behind the last session's mark"
 
 
 def test_a_barge_in_drops_the_phonemes_of_the_audio_it_drops():
