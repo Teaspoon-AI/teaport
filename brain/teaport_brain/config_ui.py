@@ -544,9 +544,24 @@ async def get_config(request: Request):
 @router.put("/api/config")
 async def put_config(request: Request):
     _authorize(request)
-    body = await request.json()
-    store = body.get("store")
-    updates = body.get("values")
+    status, content = await save_values(request, await request.json())
+    return content if status == 200 else JSONResponse(status_code=status, content=content)
+
+
+async def save_values(request: Request, body: dict, issued: bool = False) -> tuple[int, dict]:
+    """A save, as PUT /api/config's body says it ({store, values, force, force_key}):
+    (200, what was written) or (400, why not: "errors", "constraints" or "key_check", in
+    the reader's language). Raises HTTPException where the page cannot help (a store
+    that is not there, a write that failed). The one save for a key from any page on
+    the brain: the owner's paste, the operator's row, and the key OpenRouter's sign-in
+    gives (openrouter_connect.py, #282). The caller has authorized the request.
+    `issued`: the provider gave this key seconds ago (the sign-in), so a check that got
+    no answer (UNKNOWN) does not stop it; one that says it is refused still does, after
+    the check has asked again (ai_account.check_key's `issued`: a key just given can be
+    refused for a moment). A key that works on an account with no credit is saved, and
+    the answer's "notice" says so (ai_account.NO_ACCOUNT_CREDIT)."""
+    store = body.get("store") if isinstance(body, dict) else None
+    updates = body.get("values") if isinstance(body, dict) else None
     if store not in STORE_FILES or not isinstance(updates, dict) or not updates:
         raise HTTPException(status_code=400, detail="body must be {store: <env store>, values: {NAME: text|null}}")
     rows = _rows()
@@ -578,7 +593,7 @@ async def put_config(request: Request):
         else:
             secret_updates[name] = text
     if errors:
-        return JSONResponse(status_code=400, content={"errors": errors})
+        return 400, {"errors": errors}
 
     path = _store_path(store)
     if store in OPT_IN_STORES and not os.path.exists(path):
@@ -604,21 +619,22 @@ async def put_config(request: Request):
             merged[k] = v
     failed = check_constraints(rows, merged, touched=set(env_updates))
     if failed and not body.get("force"):
-        return JSONResponse(status_code=400, content={"constraints": failed})
+        return 400, {"constraints": failed}
     # The endpoint a key is checked and saved for: this save's, else the file's.
-    base = merged.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
+    base = endpoint(merged)
+    check = None
     if "LLM_API_KEY" in secret_updates:
         # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
         # saving the file would change nothing, so nothing is saved.
         if ai_account.shadowed(parse_env(current)) == ai_account.ELSEWHERE:
             check = ai_account.Check(ai_account.REFUSED, ai_account.SET_ELSEWHERE)
-            return JSONResponse(status_code=400,
-                                content={"key_check": check.public(_reader(request))})
-        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base)
+            return 400, {"key_check": check.public(_reader(request))}
+        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base,
+                                        issued=issued, account=True)
         logger.info(f"config: the new LLM key: {check.state}")
-        if check.state != ai_account.WORKS and not body.get("force_key"):
-            return JSONResponse(status_code=400,
-                                content={"key_check": check.public(_reader(request))})
+        if check.state != ai_account.WORKS and not body.get("force_key") and not (
+                issued and check.state == ai_account.UNKNOWN):
+            return 400, {"key_check": check.public(_reader(request))}
 
     # The key first, through the one save (ai_account.save_key: the brain's file and
     # OpenClaw's, both or neither, #281); if what follows fails, it is taken back.
@@ -627,8 +643,7 @@ async def put_config(request: Request):
         try:
             saved = await ai_account.save_key(secret_updates["LLM_API_KEY"], base)
         except ai_account.NotSaved as e:
-            return JSONResponse(status_code=400, content={
-                "errors": {"LLM_API_KEY": _reader(request)._(e.reason)}})  # N_() in ai_account
+            return 400, {"errors": {"LLM_API_KEY": _reader(request)._(e.reason)}}  # N_() in ai_account
     try:
         if env_updates:
             new_text = render_env(current, env_updates)
@@ -661,8 +676,11 @@ async def put_config(request: Request):
         ai_account.forget_env_copy()  # this brain reads the new file from the next session
     if superseded:
         logger.info(f"config: {STORE_FILES[store]} copy of {', '.join(superseded)} dropped — the file wins now")
-    return {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
-            "secrets": sorted(secret_updates), "superseded": superseded, "warnings": failed}
+    answer = {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
+              "secrets": sorted(secret_updates), "superseded": superseded, "warnings": failed}
+    if check is not None and check.note:
+        answer["notice"] = _reader(request)._(check.note)
+    return 200, answer
 
 
 def _reader(request: Request) -> i18n.T:
@@ -692,25 +710,61 @@ ACCOUNT_TEXT = {
     "advanced": N_("Show advanced"),
     "trust": N_("If your phone warns that this page is not private, here is how to trust "
                 "Teaport."),
+    # OpenRouter's sign-in (openrouter_connect.py, #282), above the paste field.
+    "intro_connect": N_("Teaport uses an OpenRouter account for its answers. To use your "
+                        "own, connect it here, or paste a key from it."),
+    "connect": N_("Connect your OpenRouter account"),
+    # The sign-in returns through Teaspoon's page (a Finish button), or, without that
+    # page, OpenRouter shows a code to bring back here (openrouter_connect.start).
+    "connect_note": N_("You sign in to OpenRouter on this phone and approve Teaport. Then a "
+                       "Teaport page asks you to tap Finish."),
+    "connect_note_code": N_("You sign in to OpenRouter on this phone and approve Teaport. "
+                            "OpenRouter then shows a code: copy it, come back to Teaport's "
+                            "settings, and paste it into Code from OpenRouter."),
+    "code_help": N_("If OpenRouter showed you a code, paste it here."),
+    "code": N_("Code from OpenRouter"),
+    "code_send": N_("Connect"),
+    "connecting": N_("Connecting…"),
+    # A key the sign-in gave that could not be saved (openrouter_connect.HELD_SECS).
+    "retry_help": N_("Teaport still has the key from your OpenRouter sign-in. Tap Save it "
+                     "again to try once more."),
+    "retry": N_("Save it again"),
 }
+
+
+async def brain_env() -> dict[str, str]:
+    """brain.env's values as the file has them now ({} when it cannot be read)."""
+    return parse_env(await asyncio.to_thread(_read_text, _store_path("brain_env")) or "")
+
+
+def endpoint(brain_env: dict[str, str]) -> str | None:
+    """The AI endpoint a key is for: brain.env's LLM_BASE_URL as the file has it now
+    (a save on this page changes it before any restart), else this process's."""
+    return brain_env.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
 
 
 @router.get("/api/account")
 async def account(request: Request):
     """The owner's AI account step: whether it is offered here (the box's endpoint is
     OpenRouter's: OpenRouter keys only, #283), whether a key is set, how the trial
-    credit stands (credit.py, #280), and the step's words. The key itself is never
-    returned."""
+    credit stands (credit.py, #280), whether OpenRouter's sign-in is offered (#282), and
+    the step's words. The key itself is never returned."""
+    from teaport_brain import openrouter_connect  # it builds on this module
     _authorize(request)
     credit.MONITOR.poke()  # the owner looks at the account: read the credit again, soon
     t = _reader(request)
     rows = _rows()
-    text = await asyncio.to_thread(_read_text, _store_path("brain_env"))
-    stored = parse_env(text or "")
-    base = stored.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
+    stored = await brain_env()
+    base = endpoint(stored)
     state = credit.MONITOR.state()
+    try:
+        connect = await openrouter_connect.status(request, stored)
+    except Exception as e:  # noqa: BLE001 -- the paste field never depends on the sign-in
+        logger.warning(f"config: the sign-in's state could not be read ({e!r})")
+        connect = {"offered": False}
     return {"offered": ai_account.is_openrouter(base),
             "key_set": _secret_is_set(rows["LLM_API_KEY"], stored),
+            "connect": connect,
             # The trial credit (#280): its state, and the page's line about it (None off it).
             "credit": {"state": state, "line": credit.MONITOR.page_line(t)},
             "trusted_cert": settings_access.pairing.TRUSTED_CERT,

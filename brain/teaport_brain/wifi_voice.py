@@ -113,6 +113,9 @@ AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
 # #279): saved, or not (refused, or it could not be checked). The quoted words are the
 # settings phrase (tests/test_i18n.py).
 ACCOUNT_SAVED_TEXT = N_("Your AI account is connected.")
+# The same, for an OpenRouter account with nothing to spend (ai_account.NO_ACCOUNT_CREDIT).
+ACCOUNT_NO_CREDIT_TEXT = N_("Your AI account is connected, but it has no credit yet. Add some "
+                            "on OpenRouter's website, and then I can answer.")
 ACCOUNT_NOT_SAVED_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
                             "save it. Say \"open my settings\" to try again.")
 # The same where "open my settings" is not usable (settings_access.usable).
@@ -352,6 +355,7 @@ class PhraseVoice(FrameProcessor):
         self._bot_speaking = False
         self._quiet_since = -math.inf
         self._said: deque = deque(maxlen=8)  # (when, normalized line)
+        self.says = 0  # lines say() has started: whether a step got as far as speaking
 
     @property
     def t(self) -> i18n.T:
@@ -359,6 +363,7 @@ class PhraseVoice(FrameProcessor):
 
     # -- speaking
     async def say(self, text: str) -> None:
+        self.says += 1
         self.note_said(text)
         await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
 
@@ -744,6 +749,20 @@ class WifiSetupVoice(PhraseVoice):
             return
         self.notes.add_notice(f"Wi-Fi setup ended: {outcome}")
 
+    async def _offer_account(self, line: str) -> bool:
+        """Online, with no key typed on the setup page: offer to connect the owner's
+        OpenRouter account where Settings is usable here and the box has no key of the
+        owner's (openrouter_connect.offer_after_setup, owner decision on #282). True when
+        it was said, with `line` first -- or once anything was said before it broke, so
+        the line is never said twice."""
+        from teaport_brain import openrouter_connect
+        before = self.says
+        try:
+            return await openrouter_connect.offer_after_setup(self, line)
+        except Exception as e:  # noqa: BLE001 -- the connected line is said regardless
+            logger.warning(f"wifi setup: the account offer failed ({e!r})")
+            return self.says != before
+
     async def _announce(self, status: dict) -> None:
         phase, t = status["phase"], self.t
         network = status.get("target") or t._("your network")
@@ -767,7 +786,9 @@ class WifiSetupVoice(PhraseVoice):
             saved = account.get("result") == "saved"
             self._ended((f"connected to {json.dumps(target, ensure_ascii=False)}"
                          if target else "connected") + "; the box is online." + (
-                " The owner's AI account key from the setup page was saved." if saved else
+                " The owner's AI account key from the setup page was saved"
+                + (" (its OpenRouter account has no credit yet)." if account.get("no_credit")
+                   else ".") if saved else
                 f" The AI account key typed on the setup page was not saved "
                 f"({account.get('result')}: {account.get('reason') or 'no reason'})."
                 if account else ""), online=True)
@@ -776,8 +797,12 @@ class WifiSetupVoice(PhraseVoice):
             _first_boot().reached_online("Wi-Fi setup connected")
             line = t._("I'm connected to {network}, and I'm online again.").format(network=network)
             if account:
-                line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT
-                                  if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
+                line += " " + t._((ACCOUNT_NO_CREDIT_TEXT if account.get("no_credit")
+                                   else ACCOUNT_SAVED_TEXT) if saved
+                                  else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable
+                                  else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
+            elif await self._offer_account(line):
+                return  # said, with the Settings code to connect the account (#282)
             await self.say(line)
         elif phase == "timeout":
             self.state = "idle"

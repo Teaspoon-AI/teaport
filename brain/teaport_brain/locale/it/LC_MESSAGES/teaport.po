@@ -551,3 +551,118 @@ msgstr "Il credito di prova è quasi esaurito: restano circa {amount}. Collega i
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "Il credito di prova è esaurito. Collega il tuo account perché Teaport possa tornare a rispondere."
+
+msgid "Back to settings"
+msgstr "Torna alle impostazioni"
+
+msgid "Code from OpenRouter"
+msgstr "Codice di OpenRouter"
+
+msgid "Connect your OpenRouter account"
+msgstr "Collega il tuo account OpenRouter"
+
+msgid "Connecting…"
+msgstr "Collegamento in corso…"
+
+msgid "Finish"
+msgstr "Fine"
+
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter non ha accettato l'accesso"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter non ha collegato l'account. Puoi riprovare dalle impostazioni di Teaport, oppure incollare lì una chiave."
+
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "Tocca Fine per collegare il tuo account OpenRouter a Teaport."
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport non è riuscito a collegare il tuo account OpenRouter"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport non è riuscito a collegare il tuo account OpenRouter: {reason}. Puoi riprovare dalle impostazioni di Teaport, oppure incollare lì una chiave."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport usa un account OpenRouter per le sue risposte. Per usare il tuo, collegalo qui oppure incolla una sua chiave."
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "Teaport userà il tuo account OpenRouter dalla prossima conversazione."
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "Le impostazioni di Teaport si sono chiuse su questo telefono. Di' «apri le impostazioni», poi ricollega il tuo account."
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "Questo collegamento è scaduto. Torna alle impostazioni di Teaport e ricollega il tuo account."
+
+
+
+msgid "Your OpenRouter account is connected"
+msgstr "Il tuo account OpenRouter è collegato"
+
+msgid "Connecting your OpenRouter account to Teaport"
+msgstr "Collegamento del tuo account OpenRouter a Teaport"
+
+msgid "Continue to Teaport"
+msgstr "Continua su Teaport"
+
+msgid "Copied"
+msgstr "Copiato"
+
+msgid "Copy code"
+msgstr "Copia il codice"
+
+msgid "If OpenRouter showed you a code, paste it here."
+msgstr "Se OpenRouter ti ha mostrato un codice, incollalo qui."
+
+msgid "If that doesn't work: copy this code, open Teaport's settings on this phone, and paste it into {field}. It works once, in the next ten minutes."
+msgstr "Se non funziona: copia questo codice, apri le impostazioni di Teaport su questo telefono e incollalo in {field}. Funziona una volta, nei prossimi dieci minuti."
+
+msgid "If your phone warns that the connection isn't private, it's the same warning you saw when you opened Teaport's settings."
+msgstr "Se il telefono avvisa che la connessione non è privata, è lo stesso avviso che hai visto aprendo le impostazioni di Teaport."
+
+msgid "Now let's connect your OpenRouter account. I've put a code on my screen. Scan it with your phone's camera, tap the link that appears, and follow the steps on your phone."
+msgstr "Ora colleghiamo il tuo account OpenRouter. Ho messo un codice sul mio schermo. Inquadralo con la fotocamera del telefono, tocca il link che compare e segui i passaggi sul telefono."
+
+msgid "Now let's connect your OpenRouter account. In your phone's browser, go to {address}, enter the code {code}, and follow the steps there. The code works once, for the next five minutes."
+msgstr "Ora colleghiamo il tuo account OpenRouter. Nel browser del telefono vai su {address}, inserisci il codice {code} e segui i passaggi. Il codice funziona una volta, per i prossimi cinque minuti."
+
+msgid "Save it again"
+msgstr "Salvala di nuovo"
+
+msgid "Teaport couldn't save the key"
+msgstr "Teaport non è riuscito a salvare la chiave"
+
+msgid "Teaport no longer has that key. Tap Connect your OpenRouter account to sign in again."
+msgstr "Teaport non ha più quella chiave. Tocca Collega il tuo account OpenRouter per accedere di nuovo."
+
+msgid "Teaport still has the key from your OpenRouter sign-in. Tap Save it again to try once more."
+msgstr "Teaport ha ancora la chiave del tuo accesso a OpenRouter. Tocca Salvala di nuovo per riprovare."
+
+msgid "That doesn't look like a code from OpenRouter. Check it and paste it again."
+msgstr "Non sembra un codice di OpenRouter. Controllalo e incollalo di nuovo."
+
+msgid "There's no sign-in waiting for a code. Tap Connect your OpenRouter account to start a new one."
+msgstr "Nessun accesso sta aspettando un codice. Tocca Collega il tuo account OpenRouter per iniziarne uno nuovo."
+
+msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
+msgstr "Questo link non porta a un Teaport su una rete domestica, quindi questa pagina non va avanti."
+
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "Per collegare invece il tuo account OpenRouter accedendo a OpenRouter, lascia vuoto questo campo e finisci di configurare il Wi-Fi. Poi Teaport ti mostra come fare, oppure puoi dire «apri le impostazioni»."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
+msgstr "Accedi a OpenRouter su questo telefono e autorizzi Teaport. OpenRouter mostra poi un codice: copialo, torna alle impostazioni di Teaport e incollalo in Codice di OpenRouter."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. Then a Teaport page asks you to tap Finish."
+msgstr "Accedi a OpenRouter su questo telefono e autorizzi Teaport. Poi una pagina di Teaport ti chiede di toccare Fine."
+
+msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
+msgstr "Il telefono deve essere sulla stessa rete Wi-Fi di Teaport. Se non va avanti da solo, tocca il pulsante."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "Il tuo account OpenRouter non ha ancora credito, quindi Teaport non può rispondere finché non ne aggiungi su openrouter.ai/settings/credits."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "Il tuo account IA è collegato, ma non ha ancora credito. Aggiungine sul sito di OpenRouter e poi potrò rispondere."

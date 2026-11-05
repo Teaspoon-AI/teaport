@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2177-2186#38d9c1ca; install.sh:2087#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2188-2197#38d9c1ca; install.sh:2087#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2152-2162#39346419; brain/teaport_brain/static/config.html:283-293#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2163-2173#39346419; brain/teaport_brain/static/config.html:285-295#2b63b6f7 -->
 
 To change a setting there:
 
@@ -42,21 +42,43 @@ On a device with a front door, the owner can reach the same page from a phone wi
 
 1. The device shows a QR code under the title "Settings", with the code itself under it. Scan the QR code with the phone's camera, then tap the link that the camera shows. A device without a screen that draws QR codes reads out an address, `DEVICE_NAME.local/settings` for example, and a six-character code instead: open the address in the phone's browser and enter the code there.
 2. Tap **Continue**. You can use the code one time, within five minutes. Asking again replaces it.
-3. The phone shows the **AI account** step at the top: paste a key from your OpenRouter account and tap **Test and save**. Tap **Show advanced** for every other setting on the page.
+3. The phone shows the **AI account** step at the top: tap **Connect your OpenRouter account**, or paste a key from your OpenRouter account and tap **Test and save**. Tap **Show advanced** for every other setting on the page.
 
 <!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:88-91#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
 
 The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session nothing on that port opens, whether or not `GATEWAY_TOKEN` is set. The token keeps working on `http://DEVICE_IP:7861/config`.
 
-<!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:272-277#251d20e7; brain/teaport_brain/settings_access.py:207-216#f38a8411 -->
+<!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:280-290#8831dd56; brain/teaport_brain/settings_access.py:215-224#f38a8411 -->
 
 Until the phone trusts the device's certificate, the browser warns that the connection is not private. The pages link to the steps that install the device's certificate on each kind of phone and computer.
 
-<!-- source: brain/teaport_brain/settings_access.py:359-368#35429dc2 -->
+<!-- source: brain/teaport_brain/settings_access.py:373-382#35429dc2 -->
 
 If the device is on no network at all and spoken Wi-Fi setup is on, the device asks you to get it online first: a phone cannot reach it yet. A home network without internet is enough. In setup mode the setup page takes the key too, as [Connect the device to Wi-Fi](/guides/wifi-setup/#connect-your-ai-account) shows.
 
-<!-- source: brain/teaport_brain/settings_access.py:93#fd6140cc -->
+<!-- source: brain/teaport_brain/settings_access.py:101#fd6140cc -->
+
+## Connect your OpenRouter account
+
+In the **AI account** step, **Connect your OpenRouter account** signs you in to OpenRouter instead of pasting a key:
+
+1. Tap **Connect your OpenRouter account**. The phone goes to OpenRouter. Sign in, or create an account, and approve the connection.
+2. OpenRouter sends the phone to a Teaspoon page, which sends it on to the device's settings. The phone must be on the same network as the device.
+3. Tap **Finish**. The device gets a key for your account from OpenRouter, checks it, and saves it the way it saves a pasted key, so OpenClaw gets it too and the trial credit warnings stop. A new key can be refused for a few seconds after OpenRouter makes it, so the device keeps asking for up to 6 more seconds before it treats the key as refused. If your OpenRouter account has no credit yet, the device still saves the key and says to add credit on OpenRouter before it can answer.
+
+<!-- source: brain/teaport_brain/openrouter_connect.py:34-57#5068eb0d; brain/teaport_brain/ai_account.py:405-414#576c7858; brain/teaport_brain/ai_account.py:471-506#c7fe96e5 -->
+
+The Teaspoon page is set by `TEAPORT_OPENROUTER_CONNECT_URL`. When that page does not answer, the sign-in works without it: OpenRouter shows a code at the end instead of sending the phone on. Copy the code, go back to the settings, and paste it into **Code from OpenRouter**. The Teaspoon page also shows the code when it cannot send the phone on. You can finish a sign-in one time, within 20 minutes of tapping the button, and OpenRouter's code expires 10 minutes after you approve. When anything fails, the page says why in plain words and the paste field stays. If the device gets a key but cannot save it, for example because OpenClaw does not take it, the settings offer **Save it again** for that key for 10 minutes.
+
+<!-- source: brain/teaport_brain/openrouter_connect.py:18-32#acc5ebd9; brain/teaport_brain/openrouter_connect.py:63-69#30042127 -->
+
+The button shows only on the settings site, at the port `TEAPORT_SETTINGS_PORT` sets (8443 by default), only when the device's endpoint is OpenRouter, and not when `LLM_API_KEY` is set somewhere the settings cannot change. The Teaspoon page keeps no secret: the code is useless without a verifier that only the device holds. The page sends the phone only to an HTTPS address on a home network, a `.local` name or a private IP address.
+
+<!-- source: brain/teaport_brain/openrouter_connect.py:224-229#9f8c7080 -->
+
+Setup mode can't use the sign-in, because neither the phone nor the device has internet there. When Wi-Fi setup ends without a key on the setup page, and the device has no key of your own, the device offers it: it says so out loud and shows the settings QR code on its screen, the same code that "open my settings" shows. A device without a screen that draws it reads out the address and the code instead.
+
+<!-- source: brain/teaport_brain/openrouter_connect.py:232-247#4ad57aee; brain/teaport_brain/settings_access.py:94-99#d3d45cfa -->
 
 ## Change a setting in a configuration file
 
@@ -140,11 +162,11 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 
 1. Open the configuration page as [Change a setting in the configuration page](/guides/configuration/#change-a-setting-in-the-configuration-page) shows.
 2. In the language model section, enter your endpoint in `LLM_BASE_URL`.
-3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies. A server that ignores keys still needs a placeholder, `sk-local` for example.
+3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page first sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. For an OpenRouter key that works, the page also reads the account's credit at `/api/v1/credits`, or, when OpenRouter does not answer that for the key, the key's own record, where an account that has never paid for credit, with a key that has no limit of its own, counts as having none. When the account has no credit, it saves the key and says that the device can't answer until you add credit on OpenRouter. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies. A server that ignores keys still needs a placeholder, `sk-local` for example.
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:140-150#7532ad3d; brain/teaport_brain/config_ui.py:608-621#0c2a4295 -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:149-159#7532ad3d; brain/teaport_brain/config_ui.py:620-637#3511862a; brain/teaport_brain/ai_account.py:471-506#c7fe96e5 -->
 
 ### In the configuration files
 
@@ -188,7 +210,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:210-216#1b6deadd; brain/teaport_brain/config_schema.toml:1762-1798#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:225-231#1b6deadd; brain/teaport_brain/config_schema.toml:1773-1809#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 

@@ -15,8 +15,9 @@
 #     internet). Nobody is on that page by then to say "save anyway", so only a key that
 #     works is saved; the voice says how it went (wifi_voice.py).
 #
-# Connecting with OpenRouter's OAuth (#282) ends the same way: whatever hands over a key
-# calls adopt(), which is check_key() then save_key().
+# Connecting with OpenRouter's sign-in (OAuth PKCE, #282, openrouter_connect.py) ends the
+# same way: the key exchange_code() gets for the sign-in is saved as Settings saves a
+# pasted one (config_ui.save_values: check_key, then save_key).
 #
 # save_key is the one save, whichever page: it writes the brain's key file (store_key) and,
 # on a box with OpenClaw, hands OpenClaw the same key (agent_key.give, #281: one key, one
@@ -38,10 +39,13 @@
 # brain's record of failed answers (llm_error_speaker.failure_reason, #205).
 #
 import asyncio
+import http.client
 import json
 import os
 import re
+import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,6 +70,10 @@ NO_SERVICE = N_("no AI service is set up on this box")
 UNREACHABLE = N_("the AI service didn't answer")
 REFUSED_BARE = N_("the AI service refused this key")
 NO_CREDIT = N_("this account has no credit left")
+# A key that works on an OpenRouter account with no credit (check_key, `account`): saved
+# all the same -- it is the owner's account -- with this said beside "saved".
+NO_ACCOUNT_CREDIT = N_("Your OpenRouter account has no credit yet, so Teaport can't answer "
+                       "until you add some at openrouter.ai/settings/credits.")
 SET_ELSEWHERE = N_("this box's key is set by its installer, so it can't be changed here")
 # A save the agent (OpenClaw) did not take: nothing changed (save_key).
 NOT_SHARED = N_("Teaport couldn't switch everything over to this key, so it kept the one "
@@ -83,6 +91,7 @@ class Check:
     reason: str = ""
     ours: bool = True
     data: dict = field(default_factory=dict)
+    note: str = ""           # a msgid said beside WORKS (NO_ACCOUNT_CREDIT), or ""
 
     def shown(self, t) -> str:
         """The reason in t's language (the provider's own words stay as they are)."""
@@ -148,6 +157,12 @@ def _check_url(base_url: str) -> str | None:
     if is_openrouter(base_url):
         return f"{parts.scheme}://{parts.netloc}/api/v1/key"
     return base_url.strip().rstrip("/") + "/models"
+
+
+def _credits_url(base_url: str) -> str:
+    """OpenRouter's account credit, for `base_url` (an OpenRouter one: _check_url)."""
+    parts = urllib.parse.urlsplit(base_url.strip())
+    return f"{parts.scheme}://{parts.netloc}/api/v1/credits"
 
 
 def _provider_words(body: bytes) -> str:
@@ -234,31 +249,146 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirects)
+class _Cutter:
+    """One request's deadline (time.monotonic) and the timers that enforce it, cancelled
+    when the request is over (_request)."""
+
+    def __init__(self, deadline: float):
+        self.deadline = deadline
+        self.timers: list[threading.Timer] = []
+
+    def cancel(self) -> None:
+        for timer in self.timers:
+            timer.cancel()
 
 
-def _request(url: str, key: str, timeout: float) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}",
-                                               "Accept": "application/json",
-                                               "User-Agent": "teaport"})
+def _cut_at(base, cutter: _Cutter):
+    """`base` (an http.client connection class) whose socket is shut down at the
+    cutter's deadline: every read after that ends at once. urllib's own timeout bounds
+    each socket wait, not the whole: a server dripping a byte per wait could hold a
+    request -- and the thread _deadline left it on -- for days. The cut is armed before
+    connecting, and the connect timeout is what is left, so the TCP connect and the TLS
+    handshake (on the plain socket, which the cut shuts down) are inside it too."""
+    class Cut(base):
+        def connect(self):
+            left = cutter.deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("the request took too long")
+            self.timeout, self._late = left, False
+            timer = threading.Timer(left, self._cut)
+            timer.daemon = True
+            cutter.timers.append(timer)
+            timer.start()
+            super().connect()
+            if self._late:  # the deadline passed while there was no socket yet to cut
+                self.close()
+                raise TimeoutError("the request took too long")
+
+        def _cut(self):
+            self._late = True
+            try:
+                if self.sock is not None:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:  # closed already
+                pass
+    return Cut
+
+
+class _CutHTTP(urllib.request.HTTPHandler):
+    def __init__(self, cutter: _Cutter):
+        super().__init__()
+        self.cutter = cutter
+
+    def http_open(self, req):
+        return self.do_open(_cut_at(http.client.HTTPConnection, self.cutter), req)
+
+
+class _CutHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, cutter: _Cutter):
+        super().__init__()
+        self.cutter = cutter
+
+    def https_open(self, req):
+        return self.do_open(_cut_at(http.client.HTTPSConnection, self.cutter), req,
+                            context=self._context)
+
+
+MAX_BODY_BYTES = 65536
+
+
+def _read(r, deadline: float) -> bytes:
+    """At most MAX_BODY_BYTES of `r`, and nothing past `deadline`."""
+    out = b""
+    while len(out) < MAX_BODY_BYTES:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("the answer took too long")
+        chunk = r.read1(MAX_BODY_BYTES - len(out))
+        if not chunk:
+            if getattr(r, "length", None):  # it said how long, and stopped short
+                raise OSError("the answer was cut short")
+            break
+        out += chunk
+    return out
+
+
+def _request(url: str, key: str | None, timeout: float,
+             body: bytes | None = None) -> tuple[int, bytes]:
+    """One request: a GET with `key` as its bearer, or with `body` a JSON POST (no key:
+    the sign-in's exchange, exchange_code). All of it within `timeout` (_cut_at), no
+    redirect followed (_NoRedirects). Raises OSError for no answer, a broken one included
+    (http.client's BadStatusLine, IncompleteRead, LineTooLong: a garbled answer is no
+    answer)."""
+    deadline = time.monotonic() + timeout
+    headers = {"Accept": "application/json", "User-Agent": "teaport"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers,
+                                 method="GET" if body is None else "POST")
+    cutter = _Cutter(deadline)
+    opener = urllib.request.build_opener(_NoRedirects, _CutHTTP(cutter), _CutHTTPS(cutter))
     try:
-        with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
-            return r.status, r.read(65536)
+        return _open(opener, req, timeout, deadline)
+    finally:
+        cutter.cancel()
+
+
+def _open(opener, req, timeout: float, deadline: float) -> tuple[int, bytes]:
+    try:
+        with opener.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
+            return r.status, _read(r, deadline)
     except urllib.error.HTTPError as e:  # 3xx (not followed), 4xx, 5xx
-        return e.code, e.read(65536) if e.fp is not None else b""
+        try:
+            return e.code, _read(e, deadline) if e.fp is not None else b""
+        except http.client.HTTPException as broken:
+            raise OSError(f"a broken answer ({type(broken).__name__})") from broken
+    except http.client.HTTPException as e:
+        raise OSError(f"a broken answer ({type(e).__name__})") from e
 
 
 def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
-    """(status, body) of an authenticated GET, within `timeout` overall: urllib's own
-    timeout bounds each socket wait but not the name lookup, and a router's DNS stall has
-    held this box before. Raises OSError for no answer (TimeoutError past the deadline:
-    the stuck lookup is left to finish on a daemon thread). Replaced in tests: no test
-    talks to a provider."""
+    """(status, body) of an authenticated GET, within `timeout` overall (_deadline).
+    Replaced in tests: no test talks to a provider."""
+    return _deadline(lambda: _request(url, key, timeout), timeout)
+
+
+def _post(url: str, body: bytes, timeout: float) -> tuple[int, bytes]:
+    """(status, body) of a JSON POST with no key, within `timeout` overall (_deadline).
+    Replaced in tests: no test talks to a provider."""
+    return _deadline(lambda: _request(url, None, timeout, body), timeout)
+
+
+def _deadline(call, timeout: float) -> tuple[int, bytes]:
+    """`call()`'s answer within `timeout` overall: urllib's own timeout bounds each socket
+    wait but not the name lookup, and a router's DNS stall has held this box before.
+    Raises OSError for no answer (TimeoutError past the deadline: the stuck lookup is
+    left to finish on a daemon thread)."""
     done: dict = {}
 
     def run():
         try:
-            done["answer"] = _request(url, key, timeout)
+            done["answer"] = call()
         except BaseException as e:  # noqa: BLE001 -- handed to the caller below
             done["error"] = e
 
@@ -272,9 +402,28 @@ def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
     return done["answer"]
 
 
-def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
+# A key OpenRouter's sign-in gave a moment ago can be refused (401) for a few seconds
+# before it is known everywhere (seen live, 150 ms after the exchange): such a key is
+# asked again after each of these waits before its refusal counts. A refusal there costs
+# the owner a whole new sign-in, and leaves the key behind on their account.
+ISSUED_RETRY_SECS = (1.0, 2.0, 3.0)
+# The waits between those asks and the clock the check's deadline is kept on; replaced
+# in tests.
+_sleep, _clock = time.sleep, time.monotonic
+# Less than this left before the deadline: no further request is begun.
+MIN_REQUEST_SECS = 1.0
+
+
+def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS,
+              issued: bool = False, account: bool = False) -> Check:
     """Does the endpoint at `base_url` accept `key`? One authenticated request (see the
-    module note). Never raises."""
+    module note). Never raises.
+    `issued`: the provider gave the key a moment ago (the sign-in): a 401 is asked again
+    (ISSUED_RETRY_SECS). `account`: for a save, an OpenRouter key that works is also
+    read against its account's credit (_account_note): none left is said (`note`), not
+    refused. The starter-credit monitor asks neither.
+    All of it within one deadline: `timeout`, plus the waits for an issued key (so 10 s
+    for a pasted key, 16 s for one just given, however many requests that holds)."""
     key = (key or "").strip()
     if not key:
         return Check(REFUSED, EMPTY)
@@ -283,11 +432,20 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     url = _check_url(base_url or "")
     if url is None:
         return Check(UNKNOWN, NO_SERVICE)
-    try:
-        status, body = _get(url, key, timeout)
-    except (OSError, ValueError) as e:  # URLError, a timeout, a refused connection
-        logger.info(f"ai account: the key check got no answer ({type(e).__name__})")
-        return Check(UNKNOWN, UNREACHABLE)
+    waits = list(ISSUED_RETRY_SECS) if issued else []
+    deadline = _clock() + timeout + sum(waits)
+    while True:
+        try:
+            status, body = _get(url, key, min(timeout, max(0.0, deadline - _clock())))
+        except (OSError, ValueError) as e:  # URLError, a timeout, a refused connection
+            logger.info(f"ai account: the key check got no answer ({type(e).__name__})")
+            return Check(UNKNOWN, UNREACHABLE)
+        if status != 401 or not waits or (
+                _clock() + waits[0] + MIN_REQUEST_SECS > deadline):
+            break
+        logger.info("ai account: the provider refused the key it just gave (401); asking "
+                    "again shortly")
+        _sleep(waits.pop(0))
     if status in (401, 402, 403):
         words = _provider_words(body)
         logger.info(f"ai account: the provider refused the key ({status})")
@@ -304,7 +462,104 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     remaining = credit_left(record).remaining
     if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
-    return Check(WORKS, data=record)
+    if not account:
+        return Check(WORKS, data=record)
+    left = min(timeout, deadline - _clock())
+    return Check(WORKS, data=record, note=_account_note(key, base_url, record, left))
+
+
+def _account_note(key: str, base_url: str, record: dict, timeout: float) -> str:
+    """NO_ACCOUNT_CREDIT when the key's OpenRouter account has no credit, else "". The
+    key's own limit cannot say it: a key with no limit of its own reads as having credit
+    whatever its account holds (seen live: a new account with nothing bought, whose key
+    passed the check and whose agent turns then failed with 402). Two readings:
+      * GET /api/v1/credits (total_credits minus total_usage, 0 or less: none). OpenRouter
+        documents it for management keys; when it answers the key all the same, it is
+        what counts, a paid account spent to nothing included -- except a total of 0
+        beside a record that says the account has paid (is_free_tier false): the two
+        disagree (zeros for a key not allowed to read the balance?), so nothing is said;
+      * otherwise the key's record (`record`): is_free_tier (the account has never paid
+        for credit) with no limit of its own. An account given credit without paying
+        would read as none here, as would a free account answering with a :free model;
+        the key is saved all the same, only the note is wrong.
+    Nothing read either way (no answer, a refusal, a shape not read): nothing said -- the
+    key was checked already. `timeout`: what is left of the check's deadline; under
+    MIN_REQUEST_SECS, /credits is not asked."""
+    data = {}
+    if timeout >= MIN_REQUEST_SECS:
+        try:
+            status, body = _get(_credits_url(base_url), key, timeout)
+            if status == 200:
+                data = key_record(json.loads(body.decode("utf-8", "replace")))
+            else:
+                logger.info(f"ai account: the account credit check got HTTP {status}")
+        except (OSError, ValueError) as e:
+            logger.info(f"ai account: the account credit check got no answer "
+                        f"({type(e).__name__})")
+    total, used = _number(data.get("total_credits")), _number(data.get("total_usage"))
+    if total is not None and used is not None:
+        empty = total - used <= 0 and (total > 0 or record.get("is_free_tier") is not False)
+    else:
+        empty = record.get("is_free_tier") is True and record.get("limit") is None
+    if empty:
+        logger.info("ai account: the key works, but its OpenRouter account has no credit")
+    return NO_ACCOUNT_CREDIT if empty else ""
+
+
+# ------------------------------------------------------------------ the sign-in (#282)
+# OpenRouter's OAuth PKCE (https://openrouter.ai/docs/use-cases/oauth-pkce): the code its
+# sign-in hands back, with the verifier only this box holds, is exchanged for a key, once:
+# POST /api/v1/auth/keys {code, code_verifier, code_challenge_method}, the answer's "key".
+# A code is single-use and lasts ten minutes. The flow around it is openrouter_connect.py;
+# the key goes the way every key goes: checked, then saved.
+EXCHANGE_URL = f"https://{OPENROUTER_HOST}/api/v1/auth/keys"
+CODE_MAX_CHARS = 512
+SIGN_IN_REFUSED = N_("OpenRouter didn't accept the sign-in")
+
+
+def code_shape(code: str) -> str | None:
+    """`code` stripped when it could be a sign-in code (one printable word of at most
+    CODE_MAX_CHARS), else None: what is not one is never sent, nor spends a sign-in."""
+    code = (code or "").strip()
+    if not code or len(code) > CODE_MAX_CHARS or not code.isprintable() or " " in code:
+        return None
+    return code
+
+
+def exchange_code(code: str, verifier: str, timeout: float = CHECK_TIMEOUT_SECS
+                  ) -> tuple[str | None, str]:
+    """(the key, "") for a sign-in code and the verifier it was asked with, or (None, a
+    reason msgid): SIGN_IN_REFUSED for a code OpenRouter does not take (wrong, used or
+    expired: a 400 or 403; or not a code at all, code_shape), UNREACHABLE for no answer,
+    or an answer without a key. Never raises. The key is kept out of the journal from
+    here on (never_log)."""
+    code = code_shape(code)
+    if code is None:
+        return None, SIGN_IN_REFUSED
+    body = json.dumps({"code": code, "code_verifier": verifier,
+                       "code_challenge_method": "S256"}).encode()
+    try:
+        status, raw = _post(EXCHANGE_URL, body, timeout)
+    except (OSError, ValueError) as e:
+        logger.info(f"ai account: the sign-in exchange got no answer ({type(e).__name__})")
+        return None, UNREACHABLE
+    if status in (400, 401, 403):
+        logger.info(f"ai account: OpenRouter refused the sign-in code ({status})")
+        return None, SIGN_IN_REFUSED
+    if not 200 <= status < 300:
+        logger.info(f"ai account: the sign-in exchange got HTTP {status}")
+        return None, UNREACHABLE
+    try:
+        key = json.loads(raw.decode("utf-8", "replace")).get("key")
+    except (ValueError, AttributeError):
+        key = None
+    if not isinstance(key, str) or not key.strip():
+        logger.info("ai account: the sign-in exchange answered without a key")
+        return None, UNREACHABLE
+    key = key.strip()
+    conversation_log.never_log(key, secs=3600.0)
+    logger.info("ai account: OpenRouter gave a key for the sign-in")
+    return key, ""
 
 
 # ------------------------------------------------------------------ keeping it
@@ -484,7 +739,18 @@ async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
     except OSError as e:
         logger.warning(f"ai account: the key was saved, but its state could not be written ({e!r})")
         gen = agent_key.generation()
+    for hook in SAVED_HOOKS:
+        try:
+            hook(key)
+        except Exception as e:  # noqa: BLE001 -- the save stands
+            logger.warning(f"ai account: a hook after the save failed ({e!r})")
     return Saved(key, prev_file, prev, openrouter, gen)
+
+
+# Called with the key after every save that went through (save_key), whichever page
+# made it: whatever holds a key for a later save lets go of it, so an older key is never
+# saved over this one (openrouter_connect's held sign-in key, #282).
+SAVED_HOOKS: list = []
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it
@@ -514,18 +780,35 @@ def forget_env_copy() -> None:
 
 async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
     """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
-    where nobody is left to say "save anyway" (and #282's, once OAuth hands over a key).
+    where nobody is left to say "save anyway". A key that works on an account with no
+    credit is saved, its Check's `note` says so (check_key's `account`).
     With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
     key that works but that OpenClaw did not take: UNKNOWN, with NotSaved's reason."""
     if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
-    result = await asyncio.to_thread(check_key, key, base_url, timeout)
+    result = await asyncio.to_thread(check_key, key, base_url, timeout, account=True)
     if result.state == WORKS:
         try:
             await save_key(key, base_url)
         except NotSaved as e:
             return Check(UNKNOWN, e.reason, data=result.data)
     return result
+
+
+def sign_in_after_setup(base_url: str | None, brain_env: dict | None, settings_site: bool) -> bool:
+    """Whether the end of Wi-Fi setup offers OpenRouter's sign-in (#282): the box has a
+    Settings site, its endpoint is OpenRouter's, no key is set where Settings cannot change
+    it (shadowed: `brain_env` as for that), and the box has no key of the owner's (none, or
+    the starter key: credit.on_starter). The one rule for the offer
+    (openrouter_connect.offer_after_setup, which also needs "open my settings" heard where
+    it is said) and for the setup page's line about it (wifi_setup), each passing what it
+    can read: the setup unit cannot read brain.env apart from its environment (None), so
+    there a copy in brain.env counts as set elsewhere and the page promises nothing the
+    box might not do."""
+    from teaport_brain import credit  # it imports this module
+    key = current_key()
+    return (settings_site and is_openrouter(base_url)
+            and shadowed(brain_env) != ELSEWHERE and (not key or credit.on_starter(key)))
 
 
 def adopt_blocking(key: str, base_url: str | None) -> Check:

@@ -811,7 +811,7 @@ NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 _PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style></head>
+<meta name="referrer" content="{referrer}"><title>{title}</title><style>{css}</style></head>
 <body><main><div class="logo">{logo}</div>
 <h1>{heading}</h1>
 {body}</main>{script}</body></html>"""
@@ -915,13 +915,20 @@ def trust(*parts: str) -> str:
 
 
 def page(heading: str, body: str, status: int = 200, script: str = "", lang: str = "en",
-         dir: str = "ltr", headers: dict | None = None) -> HTMLResponse:
+         dir: str = "ltr", headers: dict | None = None,
+         referrer: str = "no-referrer") -> HTMLResponse:
     """`body` is HTML, built from para() and fixed markup. `lang` and `dir`: the page's
-    language (Settings' pages are translated, settings_access.py; these are English)."""
+    language (Settings' pages are translated, settings_access.py; these are English).
+    `referrer`: the page's referrer policy, header and meta tag alike (the meta tag
+    overrides the header). no-referrer by default; but a form on a page under it posts
+    with `Origin: null`, so a page whose form must pass an Origin check
+    (settings_access.same_origin) says "same-origin"."""
     return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS + _EXTRA_CSS,
                                      logo=logo_html(), heading=html.escape(heading),
-                                     body=body, script=script, lang=lang, dir=dir),
-                        status_code=status, headers={**NO_STORE, **(headers or {})})
+                                     body=body, script=script, lang=lang, dir=dir,
+                                     referrer=html.escape(referrer, quote=True)),
+                        status_code=status,
+                        headers={**NO_STORE, "Referrer-Policy": referrer, **(headers or {})})
 
 
 def _choose(code: str) -> HTMLResponse:
@@ -1015,16 +1022,18 @@ def _find(code: str) -> tuple[str, _Session | None]:
     return state, (s if state == "live" else None)
 
 
-async def front_door_request(request: Request, post: bool) -> tuple[Response | None, dict]:
+async def front_door_request(request: Request, post: bool, limit: int = 0
+                             ) -> tuple[Response | None, dict]:
     """The checks a code page (pairing's /p/, Settings' /settings/) makes before it looks
     at a code: (a response to answer with, {}) -- 404 for anything that did not come
-    through the front door over HTTPS (no guess either), 413 for a POST body over
-    MAX_FORM_BYTES (spends nothing) -- or (None, the POST's form; {} for a GET)."""
+    through the front door over HTTPS (no guess either), 413 for a POST body over `limit`
+    (MAX_FORM_BYTES by default; spends nothing) -- or (None, the POST's form; {} for a
+    GET)."""
     if not via_front_door(request):
         return PlainTextResponse(_NOT_FOUND, status_code=404), {}
     if not post:
         return None, {}
-    form = await small_form(request)
+    form = await small_form(request, limit or MAX_FORM_BYTES)
     if form is None:
         return PlainTextResponse("Payload Too Large", status_code=413), {}
     return None, form
@@ -1037,16 +1046,16 @@ _NOT_FOUND = "Not Found"
 MAX_FORM_BYTES = 1024
 
 
-async def small_form(request: Request) -> dict[str, list[str]] | None:
-    """The urlencoded form, or None when the body is (or says it is) over
-    MAX_FORM_BYTES."""
+async def small_form(request: Request, limit: int = MAX_FORM_BYTES
+                     ) -> dict[str, list[str]] | None:
+    """The urlencoded form, or None when the body is (or says it is) over `limit`."""
     declared = (request.headers.get("content-length") or "").strip()
-    if declared and (not declared.isdigit() or int(declared) > MAX_FORM_BYTES):
+    if declared and (not declared.isdigit() or int(declared) > limit):
         return None
     body = b""
     async for chunk in request.stream():
         body += chunk
-        if len(body) > MAX_FORM_BYTES:
+        if len(body) > limit:
             return None
     return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
 router = APIRouter()

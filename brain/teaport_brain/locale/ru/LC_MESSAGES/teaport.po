@@ -551,3 +551,118 @@ msgstr "Пробный баланс почти закончился: остал�
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "Пробный баланс закончился. Подключите свой аккаунт, чтобы Teaport снова мог отвечать."
+
+msgid "Back to settings"
+msgstr "Назад к настройкам"
+
+msgid "Code from OpenRouter"
+msgstr "Код от OpenRouter"
+
+msgid "Connect your OpenRouter account"
+msgstr "Подключить аккаунт OpenRouter"
+
+msgid "Connecting…"
+msgstr "Подключение…"
+
+msgid "Finish"
+msgstr "Готово"
+
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter не принял вход"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter не подключил аккаунт. Можно попробовать снова в настройках Teaport или вставить там ключ."
+
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "Нажмите «Готово», чтобы подключить аккаунт OpenRouter к Teaport."
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport не удалось подключить ваш аккаунт OpenRouter"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport не удалось подключить ваш аккаунт OpenRouter: {reason}. Можно попробовать снова в настройках Teaport или вставить там ключ."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport использует для ответов аккаунт OpenRouter. Чтобы использовать свой, подключите его здесь или вставьте из него ключ."
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "Teaport начнёт использовать ваш аккаунт OpenRouter со следующего разговора."
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "Настройки Teaport на этом телефоне закрылись. Скажите «открой настройки», а затем снова подключите аккаунт."
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "Время на подключение истекло. Вернитесь в настройки Teaport и снова подключите аккаунт."
+
+
+
+msgid "Your OpenRouter account is connected"
+msgstr "Ваш аккаунт OpenRouter подключён"
+
+msgid "Connecting your OpenRouter account to Teaport"
+msgstr "Подключаем ваш аккаунт OpenRouter к Teaport"
+
+msgid "Continue to Teaport"
+msgstr "Перейти к Teaport"
+
+msgid "Copied"
+msgstr "Скопировано"
+
+msgid "Copy code"
+msgstr "Скопировать код"
+
+msgid "If OpenRouter showed you a code, paste it here."
+msgstr "Если OpenRouter показал вам код, вставьте его сюда."
+
+msgid "If that doesn't work: copy this code, open Teaport's settings on this phone, and paste it into {field}. It works once, in the next ten minutes."
+msgstr "Если не получилось: скопируйте этот код, откройте настройки Teaport на этом телефоне и вставьте его в поле «{field}». Код работает один раз, в течение десяти минут."
+
+msgid "If your phone warns that the connection isn't private, it's the same warning you saw when you opened Teaport's settings."
+msgstr "Если телефон предупреждает, что подключение не защищено, это то же предупреждение, что и при открытии настроек Teaport."
+
+msgid "Now let's connect your OpenRouter account. I've put a code on my screen. Scan it with your phone's camera, tap the link that appears, and follow the steps on your phone."
+msgstr "Теперь подключим ваш аккаунт OpenRouter. Я вывел код на экран. Отсканируйте его камерой телефона, нажмите на появившуюся ссылку и следуйте шагам на телефоне."
+
+msgid "Now let's connect your OpenRouter account. In your phone's browser, go to {address}, enter the code {code}, and follow the steps there. The code works once, for the next five minutes."
+msgstr "Теперь подключим ваш аккаунт OpenRouter. В браузере телефона откройте {address}, введите код {code} и следуйте шагам. Код работает один раз, в течение пяти минут."
+
+msgid "Save it again"
+msgstr "Сохранить ещё раз"
+
+msgid "Teaport couldn't save the key"
+msgstr "Teaport не удалось сохранить ключ"
+
+msgid "Teaport no longer has that key. Tap Connect your OpenRouter account to sign in again."
+msgstr "У Teaport больше нет этого ключа. Нажмите «Подключить аккаунт OpenRouter», чтобы войти снова."
+
+msgid "Teaport still has the key from your OpenRouter sign-in. Tap Save it again to try once more."
+msgstr "У Teaport ещё есть ключ после вашего входа в OpenRouter. Нажмите «Сохранить ещё раз», чтобы попробовать снова."
+
+msgid "That doesn't look like a code from OpenRouter. Check it and paste it again."
+msgstr "Это не похоже на код от OpenRouter. Проверьте его и вставьте ещё раз."
+
+msgid "There's no sign-in waiting for a code. Tap Connect your OpenRouter account to start a new one."
+msgstr "Сейчас нет входа, который ждёт код. Нажмите «Подключить аккаунт OpenRouter», чтобы начать новый."
+
+msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
+msgstr "Эта ссылка не ведёт к Teaport в домашней сети, поэтому страница не будет по ней переходить."
+
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "Чтобы подключить аккаунт OpenRouter через вход, оставьте это поле пустым и закончите настройку Wi-Fi. Потом Teaport покажет, как это сделать, или скажите «открой настройки»."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
+msgstr "Вы входите в OpenRouter на этом телефоне и разрешаете доступ Teaport. Затем OpenRouter показывает код: скопируйте его, вернитесь в настройки Teaport и вставьте его в поле «Код от OpenRouter»."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. Then a Teaport page asks you to tap Finish."
+msgstr "Вы входите в OpenRouter на этом телефоне и разрешаете доступ Teaport. Затем страница Teaport попросит нажать «Готово»."
+
+msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
+msgstr "Телефон должен быть в той же сети Wi-Fi, что и Teaport. Если переход не произойдёт сам, нажмите кнопку."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "На вашем аккаунте OpenRouter пока нет средств, поэтому Teaport не сможет отвечать, пока вы не пополните баланс на openrouter.ai/settings/credits."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "Ваш аккаунт ИИ подключён, но на нём пока нет средств. Пополните баланс на сайте OpenRouter, и тогда я смогу отвечать."

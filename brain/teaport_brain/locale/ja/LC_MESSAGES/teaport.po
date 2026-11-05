@@ -648,3 +648,118 @@ msgstr "お試し用クレジットがもうすぐなくなります（残り約
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "お試し用クレジットを使い切りました。Teaport がまたお答えできるように、ご自分のアカウントを接続してください。"
+
+msgid "Back to settings"
+msgstr "設定に戻る"
+
+msgid "Code from OpenRouter"
+msgstr "OpenRouter のコード"
+
+msgid "Connect your OpenRouter account"
+msgstr "OpenRouter アカウントを接続"
+
+msgid "Connecting…"
+msgstr "接続しています…"
+
+msgid "Finish"
+msgstr "完了"
+
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter がサインインを受け付けませんでした"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter でアカウントが接続されませんでした。Teaport の設定からもう一度試すか、そこでキーを貼り付けてください。"
+
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "「完了」をタップすると、OpenRouter アカウントが Teaport に接続されます。"
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport は OpenRouter アカウントを接続できませんでした"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport は OpenRouter アカウントを接続できませんでした：{reason}。Teaport の設定からもう一度試すか、そこでキーを貼り付けてください。"
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport は回答に OpenRouter のアカウントを使っています。ご自分のアカウントを使うには、ここで接続するか、そのアカウントのキーを貼り付けてください。"
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "次の会話から Teaport がお使いの OpenRouter アカウントを使います。"
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "この電話で Teaport の設定が閉じられました。「設定を開いて」と言ってから、もう一度接続してください。"
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "この接続は期限切れです。Teaport の設定に戻って、もう一度接続してください。"
+
+
+
+msgid "Your OpenRouter account is connected"
+msgstr "OpenRouter アカウントが接続されました"
+
+msgid "Connecting your OpenRouter account to Teaport"
+msgstr "OpenRouter アカウントを Teaport に接続しています"
+
+msgid "Continue to Teaport"
+msgstr "Teaport へ進む"
+
+msgid "Copied"
+msgstr "コピーしました"
+
+msgid "Copy code"
+msgstr "コードをコピー"
+
+msgid "If OpenRouter showed you a code, paste it here."
+msgstr "OpenRouter にコードが表示された場合は、ここに貼り付けてください。"
+
+msgid "If that doesn't work: copy this code, open Teaport's settings on this phone, and paste it into {field}. It works once, in the next ten minutes."
+msgstr "うまくいかない場合は、このコードをコピーし、この電話で Teaport の設定を開いて、「{field}」に貼り付けてください。使えるのは 1 回だけで、10 分以内です。"
+
+msgid "If your phone warns that the connection isn't private, it's the same warning you saw when you opened Teaport's settings."
+msgstr "接続がプライベートではないと電話に警告が表示された場合、それは Teaport の設定を開いたときと同じ警告です。"
+
+msgid "Now let's connect your OpenRouter account. I've put a code on my screen. Scan it with your phone's camera, tap the link that appears, and follow the steps on your phone."
+msgstr "では、OpenRouter アカウントを接続しましょう。画面にコードを表示しました。電話のカメラで読み取り、表示されたリンクをタップして、電話に表示される手順に従ってください。"
+
+msgid "Now let's connect your OpenRouter account. In your phone's browser, go to {address}, enter the code {code}, and follow the steps there. The code works once, for the next five minutes."
+msgstr "では、OpenRouter アカウントを接続しましょう。電話のブラウザで {address} を開き、コード {code} を入力して、表示される手順に従ってください。コードは 1 回だけ、5 分間使えます。"
+
+msgid "Save it again"
+msgstr "もう一度保存"
+
+msgid "Teaport couldn't save the key"
+msgstr "Teaport はキーを保存できませんでした"
+
+msgid "Teaport no longer has that key. Tap Connect your OpenRouter account to sign in again."
+msgstr "Teaport にはそのキーがもうありません。「OpenRouter アカウントを接続」をタップして、もう一度サインインしてください。"
+
+msgid "Teaport still has the key from your OpenRouter sign-in. Tap Save it again to try once more."
+msgstr "Teaport には OpenRouter のサインインで受け取ったキーがまだあります。「もう一度保存」をタップして、再度試してください。"
+
+msgid "That doesn't look like a code from OpenRouter. Check it and paste it again."
+msgstr "OpenRouter のコードではないようです。確認して、もう一度貼り付けてください。"
+
+msgid "There's no sign-in waiting for a code. Tap Connect your OpenRouter account to start a new one."
+msgstr "コードを待っているサインインはありません。「OpenRouter アカウントを接続」をタップして、新しく始めてください。"
+
+msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
+msgstr "このリンクは家庭のネットワーク上の Teaport につながっていないため、このページは先へ進みません。"
+
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "代わりにサインインで OpenRouter アカウントを接続するには、ここを空のままにして Wi-Fi の設定を済ませてください。そのあと Teaport がやり方を案内します。「設定を開いて」と言うこともできます。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
+msgstr "この電話で OpenRouter にサインインして Teaport を承認します。すると OpenRouter にコードが表示されるので、コピーして Teaport の設定に戻り、「OpenRouter のコード」に貼り付けてください。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. Then a Teaport page asks you to tap Finish."
+msgstr "この電話で OpenRouter にサインインして Teaport を承認します。そのあと Teaport のページで「完了」をタップしてください。"
+
+msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
+msgstr "電話を Teaport と同じ Wi-Fi につないでおく必要があります。自動で進まない場合は、ボタンをタップしてください。"
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "OpenRouter アカウントにまだクレジットがないため、openrouter.ai/settings/credits でクレジットを追加するまで Teaport は答えられません。"
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "AI アカウントは接続されましたが、まだクレジットがありません。OpenRouter のウェブサイトでクレジットを追加すると、答えられるようになります。"

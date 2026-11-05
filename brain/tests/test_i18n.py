@@ -46,9 +46,12 @@ DYNAMIC = {
     "config_ui.py": {
         "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
         "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
+        "_reader(request)._(check.note)",    # ai_account.NO_ACCOUNT_CREDIT: N_() there (#282)
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
-        "t._(SHOWN_TEXT)", "t._(SPOKEN_TEXT)", "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
+        "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
+        "t._(CONNECT_SHOWN_TEXT if connect else SHOWN_TEXT)",    # and its offer (#282)
+        "t._(CONNECT_SPOKEN_TEXT if connect else SPOKEN_TEXT)",
     },
     "llm_error_speaker.py": {
         "t._(text)",                         # its four notices: N_() there
@@ -56,8 +59,19 @@ DYNAMIC = {
     "sip_server.py": {
         "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
     },
+    "openrouter_connect.py": {               # its lines: N_() there (#282)
+        "t._(BACK)", "t._(CONNECTED_TEXT)", "t._(EXPIRED_TEXT)", "t._(FAILED_TEXT)",
+        "t._(FINISH)", "t._(FINISH_HEADING)", "t._(FINISH_TEXT)", "t._(NOT_CONNECTED_TEXT)",
+        "t._(SESSION_ENDED_TEXT)", "t._(SAVE_BROKE)", "t._(NOT_A_CODE_TEXT)",
+        "t._(NO_SIGN_IN_TEXT)", "t._(NOT_HELD_TEXT)",
+        "t._(heading)",                      # _page's heading: one of the N_() headings there
+        "t._(why)",                          # ai_account.exchange_code's reason: N_() there
+        "t._(v)",                            # PAGE_TEXT's values: N_() there
+        "t._(field)",                        # config_ui.ACCOUNT_TEXT["code"]: N_() there
+    },
     "wifi_setup.py": {
         "t._(ACCOUNT_HELP)",                 # N_() there (#279)
+        "t._(SIGN_IN_LATER)",                # N_() there (#282)
         "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
         "t._(error)",                        # parse_form's messages: N_() here
     },
@@ -70,7 +84,7 @@ DYNAMIC = {
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
         "self.t._(ONLINE_NOW_TEXT)",
-        "t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)",  # N_() there (#279)
+        "t._((ACCOUNT_NO_CREDIT_TEXT if account.get('no_credit') else ACCOUNT_SAVED_TEXT) if saved else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)",  # N_() there (#279, #282)
     },
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them
@@ -332,7 +346,7 @@ _QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": 
 
 
 def _quoting_lines():
-    from teaport_brain import credit, settings_access
+    from teaport_brain import credit, openrouter_connect, settings_access
     from teaport_brain.llm_error_speaker import NO_MODEL_SETTINGS_TEXT, NO_MODEL_WIFI_TEXT
     return {"no model": ("start", NO_MODEL_WIFI_TEXT), "again": ("start", wifi_voice.AGAIN_TEXT),
             "offline": ("start", settings_access.OFFLINE_TEXT),
@@ -340,11 +354,14 @@ def _quoting_lines():
             "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
-            "credit empty": ("settings", credit.EMPTY_TEXT)}
+            "credit empty": ("settings", credit.EMPTY_TEXT),
+            "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
+            "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
 
 
 @pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
-                                   "new code", "credit half", "credit low", "credit empty"])
+                                   "new code", "credit half", "credit low", "credit empty",
+                                   "sign-in session", "sign in later"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
 def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
     """The lines that tell the user what to say -- the no-model lines

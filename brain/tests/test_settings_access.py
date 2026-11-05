@@ -51,8 +51,8 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 import appliance  # noqa: E402
 from tempdirs import tempdir  # noqa: E402
 from teaport_brain import (  # noqa: E402
-    agent_key, ai_account, config_ui, i18n, llm_error_speaker, pairing, settings_access, wifi_setup,
-    wifi_voice,
+    agent_key, ai_account, config_ui, i18n, llm_error_speaker, openrouter_connect, pairing,
+    settings_access, wifi_setup, wifi_voice,
 )
 from teaport_brain import gateway_server  # noqa: E402
 
@@ -132,8 +132,9 @@ def _setup(host=HOST, port=PORT):
     config_ui._rows()["LLM_API_KEY"]["file"] = os.path.join(home, "llm_key")
     checks = []
 
-    def check(key, base_url, timeout=None):
+    def check(key, base_url, timeout=None, **asked):
         checks.append((key, base_url))
+        check.asked = asked  # issued=, account= (ai_account.check_key)
         return check.answer
 
     check.answer = ai_account.Check(ai_account.WORKS)
@@ -141,6 +142,11 @@ def _setup(host=HOST, port=PORT):
     # A saved key is not handed to an OpenClaw on the machine running the tests
     # (test_agent_key.py has that path, with a fake CLI).
     agent_key.SHARES = False
+    # OpenRouter's sign-in page is not asked for over the network (test_openrouter_connect.py
+    # has that path): here it is not there, so the AI account step offers the paste field.
+    openrouter_connect._fetch = lambda url: (404, b"")
+    openrouter_connect._probe = None
+    openrouter_connect._pending = None
     return home, check, checks
 
 
@@ -339,17 +345,163 @@ def test_a_key_is_checked_before_it_is_saved():
 
 
 class Provider:
-    """ai_account._get, faked: (status, body) or an exception."""
+    """ai_account._get, faked: (status, body) or an exception; or {path end: that} per
+    URL; or a list of them, one per request (the last one repeated)."""
 
     def __init__(self, answer):
         self.answer, self.urls = answer, []
 
     def __call__(self, url, key, timeout):
         self.urls.append(url)
-        if isinstance(self.answer, Exception):
-            raise self.answer
-        status, body = self.answer
+        answer = self.answer
+        if isinstance(answer, list):
+            answer = answer[min(len(self.urls), len(answer)) - 1]
+        if isinstance(answer, dict):
+            answer = next(a for end, a in answer.items() if url.endswith(end))
+        if isinstance(answer, Exception):
+            raise answer
+        status, body = answer
         return status, json.dumps(body).encode() if not isinstance(body, bytes) else body
+
+
+def test_a_key_just_given_is_asked_again_before_its_refusal_counts():
+    """A key OpenRouter's sign-in gave a moment ago can be refused (401) before it is
+    known everywhere: with `issued`, a 401 is asked again after each wait; a 402 or 403,
+    or a key not just given, is refused at once."""
+    real, real_sleep, real_clock = ai_account._get, ai_account._sleep, ai_account._clock
+    base = "https://openrouter.ai/api/v1"
+    waited = []
+    ai_account._sleep = waited.append
+    ai_account._clock = lambda: 100.0  # no time passes but the waits (not counted here)
+    no = (401, {"error": {"message": "User not found."}})
+    ok = (200, {"data": {"limit": None, "usage": 0}})
+    try:
+        ai_account._get = p = Provider([no, no, ok])
+        assert ai_account.check_key(FAKE_KEY, base, issued=True).state == ai_account.WORKS
+        assert waited == [1.0, 2.0] and len(p.urls) == 3
+        waited.clear()
+        ai_account._get = p = Provider([no])
+        got = ai_account.check_key(FAKE_KEY, base, issued=True)
+        assert got.state == ai_account.REFUSED and got.reason == "User not found", got
+        assert waited == list(ai_account.ISSUED_RETRY_SECS) and len(p.urls) == 4
+        for issued, answer in ((False, no), (True, (403, {})), (True, (402, {}))):
+            waited.clear()
+            ai_account._get = p = Provider([answer, ok])
+            got = ai_account.check_key(FAKE_KEY, base, issued=issued)
+            assert got.state == ai_account.REFUSED and not waited and len(p.urls) == 1, answer
+    finally:
+        ai_account._get, ai_account._sleep, ai_account._clock = real, real_sleep, real_clock
+
+
+def test_the_whole_check_keeps_one_deadline():
+    """However many asks an issued key takes, and the account's credit after them, the
+    check ends within its timeout plus the waits: each request gets what is left, a wait
+    that would leave too little is not taken, and /credits is skipped when the time is
+    up (the record's reading stands in)."""
+    real, real_sleep, real_clock = ai_account._get, ai_account._sleep, ai_account._clock
+    base = "https://openrouter.ai/api/v1"
+    now = [0.0]
+    asked = []
+
+    def slow(answers, secs):
+        def get(url, key, timeout):
+            asked.append((url.rsplit("/", 1)[1], round(timeout, 3)))
+            now[0] += min(secs, timeout)
+            status, body = answers[min(len(asked), len(answers)) - 1]
+            return status, json.dumps(body).encode()
+        return get
+
+    def sleep(secs):
+        now[0] += secs
+
+    no = (401, {"error": {"message": "User not found."}})
+    free = (200, {"data": {"limit": None, "usage": 0, "is_free_tier": True}})
+    ai_account._sleep, ai_account._clock = sleep, lambda: now[0]
+    try:
+        # Each 401 takes 3 s: the asks get what is left of 10 s + 6 s of waits, the last
+        # one its MIN_REQUEST_SECS, and the check ends at the deadline.
+        ai_account._get = slow([no], 3.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, issued=True, account=True)
+        assert got.state == ai_account.REFUSED and now[0] <= 16.0, (got, now[0])
+        assert asked == [("key", 10.0), ("key", 10.0), ("key", 7.0), ("key", 1.0)], asked
+        # A slower one: the last wait would leave too little, so it is not taken.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([no], 5.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, issued=True)
+        assert got.state == ai_account.REFUSED and now[0] <= 16.0, (got, now[0])
+        assert [u for u, _ in asked] == ["key", "key", "key"], asked
+        # A slow key answer leaves too little for /credits: the record's reading counts.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([free], 9.5)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, account=True)
+        assert got.note == ai_account.NO_ACCOUNT_CREDIT and [u for u, _ in asked] == ["key"]
+        # Otherwise /credits gets only what is left.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([free, (200, {"data": {"total_credits": 5, "total_usage": 1}})], 4.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, account=True)
+        assert got.note == "" and asked == [("key", 10.0), ("credits", 6.0)], asked
+        assert now[0] <= 10.0
+    finally:
+        ai_account._get, ai_account._sleep, ai_account._clock = real, real_sleep, real_clock
+
+
+def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
+    """A key with no limit of its own reads as having credit whatever its account holds:
+    for a save (`account`), OpenRouter's account credit is read too. None left: the key
+    works, with the note. Credit left, or no answer about it: nothing said. The monitor's
+    check (no `account`) asks nothing more. Made-up amounts."""
+    real = ai_account._get
+    base = "https://openrouter.ai/api/v1"
+    key = (200, {"data": {"label": "made-up", "limit": None, "usage": 0, "is_free_tier": True}})
+    paid = (200, {"data": {"label": "made-up", "limit": None, "usage": 3, "is_free_tier": False}})
+    empty = (200, {"data": {"total_credits": 0, "total_usage": 0}})
+    try:
+        ai_account._get = p = Provider({"/key": key, "/credits": empty})
+        got = ai_account.check_key(FAKE_KEY, base, account=True)
+        assert got.state == ai_account.WORKS and got.note == ai_account.NO_ACCOUNT_CREDIT, got
+        assert p.urls == [base + "/key", base + "/credits"]
+        ai_account._get = p = Provider({"/key": key, "/credits": empty})
+        assert ai_account.check_key(FAKE_KEY, base).note == "" and p.urls == [base + "/key"]
+        # /credits read: it decides, a paid account spent to nothing included.
+        for record in (key, paid):
+            for credits, none in (((200, {"data": {"total_credits": 10, "total_usage": 9.5}}), False),
+                                  ((200, {"data": {"total_credits": 10, "total_usage": 10.0}}), True)):
+                ai_account._get = Provider({"/key": record, "/credits": credits})
+                got = ai_account.check_key(FAKE_KEY, base, account=True)
+                assert got.state == ai_account.WORKS, credits
+                assert got.note == (ai_account.NO_ACCOUNT_CREDIT if none else ""), (record, credits)
+        # A total of 0 beside a record that says the account has paid: they disagree, so
+        # nothing is said (a never-paid account's 0 is the case above).
+        ai_account._get = Provider({"/key": paid, "/credits": empty})
+        assert ai_account.check_key(FAKE_KEY, base, account=True).note == ""
+        # Not read (refused -- OpenRouter documents it for management keys --, no answer, a
+        # shape not read): the key's record decides: never paid, no limit of its own.
+        for credits in ((403, {"error": {"message": "Only management keys can perform this operation"}}),
+                        (401, {}), (200, {"data": {}}), (200, b"not json"), OSError("no route")):
+            for record, none in ((key, True), (paid, False),
+                                 ((200, {"data": {"limit": 5, "limit_remaining": 5, "is_free_tier": True}}), False)):
+                ai_account._get = Provider({"/key": record, "/credits": credits})
+                got = ai_account.check_key(FAKE_KEY, base, account=True)
+                assert got.state == ai_account.WORKS, credits
+                assert got.note == (ai_account.NO_ACCOUNT_CREDIT if none else ""), (record, credits)
+
+        async def run():
+            home, _, _ = _setup()
+            config_ui.check_key = ai_account.check_key  # the real check, its requests faked
+            ai_account._get = Provider({"/key": key, "/credits": empty})
+            auth = {"authorization": f"Bearer {TOKEN}"}
+            async with _client(proto=None, origin=None, port=7861) as c:
+                r = await c.put("/api/config", headers=auth,
+                                json={"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}})
+            assert r.status_code == 200, r.text
+            assert r.json()["notice"] == ai_account.NO_ACCOUNT_CREDIT, r.text
+            with open(os.path.join(home, "llm_key")) as f:
+                assert f.read().strip() == FAKE_KEY
+            got = await ai_account.adopt(FAKE_KEY, base)  # setup mode: saved, and said
+            assert got.state == ai_account.WORKS and got.note == ai_account.NO_ACCOUNT_CREDIT
+        asyncio.run(run())
+    finally:
+        ai_account._get = real
 
 
 def test_the_check_reads_the_providers_answer():
@@ -806,6 +958,8 @@ def test_the_voice_says_how_the_key_went():
         refused = {"result": "refused", "reason": "User not found", "ours": False}
         for account, line, phrases in (
                 ({"result": "saved", "reason": "", "ours": True}, wifi_voice.ACCOUNT_SAVED_TEXT, ()),
+                ({"result": "saved", "reason": "", "ours": True, "no_credit": True},
+                 wifi_voice.ACCOUNT_NO_CREDIT_TEXT, ()),
                 (refused, wifi_voice.ACCOUNT_NOT_SAVED_TEXT, [settings_access.SettingsPhrase()]),
                 (refused, wifi_voice.ACCOUNT_NOT_SAVED_PLAIN_TEXT, ()),  # the phrase not heard
                 (None, None, ())):

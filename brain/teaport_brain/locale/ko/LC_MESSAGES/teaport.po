@@ -652,3 +652,118 @@ msgstr "체험용 크레딧이 거의 다 떨어졌어요. 약 {amount} 남았�
 
 msgid "The trial credit has run out. Connect your own account so Teaport can answer again."
 msgstr "체험용 크레딧을 다 썼어요. Teaport가 다시 답할 수 있도록 본인 계정을 연결해 주세요."
+
+msgid "Back to settings"
+msgstr "설정으로 돌아가기"
+
+msgid "Code from OpenRouter"
+msgstr "OpenRouter에서 받은 코드"
+
+msgid "Connect your OpenRouter account"
+msgstr "OpenRouter 계정 연결하기"
+
+msgid "Connecting…"
+msgstr "연결하는 중…"
+
+msgid "Finish"
+msgstr "완료"
+
+
+msgid "OpenRouter didn't accept the sign-in"
+msgstr "OpenRouter가 로그인을 받아들이지 않았어요"
+
+msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "OpenRouter가 계정을 연결하지 않았어요. Teaport 설정에서 다시 해 보거나, 거기에 키를 붙여 넣으세요."
+
+
+msgid "Tap Finish to connect your OpenRouter account to Teaport."
+msgstr "완료를 탭하면 OpenRouter 계정이 Teaport에 연결돼요."
+
+msgid "Teaport couldn't connect your OpenRouter account"
+msgstr "Teaport가 OpenRouter 계정을 연결하지 못했어요"
+
+msgid "Teaport couldn't connect your OpenRouter account: {reason}. You can try again from Teaport's settings, or paste a key there instead."
+msgstr "Teaport가 OpenRouter 계정을 연결하지 못했어요: {reason}. Teaport 설정에서 다시 해 보거나, 거기에 키를 붙여 넣으세요."
+
+msgid "Teaport uses an OpenRouter account for its answers. To use your own, connect it here, or paste a key from it."
+msgstr "Teaport는 답변에 OpenRouter 계정을 써요. 본인 계정을 쓰시려면 여기서 연결하거나, 그 계정의 키를 붙여 넣으세요."
+
+msgid "Teaport uses your OpenRouter account from your next conversation."
+msgstr "다음 대화부터 Teaport가 본인의 OpenRouter 계정을 써요."
+
+msgid "Teaport's settings have closed on this phone. Say \"open my settings\", then connect again."
+msgstr "이 휴대폰에서 Teaport 설정이 닫혔어요. '설정 열어 줘'라고 말한 다음 다시 연결하세요."
+
+msgid "This connection has expired. Go back to Teaport's settings and connect again."
+msgstr "이 연결은 만료됐어요. Teaport 설정으로 돌아가서 다시 연결하세요."
+
+
+
+msgid "Your OpenRouter account is connected"
+msgstr "OpenRouter 계정이 연결됐어요"
+
+msgid "Connecting your OpenRouter account to Teaport"
+msgstr "OpenRouter 계정을 Teaport에 연결하는 중이에요"
+
+msgid "Continue to Teaport"
+msgstr "Teaport로 계속"
+
+msgid "Copied"
+msgstr "복사했어요"
+
+msgid "Copy code"
+msgstr "코드 복사"
+
+msgid "If OpenRouter showed you a code, paste it here."
+msgstr "OpenRouter에 코드가 나왔다면 여기에 붙여 넣으세요."
+
+msgid "If that doesn't work: copy this code, open Teaport's settings on this phone, and paste it into {field}. It works once, in the next ten minutes."
+msgstr "잘 안 되면 이 코드를 복사하고, 이 휴대폰에서 Teaport 설정을 열어 {field}에 붙여 넣으세요. 한 번만, 10분 안에 쓸 수 있어요."
+
+msgid "If your phone warns that the connection isn't private, it's the same warning you saw when you opened Teaport's settings."
+msgstr "휴대폰에서 연결이 비공개가 아니라는 경고가 나오면, Teaport 설정을 열 때 본 것과 같은 경고예요."
+
+msgid "Now let's connect your OpenRouter account. I've put a code on my screen. Scan it with your phone's camera, tap the link that appears, and follow the steps on your phone."
+msgstr "이제 OpenRouter 계정을 연결해 볼게요. 제 화면에 코드를 띄웠어요. 휴대폰 카메라로 스캔하고, 나타나는 링크를 탭한 다음 휴대폰에 나오는 단계를 따라 하세요."
+
+msgid "Now let's connect your OpenRouter account. In your phone's browser, go to {address}, enter the code {code}, and follow the steps there. The code works once, for the next five minutes."
+msgstr "이제 OpenRouter 계정을 연결해 볼게요. 휴대폰 브라우저에서 {address}로 가서 코드 {code}를 입력하고, 거기 나오는 단계를 따라 하세요. 코드는 한 번만, 5분 동안 쓸 수 있어요."
+
+msgid "Save it again"
+msgstr "다시 저장"
+
+msgid "Teaport couldn't save the key"
+msgstr "Teaport가 키를 저장하지 못했어요"
+
+msgid "Teaport no longer has that key. Tap Connect your OpenRouter account to sign in again."
+msgstr "Teaport에 그 키가 더 이상 없어요. OpenRouter 계정 연결하기를 탭해서 다시 로그인하세요."
+
+msgid "Teaport still has the key from your OpenRouter sign-in. Tap Save it again to try once more."
+msgstr "Teaport에 OpenRouter 로그인으로 받은 키가 아직 있어요. 다시 저장을 탭해서 한 번 더 해 보세요."
+
+msgid "That doesn't look like a code from OpenRouter. Check it and paste it again."
+msgstr "OpenRouter 코드가 아닌 것 같아요. 확인하고 다시 붙여 넣으세요."
+
+msgid "There's no sign-in waiting for a code. Tap Connect your OpenRouter account to start a new one."
+msgstr "코드를 기다리는 로그인이 없어요. OpenRouter 계정 연결하기를 탭해서 새로 시작하세요."
+
+msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
+msgstr "이 링크는 집 네트워크의 Teaport로 연결되지 않아서, 이 페이지는 더 진행하지 않아요."
+
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "로그인으로 OpenRouter 계정을 연결하려면 여기를 비워 두고 Wi-Fi 설정을 마치세요. 그다음 Teaport가 방법을 알려 드리거나, '설정 열어 줘'라고 말하면 돼요."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
+msgstr "이 휴대폰에서 OpenRouter에 로그인하고 Teaport를 승인해요. 그러면 OpenRouter에 코드가 나와요. 복사해서 Teaport 설정으로 돌아와 OpenRouter에서 받은 코드에 붙여 넣으세요."
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. Then a Teaport page asks you to tap Finish."
+msgstr "이 휴대폰에서 OpenRouter에 로그인하고 Teaport를 승인해요. 그다음 Teaport 페이지에서 완료를 탭하라고 안내해요."
+
+msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
+msgstr "휴대폰이 Teaport와 같은 Wi-Fi에 연결돼 있어야 해요. 자동으로 넘어가지 않으면 버튼을 탭하세요."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "OpenRouter 계정에 아직 크레딧이 없어서, openrouter.ai/settings/credits에서 크레딧을 추가할 때까지 Teaport가 대답할 수 없어요."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "AI 계정은 연결됐지만 아직 크레딧이 없어요. OpenRouter 웹사이트에서 크레딧을 추가하면 대답할 수 있어요."
