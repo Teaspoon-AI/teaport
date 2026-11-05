@@ -36,7 +36,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 ## Open the settings from your phone
 
-On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?", in any of the device's languages. A sentence that only mentions the settings, such as "How do I open my settings?", goes to the assistant as usual. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
+On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
 <!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:891-895#abcad8a7; brain/teaport_brain/settings_access.py:410-422#f0cd5e74 -->
 

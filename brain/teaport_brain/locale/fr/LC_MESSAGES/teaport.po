@@ -487,8 +487,8 @@ msgid "no AI service is set up on this box"
 msgstr "aucun service d'IA n'est configuré sur cet appareil"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:euh|heu|hum|bah|teaport|ok|okay|d['’]accord|alors|bon|et|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp)\\W+){0,3}(?:(?:tu peux|vous pouvez|peux[- ]tu|pouvez[- ]vous|pourrais[- ]tu|pourriez[- ]vous|tu pourrais|vous pourriez)(?: (?:me|nous))? )?(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?= *(?:[.,!?;:…]|$)| (?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:euh|heu|hum|bah|teaport|ok|okay|d['’]accord|alors|bon|et|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp)\\W+){0,3}(?:(?:est-ce qu(?:e\\s+|['’]\\s*))?(?:tu peux|vous pouvez|peux[- ]tu|pouvez[- ]vous|pourrais[- ]tu|pourriez[- ]vous|tu pourrais|vous pourriez)(?: (?:me|nous))? )?(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?:[\\s,،]+(?:s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)*[\\s.,!?;:…]*$"
 
 msgctxt "spell"
 msgid "slash"

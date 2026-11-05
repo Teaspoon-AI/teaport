@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "este dispositivo no tiene ningún servicio de IA configurado"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:eh|em+|ehm|este|mm+|teaport|oye|ok|okay|vale|bueno|entonces|y|por favor|porfa)\\W+){0,3}(?:(?:me |nos )?(?:puedes|podrías|podrias|puede|podría|podria|podés)(?: (?:me|nos))? )?(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?= *(?:[.,!?;:…]|$)| (?:por favor|porfa|ahora|ya|de teaport)\\b)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:eh|em+|ehm|este|mm+|teaport|oye|ok|okay|vale|bueno|entonces|y|por favor|porfa)\\W+){0,3}(?:(?:me |nos )?(?:puedes|podrías|podrias|puede|podría|podria|podés)(?: (?:me|nos))? )?(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?:[\\s,،]+(?:por favor|porfa|ahora|ya|de teaport)\\b)*[\\s.,!?;:…]*$"
 
 msgctxt "spell"
 msgid "slash"

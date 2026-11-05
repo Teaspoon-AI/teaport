@@ -328,15 +328,15 @@ POLITE_SETTINGS = {
            ["¿Cómo abro los ajustes?", "¿Puedes abrir los ajustes del teléfono?", "¿Dónde están los ajustes?"]),
     "pt_BR": (["Você pode abrir as configurações?", "Pode abrir as configurações?", "Poderia me mostrar as configurações?"],
               ["Como abro as configurações?", "Você pode abrir as configurações do celular?", "Onde ficam as configurações?"]),
-    "fr": (["Tu peux ouvrir les réglages ?", "Pouvez-vous ouvrir les paramètres ?", "Peux-tu afficher mes réglages ?"],
+    "fr": (["Tu peux ouvrir les réglages ?", "Pouvez-vous ouvrir les paramètres ?", "Peux-tu afficher mes réglages ?", "Est-ce que tu peux ouvrir les réglages ?"],
            ["Comment j'ouvre les réglages ?", "Tu peux ouvrir les réglages du téléphone ?", "Où sont les réglages ?"]),
     "it": (["Puoi aprire le impostazioni?", "Mi puoi mostrare le impostazioni?", "Potresti aprire le mie impostazioni?"],
            ["Come apro le impostazioni?", "Puoi aprire le impostazioni del telefono?", "Dove sono le impostazioni?"]),
-    "de": (["Kannst du die Einstellungen öffnen?", "Kannst du mir bitte die Einstellungen zeigen?", "Können Sie die Einstellungen öffnen?", "Öffne die Einstellungen?"],
+    "de": (["Kannst du die Einstellungen öffnen?", "Kannst du mir bitte die Einstellungen zeigen?", "Können Sie die Einstellungen öffnen?", "Können Sie Ihre Einstellungen öffnen?", "Öffne die Einstellungen?"],
            ["Wie öffne ich die Einstellungen?", "Kannst du die Handy-Einstellungen öffnen?", "Wo sind die Einstellungen?"]),
     "nl": (["Kun je de instellingen openen?", "Kunt u mij de instellingen laten zien?", "Kun je even de instellingen openen?"],
            ["Hoe open ik de instellingen?", "Kun je de telefooninstellingen openen?", "Waar zijn de instellingen?"]),
-    "ru": (["Можешь открыть настройки?", "Ты можешь показать мне настройки?", "Не могли бы вы открыть настройки?"],
+    "ru": (["Можешь открыть настройки?", "Ты можешь показать мне настройки?", "Не могли бы вы открыть настройки?", "Ты мог бы открыть настройки?"],
            ["Как открыть настройки телефона?", "Можешь открыть настройки телефона?", "Где настройки?"]),
     "ar": (["ممكن تفتح الإعدادات؟", "هل يمكنك فتح الإعدادات؟", "افتح الإعدادات؟"],
            ["كيف أفتح الإعدادات؟", "هل يمكنك فتح إعدادات الهاتف؟", "أين الإعدادات؟"]),
@@ -351,12 +351,38 @@ POLITE_SETTINGS = {
 }
 
 
+# The request, and then something else said after it: that is talk for the assistant,
+# not the phrase (the pattern ends at the end of the utterance, #309 review).
+THEN_MORE = {
+    "es": ["¿Puedes abrir los ajustes? ¿Qué tiempo hace?", "abre los ajustes, los del teléfono"],
+    "pt_BR": ["Você pode abrir as configurações? Que horas são?", "abre as configurações, as do celular"],
+    "fr": ["Tu peux ouvrir les réglages ? Il fait beau ?", "ouvre les réglages, ceux du téléphone"],
+    "it": ["Puoi aprire le impostazioni? Che tempo fa?", "apri le impostazioni, quelle del telefono"],
+    "de": ["Kannst du die Einstellungen öffnen? Wie ist das Wetter?", "Kannst du die Einstellungen öffnen, die vom Handy?"],
+    "nl": ["Kun je de instellingen openen? Hoe laat is het?", "open de instellingen, die van de telefoon"],
+    "ru": ["Можешь открыть настройки? Какая погода?", "открой настройки, те что в телефоне"],
+    "ar": ["هل يمكنك فتح الإعدادات؟ كيف الطقس؟", "افتح الإعدادات، تلك التي في الهاتف"],
+    "hi": ["सेटिंग्स खोलो? मौसम कैसा है?"],
+    "zh": ["你能打开设置吗？天气怎么样？", "打开设置，手机的那个"],
+    "ja": ["設定を開いてもらえますか？天気は？"],
+    "ko": ["설정 열어 줄래요? 날씨는?"],
+}
+
+
 @pytest.mark.parametrize("lang", LANGS)
 def test_a_polite_question_is_the_settings_request(lang):
     t = i18n.get(lang)
     asks, talk = POLITE_SETTINGS[lang]
     assert [s for s in asks if not _settings_heard(s, t)] == []
     assert [s for s in talk if _settings_heard(s, t)] == []
+    assert [s for s in THEN_MORE[lang] if _settings_heard(s, t)] == []
+    for then in ("open my settings. What's the weather?", "Could you open my settings? Wait, no.",
+                 "Can you open the settings, the phone ones?",
+                 "could you go to settings, the bluetooth ones?"):
+        assert not _settings_heard(then, t), then
+    for ask in ("open my settings, please", "Open the settings now please.",
+                "can you open settings for me?"):
+        assert _settings_heard(ask, t), ask
     # English too, in every session (#309).
     for ask in ("Can you open my settings?", "could you please open my settings?",
                 "Hey Teaport, could you please open my settings?", "open my settings?",
