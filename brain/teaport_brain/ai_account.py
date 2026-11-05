@@ -407,8 +407,11 @@ def _deadline(call, timeout: float) -> tuple[int, bytes]:
 # asked again after each of these waits before its refusal counts. A refusal there costs
 # the owner a whole new sign-in, and leaves the key behind on their account.
 ISSUED_RETRY_SECS = (1.0, 2.0, 3.0)
-# Waits between those asks; replaced in tests.
-_sleep = time.sleep
+# The waits between those asks and the clock the check's deadline is kept on; replaced
+# in tests.
+_sleep, _clock = time.sleep, time.monotonic
+# Less than this left before the deadline: no further request is begun.
+MIN_REQUEST_SECS = 1.0
 
 
 def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS,
@@ -418,7 +421,9 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     `issued`: the provider gave the key a moment ago (the sign-in): a 401 is asked again
     (ISSUED_RETRY_SECS). `account`: for a save, an OpenRouter key that works is also
     read against its account's credit (_account_note): none left is said (`note`), not
-    refused. The starter-credit monitor asks neither."""
+    refused. The starter-credit monitor asks neither.
+    All of it within one deadline: `timeout`, plus the waits for an issued key (so 10 s
+    for a pasted key, 16 s for one just given, however many requests that holds)."""
     key = (key or "").strip()
     if not key:
         return Check(REFUSED, EMPTY)
@@ -428,13 +433,15 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     if url is None:
         return Check(UNKNOWN, NO_SERVICE)
     waits = list(ISSUED_RETRY_SECS) if issued else []
+    deadline = _clock() + timeout + sum(waits)
     while True:
         try:
-            status, body = _get(url, key, timeout)
+            status, body = _get(url, key, min(timeout, max(0.0, deadline - _clock())))
         except (OSError, ValueError) as e:  # URLError, a timeout, a refused connection
             logger.info(f"ai account: the key check got no answer ({type(e).__name__})")
             return Check(UNKNOWN, UNREACHABLE)
-        if status != 401 or not waits:
+        if status != 401 or not waits or (
+                _clock() + waits[0] + MIN_REQUEST_SECS > deadline):
             break
         logger.info("ai account: the provider refused the key it just gave (401); asking "
                     "again shortly")
@@ -455,32 +462,45 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     remaining = credit_left(record).remaining
     if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
-    return Check(WORKS, data=record,
-                 note=_account_note(key, base_url, timeout) if account else "")
+    if not account:
+        return Check(WORKS, data=record)
+    left = min(timeout, deadline - _clock())
+    return Check(WORKS, data=record, note=_account_note(key, base_url, record, left))
 
 
-def _account_note(key: str, base_url: str, timeout: float) -> str:
-    """NO_ACCOUNT_CREDIT when OpenRouter says the key's account has no credit left
-    (GET /api/v1/credits: total_credits minus total_usage, 0 or less), else "". A key's
-    own record cannot say it: a key with no limit of its own reads as having credit
+def _account_note(key: str, base_url: str, record: dict, timeout: float) -> str:
+    """NO_ACCOUNT_CREDIT when the key's OpenRouter account has no credit, else "". The
+    key's own limit cannot say it: a key with no limit of its own reads as having credit
     whatever its account holds (seen live: a new account with nothing bought, whose key
-    passed the check and whose agent turns then failed with 402). Anything else -- no
-    answer, a refusal, a shape not read -- says nothing: the key was checked already."""
-    try:
-        status, body = _get(_credits_url(base_url), key, timeout)
-        data = key_record(json.loads(body.decode("utf-8", "replace"))) if status == 200 else {}
-    except (OSError, ValueError) as e:
-        logger.info(f"ai account: the account credit check got no answer ({type(e).__name__})")
-        return ""
+    passed the check and whose agent turns then failed with 402). Two readings:
+      * GET /api/v1/credits (total_credits minus total_usage, 0 or less: none). OpenRouter
+        documents it for management keys; when it answers the key all the same, it is
+        what counts, a paid account spent to nothing included;
+      * otherwise the key's record (`record`): is_free_tier (the account has never paid
+        for credit) with no limit of its own. An account given credit without paying
+        would read as none here; the key is saved all the same, only the note is wrong.
+    Nothing read either way (no answer, a refusal, a shape not read): nothing said -- the
+    key was checked already. `timeout`: what is left of the check's deadline; under
+    MIN_REQUEST_SECS, /credits is not asked."""
+    data = {}
+    if timeout >= MIN_REQUEST_SECS:
+        try:
+            status, body = _get(_credits_url(base_url), key, timeout)
+            if status == 200:
+                data = key_record(json.loads(body.decode("utf-8", "replace")))
+            else:
+                logger.info(f"ai account: the account credit check got HTTP {status}")
+        except (OSError, ValueError) as e:
+            logger.info(f"ai account: the account credit check got no answer "
+                        f"({type(e).__name__})")
     total, used = _number(data.get("total_credits")), _number(data.get("total_usage"))
-    if total is None or used is None:
-        if status != 200:
-            logger.info(f"ai account: the account credit check got HTTP {status}")
-        return ""
-    if total - used > 0:
-        return ""
-    logger.info("ai account: the key works, but its OpenRouter account has no credit")
-    return NO_ACCOUNT_CREDIT
+    if total is not None and used is not None:
+        empty = total - used <= 0
+    else:
+        empty = record.get("is_free_tier") is True and record.get("limit") is None
+    if empty:
+        logger.info("ai account: the key works, but its OpenRouter account has no credit")
+    return NO_ACCOUNT_CREDIT if empty else ""
 
 
 # ------------------------------------------------------------------ the sign-in (#282)

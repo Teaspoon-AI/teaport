@@ -409,6 +409,25 @@ def test_an_account_with_no_credit_is_connected_and_said():
             r = await c.post("/settings/api/openrouter/code", json={"code": FAKE_CODE})
             assert r.status_code == 200 and r.json()["message"].endswith(
                 EN._(ai_account.NO_ACCOUNT_CREDIT)), r.text
+        # The real check, its requests faked: refused once (a key just given), then its
+        # record, then the account's credit -- connected, and said.
+        home, *_rest = _setup()
+        real = (config_ui.check_key, ai_account._get, ai_account._sleep)
+        config_ui.check_key = ai_account.check_key
+        ai_account._get = p = sa.Provider([
+            (401, {"error": {"message": "User not found."}}),
+            (200, {"data": {"limit": None, "usage": 0, "is_free_tier": True}}),
+            (200, {"data": {"total_credits": 0, "total_usage": 0}})])
+        ai_account._sleep = lambda secs: None
+        try:
+            async with _client(cookie=_session()) as c:
+                q = await _start(c)
+                r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+            assert r.status_code == 200 and _key_file(home) == FAKE_KEY, r.text
+            assert _esc(EN._(ai_account.NO_ACCOUNT_CREDIT)) in r.text, r.text
+            assert [u.rsplit("/", 1)[1] for u in p.urls] == ["key", "key", "credits"], p.urls
+        finally:
+            config_ui.check_key, ai_account._get, ai_account._sleep = real
     asyncio.run(run())
 
 

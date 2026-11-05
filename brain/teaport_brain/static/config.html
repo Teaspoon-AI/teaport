@@ -753,6 +753,7 @@
       const byStore = {};
       for (const [name, value] of Object.entries(edits)) (byStore[rowsByName[name].store] ||= {})[name] = value;
       let force = false;
+      const notices = [];
       for (const [store, values] of Object.entries(byStore)) {
         let res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force }) });
         if (res.status === 400 && res.body.constraints) {
@@ -769,9 +770,10 @@
           res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force, force_key: true }) });
         }
         if (res.status === 400) { showErrors(res.body.errors || { _: res.body.detail || 'rejected' }); return; }
+        if (res.body.notice) notices.push(res.body.notice);  // e.g. the key's account has no credit
         for (const name of Object.keys(values)) delete edits[name];
       }
-      await load(h('div', { class: 'banner ok' }, h('p', {}, 'Saved. The services below are waiting for a restart to pick it up.')));
+      await load(h('div', { class: 'banner ok' }, h('p', {}, ['Saved. The services below are waiting for a restart to pick it up.', ...notices].join(' '))));
     } catch (e) {
       renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Save failed: ' + e.message)));
     } finally { btn.disabled = false; }

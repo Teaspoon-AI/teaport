@@ -368,10 +368,11 @@ def test_a_key_just_given_is_asked_again_before_its_refusal_counts():
     """A key OpenRouter's sign-in gave a moment ago can be refused (401) before it is
     known everywhere: with `issued`, a 401 is asked again after each wait; a 402 or 403,
     or a key not just given, is refused at once."""
-    real, real_sleep = ai_account._get, ai_account._sleep
+    real, real_sleep, real_clock = ai_account._get, ai_account._sleep, ai_account._clock
     base = "https://openrouter.ai/api/v1"
     waited = []
     ai_account._sleep = waited.append
+    ai_account._clock = lambda: 100.0  # no time passes but the waits (not counted here)
     no = (401, {"error": {"message": "User not found."}})
     ok = (200, {"data": {"limit": None, "usage": 0}})
     try:
@@ -389,7 +390,59 @@ def test_a_key_just_given_is_asked_again_before_its_refusal_counts():
             got = ai_account.check_key(FAKE_KEY, base, issued=issued)
             assert got.state == ai_account.REFUSED and not waited and len(p.urls) == 1, answer
     finally:
-        ai_account._get, ai_account._sleep = real, real_sleep
+        ai_account._get, ai_account._sleep, ai_account._clock = real, real_sleep, real_clock
+
+
+def test_the_whole_check_keeps_one_deadline():
+    """However many asks an issued key takes, and the account's credit after them, the
+    check ends within its timeout plus the waits: each request gets what is left, a wait
+    that would leave too little is not taken, and /credits is skipped when the time is
+    up (the record's reading stands in)."""
+    real, real_sleep, real_clock = ai_account._get, ai_account._sleep, ai_account._clock
+    base = "https://openrouter.ai/api/v1"
+    now = [0.0]
+    asked = []
+
+    def slow(answers, secs):
+        def get(url, key, timeout):
+            asked.append((url.rsplit("/", 1)[1], round(timeout, 3)))
+            now[0] += min(secs, timeout)
+            status, body = answers[min(len(asked), len(answers)) - 1]
+            return status, json.dumps(body).encode()
+        return get
+
+    def sleep(secs):
+        now[0] += secs
+
+    no = (401, {"error": {"message": "User not found."}})
+    free = (200, {"data": {"limit": None, "usage": 0, "is_free_tier": True}})
+    ai_account._sleep, ai_account._clock = sleep, lambda: now[0]
+    try:
+        # Each 401 takes 3 s: the asks get what is left of 10 s + 6 s of waits, the last
+        # one its MIN_REQUEST_SECS, and the check ends at the deadline.
+        ai_account._get = slow([no], 3.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, issued=True, account=True)
+        assert got.state == ai_account.REFUSED and now[0] <= 16.0, (got, now[0])
+        assert asked == [("key", 10.0), ("key", 10.0), ("key", 7.0), ("key", 1.0)], asked
+        # A slower one: the last wait would leave too little, so it is not taken.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([no], 5.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, issued=True)
+        assert got.state == ai_account.REFUSED and now[0] <= 16.0, (got, now[0])
+        assert [u for u, _ in asked] == ["key", "key", "key"], asked
+        # A slow key answer leaves too little for /credits: the record's reading counts.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([free], 9.5)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, account=True)
+        assert got.note == ai_account.NO_ACCOUNT_CREDIT and [u for u, _ in asked] == ["key"]
+        # Otherwise /credits gets only what is left.
+        asked.clear(); now[0] = 0.0
+        ai_account._get = slow([free, (200, {"data": {"total_credits": 5, "total_usage": 1}})], 4.0)
+        got = ai_account.check_key(FAKE_KEY, base, timeout=10.0, account=True)
+        assert got.note == "" and asked == [("key", 10.0), ("credits", 6.0)], asked
+        assert now[0] <= 10.0
+    finally:
+        ai_account._get, ai_account._sleep, ai_account._clock = real, real_sleep, real_clock
 
 
 def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
@@ -400,6 +453,7 @@ def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
     real = ai_account._get
     base = "https://openrouter.ai/api/v1"
     key = (200, {"data": {"label": "made-up", "limit": None, "usage": 0, "is_free_tier": True}})
+    paid = (200, {"data": {"label": "made-up", "limit": None, "usage": 3, "is_free_tier": False}})
     empty = (200, {"data": {"total_credits": 0, "total_usage": 0}})
     try:
         ai_account._get = p = Provider({"/key": key, "/credits": empty})
@@ -408,15 +462,24 @@ def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
         assert p.urls == [base + "/key", base + "/credits"]
         ai_account._get = p = Provider({"/key": key, "/credits": empty})
         assert ai_account.check_key(FAKE_KEY, base).note == "" and p.urls == [base + "/key"]
-        for credits in ((200, {"data": {"total_credits": 10, "total_usage": 9.5}}),
-                        (200, {"data": {"total_credits": 10, "total_usage": 10.0}}),
-                        (403, {"error": {"message": "nope"}}), (200, {"data": {}}),
-                        (200, b"not json"), OSError("no route")):
-            ai_account._get = Provider({"/key": key, "/credits": credits})
-            got = ai_account.check_key(FAKE_KEY, base, account=True)
-            spent = credits == (200, {"data": {"total_credits": 10, "total_usage": 10.0}})
-            assert got.state == ai_account.WORKS, credits
-            assert got.note == (ai_account.NO_ACCOUNT_CREDIT if spent else ""), credits
+        # /credits read: it decides, a paid account spent to nothing included.
+        for record in (key, paid):
+            for credits, none in (((200, {"data": {"total_credits": 10, "total_usage": 9.5}}), False),
+                                  ((200, {"data": {"total_credits": 10, "total_usage": 10.0}}), True)):
+                ai_account._get = Provider({"/key": record, "/credits": credits})
+                got = ai_account.check_key(FAKE_KEY, base, account=True)
+                assert got.state == ai_account.WORKS, credits
+                assert got.note == (ai_account.NO_ACCOUNT_CREDIT if none else ""), (record, credits)
+        # Not read (refused -- OpenRouter documents it for management keys --, no answer, a
+        # shape not read): the key's record decides: never paid, no limit of its own.
+        for credits in ((403, {"error": {"message": "Only management keys can perform this operation"}}),
+                        (401, {}), (200, {"data": {}}), (200, b"not json"), OSError("no route")):
+            for record, none in ((key, True), (paid, False),
+                                 ((200, {"data": {"limit": 5, "limit_remaining": 5, "is_free_tier": True}}), False)):
+                ai_account._get = Provider({"/key": record, "/credits": credits})
+                got = ai_account.check_key(FAKE_KEY, base, account=True)
+                assert got.state == ai_account.WORKS, credits
+                assert got.note == (ai_account.NO_ACCOUNT_CREDIT if none else ""), (record, credits)
 
         async def run():
             home, _, _ = _setup()
