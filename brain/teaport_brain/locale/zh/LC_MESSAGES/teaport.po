@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "这台设备上没有设置 AI 服务"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我|给我|我要|我想|我想要)?\\s*(?:打开|打開|开一下|显示|顯示|调出|进入|進入|看看|看一下|去)(?:一下)?\\s*(?:我的|你的|teaport\\s*的|的)?\\s*(?:设置|设定|設定|設置)(?:页面|页|界面)?\\s*(?:吧|一下|呗|啊|呀|嘛)?\\s*(?:[，,。.!！…]|$)|^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我)?把(?:我的|你的)?(?:设置|设定)(?:页面|页|界面)?打开(?:吧|一下)?\\s*(?:[，,。.!！…]|$)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:能不能|可不可以|能|可以)?\\s*(?:帮我|给我|我要|我想|我想要)?\\s*(?:打开|打開|开一下|显示|顯示|调出|进入|進入|看看|看一下|去)(?:一下)?\\s*(?:我的|你的|teaport\\s*的|的)?\\s*(?:设置|设定|設定|設置)(?:页面|页|界面)?\\s*(?:吧|一下|呗|啊|呀|嘛|吗|嗎|好吗|好嗎){0,2}(?:[，,\\s]*(?:谢谢|谢了|謝謝|多谢|多謝))?\\s*[\\s，,。.!！…?？]*$|^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我)?把(?:我的|你的)?(?:设置|设定)(?:页面|页|界面)?打开(?:吧|一下|吗|嗎|好吗|好嗎){0,2}(?:[，,\\s]*(?:谢谢|谢了|謝謝|多谢|多謝))?\\s*[\\s，,。.!！…?？]*$"
 
 msgctxt "spell"
 msgid "slash"
