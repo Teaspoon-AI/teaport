@@ -64,9 +64,9 @@ In the **AI account** step, **Connect your OpenRouter account** signs you in to 
 
 1. Tap **Connect your OpenRouter account**. The phone goes to OpenRouter. Sign in, or create an account, and approve the connection.
 2. OpenRouter sends the phone to a Teaspoon page, which sends it on to the device's settings. The phone must be on the same network as the device.
-3. Tap **Finish**. The device gets a key for your account from OpenRouter, checks it, and saves it the way it saves a pasted key, so OpenClaw gets it too and the trial credit warnings stop.
+3. Tap **Finish**. The device gets a key for your account from OpenRouter, checks it, and saves it the way it saves a pasted key, so OpenClaw gets it too and the trial credit warnings stop. A new key can be refused for a few seconds after OpenRouter makes it, so the device asks again for up to 6 seconds before it treats the key as refused. If your OpenRouter account has no credit yet, the device still saves the key and says to add credit on OpenRouter before it can answer.
 
-<!-- source: brain/teaport_brain/openrouter_connect.py:34-57#5068eb0d -->
+<!-- source: brain/teaport_brain/openrouter_connect.py:34-57#5068eb0d; brain/teaport_brain/ai_account.py:405-409#c337bef5; brain/teaport_brain/ai_account.py:462-483#a85f0fb5 -->
 
 The Teaspoon page is set by `TEAPORT_OPENROUTER_CONNECT_URL`. When that page does not answer, the sign-in works without it: OpenRouter shows a code at the end instead of sending the phone on. Copy the code, go back to the settings, and paste it into **Code from OpenRouter**. The Teaspoon page also shows the code when it cannot send the phone on. You can finish a sign-in one time, within 20 minutes of tapping the button, and OpenRouter's code expires 10 minutes after you approve. When anything fails, the page says why in plain words and the paste field stays. If the device gets a key but cannot save it, for example because OpenClaw does not take it, the settings offer **Save it again** for that key for 10 minutes.
 
@@ -162,11 +162,11 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 
 1. Open the configuration page as [Change a setting in the configuration page](/guides/configuration/#change-a-setting-in-the-configuration-page) shows.
 2. In the language model section, enter your endpoint in `LLM_BASE_URL`.
-3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies. A server that ignores keys still needs a placeholder, `sk-local` for example.
+3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. For an OpenRouter key that works, the page also reads the account's credit at `/api/v1/credits`: when the account has none left, it saves the key and says that the device can't answer until you add credit on OpenRouter. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies. A server that ignores keys still needs a placeholder, `sk-local` for example.
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:144-154#7532ad3d; brain/teaport_brain/config_ui.py:620-632#a5bf59f1 -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:149-159#7532ad3d; brain/teaport_brain/config_ui.py:620-637#3511862a -->
 
 ### In the configuration files
 
@@ -210,7 +210,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:214-220#1b6deadd; brain/teaport_brain/config_schema.toml:1773-1809#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:225-231#1b6deadd; brain/teaport_brain/config_schema.toml:1773-1809#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 

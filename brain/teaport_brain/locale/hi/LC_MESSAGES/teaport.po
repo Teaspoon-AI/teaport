@@ -757,3 +757,9 @@ msgstr "आप इस फ़ोन पर OpenRouter में साइन इ�
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "आपका फ़ोन उसी Wi-Fi पर होना चाहिए जिस पर Teaport है। अगर यह अपने-आप आगे न बढ़े, तो बटन पर टैप करें।"
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "आपके OpenRouter खाते में अभी कोई क्रेडिट नहीं है, इसलिए जब तक आप openrouter.ai/settings/credits पर क्रेडिट नहीं जोड़ते, Teaport जवाब नहीं दे सकता।"
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "आपका AI खाता जुड़ गया है, लेकिन उसमें अभी कोई क्रेडिट नहीं है। OpenRouter की वेबसाइट पर क्रेडिट जोड़िए, फिर मैं जवाब दे पाऊँगा।"

@@ -652,3 +652,9 @@ msgstr "Du meldest dich auf diesem Handy bei OpenRouter an und erlaubst Teaport 
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "Dein Handy muss im selben WLAN sein wie Teaport. Wenn es nicht von selbst weitergeht, tippe auf die Schaltfläche."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "Dein OpenRouter-Konto hat noch kein Guthaben, deshalb kann Teaport nicht antworten, bis du welches auf openrouter.ai/settings/credits aufgeladen hast."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "Dein KI-Konto ist verbunden, aber es hat noch kein Guthaben. Lade welches auf der Website von OpenRouter auf, dann kann ich antworten."

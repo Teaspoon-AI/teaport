@@ -626,7 +626,8 @@ class Setup:
     def _adopt_key(self) -> dict | None:
         """The key typed with the Wi-Fi choice, checked now that the box is online and
         saved if it works (ai_account.adopt): {"result": "saved" | "refused" | "unknown",
-        "reason": English, "ours": the reason is a msgid}, or None when none was typed.
+        "reason": English, "ours": the reason is a msgid, "no_credit": saved, but its
+        OpenRouter account has no credit yet}, or None when none was typed.
         The key is forgotten here either way."""
         key, self.key = self.key, ""
         if not key or self.account is None:
@@ -634,7 +635,8 @@ class Setup:
         check = ai_account.adopt_blocking(key, self.account)
         log(f"the AI account key: {check.state}")
         return {"result": "saved" if check.state == ai_account.WORKS else check.state,
-                "reason": check.reason, "ours": check.ours}
+                "reason": check.reason, "ours": check.ours,
+                "no_credit": check.note == ai_account.NO_ACCOUNT_CREDIT}
 
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup

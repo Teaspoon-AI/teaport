@@ -113,6 +113,9 @@ AGAIN_TEXT = N_("You can say \"set up Wi-Fi\" any time to try again.")
 # #279): saved, or not (refused, or it could not be checked). The quoted words are the
 # settings phrase (tests/test_i18n.py).
 ACCOUNT_SAVED_TEXT = N_("Your AI account is connected.")
+# The same, for an OpenRouter account with nothing to spend (ai_account.NO_ACCOUNT_CREDIT).
+ACCOUNT_NO_CREDIT_TEXT = N_("Your AI account is connected, but it has no credit yet. Add some "
+                            "on OpenRouter's website, and then I can answer.")
 ACCOUNT_NOT_SAVED_TEXT = N_("I couldn't use the AI account key you entered, so I didn't "
                             "save it. Say \"open my settings\" to try again.")
 # The same where "open my settings" is not usable (settings_access.usable).
@@ -783,7 +786,9 @@ class WifiSetupVoice(PhraseVoice):
             saved = account.get("result") == "saved"
             self._ended((f"connected to {json.dumps(target, ensure_ascii=False)}"
                          if target else "connected") + "; the box is online." + (
-                " The owner's AI account key from the setup page was saved." if saved else
+                " The owner's AI account key from the setup page was saved"
+                + (" (its OpenRouter account has no credit yet)." if account.get("no_credit")
+                   else ".") if saved else
                 f" The AI account key typed on the setup page was not saved "
                 f"({account.get('result')}: {account.get('reason') or 'no reason'})."
                 if account else ""), online=True)
@@ -792,8 +797,10 @@ class WifiSetupVoice(PhraseVoice):
             _first_boot().reached_online("Wi-Fi setup connected")
             line = t._("I'm connected to {network}, and I'm online again.").format(network=network)
             if account:
-                line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT
-                                  if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
+                line += " " + t._((ACCOUNT_NO_CREDIT_TEXT if account.get("no_credit")
+                                   else ACCOUNT_SAVED_TEXT) if saved
+                                  else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable
+                                  else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
             elif await self._offer_account(line):
                 return  # said, with the Settings code to connect the account (#282)
             await self.say(line)

@@ -575,7 +575,8 @@
       try {
         const res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store: 'brain_env', values: { LLM_API_KEY: value }, force_key: force }) });
         if (res.status === 200) {
-          key.value = ''; out.className = 'acct-msg ok'; out.textContent = T.works;
+          key.value = ''; out.className = 'acct-msg ok';
+          out.textContent = [T.works, res.body.notice].filter(Boolean).join(' ');
           connected();
         } else if (res.body.key_check) {
           const kc = res.body.key_check;

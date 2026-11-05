@@ -373,7 +373,7 @@ async def _save(request: Request, key: str) -> tuple[bool, str]:
         status, content = 500, {"errors": {"LLM_API_KEY": t._(SAVE_BROKE)}}
     if status == 200:
         logger.info("openrouter connect: the owner's OpenRouter account is connected")
-        return True, t._(CONNECTED_TEXT)
+        return True, " ".join(filter(None, (t._(CONNECTED_TEXT), content.get("notice"))))
     check = content.get("key_check")
     if check:  # refused (or set elsewhere): this key will not do
         _held = None

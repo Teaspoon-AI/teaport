@@ -652,3 +652,9 @@ msgstr "Inicias sesión en OpenRouter en este teléfono y apruebas a Teaport. De
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "Tu teléfono tiene que estar en el mismo wifi que Teaport. Si no sigue solo, toca el botón."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "Tu cuenta de OpenRouter todavía no tiene saldo, así que Teaport no puede responder hasta que añadas saldo en openrouter.ai/settings/credits."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "Tu cuenta de IA está conectada, pero todavía no tiene saldo. Añade saldo en la web de OpenRouter y entonces podré responder."

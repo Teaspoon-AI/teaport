@@ -93,7 +93,7 @@ def setup():
 
     # No test talks to a provider: a saved LLM_API_KEY is "checked" here
     # (test_settings_access.py has the check's own answers).
-    def works(key, base_url, timeout=None):
+    def works(key, base_url, timeout=None, **asked):
         return ai_account.Check(ai_account.WORKS)
 
     config_ui.check_key = works

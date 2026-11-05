@@ -197,6 +197,8 @@ def test_the_owner_connects_through_the_page_and_the_key_is_saved_as_a_pasted_on
                 assert "Your OpenRouter account is connected" in done.text
                 assert exchanged == [(FAKE_CODE, pending.verifier)]
                 assert checks[-1] == (FAKE_KEY, "https://openrouter.ai/api/v1")
+                # A key just given: a 401 is asked again; the account's credit is read.
+                assert check.asked == {"issued": True, "account": True}, check.asked
                 assert _key_file(home) == FAKE_KEY
                 # Once: the same finish again is refused, and nothing more is exchanged.
                 again = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
@@ -387,6 +389,26 @@ def test_every_failure_is_said_plainly_and_saves_nothing():
             assert _esc(EN._(openrouter_connect.SAVE_BROKE)) in r.text
         finally:
             config_ui.save_values = real
+    asyncio.run(run())
+
+
+def test_an_account_with_no_credit_is_connected_and_said():
+    """The owner signed in to an account with nothing to spend: connected (it is their
+    account), and the page says what to do (ai_account.NO_ACCOUNT_CREDIT)."""
+    async def run():
+        home, check, _checks, _fetched, _exchanged = _setup()
+        check.answer = ai_account.Check(ai_account.WORKS, note=ai_account.NO_ACCOUNT_CREDIT)
+        async with _client(cookie=_session()) as c:
+            q = await _start(c)
+            r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+            assert r.status_code == 200 and _key_file(home) == FAKE_KEY, r.text
+            assert _esc(EN._(openrouter_connect.CONNECTED_TEXT)) in r.text
+            assert _esc(EN._(ai_account.NO_ACCOUNT_CREDIT)) in r.text, r.text
+            # The pasted code's way says the same.
+            await _start(c)
+            r = await c.post("/settings/api/openrouter/code", json={"code": FAKE_CODE})
+            assert r.status_code == 200 and r.json()["message"].endswith(
+                EN._(ai_account.NO_ACCOUNT_CREDIT)), r.text
     asyncio.run(run())
 
 

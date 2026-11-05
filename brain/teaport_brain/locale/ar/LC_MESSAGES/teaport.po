@@ -663,3 +663,9 @@ msgstr "ستسجّل الدخول إلى OpenRouter على هذا الهاتف �
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "يجب أن يكون هاتفك على شبكة Wi-Fi نفسها التي عليها Teaport. إذا لم يتابع من تلقاء نفسه، فاضغط على الزر."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "لا يوجد رصيد في حسابك على OpenRouter بعد، لذلك لا يستطيع Teaport الإجابة حتى تضيف رصيدًا على openrouter.ai/settings/credits."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك، لكن لا يوجد فيه رصيد بعد. أضف رصيدًا على موقع OpenRouter، وبعدها أستطيع الإجابة."

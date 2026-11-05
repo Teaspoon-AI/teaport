@@ -556,7 +556,10 @@ async def save_values(request: Request, body: dict, issued: bool = False) -> tup
     the brain: the owner's paste, the operator's row, and the key OpenRouter's sign-in
     gives (openrouter_connect.py, #282). The caller has authorized the request.
     `issued`: the provider gave this key seconds ago (the sign-in), so a check that got
-    no answer (UNKNOWN) does not stop it; one that says it is refused still does."""
+    no answer (UNKNOWN) does not stop it; one that says it is refused still does, after
+    the check has asked again (ai_account.check_key's `issued`: a key just given can be
+    refused for a moment). A key that works on an account with no credit is saved, and
+    the answer's "notice" says so (ai_account.NO_ACCOUNT_CREDIT)."""
     store = body.get("store") if isinstance(body, dict) else None
     updates = body.get("values") if isinstance(body, dict) else None
     if store not in STORE_FILES or not isinstance(updates, dict) or not updates:
@@ -619,13 +622,15 @@ async def save_values(request: Request, body: dict, issued: bool = False) -> tup
         return 400, {"constraints": failed}
     # The endpoint a key is checked and saved for: this save's, else the file's.
     base = endpoint(merged)
+    check = None
     if "LLM_API_KEY" in secret_updates:
         # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
         # saving the file would change nothing, so nothing is saved.
         if ai_account.shadowed(parse_env(current)) == ai_account.ELSEWHERE:
             check = ai_account.Check(ai_account.REFUSED, ai_account.SET_ELSEWHERE)
             return 400, {"key_check": check.public(_reader(request))}
-        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base)
+        check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base,
+                                        issued=issued, account=True)
         logger.info(f"config: the new LLM key: {check.state}")
         if check.state != ai_account.WORKS and not body.get("force_key") and not (
                 issued and check.state == ai_account.UNKNOWN):
@@ -671,9 +676,11 @@ async def save_values(request: Request, body: dict, issued: bool = False) -> tup
         ai_account.forget_env_copy()  # this brain reads the new file from the next session
     if superseded:
         logger.info(f"config: {STORE_FILES[store]} copy of {', '.join(superseded)} dropped — the file wins now")
-    return 200, {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
-                 "secrets": sorted(secret_updates), "superseded": superseded,
-                 "warnings": failed}
+    answer = {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
+              "secrets": sorted(secret_updates), "superseded": superseded, "warnings": failed}
+    if check is not None and check.note:
+        answer["notice"] = _reader(request)._(check.note)
+    return 200, answer
 
 
 def _reader(request: Request) -> i18n.T:

@@ -652,3 +652,9 @@ msgstr "Je meldt je op deze telefoon aan bij OpenRouter en geeft Teaport toestem
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "Je telefoon moet op dezelfde wifi zitten als Teaport. Gaat het niet vanzelf verder, tik dan op de knop."
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "Je OpenRouter-account heeft nog geen tegoed, dus Teaport kan pas antwoorden als je tegoed toevoegt op openrouter.ai/settings/credits."
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "Je AI-account is gekoppeld, maar heeft nog geen tegoed. Voeg tegoed toe op de website van OpenRouter, dan kan ik antwoorden."

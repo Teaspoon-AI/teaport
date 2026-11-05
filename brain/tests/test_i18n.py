@@ -46,6 +46,7 @@ DYNAMIC = {
     "config_ui.py": {
         "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
         "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
+        "_reader(request)._(check.note)",    # ai_account.NO_ACCOUNT_CREDIT: N_() there (#282)
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
         "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
@@ -83,7 +84,7 @@ DYNAMIC = {
         "t._(status.get('reason') or N_('something went wrong'))",  # the same
         "self.t._(WELCOME_TEXT)", "self.t._(AGAIN_TEXT)",  # N_() there (#278)
         "self.t._(ONLINE_NOW_TEXT)",
-        "t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)",  # N_() there (#279)
+        "t._((ACCOUNT_NO_CREDIT_TEXT if account.get('no_credit') else ACCOUNT_SAVED_TEXT) if saved else ACCOUNT_NOT_SAVED_TEXT if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)",  # N_() there (#279, #282)
     },
     "agent_session.py": {
         "t._(self._BUSY_MESSAGE)",           # the class constants: N_() wraps them

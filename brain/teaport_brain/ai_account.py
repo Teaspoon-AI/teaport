@@ -70,6 +70,10 @@ NO_SERVICE = N_("no AI service is set up on this box")
 UNREACHABLE = N_("the AI service didn't answer")
 REFUSED_BARE = N_("the AI service refused this key")
 NO_CREDIT = N_("this account has no credit left")
+# A key that works on an OpenRouter account with no credit (check_key, `account`): saved
+# all the same -- it is the owner's account -- with this said beside "saved".
+NO_ACCOUNT_CREDIT = N_("Your OpenRouter account has no credit yet, so Teaport can't answer "
+                       "until you add some at openrouter.ai/settings/credits.")
 SET_ELSEWHERE = N_("this box's key is set by its installer, so it can't be changed here")
 # A save the agent (OpenClaw) did not take: nothing changed (save_key).
 NOT_SHARED = N_("Teaport couldn't switch everything over to this key, so it kept the one "
@@ -87,6 +91,7 @@ class Check:
     reason: str = ""
     ours: bool = True
     data: dict = field(default_factory=dict)
+    note: str = ""           # a msgid said beside WORKS (NO_ACCOUNT_CREDIT), or ""
 
     def shown(self, t) -> str:
         """The reason in t's language (the provider's own words stay as they are)."""
@@ -152,6 +157,12 @@ def _check_url(base_url: str) -> str | None:
     if is_openrouter(base_url):
         return f"{parts.scheme}://{parts.netloc}/api/v1/key"
     return base_url.strip().rstrip("/") + "/models"
+
+
+def _credits_url(base_url: str) -> str:
+    """OpenRouter's account credit, for `base_url` (an OpenRouter one: _check_url)."""
+    parts = urllib.parse.urlsplit(base_url.strip())
+    return f"{parts.scheme}://{parts.netloc}/api/v1/credits"
 
 
 def _provider_words(body: bytes) -> str:
@@ -391,9 +402,23 @@ def _deadline(call, timeout: float) -> tuple[int, bytes]:
     return done["answer"]
 
 
-def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
+# A key OpenRouter's sign-in gave a moment ago can be refused (401) for a few seconds
+# before it is known everywhere (seen live, 150 ms after the exchange): such a key is
+# asked again after each of these waits before its refusal counts. A refusal there costs
+# the owner a whole new sign-in, and leaves the key behind on their account.
+ISSUED_RETRY_SECS = (1.0, 2.0, 3.0)
+# Waits between those asks; replaced in tests.
+_sleep = time.sleep
+
+
+def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS,
+              issued: bool = False, account: bool = False) -> Check:
     """Does the endpoint at `base_url` accept `key`? One authenticated request (see the
-    module note). Never raises."""
+    module note). Never raises.
+    `issued`: the provider gave the key a moment ago (the sign-in): a 401 is asked again
+    (ISSUED_RETRY_SECS). `account`: for a save, an OpenRouter key that works is also
+    read against its account's credit (_account_note): none left is said (`note`), not
+    refused. The starter-credit monitor asks neither."""
     key = (key or "").strip()
     if not key:
         return Check(REFUSED, EMPTY)
@@ -402,11 +427,18 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     url = _check_url(base_url or "")
     if url is None:
         return Check(UNKNOWN, NO_SERVICE)
-    try:
-        status, body = _get(url, key, timeout)
-    except (OSError, ValueError) as e:  # URLError, a timeout, a refused connection
-        logger.info(f"ai account: the key check got no answer ({type(e).__name__})")
-        return Check(UNKNOWN, UNREACHABLE)
+    waits = list(ISSUED_RETRY_SECS) if issued else []
+    while True:
+        try:
+            status, body = _get(url, key, timeout)
+        except (OSError, ValueError) as e:  # URLError, a timeout, a refused connection
+            logger.info(f"ai account: the key check got no answer ({type(e).__name__})")
+            return Check(UNKNOWN, UNREACHABLE)
+        if status != 401 or not waits:
+            break
+        logger.info("ai account: the provider refused the key it just gave (401); asking "
+                    "again shortly")
+        _sleep(waits.pop(0))
     if status in (401, 402, 403):
         words = _provider_words(body)
         logger.info(f"ai account: the provider refused the key ({status})")
@@ -423,7 +455,32 @@ def check_key(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SEC
     remaining = credit_left(record).remaining
     if remaining is not None and remaining <= 0:  # the key's limit, or its budget, used up
         return Check(REFUSED, NO_CREDIT, data=record)
-    return Check(WORKS, data=record)
+    return Check(WORKS, data=record,
+                 note=_account_note(key, base_url, timeout) if account else "")
+
+
+def _account_note(key: str, base_url: str, timeout: float) -> str:
+    """NO_ACCOUNT_CREDIT when OpenRouter says the key's account has no credit left
+    (GET /api/v1/credits: total_credits minus total_usage, 0 or less), else "". A key's
+    own record cannot say it: a key with no limit of its own reads as having credit
+    whatever its account holds (seen live: a new account with nothing bought, whose key
+    passed the check and whose agent turns then failed with 402). Anything else -- no
+    answer, a refusal, a shape not read -- says nothing: the key was checked already."""
+    try:
+        status, body = _get(_credits_url(base_url), key, timeout)
+        data = key_record(json.loads(body.decode("utf-8", "replace"))) if status == 200 else {}
+    except (OSError, ValueError) as e:
+        logger.info(f"ai account: the account credit check got no answer ({type(e).__name__})")
+        return ""
+    total, used = _number(data.get("total_credits")), _number(data.get("total_usage"))
+    if total is None or used is None:
+        if status != 200:
+            logger.info(f"ai account: the account credit check got HTTP {status}")
+        return ""
+    if total - used > 0:
+        return ""
+    logger.info("ai account: the key works, but its OpenRouter account has no credit")
+    return NO_ACCOUNT_CREDIT
 
 
 # ------------------------------------------------------------------ the sign-in (#282)
@@ -700,12 +757,13 @@ def forget_env_copy() -> None:
 
 async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
     """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
-    where nobody is left to say "save anyway".
+    where nobody is left to say "save anyway". A key that works on an account with no
+    credit is saved, its Check's `note` says so (check_key's `account`).
     With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
     key that works but that OpenClaw did not take: UNKNOWN, with NotSaved's reason."""
     if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
-    result = await asyncio.to_thread(check_key, key, base_url, timeout)
+    result = await asyncio.to_thread(check_key, key, base_url, timeout, account=True)
     if result.state == WORKS:
         try:
             await save_key(key, base_url)

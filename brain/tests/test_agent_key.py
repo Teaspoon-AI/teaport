@@ -254,7 +254,7 @@ def _page(box):
     config_ui.ETC_DIR = etc
     config_ui.SIP_CONF = os.path.join(box.home, "teaport-sip.conf")
     os.environ["GATEWAY_TOKEN"] = "t0k3n"
-    config_ui.check_key = lambda key, base_url, timeout=None: ai_account.Check(ai_account.WORKS)
+    config_ui.check_key = lambda key, base_url, timeout=None, **asked: ai_account.Check(ai_account.WORKS)
 
     async def states(units):
         return {u: {"state": "active", "active_since": 0.0} for u in units}

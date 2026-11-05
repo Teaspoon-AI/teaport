@@ -652,3 +652,9 @@ msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问。之
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "你的手机需要和 Teaport 连在同一个 Wi-Fi 上。如果没有自动继续，请点按按钮。"
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "你的 OpenRouter 账户还没有余额，所以在你到 openrouter.ai/settings/credits 充值之前，Teaport 无法回答。"
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "你的 AI 账户已连接，但还没有余额。到 OpenRouter 网站充值后，我就能回答了。"

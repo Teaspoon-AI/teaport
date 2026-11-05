@@ -757,3 +757,9 @@ msgstr "この電話で OpenRouter にサインインして Teaport を承認し
 
 msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
 msgstr "電話を Teaport と同じ Wi-Fi につないでおく必要があります。自動で進まない場合は、ボタンをタップしてください。"
+
+msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
+msgstr "OpenRouter アカウントにまだクレジットがないため、openrouter.ai/settings/credits でクレジットを追加するまで Teaport は答えられません。"
+
+msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
+msgstr "AI アカウントは接続されましたが、まだクレジットがありません。OpenRouter のウェブサイトでクレジットを追加すると、答えられるようになります。"
