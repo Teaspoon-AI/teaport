@@ -286,8 +286,8 @@ def test_the_start_pattern_hears_requests_not_talk(lang):
 
 
 # "open my settings" (settings_access.py, #279): ways to ask, and talk about settings that
-# is not a request -- the phone's, Wi-Fi, network, Bluetooth or app settings among it -- heard as SettingsPhrase hears it (no question, at most
-# PHRASE_MAX_WORDS words).
+# is not a request -- the phone's, Wi-Fi, network, Bluetooth or app settings among it -- heard as SettingsPhrase hears it
+# (settings_access.phrase_heard).
 SETTINGS = {
     "es": (["eh, abre los ajustes", "abre los ajustes", "Teaport, abre tus ajustes", "por favor, abre la configuración", "muéstrame mis ajustes"],
            ["abre los ajustes del teléfono", "abre los ajustes de wifi", "abre la configuración de red", "abre los ajustes de bluetooth", "en el móvil, abre los ajustes", "abre los ajustes de la app", "me gustan tus ajustes", "los ajustes están bien así"]),
@@ -318,8 +318,55 @@ SETTINGS = {
 
 def _settings_heard(text: str, t) -> bool:
     from teaport_brain import settings_access
-    return (wifi_voice.heard("settings", text, t) and not wifi_voice._QUESTION.search(text)
-            and wifi_voice.words(text) <= settings_access.PHRASE_MAX_WORDS)
+    return settings_access.phrase_heard(text, t)
+
+
+# The same request asked politely, as a question (#309): each language's own wrapper,
+# and its question mark. Then questions that only mention settings, which stay talk.
+POLITE_SETTINGS = {
+    "es": (["¿Puedes abrir los ajustes?", "¿Me puedes abrir la configuración?", "¿Podrías mostrarme mis ajustes?", "abre los ajustes?"],
+           ["¿Cómo abro los ajustes?", "¿Puedes abrir los ajustes del teléfono?", "¿Dónde están los ajustes?"]),
+    "pt_BR": (["Você pode abrir as configurações?", "Pode abrir as configurações?", "Poderia me mostrar as configurações?"],
+              ["Como abro as configurações?", "Você pode abrir as configurações do celular?", "Onde ficam as configurações?"]),
+    "fr": (["Tu peux ouvrir les réglages ?", "Pouvez-vous ouvrir les paramètres ?", "Peux-tu afficher mes réglages ?"],
+           ["Comment j'ouvre les réglages ?", "Tu peux ouvrir les réglages du téléphone ?", "Où sont les réglages ?"]),
+    "it": (["Puoi aprire le impostazioni?", "Mi puoi mostrare le impostazioni?", "Potresti aprire le mie impostazioni?"],
+           ["Come apro le impostazioni?", "Puoi aprire le impostazioni del telefono?", "Dove sono le impostazioni?"]),
+    "de": (["Kannst du die Einstellungen öffnen?", "Kannst du mir bitte die Einstellungen zeigen?", "Können Sie die Einstellungen öffnen?", "Öffne die Einstellungen?"],
+           ["Wie öffne ich die Einstellungen?", "Kannst du die Handy-Einstellungen öffnen?", "Wo sind die Einstellungen?"]),
+    "nl": (["Kun je de instellingen openen?", "Kunt u mij de instellingen laten zien?", "Kun je even de instellingen openen?"],
+           ["Hoe open ik de instellingen?", "Kun je de telefooninstellingen openen?", "Waar zijn de instellingen?"]),
+    "ru": (["Можешь открыть настройки?", "Ты можешь показать мне настройки?", "Не могли бы вы открыть настройки?"],
+           ["Как открыть настройки телефона?", "Можешь открыть настройки телефона?", "Где настройки?"]),
+    "ar": (["ممكن تفتح الإعدادات؟", "هل يمكنك فتح الإعدادات؟", "افتح الإعدادات؟"],
+           ["كيف أفتح الإعدادات؟", "هل يمكنك فتح إعدادات الهاتف؟", "أين الإعدادات؟"]),
+    "hi": (["क्या आप सेटिंग्स खोल सकते हैं?", "क्या तुम मेरी सेटिंग्स दिखा सकते हो?", "सेटिंग्स खोलो?"],
+           ["सेटिंग्स कैसे खोलूँ?", "क्या आप फ़ोन की सेटिंग्स खोल सकते हैं?", "सेटिंग्स कहाँ हैं?"]),
+    "zh": (["你能帮我打开设置吗？", "可以打开设置吗？", "能不能打开设置？", "把设置打开好吗？"],
+           ["怎么打开设置？", "你能打开手机设置吗？", "设置在哪里？"]),
+    "ja": (["設定を開いてもらえますか？", "設定を開いてくれますか？", "設定を見せてくれる？"],
+           ["設定はどうやって開くの？", "スマホの設定を開いてもらえますか？", "設定はどこ？"]),
+    "ko": (["설정 열어 줄래요?", "설정 좀 열어 줄 수 있어요?", "설정 페이지 보여 주실래요?"],
+           ["설정은 어떻게 열어요?", "휴대폰 설정 열어 줄래요?", "설정이 어디 있어요?"]),
+}
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_a_polite_question_is_the_settings_request(lang):
+    t = i18n.get(lang)
+    asks, talk = POLITE_SETTINGS[lang]
+    assert [s for s in asks if not _settings_heard(s, t)] == []
+    assert [s for s in talk if _settings_heard(s, t)] == []
+    # English too, in every session (#309).
+    for ask in ("Can you open my settings?", "could you please open my settings?",
+                "Hey Teaport, could you please open my settings?", "open my settings?",
+                "Would you show me the settings?", "can you open the settings page please?"):
+        assert _settings_heard(ask, t), ask
+    for talk_ in ("How do I open my settings?", "Can I open my settings?",
+                  "Can you open my settings on the phone?", "Why did you open my settings?",
+                  "can you tell me how to open my settings?", "Did you open the settings?",
+                  "can you open the phone settings?", "could you open wifi settings?"):
+        assert not _settings_heard(talk_, t), talk_
 
 
 @pytest.mark.parametrize("lang", LANGS)

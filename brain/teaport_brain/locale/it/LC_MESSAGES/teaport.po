@@ -490,8 +490,8 @@ msgid "no AI service is set up on this box"
 msgstr "su questo dispositivo non è configurato nessun servizio di IA"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti)\\W+){0,3}(?:apri(?:mi)?|apra|mostra(?:mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?= *(?:[.,!?;:…]|$)| (?:per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti)\\W+){0,3}(?:(?:mi |ci )?(?:puoi|potresti|può|potrebbe)(?: (?:mi|ci))? )?(?:apri(?:re|rmi|mi)?|apra|mostra(?:re|rmi|mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?= *(?:[.,!?;:…]|$)| (?:per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)"
 
 msgctxt "spell"
 msgid "slash"

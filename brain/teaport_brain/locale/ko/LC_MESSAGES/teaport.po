@@ -591,8 +591,8 @@ msgid "no AI service is set up on this box"
 msgstr "이 기기에는 AI 서비스가 설정되어 있지 않아요"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
-msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:네|너의|니|당신의|내|제|나의|teaport의?|티포트의?)\\s*)?(?:설정|세팅)\\s*(?:페이지|화면|창|메뉴)?\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:열어|보여|띄워)\\s*(?:줘요|줘|줄래요|줄래|주세요|주실래요|봐요|봐)?\\s*(?:[.!,…]|$)"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\\b)"
+msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:네|너의|니|당신의|내|제|나의|teaport의?|티포트의?)\\s*)?(?:설정|세팅)\\s*(?:페이지|화면|창|메뉴)?\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:열어|보여|띄워)\\s*(?:줘요|줘|줄래요|줄래|주세요|주실래요|줄\\s*수\\s*있(?:어요|어|나요|을까요|니)|봐요|봐)?\\s*(?:[.!,…?？]|$)"
 
 msgctxt "spell"
 msgid "slash"

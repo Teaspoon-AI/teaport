@@ -18,7 +18,7 @@ If the device has no internet connection, put it in setup mode: it opens a tempo
 
 Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no internet, either phrase starts setup mode without the agent: the device asks whether to go into setup mode, and after you say yes, it opens its setup network and says that it is in setup mode.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:519-521,775#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
+<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:522-524,778#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
 
 With `TEAPORT_SETUP_ON_FIRST_BOOT` on, a new device does this by itself. When it has never
 been online and still has no internet a minute after it starts, it goes into setup mode
@@ -29,11 +29,11 @@ voice in the first minute counts as that start-up's try. The first time the devi
 online, it stops doing this for good; if that happens during setup mode, for example when
 you plug in a network cable, it leaves setup mode by itself.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:107-111#3b3a158c; brain/teaport_brain/first_boot.py:191-214#eb3223f5; brain/teaport_brain/wifi_voice.py:555-563#4eeee6c0 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:107-111#3b3a158c; brain/teaport_brain/first_boot.py:191-214#eb3223f5; brain/teaport_brain/wifi_voice.py:558-566#4eeee6c0 -->
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1753-1760#389fa64a; brain/teaport_brain/wifi_voice.py:870-874#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1753-1760#389fa64a; brain/teaport_brain/wifi_voice.py:873-877#e2d218b7 -->
 
 ## Join the setup network
 
@@ -45,7 +45,7 @@ A device with a screen shows, under the title "Setup mode", the setup network's 
 
 Say "repeat" to hear the network's name, the password, and the address read out. A device without a screen reads them out straight away. Some phones open the page on their own after they join the setup network; if yours does not, use the address.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:282-329#d6a50544; brain/teaport_brain/wifi_voice.py:903#d902fb7c; brain/teaport_brain/wifi_setup.py:557-568#3f154da2; brain/teaport_brain/wifi_setup.py:689-700#01afe627; brain/teaport_brain/wifi_setup.py:100#bf4c222f; brain/teaport_brain/wifi_setup.py:16-20#a67a8952 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:285-332#d6a50544; brain/teaport_brain/wifi_voice.py:906#d902fb7c; brain/teaport_brain/wifi_setup.py:557-568#3f154da2; brain/teaport_brain/wifi_setup.py:689-700#01afe627; brain/teaport_brain/wifi_setup.py:100#bf4c222f; brain/teaport_brain/wifi_setup.py:16-20#a67a8952 -->
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
@@ -67,7 +67,7 @@ Signing in to OpenRouter instead of pasting a key does not work in setup mode: n
 
 The page tells you that the device is joining your network, so switch your phone back to it. The device leaves setup mode and says that it is connected to your network and online again; a screen shows "Connected to" and the network's name under the title "Wi-Fi" for a few seconds.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:321-330#99955446; brain/teaport_brain/wifi_voice.py:798-803#799aa40d; brain/teaport_brain/wifi_setup.py:723-724#bd5d3568; brain/teaport_brain/wifi_setup.py:102#296b6e77 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:321-330#99955446; brain/teaport_brain/wifi_voice.py:801-806#799aa40d; brain/teaport_brain/wifi_setup.py:723-724#bd5d3568; brain/teaport_brain/wifi_setup.py:102#296b6e77 -->
 
 ## If the join fails
 

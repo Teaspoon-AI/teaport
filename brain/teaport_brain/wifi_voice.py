@@ -156,9 +156,12 @@ PATTERNS = {
     # box's settings, said as a request on its own -- it starts the utterance (after at
     # most a short lead-in: "ok", "hey", "please"...), so "on my phone, open the settings"
     # is not it, and the phrase ends the sentence (or "page", "please", "now" follow it).
-    # How short and that it is no question is the phrase's own rule
-    # (settings_access.PHRASE_MAX_WORDS). Every catalog's pattern is anchored the same way.
+    # A polite wrapper may come first ("can you open my settings?", #309): a question
+    # mark is fine, the anchoring is what keeps out talk about settings. How short is the
+    # phrase's own rule (settings_access.phrase_heard). Every catalog's pattern is anchored
+    # the same way, with its language's own wrappers.
     "settings": r"^\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
+                r"(?:(?:can|could|would|will) you(?: please)? )?"
                 r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
                 r"(?:(?:my|your|the|teaport's|teaport) )?settings(?= *(?:[.,!?;:…]|$)| (?:page|please|now)\b)",
 }
