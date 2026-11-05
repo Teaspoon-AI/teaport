@@ -822,6 +822,71 @@ async def test_words_placed_after_the_release_move_with_the_held_ones():
             "the End (no context of its own) must move with its context's words")
 
 
+async def test_a_pause_during_a_hold_is_no_part_of_the_held_reply_s_shift():
+    # The gate measures its holds on the transport's voice clock, the clock the pts are
+    # on (formal/VoiceClock.tla, vc_holdWall): a playout pause during the hold (a filler
+    # playing over the held reply, paused for the caller) stood that clock still, and the
+    # held reply's words must not carry the pause on top of it.
+    from teaport_brain.playout_pause import VoiceClock
+    async with GateRig() as rig:
+        voice = VoiceClock()
+        voice.attach(rig.gate.get_clock())
+        rig.gate.voice_clock = voice
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        frames = reply("c1", rig)
+        base = frames[2].pts
+        t_sent = time.monotonic()
+        await rig.send(*frames)                          # held
+        await asyncio.sleep(0.1)
+        voice.stop()
+        await asyncio.sleep(0.3)
+        voice.start()
+        await rig.send(VADUserStoppedSpeakingFrame())
+        while rig.gate.released < 1:
+            await asyncio.sleep(0.005)
+        t_released = time.monotonic()
+        await asyncio.sleep(0.1)
+        got = {getattr(f, "text", None): f.pts for _, f in rig.bottom.down
+               if isinstance(f, TTSTextFrame)}
+        moved = nanoseconds_to_seconds(got["Sure,"] - base)
+        want = t_released - t_sent - 0.3
+        assert abs(moved - want) <= 0.05, (
+            f"moved {moved:.2f}s; held {t_released - t_sent:.2f}s of which the voice "
+            f"clock stood 0.30s")
+
+
+def test_a_frame_after_the_release_is_not_held_while_the_voice_stands():
+    # Review nit 3: the voice clock stands still through a pause, so a frame that reaches
+    # the gate after a release can read the same voice instant as the release. Which came
+    # first is read on the pipeline clock: it was not held, and moves by nothing.
+    from teaport_brain.playout_pause import VoiceClock
+
+    class Pipeline:
+        t = 10_000_000_000
+
+        def get_time(self):
+            return self.t
+
+    gate, base, voice = ReplyHoldGate(merge=TurnMerge()), Pipeline(), VoiceClock()
+    voice.attach(base)
+    gate.voice_clock = voice
+    gate.get_clock = lambda: base
+    voice.stop()
+    gate._released_ns = gate._instant()
+    base.t += 1_000_000                                   # just after the release
+    f = word("after", "c2", voice.now_ns())
+    gate._arrivals[f.id] = gate._instant()
+    assert gate._arrivals[f.id][1] == gate._released_ns[1], "the tie the review found"
+    base.t += 100_000_000                                 # a backlog, the voice standing
+    voice.start()
+    base.t += 100_000_000
+    pts = f.pts
+    gate._restamp(f)
+    assert f.pts == pts and "c2" not in gate._shift, "a frame the hold never caught moved"
+
+
 async def test_a_hang_up_during_a_hold_ends_at_once_and_plays_nothing():
     from pipecat.frames.frames import EndFrame
     rig = GateRig()

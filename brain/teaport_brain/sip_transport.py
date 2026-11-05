@@ -541,7 +541,7 @@ class SipGatewayOutputTransport(PausablePlayout, BaseOutputTransport):
             # serializer sees the same frame type the pipeline produced.
             await self._write_frame(type(frame)(
                 chunk, sample_rate=frame.sample_rate, num_channels=frame.num_channels))
-            self._wrote(self._send_interval)
+            self._wrote(self._send_interval, frame)
             await self._write_audio_sleep()
         return True
 

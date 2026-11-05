@@ -793,11 +793,6 @@ class TranscriptLedger(BaseObserver):
                 "played": 0.0,        # seconds played out in windows already closed
                 "synth_done": False,  # all of its audio has been pushed
                 "spoken": [],         # (word, pts) from its TTSTextFrames
-                # Playout pauses since it opened: added to the cut before comparing
-                # pts. A turn that opens after a pause starts at 0 -- the TTS moved
-                # the anchor of a reply queued behind the paused one by the pause
-                # (engine_tts._freeze_playout), so its pts already account for it.
-                "pts_shift": 0.0,
                 "ifs": False}         # its word frames carry their own spacing
         if entry is not None:
             entry["turn"] = turn
@@ -859,6 +854,14 @@ class TranscriptLedger(BaseObserver):
         self._credit(self._play_t(t))
         self._close_ready(t)
 
+    def _voice_ns(self, t: float) -> float:
+        """The voice clock (ns) at pipeline instant `t` (s): the transport's, or with no
+        pausable transport the pipeline clock itself -- nothing pauses there."""
+        voice = getattr(self._output, "voice_clock", None)
+        if voice is not None and voice.attached:
+            return voice.at(round(t * 1e9))
+        return self._play_t(t) * 1e9
+
     def _play_t(self, t: float) -> float:
         """Playout time at `t`: `t`, or the instant a pause still in force began."""
         return min(t, self._paused_at) if self._paused_at is not None else t
@@ -905,31 +908,23 @@ class TranscriptLedger(BaseObserver):
         self._close_ready(t)
 
     def _resume(self, t: float):
-        """Writing again: everything still queued plays from now, and every open turn's
-        words play that much later than they were scheduled."""
+        """Writing again: everything still queued plays from now. (Its words need no
+        moving: their pts are on the voice clock, which stood still through the pause --
+        _pts_heard.)"""
         if self._paused_at is None:
             return
-        shift = max(0.0, t - self._paused_at)
         self._paused_at = None
         if self._win_t0 is not None:
             self._win_t0 = t
-        for turn in self._turns:
-            # Only a turn with audio already pushed was scheduled on the pre-pause clock.
-            # One whose first audio comes after the resume is anchored by the TTS on its
-            # moved clock (engine_tts._freeze_playout moves _prev_audio_end_ns), so
-            # shifting it here would count the pause twice.
-            if turn["pushed"] > 0:
-                turn["pts_shift"] += shift
 
     def _pts_heard(self, turn: dict, t: float):
         """The words of `turn` played out by `t`, by their scheduled pts, and the cut
         instant they were read at (ns on the schedule's clock)."""
         # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
         # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
-        # A playout pause stops the clock the words were scheduled on: the cut is
-        # read where playout stood (the pause's start, if one is in force), on the
-        # schedule's own time (less the pausing it has had since).
-        cut_ns = (self._play_t(t) - turn["pts_shift"] - _PTS_LEAD_SECS) * 1e9
+        # The pts are on the output transport's voice clock (playout_pause.py), which
+        # stands still while a pause keeps the voice still: the cut is read on it.
+        cut_ns = self._voice_ns(t) - _PTS_LEAD_SECS * 1e9
         # Rejoin the matched words with the spacing the frames declare: a
         # frame set that includes its inter-frame spaces (a CJK voice's
         # character tokens) is concatenated; one that does not (the engine's

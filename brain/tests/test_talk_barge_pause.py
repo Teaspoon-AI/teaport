@@ -49,6 +49,10 @@ from teaport_brain.talk_transport import TalkOutputTransport, TalkWebsocketTrans
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 from test_barge_pause import (  # noqa: E402
+    check_a_cut_drops_the_words_a_pause_held,
+    check_a_word_due_in_the_lag_waits_for_the_resume,
+    check_a_reply_stamped_after_the_resume_is_on_time,
+    check_the_words_keep_the_voices_time_through_a_pause,
     RESUME_S,
     SPEECH,
     SR,
@@ -353,9 +357,10 @@ async def test_a_talk_session_builds_the_pauser():
     from teaport_brain.agent_session import build_agent_session
     from teaport_brain.barge_pause import PauseAwareMinWordsStrategy
 
+    from teaport_brain.echo_guard import PlayedWordsTap
     for front_end in ("talk", "room"):
-        # Off by default on Talk and in the room (TEAPORT_BARGE_PAUSE_TALK and _ROOM, until
-        # #255): /talk's transport is pipecat's own then, and nothing pauses.
+        # Off by default on Talk and in the room (TEAPORT_BARGE_PAUSE_TALK and _ROOM):
+        # /talk's transport is pipecat's own then, and nothing pauses.
         off_t = _talk_transport(_Socket(), pausable=False)
         assert not hasattr(off_t.output(), "supports_playout_pause")
         off = build_agent_session(off_t, front_end=front_end)
@@ -369,13 +374,22 @@ async def test_a_talk_session_builds_the_pauser():
         assert pauser.on_onset in p._params.vad_analyzer.onset_listeners
         assert [type(s) for s in p._params.user_turn_strategies.start] == \
             [PauseAwareMinWordsStrategy]
+    # The room's echo guard dates the words on the transport's voice clock (echo_guard.py).
+    room = build_agent_session(_talk_transport(_Socket()), front_end="room",
+                               client_features=frozenset({"local"}))
+    out = room.ledger._output
+    p, taps = out, []
+    while p is not None:
+        if isinstance(p, PlayedWordsTap):
+            taps.append(p)
+        p = p.next
+    assert taps and all(t._voice is out.voice_clock for t in taps), taps
 
 
 async def test_the_room_and_talk_pause_by_their_own_switches():
     """/talk's transport pauses by TEAPORT_BARGE_PAUSE_ROOM for the box's own mic
-    (?features=local) and by TEAPORT_BARGE_PAUSE_TALK for every other client: the room's
-    echo guard is what the playout timing across a pause breaks (#255), so the room can
-    stay off while the app and browsers pause."""
+    (?features=local) and by TEAPORT_BARGE_PAUSE_TALK for every other client: the room
+    can stay off while the app and browsers pause (its bridge's half of #255)."""
     from types import SimpleNamespace
 
     from teaport_brain import barge_pause as bp, gateway_server as gs
@@ -412,6 +426,26 @@ async def test_the_room_and_talk_pause_by_their_own_switches():
     finally:
         bp.ENABLED, bp.TALK_ENABLED, bp.ROOM_ENABLED = saved
         gs.TalkWebsocketTransport, gs.host_context.fetch, gs.arb.ARBITER = saved_gs
+
+
+async def test_talk_words_keep_the_voices_time_through_a_pause():
+    async with TalkRig() as rig:
+        await check_the_words_keep_the_voices_time_through_a_pause(rig)
+
+
+async def test_talk_a_word_due_in_the_lag_waits_for_the_resume():
+    async with TalkRig(with_pauser=False) as rig:
+        await check_a_word_due_in_the_lag_waits_for_the_resume(rig)
+
+
+async def test_talk_a_cut_drops_the_words_a_pause_held():
+    async with TalkRig() as rig:
+        await check_a_cut_drops_the_words_a_pause_held(rig)
+
+
+async def test_talk_a_reply_stamped_after_the_resume_is_on_time():
+    async with TalkRig() as rig:
+        await check_a_reply_stamped_after_the_resume_is_on_time(rig)
 
 
 def _pause_times(rig):

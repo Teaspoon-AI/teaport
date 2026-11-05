@@ -49,7 +49,9 @@ from pipecat.frames.frames import (  # noqa: E402
 )
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
 
+from teaport_brain.barge_pause import PlayoutPauseFrame  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
+from teaport_brain.playout_pause import VoiceClock  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 from teaport_brain.tts_text import has_speech  # noqa: E402
 
@@ -67,13 +69,36 @@ R2 = "It is Tuesday the second."                                        # 5 word
 ANSWER = "The bakery opens at eight and closes at six."                 # 9 words
 
 
+class _PipelineClock:
+    """The pipeline clock, moved by feed() to each frame's time (ns)."""
+    t = 0
+
+    def get_time(self):
+        return self.t
+
+
 def ledger():
-    return TranscriptLedger(tts=TTS, output=OUT)
+    """A ledger whose output transport has a voice clock (playout_pause.VoiceClock),
+    which feed() stops and starts at each PlayoutPauseFrame as the transport does."""
+    voice, base = VoiceClock(), _PipelineClock()
+    voice.attach(base)
+    out = SimpleNamespace(name=OUT.name, voice_clock=voice, pipeline_clock=base)
+    return TranscriptLedger(tts=TTS, output=out)
 
 
 async def feed(L, seq):
     """seq: (frame, t) or (frame, t, processor). No processor = a hermetic sighting."""
+    out = getattr(L, "_output", None)
+    base, voice = getattr(out, "pipeline_clock", None), getattr(out, "voice_clock", None)
     for f, t, *proc in seq:
+        if base is not None:
+            base.t = max(base.t, int(t * 1e9))
+            if isinstance(f, PlayoutPauseFrame):
+                # The transport moves its voice clock as it announces the pause.
+                if f.paused:
+                    voice.stop(after_secs=f.lag_secs)
+                else:
+                    voice.start()
         await L.on_process_frame(SimpleNamespace(
             frame=f, timestamp=int(t * 1e9), processor=proc[0] if proc else None))
     return L

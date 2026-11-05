@@ -139,15 +139,10 @@
 #     longer after the pause, and the ledger's heard cut (lag_secs) and the
 #     captions are short of what was heard by the same amount -- the same assumption
 #     the ledger already made on Talk for every cut, pause or not.
-#   * While paused, the transport keeps releasing the reply's words on the wall clock
-#     (pipecat's clock knows nothing of the pause): the assistant aggregator's running
-#     text and the Talk view's captions run ahead of the voice -- the heard correction
-#     at a cut trims the context back to what was heard, as on any cut -- and so do the
-#     room echo guard's "played" stamps, so after a pause longer than about half a
-#     second the resumed reply's echo can pass it as the user's words. The room bridge
-#     also counts a pause as the reply's end (its mouth timing, a goodbye "heard out").
-#     One design of the playout timing across a pause is the follow-up (#255, branch
-#     feat/pause-word-clock).
+#   * The room bridge counts a pause as the reply's end (its mouth timing, a goodbye
+#     "heard out"): the bridge's part of #255. (The reply's words wait out a pause on
+#     the transport's voice clock -- playout_pause.py -- so the brain's own readers of
+#     them do not.)
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
 #
@@ -190,12 +185,9 @@ from teaport_brain.settings import setting
 from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
-# -- on /talk only with a switch of its own as well (talk_pauses): off there until the
-# playout timing across a pause is done (#255; Known limits). The room mic has its own,
-# because there the limit costs more than captions: its echo guard times the bot's words
-# on the wall clock, so after a pause the resumed reply's echo passes as the user's words
-# and cuts the reply -- the bot answering itself on the box's speaker. The app, the
-# dashboard and Discord have no echo guard; their clients cancel their own echo.
+# -- on /talk only with a switch of its own as well (talk_pauses), off by default. The
+# room mic has its own, off until the room bridge follows a pause too (#255; Known
+# limits).
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
 TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
 ROOM_ENABLED = setting("TEAPORT_BARGE_PAUSE_ROOM")

@@ -1095,6 +1095,13 @@ def build_agent_session(transport, *, voice: str | None = None,
     # corrector fold the caller's next turn into the one it then drops (reply_hold.py).
     turn_merge = reply_hold.TurnMerge() if reply_hold_enabled else None
     reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold_enabled else None
+    # One clock for when the bot's words play: the pausable transport's voice clock
+    # (playout_pause.py, THE VOICE CLOCK). The TTS stamps every pts on it, the gate
+    # measures its holds on it, and the ledger cuts on it (reading it off the transport).
+    voice_clock = getattr(transport_output, "voice_clock", None)
+    tts.voice_clock = voice_clock
+    if reply_gate is not None:
+        reply_gate.voice_clock = voice_clock
     heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
     if reply_gate is not None:
         # A commit that finds the gate still armed continues the turn whose reply it
@@ -1370,7 +1377,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         barge_pauser,
         transport_output,
         # Directly below the transport: each word's text frame passes here as it plays.
-        guard.tap() if guard is not None else None,
+        guard.tap(voice_clock) if guard is not None else None,
         # The owner's call recording (call_recording.py): below the transport, where
         # the bot's audio passes as it plays and the caller's on its way down.
         *(recording.processors if recording is not None else []),

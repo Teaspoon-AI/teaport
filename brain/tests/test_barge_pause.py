@@ -174,6 +174,172 @@ async def _at(rig, secs):
     await asyncio.sleep(max(0.0, rig.t0 + secs - time.monotonic()))
 
 
+# --- The voice clock: a paused reply's words wait out the pause (playout_pause.py) ---
+
+def _words_out(rig):
+    """(arrival, word) of each TTSTextFrame the transport released downstream."""
+    return [(t, f.text) for t, d, f in rig.bottom.frames
+            if d == FrameDirection.DOWNSTREAM and isinstance(f, TTSTextFrame)]
+
+
+def _pauses_out(rig):
+    """(arrival, frame) of each PlayoutPauseFrame the transport said downstream."""
+    return [(t, f) for t, d, f in rig.bottom.frames
+            if d == FrameDirection.DOWNSTREAM and isinstance(f, PlayoutPauseFrame)]
+
+
+async def check_the_words_keep_the_voices_time_through_a_pause(rig):
+    # The words are stamped on the voice clock (here: before the pause, where it is the
+    # pipeline clock). Paused, nothing plays: no word is released; resumed, each word
+    # of the reply comes when its audio plays -- the pause's length later than its pts
+    # on the pipeline clock, less the lag that played on -- not all at once, nor early.
+    await rig.speak()
+    await _at(rig, 0.6)
+    await rig.pauser.on_onset(True)
+    await _at(rig, 1.0)
+    await rig.pauser.on_onset(False)
+    await _at(rig, 3.4)
+    (t_pause, pause), (t_resume, _) = _pauses_out(rig)
+    stop = t_pause + pause.lag_secs              # what was sent before the pause played on
+    held = t_resume - stop
+    stood = (rig.out.get_clock().get_time() - rig.out.voice_clock.now_ns()) / 1e9
+    assert abs(stood - held) <= 0.01, (
+        f"the voice clock stood {stood:.3f}s; the voice stood {held:.3f}s, from the end "
+        f"of the pause's {pause.lag_secs:.3f}s lag to the resume")
+    words = _words_out(rig)
+    assert [w for _, w in words] == WORDS, words
+    assert not [w for t, w in words if stop + 0.03 < t < t_resume - 0.01], (
+        f"words released while the voice stood still: {words}")
+    for i, (t, w) in enumerate(words):
+        due = rig.t0 + i * CHUNK_S - CAPTION_LEAD_SECS   # its pts: the lead ahead of its audio
+        if due + CAPTION_LEAD_SECS < stop - 0.03:
+            # Played before the pause. (The rig queues the words once the audio is out,
+            # so the first ones go at once, their pts already past.)
+            assert t <= due + CAPTION_LEAD_SECS + 0.06, (
+                f"{w!r} came {t - due:.2f}s after its pts, after its audio")
+        elif due < stop - 0.03:
+            # Its audio after the stop, its pts before it (the seam, review 1): held to
+            # the resume, nobody having heard it before then -- unless it was out before
+            # the pause began (the echo guard dates it by its audio: test_echo_guard).
+            assert t < t_pause + 0.005 or t_resume - 0.01 <= t <= t_resume + 0.06, (
+                f"{w!r}, heard only after the resume, came {t - t_resume:+.2f}s from it")
+        elif due > stop + 0.03:
+            assert abs(t - (due + held)) <= 0.06, (
+                f"{w!r} came {t - due:.2f}s after its pts; the voice stood {held:.2f}s")
+
+
+async def check_a_cut_drops_the_words_a_pause_held(rig):
+    await rig.speak()
+    await _at(rig, 0.6)
+    await rig.pauser.on_onset(True)
+    await _at(rig, 1.1)
+    await rig.task.queue_frame(InterruptionFrame())
+    await _at(rig, 2.6)
+    (t_pause, pause), = _pauses_out(rig)
+    late = [w for t, w in _words_out(rig) if t > t_pause + pause.lag_secs + 0.06]
+    assert not late, f"words of the cut reply released after the pause: {late}"
+    # The cut ended the pause: the voice clock runs again, and the next reply's words
+    # come on time (review 4: left standing, every later word waited for good).
+    word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
+    word.pts = rig.out.voice_clock.now_ns() + int(0.3e9)
+    t_queued = time.monotonic()
+    await rig.task.queue_frames([TTSStartedFrame(context_id="r2"),
+                                 TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r2"),
+                                 word, TTSStoppedFrame(context_id="r2")])
+    await asyncio.sleep(0.6)
+    t_next = [t for t, w in _words_out(rig) if w == "next"]
+    assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
+
+
+async def check_a_reply_stamped_after_the_resume_is_on_time(rig):
+    # A reply placed after the resume is stamped on the voice clock as it reads then (the
+    # TTS's baseline): its words are released on time, not moved again by the pause.
+    await rig.speak()
+    await _at(rig, 0.6)
+    await rig.pauser.on_onset(True)
+    await _at(rig, 1.0)
+    await rig.pauser.on_onset(False)
+    await _at(rig, 3.4)
+    assert rig.out.voice_clock.now_ns() < rig.out.get_clock().get_time() - int(0.3e9), (
+        "the voice clock stood still through the pause")
+    word = TTSTextFrame("next", aggregated_by="word", context_id="r2")
+    word.pts = rig.out.voice_clock.now_ns() + int(0.3e9)
+    t_queued = time.monotonic()
+    await rig.task.queue_frames([TTSStartedFrame(context_id="r2"),
+                                 TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r2"),
+                                 word, TTSStoppedFrame(context_id="r2")])
+    await asyncio.sleep(0.6)
+    t_next = [t for t, w in _words_out(rig) if w == "next"]
+    assert t_next and abs(t_next[0] - t_queued - 0.3) <= 0.06, (t_next, t_queued)
+
+
+async def check_a_word_due_in_the_lag_waits_for_the_resume(rig):
+    # A word whose pts comes after the pause but inside its lag, while what was sent
+    # still plays: its audio, the caption lead later, is past the stop, so it waits for
+    # the resume -- released at its pts, it would be read as played while the voice
+    # stood still. (No other word queued: the clock task would hold it behind one.)
+    await rig.task.queue_frames(
+        [TTSStartedFrame(context_id="r1")]
+        + [TTSAudioRawFrame(_pcm(i), SR, 1, context_id="r1") for i in range(N_CHUNKS)]
+        + [TTSStoppedFrame(context_id="r1")])
+    while not rig.wire.times:
+        await asyncio.sleep(0.002)
+    rig.t0 = rig.wire.times[0]
+    await _at(rig, 0.4)
+    await rig.out.set_playout_paused(True)
+    # The lag as frozen at the pause, not a later read: a loop stall after it would
+    # leave none, and the word would test nothing (review round 3).
+    assert rig.out._pause_lag > 0.005, f"no lag to test in: {rig.out._pause_lag:.3f}s"
+    voice = rig.out.voice_clock
+    seam = TTSTextFrame("seam", aggregated_by="word", context_id="r1")
+    seam.pts = voice._stop_at - voice._stood - int(0.001e9)   # just before the stop
+    await rig.task.queue_frames([seam])
+    await _at(rig, 1.0)
+    assert not [w for _, w in _words_out(rig) if w == "seam"], (
+        "released before its audio, which plays only after the resume")
+    t_resume = time.monotonic()
+    await rig.out.set_playout_paused(False)
+    await asyncio.sleep(0.2)
+    t = [t for t, w in _words_out(rig) if w == "seam"]
+    assert t and t[0] - t_resume <= 0.06, (t, t_resume)
+
+
+async def test_a_word_due_in_the_lag_waits_for_the_resume():
+    async with Rig(with_pauser=False) as rig:
+        await check_a_word_due_in_the_lag_waits_for_the_resume(rig)
+
+
+async def test_the_words_keep_the_voices_time_through_a_pause():
+    async with Rig() as rig:
+        await check_the_words_keep_the_voices_time_through_a_pause(rig)
+
+
+async def test_a_cut_drops_the_words_a_pause_held():
+    async with Rig() as rig:
+        await check_a_cut_drops_the_words_a_pause_held(rig)
+
+
+async def test_a_reply_stamped_after_the_resume_is_on_time():
+    async with Rig() as rig:
+        await check_a_reply_stamped_after_the_resume_is_on_time(rig)
+
+
+async def test_the_thinking_sound_is_no_part_of_the_reply_s_end():
+    # #255 comment: PausablePlayout's remaining playout counted every audio frame it was
+    # handed, the thinking sound's typing too: the pauser's near-end rule and a pause's
+    # tail then read the reply as longer than it is.
+    async with Rig() as rig:
+        await rig.task.queue_frames([OutputAudioRawFrame(_pcm(i), SR, 1) for i in range(5)])
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frames([TTSStartedFrame(context_id="r1"),
+                                     TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r1"),
+                                     TTSStoppedFrame(context_id="r1")])
+        await asyncio.sleep(0.05)
+        tail = rig.out.playout_tail_secs()
+        assert tail is not None and tail <= CHUNK_S + 0.05, (
+            f"{tail}: the reply is one {CHUNK_S}s chunk; the typing ahead of it is not it")
+
+
 async def test_speech_then_no_words_pauses_at_once_and_resumes_without_loss():
     async with Rig() as rig:
         await rig.speak()
@@ -573,81 +739,124 @@ def test_a_one_word_answer_after_the_reply_would_have_ended_is_a_turn():
     assert asyncio.run(run(-1.0, 0.3)) == (False, True), "synthesis not over: no tail"
 
 
-def test_a_pause_ending_inside_a_hold_does_not_unfreeze_the_tts():
-    # Review S6: the hold and the pause share the TTS's playout model. One freeze per
-    # source: the pause lifting while the hold is still on must leave it frozen.
+class _PipelineClock:
+    """A pipeline clock the test moves by hand (ns)."""
+    t = 10_000_000_000
+
+    def get_time(self):
+        return self.t
+
+
+def _tts_on_a_voice_clock():
+    """An EngineTTSService on a VoiceClock that runs on a hand-moved pipeline clock."""
     from teaport_brain.engine_tts import EngineTTSService
+    from teaport_brain.playout_pause import VoiceClock
+
+    tts, base, voice = EngineTTSService(voice="af_heart"), _PipelineClock(), VoiceClock()
+    voice.attach(base)
+    tts.voice_clock = voice
+    pushed = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append((frame, direction))
+
+    tts.push_frame = push
+    return tts, base, voice, pushed
+
+
+def test_a_pause_during_a_hold_leaves_the_hold_s_freeze_alone():
+    # The hold freezes the TTS's playout model; a pause in the middle of it (a filler
+    # playing over the held reply) stands the voice clock still, and the model is on that
+    # clock: the hold still freezes it after the pause, and moves it at its end by the
+    # voice clock's time since -- the pause's own time is not in it (formal/VoiceClock.tla,
+    # vc_holdWall).
     from teaport_brain.reply_hold import PlayoutHoldFrame
 
     async def run():
-        tts = EngineTTSService(voice="af_heart")
-
-        async def push(frame, direction=FrameDirection.DOWNSTREAM):
-            pass
-
-        tts.push_frame = push
-        tts._play_end = time.monotonic() + 1.0
+        tts, base, voice, _ = _tts_on_a_voice_clock()
+        tts._play_end = tts._now() + 1.0
         await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
-        await tts.process_frame(PlayoutPauseFrame(paused=True), FrameDirection.UPSTREAM)
-        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
-        await asyncio.sleep(0.2)
-        assert tts._lead_secs() >= 0.98, "the pause ending unfroze a model the hold still froze"
+        voice.stop()
+        base.t += 200_000_000
+        voice.start()
+        base.t += 200_000_000
+        assert abs(tts._lead_secs() - 1.0) < 1e-6, "the pause ending unfroze what the hold froze"
         await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
-        await asyncio.sleep(0.2)
-        assert 0.75 <= tts._lead_secs() <= 0.82, tts._lead_secs()
+        assert abs(tts._lead_secs() - 1.0) < 1e-6, "nothing played through the hold"
+        base.t += 250_000_000
+        assert abs(tts._lead_secs() - 0.75) < 1e-6, tts._lead_secs()
 
     asyncio.run(run())
 
 
-def test_the_tts_freezes_its_playout_model_and_passes_the_pause_on():
-    from teaport_brain.engine_tts import EngineTTSService
-
+def test_the_tts_leaves_a_pause_to_the_voice_clock_and_passes_it_on():
     async def run():
-        tts = EngineTTSService(voice="af_heart")
-        pushed = []
-
-        async def push(frame, direction=FrameDirection.DOWNSTREAM):
-            pushed.append((frame, direction))
-
-        tts.push_frame = push
-        tts._play_end = time.monotonic() + 1.0
+        tts, base, voice, pushed = _tts_on_a_voice_clock()
+        tts._play_end = tts._now() + 1.0
         await tts.process_frame(PlayoutPauseFrame(paused=True), FrameDirection.UPSTREAM)
-        await asyncio.sleep(0.25)
-        assert 0.95 <= tts._lead_secs() <= 1.01
+        voice.stop()
+        base.t += 250_000_000
+        assert abs(tts._lead_secs() - 1.0) < 1e-6, "nothing plays during a pause"
+        voice.start()
         await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
-        assert 0.95 <= tts._lead_secs() <= 1.01, "nothing played during the pause"
+        assert abs(tts._lead_secs() - 1.0) < 1e-6, "the pause moved the model by itself too"
+        assert not tts._freezes, "a pause is no freeze of the TTS's own"
         assert [type(f).__name__ for f, _ in pushed] == ["PlayoutPauseFrame"] * 2, (
             "the strategy above the TTS reads the pause frames too")
 
     asyncio.run(run())
 
 
-def test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well():
-    # formal/README, PlayoutPause pp_late_ahead_heard: the first clause has played out
-    # and the next is not synthesized yet; the caller makes a sound, the transport pauses
-    # with nothing to hold back, and resumes. The ledger moves the reply's words by the
-    # pause (_resume: the turn has audio pushed). The TTS used to count the pause into
-    # the playout gap as well -- _play_end moved only if still ahead of the pause -- so
-    # the next clause's words (placed at the context's tally) carried it twice, and the
-    # ledger's cut dropped the words heard after it.
-    from teaport_brain.engine_tts import EngineTTSService
+def test_the_tts_stamps_on_the_voice_clock():
+    # A reply placed after a pause: its baseline (pipecat's start_word_timestamps) and a
+    # spoken segment's announcement (tts_service.push_frame) are on the voice clock, as
+    # the transport releases them -- not on the pipeline clock, which ran on through it.
+    from pipecat.frames.frames import AggregatedTextFrame
+    from pipecat.utils.text.base_text_aggregator import AggregationType
 
     async def run():
-        tts = EngineTTSService(voice="af_heart")
+        tts, base, voice, pushed = _tts_on_a_voice_clock()
+        voice.stop()
+        base.t += 700_000_000
+        voice.start()
+        assert voice.now_ns() == base.t - 700_000_000
+        await tts.start_word_timestamps()
+        assert tts._initial_word_timestamp == voice.now_ns(), (
+            tts._initial_word_timestamp, voice.now_ns(), base.t)
+        del tts.push_frame                               # the service's own push
+        seg = AggregatedTextFrame("Hello there.", AggregationType.SENTENCE)
+        seg.will_be_spoken = True
+        tts._word_last_pts = 0
+        await tts.push_frame(seg)
+        assert seg.pts == voice.now_ns(), (seg.pts, voice.now_ns(), base.t)
+        # A reply hold holding anchored audio back: its words are on the frozen schedule
+        # (the baseline pin), and so is its announcement, just ahead of them (review 5).
+        tts._frozen_at, tts._frozen_from = tts._now(), voice.now_ns() - 400_000_000
+        held = AggregatedTextFrame("Then this.", AggregationType.SENTENCE)
+        held.will_be_spoken = True
+        await tts.push_frame(held)
+        assert held.pts == tts._frozen_from, (held.pts, tts._frozen_from)
 
-        async def push(frame, direction=FrameDirection.DOWNSTREAM):
-            pass
+    asyncio.run(run())
 
-        tts.push_frame = push
+
+def test_a_pause_in_an_underrun_is_not_a_playout_gap():
+    # formal/README, PlayoutPause pp_late_ahead_heard; VoiceClock.tla's late clause: the
+    # first clause has played out and the next is not synthesized yet; the caller makes a
+    # sound, the transport pauses with nothing to hold back, and resumes. The next clause
+    # is placed right after the first on the voice clock, which stood still through the
+    # pause: no gap, so its words land on its audio.
+    async def run():
+        tts, base, voice, _ = _tts_on_a_voice_clock()
         tts._ctx_audio_secs["c"] = 1.0           # the first clause's audio
-        tts._play_end = time.monotonic()         # ... just played out: an underrun
-        await tts.process_frame(PlayoutPauseFrame(paused=True), FrameDirection.UPSTREAM)
-        await asyncio.sleep(0.3)
-        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        tts._play_end = tts._now()               # ... just played out: an underrun
+        voice.stop()
+        base.t += 300_000_000
+        voice.start()
         tts._note_playout("c", 0.5, mid_sentence=False)   # the next clause, at once
         assert tts._ctx_audio_secs["c"] < 1.05, (
             f"the pause joined the playout gap: the next clause starts at "
-            f"{tts._ctx_audio_secs['c']:.2f}s, and the ledger adds the pause again")
+            f"{tts._ctx_audio_secs['c']:.2f}s")
 
     asyncio.run(run())
 
@@ -1044,23 +1253,30 @@ async def test_the_transport_announces_a_tail_learned_during_the_pause():
         await rig.pauser.on_onset(False)
 
 
-async def test_a_reply_whose_audio_starts_after_the_pause_is_not_shifted_twice():
-    # Reply B's context opened before the pause but its first audio came after: the
-    # TTS anchored it on the moved clock, so the ledger must not shift it again.
-    from test_ledger_playout import OUT, audio as l_audio, feed, ledger, response, started, at
+async def test_the_ledger_cuts_the_words_on_the_voice_clock():
+    # The TTS stamps every word on the transport's voice clock, which stands still while
+    # a pause holds the voice still. So the ledger reads its cut on that clock: reply A
+    # (word k at 1.0 + 0.2 k on it) paused 1.0 s from 1.5, cut at 3.0 -- the voice clock
+    # reads 2.0 there, and the words before it, less the caption lead, were heard. And
+    # reply B, whose audio came after the pause, is anchored on the same clock: no
+    # second move for it either (the old pts_shift bookkeeping, gone).
+    from test_ledger_playout import (OUT, audio as l_audio, feed, ledger, response,
+                                     started, at, word)
     L = ledger()
-    a_frames, _ = response("one two three four", 0.0)
-    b_frames, _ = response("five six seven eight", 0.4)
+    text = "one two three four five six seven eight"
+    a_frames, _ = response(text, 0.0)
+    words = [(word(w, 1.0 + 0.2 * k, "a"), 0.3, None) for k, w in enumerate(text.split())]
     await feed(L, a_frames + [
-        (started("a"), 0.3, None), at(l_audio(1.0, "a"), 0.3),
+        (started("a"), 0.3, None), at(l_audio(1.6, "a"), 0.3), *words,
         (BotStartedSpeakingFrame(), 1.0, OUT),
-    ] + b_frames + [
-        (started("b"), 1.2, None),                       # B's context, no audio yet
         (PlayoutPauseFrame(paused=True), 1.5, OUT),
         (PlayoutPauseFrame(paused=False), 2.5, OUT),
+        (InterruptionFrame(), 3.0, None),
     ])
-    shifts = {t["ctx"]: t["pts_shift"] for t in L._turns}
-    assert shifts == {"a": 1.0, "b": 0.0}, shifts
+    cut = [u for u in L.events if u.speaker == "assistant"]
+    assert cut and cut[0].interrupted
+    want = sum(1 for k in range(8) if 1.0 + 0.2 * k <= 2.0 - CAPTION_LEAD_SECS + 1e-9)
+    assert len(cut[0].heard_text.split()) == want, (cut[0].heard_text, want)
 
 
 async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
@@ -1070,7 +1286,8 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     from test_service_unusable import _Transport
 
     wire = _Wire()
-    session = build_agent_session(SipGatewayTransport(wire.connection, make_sip_params()))
+    session = build_agent_session(SipGatewayTransport(wire.connection, make_sip_params()),
+                                  reply_hold_enabled=True)
     out = session.ledger._output
     pauser = out.previous
     assert isinstance(pauser, BargeInPauser), f"above the SIP transport: {pauser!r}"
@@ -1080,11 +1297,22 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     assert pauser.on_onset in p._params.vad_analyzer.onset_listeners
     starts = p._params.user_turn_strategies.start
     assert [type(s) for s in starts] == [PauseAwareMinWordsStrategy]
+    # One clock for when the words play: the transport's, handed to the TTS that stamps
+    # on it and the reply hold that measures on it (the ledger reads it off the transport).
+    from teaport_brain.reply_hold import ReplyHoldGate
+    assert out.voice_clock is not None and session.tts.voice_clock is out.voice_clock
+    p, gates = out, []
+    while p is not None:
+        if isinstance(p, ReplyHoldGate):
+            gates.append(p)
+        p = p.previous
+    assert gates and all(g.voice_clock is out.voice_clock for g in gates), gates
     wire.connection.close()
     wire.gw_sock.close()
 
     talk = build_agent_session(_Transport())          # no supports_playout_pause
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
+    assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 
 async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_pauser():
