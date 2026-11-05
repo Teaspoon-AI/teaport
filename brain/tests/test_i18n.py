@@ -369,6 +369,20 @@ THEN_MORE = {
 }
 
 
+# The request with a thank-you or a please after it, in each language (#309 review).
+THANKS_AFTER = {
+    "es": ["abre los ajustes, gracias"], "pt_BR": ["abre as configurações, obrigado"],
+    "fr": ["ouvre les réglages, merci", "Teaport, est-ce que tu peux ouvrir les réglages s'il te plaît ?"],
+    "it": ["apri le impostazioni, grazie"], "de": ["öffne die Einstellungen, danke"],
+    "nl": ["open de instellingen, dank je"], "ru": ["открой настройки, спасибо"],
+    "ar": ["افتح الإعدادات، شكرا", "ممكن تفتح الإعدادات من فضلك؟", "افتح الإعدادات من فضلك؟"],
+    "hi": ["सेटिंग्स खोलो, धन्यवाद", "खोलो सेटिंग्स प्लीज़"],
+    "zh": ["打开设置吧，谢谢", "请打开设置，谢谢", "打开设置一下吧"],
+    "ja": ["設定を開いて、お願い", "設定を開いてください、お願いします"],
+    "ko": ["설정 열어 줘, 제발", "설정 열어 주세요, 감사합니다"],
+}
+
+
 @pytest.mark.parametrize("lang", LANGS)
 def test_a_polite_question_is_the_settings_request(lang):
     t = i18n.get(lang)
@@ -376,12 +390,14 @@ def test_a_polite_question_is_the_settings_request(lang):
     assert [s for s in asks if not _settings_heard(s, t)] == []
     assert [s for s in talk if _settings_heard(s, t)] == []
     assert [s for s in THEN_MORE[lang] if _settings_heard(s, t)] == []
+    assert [s for s in THANKS_AFTER[lang] if not _settings_heard(s, t)] == []
     for then in ("open my settings. What's the weather?", "Could you open my settings? Wait, no.",
                  "Can you open the settings, the phone ones?",
                  "could you go to settings, the bluetooth ones?"):
         assert not _settings_heard(then, t), then
     for ask in ("open my settings, please", "Open the settings now please.",
-                "can you open settings for me?"):
+                "can you open settings for me?", "open my settings, thanks",
+                "Could you open my settings, thank you."):
         assert _settings_heard(ask, t), ask
     # English too, in every session (#309).
     for ask in ("Can you open my settings?", "could you please open my settings?",

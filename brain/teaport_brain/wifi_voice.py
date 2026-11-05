@@ -163,7 +163,7 @@ PATTERNS = {
     "settings": r"^\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
                 r"(?:(?:can|could|would|will) you(?: please)? )?"
                 r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
-                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?:[\s,]+(?:page|please|now|for me)\b)*[\s.,!?;:…]*$",
+                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?:[\s,]+(?:page|please|now|for me|thanks|thank you)\b)*[\s.,!?;:…]*$",
 }
 
 # English words that make a "start" match a question or a complaint about Wi-Fi rather

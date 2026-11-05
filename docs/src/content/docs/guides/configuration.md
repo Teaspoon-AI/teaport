@@ -38,25 +38,25 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:891-895#abcad8a7; brain/teaport_brain/settings_access.py:410-422#f0cd5e74 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:891-895#abcad8a7; brain/teaport_brain/settings_access.py:413-425#f0cd5e74 -->
 
 1. The device shows a QR code under the title "Settings", with the code itself under it. Scan the QR code with the phone's camera, then tap the link that the camera shows. A device without a screen that draws QR codes reads out an address, `DEVICE_NAME.local/settings` for example, and a six-character code instead: open the address in the phone's browser and enter the code there.
 2. Tap **Continue**. You can use the code one time, within five minutes. Asking again replaces it.
 3. The phone shows the **AI account** step at the top: tap **Connect your OpenRouter account**, or paste a key from your OpenRouter account and tap **Test and save**. Tap **Show advanced** for every other setting on the page.
 
-<!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:89-92#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
+<!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:92-95#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
 
 The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session nothing on that port opens, whether or not `GATEWAY_TOKEN` is set. The token keeps working on `http://DEVICE_IP:7861/config`.
 
-<!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:281-291#8831dd56; brain/teaport_brain/settings_access.py:216-225#f38a8411 -->
+<!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:284-294#8831dd56; brain/teaport_brain/settings_access.py:219-228#f38a8411 -->
 
 Until the phone trusts the device's certificate, the browser warns that the connection is not private. The pages link to the steps that install the device's certificate on each kind of phone and computer.
 
-<!-- source: brain/teaport_brain/settings_access.py:374-383#35429dc2 -->
+<!-- source: brain/teaport_brain/settings_access.py:377-386#35429dc2 -->
 
 If the device is on no network at all and spoken Wi-Fi setup is on, the device asks you to get it online first: a phone cannot reach it yet. A home network without internet is enough. In setup mode the setup page takes the key too, as [Connect the device to Wi-Fi](/guides/wifi-setup/#connect-your-ai-account) shows.
 
-<!-- source: brain/teaport_brain/settings_access.py:102#fd6140cc -->
+<!-- source: brain/teaport_brain/settings_access.py:105#fd6140cc -->
 
 ## Connect your OpenRouter account
 
@@ -78,7 +78,7 @@ The button shows only on the settings site, at the port `TEAPORT_SETTINGS_PORT` 
 
 Setup mode can't use the sign-in, because neither the phone nor the device has internet there. When Wi-Fi setup ends without a key on the setup page, and the device has no key of your own, the device offers it: it says so out loud and shows the settings QR code on its screen, the same code that "open my settings" shows. A device without a screen that draws it reads out the address and the code instead.
 
-<!-- source: brain/teaport_brain/openrouter_connect.py:232-247#4ad57aee; brain/teaport_brain/settings_access.py:95-100#d3d45cfa -->
+<!-- source: brain/teaport_brain/openrouter_connect.py:232-247#4ad57aee; brain/teaport_brain/settings_access.py:98-103#d3d45cfa -->
 
 ## Change a setting in a configuration file
 

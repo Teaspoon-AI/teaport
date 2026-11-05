@@ -482,8 +482,8 @@ msgid "no AI service is set up on this box"
 msgstr "この機器には AI サービスが設定されていません"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me)\\b)*[\\s.,!?;:…]*$"
-msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|もらえません|くれます|くれません|ほしい|欲しい)?\\s*(?:ね|よ|か)?\\s*[\\s。.!！、,…?？]*$"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks|thank you)\\b)*[\\s.,!?;:…]*$"
+msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|もらえません|くれます|くれません|ほしい|欲しい)?\\s*(?:ね|よ|か)?\\s*(?:[、,\\s]*(?:お願い(?:します)?|ありがとう(?:ございます)?))?[\\s。.!！、,…?？]*$"
 
 msgctxt "spell"
 msgid "slash"

@@ -77,9 +77,12 @@ SESSION_SECS = 3600
 SCREEN_ID, SCREEN_TITLE = "settings", "Settings"
 # The screen after the code was used: the QR code is of no more use.
 USED_SCREEN_SECS = 10.0
-# "open my settings" said as a request of its own, not inside a longer sentence: room
-# for a lead-in and a polite wrapper ("hey Teaport, could you please open my settings?").
-PHRASE_MAX_WORDS = 8
+# "open my settings" said as a request of its own, not inside a longer sentence. The
+# pattern already holds the utterance to a lead-in, a polite wrapper, the request and a
+# few trailing words; this is a backstop, with room for the longest of those ("Teaport,
+# est-ce que tu peux ouvrir les réglages s'il te plaît ?": 13 words by words(), which
+# splits on hyphens and apostrophes).
+PHRASE_MAX_WORDS = 16
 
 _clock = time.monotonic  # the code's clock; replaced in tests (a LiveCode reads it)
 _wall = time.time        # the session's (a cookie outlives the process)
