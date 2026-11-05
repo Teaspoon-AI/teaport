@@ -372,6 +372,20 @@ PAIR_DEVICE = FunctionSchema(
     required=[],
 )
 
+OPEN_SETTINGS = FunctionSchema(
+    name="open_settings",
+    description=(
+        "Open this box's settings for the user on their phone: it shows a code on the "
+        "box's screen to scan (or reads out an address where there is no screen) and tells "
+        "the user what to do itself. Call it, with no line before it, whenever the user "
+        "asks, in any words, to see or change your settings, their AI account or their key "
+        "(for example 'I need to change my AI key'). Not for their phone's settings, and "
+        "not for Wi-Fi (wifi_setup does that)."
+    ),
+    properties={},
+    required=[],
+)
+
 _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mid-flight
 
 # Return a tool result WITHOUT triggering another inference pass. Pipecat runs the
@@ -1301,6 +1315,9 @@ class ToolContext:
     via: str | None = None
     # The session's SessionPairing (pair_device.py), which the pair_device tool hands to.
     pairing: object = None
+    # The session's way to open Settings: the settings phrase's own (settings_access
+    # SettingsPhrase.open, bound to the session's PhraseVoice), which open_settings calls.
+    open_settings: object = None
 
     @property
     def relay(self) -> bool:
@@ -1416,6 +1433,30 @@ def _flag(value) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("true", "1", "yes")
+
+
+async def _open_settings(params: FunctionCallParams, open_settings=None):
+    """The settings phrase's own path ("open my settings", settings_access.py): the code on
+    the screen, or the address read out, and the line that says what to do -- spoken by
+    the session's PhraseVoice, so the model says nothing after it."""
+    from teaport_brain import settings_access as sa
+    if open_settings is None:
+        await params.result_callback({"ok": False, "error": "settings can't be opened here"})
+        return
+    outcome = await open_settings()
+    if outcome in (sa.OPENED_SHOWN, sa.OPENED_READ_OUT):
+        how = ("a code on your screen for their phone's camera" if outcome == sa.OPENED_SHOWN
+               else "an address and a code, read out, for their phone's browser")
+        result = {"ok": True, "note": f"Done: you gave the user {how}, and told them what "
+                                      "to do. Never repeat a code or an address. Say "
+                                      "nothing more now."}
+    else:
+        why = ("you are on no network, so no phone can reach you; you told the user how to "
+               "get you online" if outcome == sa.NOT_OFFLINE
+               else "settings can't be reached from a phone on this box right now; you told "
+                    "the user so")
+        result = {"ok": False, "error": f"Settings did not open: {why}. Say nothing more now."}
+    await params.result_callback(result, properties=no_inference())
 
 
 async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None):
@@ -1555,6 +1596,13 @@ TOOLS: tuple[Tool, ...] = (
          setting("TEAPORT_TOOL_PAIR_DEVICE"), frozenset({"agent", "room_or_talk", "host:pairing"}),
          hint="pair_device (connect the user's laptop or phone to you: it shows a code on "
               "your screen for its camera)"),
+    # room_or_talk + host:settings -- where "open my settings" is usable (the owner's
+    # surfaces, the Settings site set up): the same opening, for any wording.
+    Tool(OPEN_SETTINGS, lambda ctx: functools.partial(_open_settings,
+                                                      open_settings=ctx.open_settings),
+         setting("TEAPORT_TOOL_OPEN_SETTINGS"), frozenset({"room_or_talk", "host:settings"}),
+         hint="open_settings (show the user how to open your settings, their AI account or "
+              "key, on their phone)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
@@ -1599,6 +1647,14 @@ def _pairing_set_up() -> bool:
     return pairing.available()
 
 
+def _settings_available() -> bool:
+    # The Settings site is set up (settings_access.available: the front door and its
+    # Settings port). Stricter than where the phrase is heard (heard_here), which also
+    # answers "Settings can't be reached here": the model is never offered a dead end.
+    from teaport_brain import settings_access
+    return settings_access.available()
+
+
 def _wifi_setup_installed() -> bool:
     from teaport_brain import wifi_voice
     return wifi_voice.available()
@@ -1606,7 +1662,8 @@ def _wifi_setup_installed() -> bool:
 
 # "host:<part>" needs: is that part installed on this box. Checked per session.
 HOST_CHECKS: dict[str, Callable[[], bool]] = {"wifi_setup": _wifi_setup_installed,
-                                              "pairing": _pairing_set_up}
+                                              "pairing": _pairing_set_up,
+                                              "settings": _settings_available}
 
 
 def _has(need: str, ctx: ToolContext) -> bool:
@@ -1819,7 +1876,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                    client_features: frozenset = frozenset(), wifi_voice=None,
                    call_prompt=None, run_control: bool = False, notes=None,
                    captions_ahead: bool = False, front_end: str | None = None,
-                   via: str | None = None, pairing=None) -> None:
+                   via: str | None = None, pairing=None, open_settings=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `owed`, if given,
     is the session's owed records (owed.Owed), which a background consult is dispatched
@@ -1829,7 +1886,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     run-control questions (ToolContext.run_control), where openclaw_agent_control is
     offered. `notes`: the session's ClientNotes (ToolContext.notes). `captions_ahead`
     charts a tool call's filler before the call (Talk: captions.caption_ahead).
-    `front_end`, `via` and `pairing`: ToolContext's."""
+    `front_end`, `via`, `pairing` and `open_settings`: ToolContext's."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session
@@ -1843,7 +1900,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                       owed=owed if HAS_AGENT else None, gate=gate,
                       wifi_voice=wifi_voice, call_prompt=call_prompt,
                       run_control=run_control, notes=notes, front_end=front_end,
-                      via=via, pairing=pairing)
+                      via=via, pairing=pairing, open_settings=open_settings)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
         llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn,

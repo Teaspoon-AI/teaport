@@ -526,7 +526,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 - A phone caller hears a short line that teaport can't take calls now, and then the
   call ends. A caller never hears setup instructions.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:137-150#aeaad70d -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:145-158#aeaad70d -->
 
 **Fix**
 
@@ -551,11 +551,13 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 no credit or allowance left. For example, a key that reached its spending limit.
 Every request fails until you change the key or the account, so asking again
 does not help. teaport says this once, and on later failed turns it says that
-it still can't answer. For other failures, such as a provider that is busy or slow,
+it still can't answer. In the room and in Talk, on a device whose settings site is
+set up, it also tells you to say "open my settings" to fix it. On a phone call it only says that the account can be fixed on
+its configuration page. For other failures, such as a provider that is busy or slow,
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:120-135#9051cca4 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:120-140#6767a7cb -->
 
 **Fix**
 

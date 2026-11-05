@@ -658,3 +658,6 @@ msgstr "Dein OpenRouter-Konto hat noch kein Guthaben, deshalb kann Teaport nicht
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Dein KI-Konto ist verbunden, aber es hat noch kein Guthaben. Lade welches auf der Website von OpenRouter auf, dann kann ich antworten."
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für meine Antworten nutze, braucht Aufmerksamkeit, und ein neuer Versuch hilft nicht. Sag „Öffne die Einstellungen“, um es zu beheben."

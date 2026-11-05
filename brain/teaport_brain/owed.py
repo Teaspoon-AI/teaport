@@ -252,8 +252,16 @@ CANCELLED_NOTE = ("OpenClaw stopped this before it finished, so there is no resu
                   "start it again unless the user asks.")
 
 
-def failure_outcome(failure, detail="") -> tuple[str, str]:
-    """(status, outcome) for a consult with no answer."""
+# A billing failure where open_settings is offered (the room, Talk): the owner can fix
+# it from their phone, so the model offers to open Settings, and calls the tool on a yes.
+BILLING_SETTINGS_HINT = (" The user can fix this on their phone: offer to open your "
+                         "settings so they can check their AI account, and call "
+                         "open_settings if they say yes.")
+
+
+def failure_outcome(failure, detail="", settings: bool = False) -> tuple[str, str]:
+    """(status, outcome) for a consult with no answer. `settings`: the session has the
+    open_settings tool (BILLING_SETTINGS_HINT on a billing failure)."""
     if failure == "timeout":
         return "timeout", "No answer: it ran out of time before it finished." + _ACTION_HEDGE
     if failure == "empty":
@@ -264,7 +272,8 @@ def failure_outcome(failure, detail="") -> tuple[str, str]:
         # problem" sends the caller off to fix the wrong thing.
         if re.search(r"\b402\b", detail or ""):
             return "error", ("No answer: it couldn't be done because of a billing or credit "
-                             "problem with the AI service." + _ACTION_HEDGE)
+                             "problem with the AI service." + _ACTION_HEDGE
+                             + (BILLING_SETTINGS_HINT if settings else ""))
         return "error", "No answer: it hit an error and couldn't be done." + _ACTION_HEDGE
     # "unknown", not "failed": a consult can die on teardown AFTER its action landed.
     return "unknown", ("No answer: it didn't report back, so it may or may not have been "
@@ -782,9 +791,13 @@ class Owed:
     book's own task."""
 
     def __init__(self, context, gate=None, *, answer_tools=frozenset(), judge=None,
-                 gist=None, decline=None, reoffer_quiet_s: float = None):
+                 gist=None, decline=None, reoffer_quiet_s: float = None,
+                 settings: bool = False):
         self.context = context
         self.gate = gate
+        # The session offers open_settings (the room, Talk): a billing failure's outcome
+        # says the owner can fix it there (failure_outcome).
+        self.settings = settings
         # The cut judge: async (question, heard, rest) -> True (HEARD) | False (OWED) |
         # None (no verdict) -- services.BoundedOpenAILLMService.judge_cut. None: no
         # verdict ever, every cut errs owed.
@@ -1007,7 +1020,8 @@ class Owed:
         status = "complete"
         if not outcome:
             # An answer that cleans to nothing (only an address, say) came back empty.
-            status, outcome = failure_outcome(failure if text is None else "empty", detail)
+            status, outcome = failure_outcome(failure if text is None else "empty", detail,
+                                              settings=self.settings)
             failure = status
         rewrote = self._rewrite(key, {"status": "complete", "answer": outcome} if not failure
                                 else {"status": status, "error": outcome})

@@ -130,6 +130,14 @@ GLITCH_NO_RETRY_TEXT = N_("Sorry, I couldn't get an answer just then.")
 ACCOUNT_TEXT = N_("Sorry, I can't answer right now: the account I use for my answers "
                   "needs attention, and trying again won't help. It can be fixed on my "
                   "settings page.")
+# The same where "open my settings" is heard (the room, Talk: settings_access.usable):
+# the owner is the one listening, and the phrase -- or asking in any words, the
+# open_settings tool -- gets them there. The quoted words are that phrase, in each catalog
+# one its own "settings" pattern hears (tests/test_i18n.py checks). A phone call keeps
+# ACCOUNT_TEXT: settings are not opened from there.
+ACCOUNT_SETTINGS_TEXT = N_("Sorry, I can't answer right now: the account I use for my "
+                           "answers needs attention, and trying again won't help. Say "
+                           "\"open my settings\" to fix it.")
 # The same, on every later failed turn inside the account window: short, because the
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
@@ -329,7 +337,7 @@ class LLMErrorSpeaker(FrameProcessor):
                     category_of(frame) is ErrorCategory.QUOTA or state == credit.EMPTY):
                 self._end_after = True
                 return self._spent_text()
-            return ACCOUNT_TEXT
+            return ACCOUNT_SETTINGS_TEXT if self._settings else ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
             return None
         self._said = now

@@ -19,6 +19,7 @@
 import asyncio
 import contextlib
 import dataclasses
+import functools
 
 from loguru import logger
 
@@ -1237,7 +1238,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS,
                 judge=llm.judge_cut if llm is not None else None,
                 gist=llm.judge_gist if llm is not None else None,
-                decline=llm.judge_decline if llm is not None else None)
+                decline=llm.judge_decline if llm is not None else None,
+                settings=any(t.name == "open_settings" for t in session_tools)
+                and settings_access.usable([settings_phrase]))
     if llm is not None:
         llm.owed = owed
     ledger.on_reply_text = owed.reply_text
@@ -1486,7 +1489,12 @@ def build_agent_session(transport, *, voice: str | None = None,
                        # OpenClaw's Talk relay stores every final in the session a
                        # consult starts from (captions.py, caption_ahead).
                        captions_ahead=front_end == "talk",
-                       front_end=front_end, via=via, pairing=pairing)
+                       front_end=front_end, via=via, pairing=pairing,
+                       # "open my settings"'s own opening (settings_access.SettingsPhrase.open),
+                       # spoken by the session's PhraseVoice: the tool and the phrase are one.
+                       open_settings=(functools.partial(settings_phrase.open, phrases)
+                                      if settings_phrase is not None and phrases is not None
+                                      else None))
 
     if pairing is not None:
         @task.event_handler("on_pipeline_finished")

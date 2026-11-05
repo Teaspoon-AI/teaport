@@ -135,6 +135,17 @@ async def test_account_failures_speak_the_account_line():
         assert said == [ACCOUNT_TEXT], (name, said)
 
 
+async def test_where_the_phrase_is_heard_the_account_line_names_it():
+    """The room and Talk (settings: "open my settings" is usable there): the account line
+    says the phrase that fixes it. A phone call keeps the neutral line."""
+    from teaport_brain.llm_error_speaker import ACCOUNT_SETTINGS_TEXT
+    llm, _ = _llm()
+    frame = ErrorFrame(error="x", processor=llm, category=ErrorCategory.AUTHENTICATION)
+    assert await _spoken(LLMErrorSpeaker(settings=True), frame) == [ACCOUNT_SETTINGS_TEXT]
+    assert await _spoken(LLMErrorSpeaker(settings=False), frame) == [ACCOUNT_TEXT]
+    assert '"open my settings"' in ACCOUNT_SETTINGS_TEXT
+
+
 async def test_passing_failures_keep_todays_line():
     services.ANSWERS = AnswerHealth()
     llm, pushed = _llm()

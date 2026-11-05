@@ -432,15 +432,16 @@ def test_the_trial_credit_line_names_the_right_cause_and_only_to_the_owner():
         refused = ErrorFrame(error="x", exception=None, category=ErrorCategory.AUTHORIZATION)
         owner = lambda: llm_error_speaker.LLMErrorSpeaker(settings=True, owner=True)  # noqa: E731
         assert owner()._notice(quota, 1000.0) == credit.EMPTY_TEXT       # the provider says so
-        # $0.90 left and a revoked key or a policy 403: not "the trial credit ran out".
-        assert owner()._notice(refused, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
+        # $0.90 left and a revoked key or a policy 403: not "the trial credit ran out" --
+        # the account line, naming the phrase (the owner's surface).
+        assert owner()._notice(refused, 1000.0) == llm_error_speaker.ACCOUNT_SETTINGS_TEXT
         # The phone and a bridge never hear about the owner's trial credit.
         assert llm_error_speaker.LLMErrorSpeaker()._notice(quota, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
         fetch.record = {"limit": 5, "limit_remaining": 0, "usage": 5}
         _run(m.refresh())
         assert owner()._notice(refused, 1000.0) == credit.EMPTY_TEXT     # nothing left
         ai_account.store_key(OWN)  # the owner's own account refused: the usual line
-        assert owner()._notice(quota, 1000.0) == llm_error_speaker.ACCOUNT_TEXT
+        assert owner()._notice(quota, 1000.0) == llm_error_speaker.ACCOUNT_SETTINGS_TEXT
         # An account refusal reads the credit again (soon: pokes are spaced).
         poked = []
         m.poke = lambda: poked.append(1)

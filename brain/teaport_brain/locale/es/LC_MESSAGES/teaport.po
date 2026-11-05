@@ -658,3 +658,6 @@ msgstr "Tu cuenta de OpenRouter todavía no tiene saldo, así que Teaport no pue
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Tu cuenta de IA está conectada, pero todavía no tiene saldo. Añade saldo en la web de OpenRouter y entonces podré responder."
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "Lo siento, ahora mismo no puedo responder: la cuenta que uso para mis respuestas necesita atención, y volver a intentarlo no servirá. Di «abre los ajustes» para arreglarlo."

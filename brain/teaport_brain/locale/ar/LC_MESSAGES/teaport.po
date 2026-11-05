@@ -669,3 +669,6 @@ msgstr "لا يوجد رصيد في حسابك على OpenRouter بعد، لذل
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك، لكن لا يوجد فيه رصيد بعد. أضف رصيدًا على موقع OpenRouter، وبعدها أستطيع الإجابة."
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب الذي أستخدمه لإجاباتي يحتاج إلى مراجعة، ولن تفيد إعادة المحاولة. قل «افتح الإعدادات» لإصلاحه."

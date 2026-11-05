@@ -216,6 +216,17 @@ def test_a_reply_about_another_question_is_not_about_it():
     assert yes.about("Yes, it is.") and not yes.about("Sorry, still checking.")
 
 
+def test_a_billing_failure_offers_settings_where_the_tool_is():
+    """A consult refused for billing (402): where open_settings is offered, the outcome
+    says the owner can fix it there and to call the tool on a yes; elsewhere it doesn't."""
+    _, plain = owed.failure_outcome("error", "HTTP 402 Payment Required")
+    _, hint = owed.failure_outcome("error", "HTTP 402 Payment Required", settings=True)
+    assert "billing" in plain and "open_settings" not in plain
+    assert hint == plain + owed.BILLING_SETTINGS_HINT and "open_settings" in hint
+    _, other = owed.failure_outcome("error", "boom", settings=True)
+    assert "open_settings" not in other            # only a billing failure
+
+
 def test_a_failure_is_about_what_it_was_asked_for():
     """A failure has no terms (Owed.tla OUTCOME = "failure"): a reply about it shares the
     request; an unrelated one nothing."""
@@ -391,6 +402,11 @@ async def test_a_failure_lands_as_its_record():
     b.land(HN_REQ, None, "call-hn", failure="error", detail="HTTP 402 Payment Required")
     tool = json.loads(ctx.get_messages()[-1]["content"])
     assert tool["status"] == "error" and "billing" in tool["error"]
+    assert "open_settings" not in tool["error"]          # this book has no open_settings
+    bs, ctxs, _ = book()
+    bs.settings = True                                   # one that has (the room, Talk)
+    bs.land(HN_REQ, None, "call-hn", failure="error", detail="HTTP 402 Payment Required")
+    assert "open_settings" in json.loads(ctxs.get_messages()[-1]["content"])["error"]
     b2, ctx2, _ = book()
     b2.land(HN_REQ, None, "call-hn", failure="error", detail="req-140223 failed")
     assert "billing" not in json.loads(ctx2.get_messages()[-1]["content"])["error"]

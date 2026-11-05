@@ -658,3 +658,6 @@ msgstr "Je OpenRouter-account heeft nog geen tegoed, dus Teaport kan pas antwoor
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Je AI-account is gekoppeld, maar heeft nog geen tegoed. Voeg tegoed toe op de website van OpenRouter, dan kan ik antwoorden."
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorden gebruik heeft aandacht nodig, en opnieuw proberen helpt niet. Zeg ‘open de instellingen’ om het op te lossen."
