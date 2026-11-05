@@ -39,10 +39,13 @@
 # brain's record of failed answers (llm_error_speaker.failure_reason, #205).
 #
 import asyncio
+import http.client
 import json
 import os
 import re
+import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -235,13 +238,71 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirects)
+def _cut_at(base, deadline: float):
+    """`base` (an http.client connection class) whose socket is shut down at `deadline`
+    (time.monotonic): every read after that ends at once. urllib's own timeout bounds
+    each socket wait, not the whole: a server dripping a byte per wait could hold a
+    request -- and the thread _deadline left it on -- for days."""
+    class Cut(base):
+        def connect(self):
+            super().connect()
+            timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._cut)
+            timer.daemon = True
+            timer.start()
+
+        def _cut(self):
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except (OSError, AttributeError):  # closed already, or never opened
+                pass
+    return Cut
+
+
+class _CutHTTP(urllib.request.HTTPHandler):
+    def __init__(self, deadline: float):
+        super().__init__()
+        self.deadline = deadline
+
+    def http_open(self, req):
+        return self.do_open(_cut_at(http.client.HTTPConnection, self.deadline), req)
+
+
+class _CutHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, deadline: float):
+        super().__init__()
+        self.deadline = deadline
+
+    def https_open(self, req):
+        return self.do_open(_cut_at(http.client.HTTPSConnection, self.deadline), req,
+                            context=self._context)
+
+
+MAX_BODY_BYTES = 65536
+
+
+def _read(r, deadline: float) -> bytes:
+    """At most MAX_BODY_BYTES of `r`, and nothing past `deadline`."""
+    out = b""
+    while len(out) < MAX_BODY_BYTES:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("the answer took too long")
+        chunk = r.read1(MAX_BODY_BYTES - len(out))
+        if not chunk:
+            if getattr(r, "length", None):  # it said how long, and stopped short
+                raise OSError("the answer was cut short")
+            break
+        out += chunk
+    return out
 
 
 def _request(url: str, key: str | None, timeout: float,
              body: bytes | None = None) -> tuple[int, bytes]:
     """One request: a GET with `key` as its bearer, or with `body` a JSON POST (no key:
-    the sign-in's exchange, exchange_code)."""
+    the sign-in's exchange, exchange_code). All of it within `timeout` (_cut_at), no
+    redirect followed (_NoRedirects). Raises OSError for no answer, a broken one included
+    (http.client's BadStatusLine, IncompleteRead, LineTooLong: a garbled answer is no
+    answer)."""
+    deadline = time.monotonic() + timeout
     headers = {"Accept": "application/json", "User-Agent": "teaport"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -249,11 +310,17 @@ def _request(url: str, key: str | None, timeout: float,
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=body, headers=headers,
                                  method="GET" if body is None else "POST")
+    opener = urllib.request.build_opener(_NoRedirects, _CutHTTP(deadline), _CutHTTPS(deadline))
     try:
-        with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
-            return r.status, r.read(65536)
+        with opener.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
+            return r.status, _read(r, deadline)
     except urllib.error.HTTPError as e:  # 3xx (not followed), 4xx, 5xx
-        return e.code, e.read(65536) if e.fp is not None else b""
+        try:
+            return e.code, _read(e, deadline) if e.fp is not None else b""
+        except http.client.HTTPException as broken:
+            raise OSError(f"a broken answer ({type(broken).__name__})") from broken
+    except http.client.HTTPException as e:
+        raise OSError(f"a broken answer ({type(e).__name__})") from e
 
 
 def _get(url: str, key: str, timeout: float) -> tuple[int, bytes]:
@@ -337,14 +404,24 @@ CODE_MAX_CHARS = 512
 SIGN_IN_REFUSED = N_("OpenRouter didn't accept the sign-in")
 
 
+def code_shape(code: str) -> str | None:
+    """`code` stripped when it could be a sign-in code (one printable word of at most
+    CODE_MAX_CHARS), else None: what is not one is never sent, nor spends a sign-in."""
+    code = (code or "").strip()
+    if not code or len(code) > CODE_MAX_CHARS or not code.isprintable() or " " in code:
+        return None
+    return code
+
+
 def exchange_code(code: str, verifier: str, timeout: float = CHECK_TIMEOUT_SECS
                   ) -> tuple[str | None, str]:
     """(the key, "") for a sign-in code and the verifier it was asked with, or (None, a
     reason msgid): SIGN_IN_REFUSED for a code OpenRouter does not take (wrong, used or
-    expired: a 400 or 403), UNREACHABLE for no answer, or an answer without a key. Never
-    raises. The key is kept out of the journal from here on (never_log)."""
-    code = (code or "").strip()
-    if not code or len(code) > CODE_MAX_CHARS or not code.isprintable() or " " in code:
+    expired: a 400 or 403; or not a code at all, code_shape), UNREACHABLE for no answer,
+    or an answer without a key. Never raises. The key is kept out of the journal from
+    here on (never_log)."""
+    code = code_shape(code)
+    if code is None:
         return None, SIGN_IN_REFUSED
     body = json.dumps({"code": code, "code_verifier": verifier,
                        "code_challenge_method": "S256"}).encode()

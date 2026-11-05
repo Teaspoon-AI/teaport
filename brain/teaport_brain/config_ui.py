@@ -548,13 +548,15 @@ async def put_config(request: Request):
     return content if status == 200 else JSONResponse(status_code=status, content=content)
 
 
-async def save_values(request: Request, body: dict) -> tuple[int, dict]:
+async def save_values(request: Request, body: dict, issued: bool = False) -> tuple[int, dict]:
     """A save, as PUT /api/config's body says it ({store, values, force, force_key}):
     (200, what was written) or (400, why not: "errors", "constraints" or "key_check", in
     the reader's language). Raises HTTPException where the page cannot help (a store
     that is not there, a write that failed). The one save for a key from any page on
     the brain: the owner's paste, the operator's row, and the key OpenRouter's sign-in
-    gives (openrouter_connect.py, #282). The caller has authorized the request."""
+    gives (openrouter_connect.py, #282). The caller has authorized the request.
+    `issued`: the provider gave this key seconds ago (the sign-in), so a check that got
+    no answer (UNKNOWN) does not stop it; one that says it is refused still does."""
     store = body.get("store") if isinstance(body, dict) else None
     updates = body.get("values") if isinstance(body, dict) else None
     if store not in STORE_FILES or not isinstance(updates, dict) or not updates:
@@ -616,7 +618,7 @@ async def save_values(request: Request, body: dict) -> tuple[int, dict]:
     if failed and not body.get("force"):
         return 400, {"constraints": failed}
     # The endpoint a key is checked and saved for: this save's, else the file's.
-    base = _endpoint(merged)
+    base = endpoint(merged)
     if "LLM_API_KEY" in secret_updates:
         # A copy brain.env does not hold cannot be dropped from here (ai_account.shadowed):
         # saving the file would change nothing, so nothing is saved.
@@ -625,7 +627,8 @@ async def save_values(request: Request, body: dict) -> tuple[int, dict]:
             return 400, {"key_check": check.public(_reader(request))}
         check = await asyncio.to_thread(check_key, secret_updates["LLM_API_KEY"], base)
         logger.info(f"config: the new LLM key: {check.state}")
-        if check.state != ai_account.WORKS and not body.get("force_key"):
+        if check.state != ai_account.WORKS and not body.get("force_key") and not (
+                issued and check.state == ai_account.UNKNOWN):
             return 400, {"key_check": check.public(_reader(request))}
 
     # The key first, through the one save (ai_account.save_key: the brain's file and
@@ -704,25 +707,32 @@ ACCOUNT_TEXT = {
     "intro_connect": N_("Teaport uses an OpenRouter account for its answers. To use your "
                         "own, connect it here, or paste a key from it."),
     "connect": N_("Connect your OpenRouter account"),
-    "connect_note": N_("You sign in to OpenRouter on this phone and approve Teaport, then "
-                       "come back to this page."),
-    "connect_off": N_("Signing in with OpenRouter isn't available on this box right now. "
-                      "Paste a key instead."),
-    "code_help": N_("If the page after OpenRouter showed you a code, paste it here."),
+    # The sign-in returns through Teaspoon's page (a Finish button), or, without that
+    # page, OpenRouter shows a code to bring back here (openrouter_connect.start).
+    "connect_note": N_("You sign in to OpenRouter on this phone and approve Teaport. Then a "
+                       "Teaport page asks you to tap Finish."),
+    "connect_note_code": N_("You sign in to OpenRouter on this phone and approve Teaport. "
+                            "OpenRouter then shows a code: copy it, come back to Teaport's "
+                            "settings, and paste it into Code from OpenRouter."),
+    "code_help": N_("If OpenRouter showed you a code, paste it here."),
     "code": N_("Code from OpenRouter"),
     "code_send": N_("Connect"),
     "connecting": N_("Connecting…"),
+    # A key the sign-in gave that could not be saved (openrouter_connect.HELD_SECS).
+    "retry_help": N_("Teaport still has the key from your OpenRouter sign-in. Tap Save it "
+                     "again to try once more."),
+    "retry": N_("Save it again"),
 }
 
 
-async def account_endpoint() -> str | None:
+async def brain_env() -> dict[str, str]:
+    """brain.env's values as the file has them now ({} when it cannot be read)."""
+    return parse_env(await asyncio.to_thread(_read_text, _store_path("brain_env")) or "")
+
+
+def endpoint(brain_env: dict[str, str]) -> str | None:
     """The AI endpoint a key is for: brain.env's LLM_BASE_URL as the file has it now
     (a save on this page changes it before any restart), else this process's."""
-    text = await asyncio.to_thread(_read_text, _store_path("brain_env"))
-    return _endpoint(parse_env(text or ""))
-
-
-def _endpoint(brain_env: dict[str, str]) -> str | None:
     return brain_env.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL")
 
 
@@ -737,13 +747,17 @@ async def account(request: Request):
     credit.MONITOR.poke()  # the owner looks at the account: read the credit again, soon
     t = _reader(request)
     rows = _rows()
-    text = await asyncio.to_thread(_read_text, _store_path("brain_env"))
-    stored = parse_env(text or "")
-    base = _endpoint(stored)
+    stored = await brain_env()
+    base = endpoint(stored)
     state = credit.MONITOR.state()
+    try:
+        connect = await openrouter_connect.status(request, stored)
+    except Exception as e:  # noqa: BLE001 -- the paste field never depends on the sign-in
+        logger.warning(f"config: the sign-in's state could not be read ({e!r})")
+        connect = {"offered": False}
     return {"offered": ai_account.is_openrouter(base),
             "key_set": _secret_is_set(rows["LLM_API_KEY"], stored),
-            "connect": await openrouter_connect.status(request, base),
+            "connect": connect,
             # The trial credit (#280): its state, and the page's line about it (None off it).
             "credit": {"state": state, "line": credit.MONITOR.page_line(t)},
             "trusted_cert": settings_access.pairing.TRUSTED_CERT,

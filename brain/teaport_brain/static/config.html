@@ -555,9 +555,14 @@
     // On the box's trial credit (#280) its line stands in for "connected": a warning
     // from half used on, an error once it has run out.
     const credit = a.credit || {};
-    const state = credit.line
+    let state = credit.line
       ? h('div', { class: 'banner' + ({ half: ' warn', low: ' warn', empty: ' err' }[credit.state] || '') }, h('p', {}, credit.line))
       : h('p', { class: 'group-blurb' }, a.key_set ? T.connected : T.none);
+    // A key saved (pasted, or from the sign-in): the line says so, whichever came first.
+    const connected = () => {
+      const now = h('p', { class: 'group-blurb' }, T.connected);
+      state.replaceWith(now); state = now;
+    };
     const key = h('input', { type: 'password', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.key, placeholder: T.key });
     const out = h('p', { class: 'acct-msg', 'aria-live': 'polite' });
     const saveBtn = h('button', { class: 'btn-primary', type: 'submit' }, T.save);
@@ -571,7 +576,7 @@
         const res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store: 'brain_env', values: { LLM_API_KEY: value }, force_key: force }) });
         if (res.status === 200) {
           key.value = ''; out.className = 'acct-msg ok'; out.textContent = T.works;
-          state.replaceWith(h('p', { class: 'group-blurb' }, T.connected));
+          connected();
         } else if (res.body.key_check) {
           const kc = res.body.key_check;
           out.className = 'acct-msg err';
@@ -588,39 +593,55 @@
     const form = h('form', { class: 'acct-form', onsubmit: (e) => { e.preventDefault(); send(false); } },
       key, h('div', { class: 'acct-actions' }, saveBtn, forceBtn));
     // OpenRouter's sign-in (#282, openrouter_connect.py): the button takes this tab to
-    // OpenRouter, which sends it back through Teaspoon's page to /settings/openrouter.
-    // While a sign-in waits, the code that page shows (when it could not send the phone
-    // on) can be pasted here. Only on the front door: the sign-in comes back there.
+    // OpenRouter. With Teaspoon's page (connect.page) OpenRouter sends it back through
+    // that page to /settings/openrouter; without, OpenRouter shows a code, which comes
+    // back here into the code field. While a sign-in waits, the field is shown (the
+    // page shows the same code when it could not send the phone on). A key the sign-in
+    // gave that could not be saved can be saved again. Only on the front door.
     const connect = a.connect || {};
     let connectPart = null;
     if (connect.offered) {
+      const parts = h('div', { class: 'acct-connect' });
       const connectBtn = h('button', { class: 'btn-primary', type: 'button' }, T.connect);
+      const code = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.code, placeholder: T.code });
+      const codeBtn = h('button', { class: 'btn-ghost', type: 'submit' }, h('span', { class: 'btn-label' }, T.code_send));
+      const codeForm = h('form', { class: 'acct-form', hidden: !connect.pending, onsubmit: async (e) => {
+        e.preventDefault();
+        if (!code.value.trim()) { code.focus(); return; }
+        codeBtn.disabled = true; out.className = 'acct-msg'; out.textContent = T.connecting;
+        try {
+          const res = await api('/api/openrouter/code', { method: 'POST', body: JSON.stringify({ code: code.value.trim() }) });
+          answered(res.body);
+          if (res.body.ok) code.value = '';
+        } catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }
+        finally { codeBtn.disabled = false; }
+      } }, h('p', { class: 'note' }, T.code_help), code, h('div', { class: 'acct-actions' }, codeBtn));
+      const retryBtn = h('button', { class: 'btn-ghost', type: 'button' }, h('span', { class: 'btn-label' }, T.retry));
+      const retryPart = h('div', { class: 'acct-actions', hidden: !connect.retry }, h('p', { class: 'note' }, T.retry_help), retryBtn);
+      // What the server says after a code or a retry: the message, the line, and which
+      // of the field and the retry are still of use.
+      const answered = (body) => {
+        out.className = 'acct-msg ' + (body.ok ? 'ok' : 'err'); out.textContent = body.message || '';
+        if (body.ok) connected();
+        codeForm.hidden = !body.pending;
+        retryPart.hidden = !body.retry;
+      };
+      retryBtn.onclick = async () => {
+        retryBtn.disabled = true; out.className = 'acct-msg'; out.textContent = T.connecting;
+        try { answered((await api('/api/openrouter/retry', { method: 'POST', body: '{}' })).body); }
+        catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }
+        finally { retryBtn.disabled = false; }
+      };
       connectBtn.onclick = async () => {
         connectBtn.disabled = true; out.className = 'acct-msg'; out.textContent = '';
         try {
           const res = await api('/api/openrouter/start', { method: 'POST', body: '{}' });
+          codeForm.hidden = false;  // for Back from OpenRouter (the page may come back from the cache)
           location.assign(res.body.url);
-        } catch (e) { out.className = 'acct-msg err'; out.textContent = T.connect_off; connectBtn.disabled = false; }
+        } catch (e) { out.className = 'acct-msg err'; out.textContent = e.message; connectBtn.disabled = false; }
       };
-      let codeForm = null;
-      if (connect.pending) {
-        const code = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'none', spellcheck: 'false', 'aria-label': T.code, placeholder: T.code });
-        const codeBtn = h('button', { class: 'btn-ghost', type: 'submit' }, h('span', { class: 'btn-label' }, T.code_send));
-        codeForm = h('form', { class: 'acct-form', onsubmit: async (e) => {
-          e.preventDefault();
-          if (!code.value.trim()) { code.focus(); return; }
-          codeBtn.disabled = true; out.className = 'acct-msg'; out.textContent = T.connecting;
-          try {
-            const res = await api('/api/openrouter/code', { method: 'POST', body: JSON.stringify({ code: code.value.trim() }) });
-            out.className = 'acct-msg ' + (res.body.ok ? 'ok' : 'err'); out.textContent = res.body.message || '';
-            if (res.body.ok) { codeForm.remove(); state.replaceWith(h('p', { class: 'group-blurb' }, T.connected)); }
-          } catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }
-          finally { codeBtn.disabled = false; }
-        } }, h('p', { class: 'note' }, T.code_help), code, h('div', { class: 'acct-actions' }, codeBtn));
-      }
-      connectPart = h('div', { class: 'acct-connect' }, connectBtn, h('p', { class: 'note' }, T.connect_note), codeForm);
-    } else if (BASE) {
-      connectPart = h('p', { class: 'note' }, T.connect_off);
+      parts.append(connectBtn, h('p', { class: 'note' }, connect.page ? T.connect_note : T.connect_note_code), retryPart, codeForm);
+      connectPart = parts;
     }
     sec.replaceChildren(
       h('div', { class: 'group-head' }, h('h2', {}, T.title)),
@@ -628,6 +649,9 @@
       BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null);
     sec.hidden = false;
   };
+  // Back from OpenRouter can bring this page back from the browser's cache, as it was
+  // before the sign-in started: read the account step again (the code field, #282).
+  window.addEventListener('pageshow', (e) => { if (e.persisted && data) renderAccount(); });
   $('#advbtn').addEventListener('click', () => {
     document.body.classList.toggle('show-adv');
     if (document.body.classList.contains('show-adv')) document.querySelectorAll('section.group').forEach((g) => io.observe(g));

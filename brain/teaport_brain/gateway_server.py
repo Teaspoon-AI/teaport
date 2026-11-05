@@ -786,14 +786,16 @@ class _ReadyServer(uvicorn.Server):
         await super().shutdown(sockets=sockets)
 
 
-# What a request line uvicorn logs must not carry: a ?token= (the access line of an
+# What a request line uvicorn logs must not carry: a ?token= or any ?<name>token=
+# (access_token, gateway_token, auth_token...: the access line of an
 # HTTP request, the "WebSocket /talk?...&token=..." [accepted] line of every Talk
 # connect), and a pairing code, the path segment after /p/ (pairing.py: a live one is
 # the owner's access until it is used), or a Settings code after /settings/
 # (settings_access.py) -- not the page's own paths there -- and OpenRouter's sign-in code
 # and its state, ?code=..&state=.. on /settings/openrouter (openrouter_connect.py).
-_SECRETS_IN_URL = re.compile(r"(\b(?:token|code|state)=|(?:^|(?<=[\s\"']))/(?:p|settings(?!/(?:"
-                             r"config|api|health|trust|openrouter)\b))/)[^&/?#\s\"']+")
+_SECRETS_IN_URL = re.compile(r"((?<=[?&])(?:\w*token|code|state)=|(?:^|(?<=[\s\"']))/(?:p|"
+                             r"settings(?!/(?:config|api|health|trust|openrouter)\b))/)"
+                             r"[^&/?#\s\"']+")
 
 
 def _redact(text: str) -> str:

@@ -559,8 +559,6 @@ msgstr "正在连接…"
 msgid "Finish"
 msgstr "完成"
 
-msgid "If the page after OpenRouter showed you a code, paste it here."
-msgstr "如果 OpenRouter 之后的页面给你显示了一个代码，请把它粘贴到这里。"
 
 msgid "OpenRouter didn't accept the sign-in"
 msgstr "OpenRouter 没有接受这次登录"
@@ -568,8 +566,6 @@ msgstr "OpenRouter 没有接受这次登录"
 msgid "OpenRouter didn't connect the account. You can try again from Teaport's settings, or paste a key there instead."
 msgstr "OpenRouter 没有连接账户。你可以在 Teaport 的设置里再试一次，或者在那里粘贴密钥。"
 
-msgid "Signing in with OpenRouter isn't available on this box right now. Paste a key instead."
-msgstr "现在这台设备上还不能通过 OpenRouter 登录，请改为粘贴密钥。"
 
 msgid "Tap Finish to connect your OpenRouter account to Teaport."
 msgstr "点按“完成”，把你的 OpenRouter 账户连接到 Teaport。"
@@ -592,11 +588,67 @@ msgstr "这部手机上的 Teaport 设置已经关闭。说“打开设置”，
 msgid "This connection has expired. Go back to Teaport's settings and connect again."
 msgstr "这次连接已经过期。请回到 Teaport 的设置，重新连接。"
 
-msgid "To connect your OpenRouter account by signing in instead, finish setting up Wi-Fi, then say \"open my settings\"."
-msgstr "如果想改为登录来连接你的 OpenRouter 账户，请先完成 Wi-Fi 设置，然后说“打开设置”。"
 
-msgid "You sign in to OpenRouter on this phone and approve Teaport, then come back to this page."
-msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问，然后回到这个页面。"
 
 msgid "Your OpenRouter account is connected"
 msgstr "你的 OpenRouter 账户已连接"
+
+msgid "Connecting your OpenRouter account to Teaport"
+msgstr "正在把你的 OpenRouter 账户连接到 Teaport"
+
+msgid "Continue to Teaport"
+msgstr "继续前往 Teaport"
+
+msgid "Copied"
+msgstr "已复制"
+
+msgid "Copy code"
+msgstr "复制代码"
+
+msgid "If OpenRouter showed you a code, paste it here."
+msgstr "如果 OpenRouter 给你显示了一个代码，请把它粘贴到这里。"
+
+msgid "If that doesn't work: copy this code, open Teaport's settings on this phone, and paste it into {field}. It works once, in the next ten minutes."
+msgstr "如果不行：复制这个代码，在这部手机上打开 Teaport 的设置，把它粘贴到“{field}”里。它只能用一次，十分钟内有效。"
+
+msgid "If your phone warns that the connection isn't private, it's the same warning you saw when you opened Teaport's settings."
+msgstr "如果手机提示连接不是私密连接，这和你打开 Teaport 设置时看到的是同一个提示。"
+
+msgid "Now let's connect your OpenRouter account. I've put a code on my screen. Scan it with your phone's camera, tap the link that appears, and follow the steps on your phone."
+msgstr "现在来连接你的 OpenRouter 账户。我已经在屏幕上显示了一个代码。用手机相机扫描它，点按出现的链接，然后按照手机上的步骤操作。"
+
+msgid "Now let's connect your OpenRouter account. In your phone's browser, go to {address}, enter the code {code}, and follow the steps there. The code works once, for the next five minutes."
+msgstr "现在来连接你的 OpenRouter 账户。在手机浏览器里打开 {address}，输入代码 {code}，然后按照那里的步骤操作。这个代码只能用一次，五分钟内有效。"
+
+msgid "Save it again"
+msgstr "再次保存"
+
+msgid "Teaport couldn't save the key"
+msgstr "Teaport 没能保存密钥"
+
+msgid "Teaport no longer has that key. Tap Connect your OpenRouter account to sign in again."
+msgstr "Teaport 已经没有那个密钥了。点按“连接你的 OpenRouter 账户”重新登录。"
+
+msgid "Teaport still has the key from your OpenRouter sign-in. Tap Save it again to try once more."
+msgstr "Teaport 还保留着你这次 OpenRouter 登录得到的密钥。点按“再次保存”再试一次。"
+
+msgid "That doesn't look like a code from OpenRouter. Check it and paste it again."
+msgstr "这看起来不像 OpenRouter 的代码。请检查后重新粘贴。"
+
+msgid "There's no sign-in waiting for a code. Tap Connect your OpenRouter account to start a new one."
+msgstr "现在没有等待代码的登录。点按“连接你的 OpenRouter 账户”开始新的登录。"
+
+msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
+msgstr "这个链接不是指向家庭网络里的 Teaport，所以这个页面不会继续跳转。"
+
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
+msgstr "如果想改为登录来连接你的 OpenRouter 账户，请把这里留空，然后完成 Wi-Fi 设置。之后 Teaport 会告诉你怎么做。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
+msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问。之后 OpenRouter 会显示一个代码：复制它，回到 Teaport 的设置，把它粘贴到“OpenRouter 给的代码”里。"
+
+msgid "You sign in to OpenRouter on this phone and approve Teaport. Then a Teaport page asks you to tap Finish."
+msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问。之后 Teaport 的一个页面会请你点按“完成”。"
+
+msgid "Your phone needs to be on the same Wi-Fi as Teaport. If it doesn't go on by itself, tap the button."
+msgstr "你的手机需要和 Teaport 连在同一个 Wi-Fi 上。如果没有自动继续，请点按按钮。"

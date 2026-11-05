@@ -48,7 +48,9 @@ DYNAMIC = {
         "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
-        "t._(SHOWN_TEXT)", "t._(SPOKEN_TEXT)", "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
+        "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
+        "t._(CONNECT_SHOWN_TEXT if connect else SHOWN_TEXT)",    # and its offer (#282)
+        "t._(CONNECT_SPOKEN_TEXT if connect else SPOKEN_TEXT)",
     },
     "llm_error_speaker.py": {
         "t._(text)",                         # its four notices: N_() there
@@ -59,9 +61,12 @@ DYNAMIC = {
     "openrouter_connect.py": {               # its lines: N_() there (#282)
         "t._(BACK)", "t._(CONNECTED_TEXT)", "t._(EXPIRED_TEXT)", "t._(FAILED_TEXT)",
         "t._(FINISH)", "t._(FINISH_HEADING)", "t._(FINISH_TEXT)", "t._(NOT_CONNECTED_TEXT)",
-        "t._(SESSION_ENDED_TEXT)",
+        "t._(SESSION_ENDED_TEXT)", "t._(SAVE_BROKE)", "t._(NOT_A_CODE_TEXT)",
+        "t._(NO_SIGN_IN_TEXT)", "t._(NOT_HELD_TEXT)",
         "t._(heading)",                      # _page's heading: one of the N_() headings there
         "t._(why)",                          # ai_account.exchange_code's reason: N_() there
+        "t._(v)",                            # PAGE_TEXT's values: N_() there
+        "t._(field)",                        # config_ui.ACCOUNT_TEXT["code"]: N_() there
     },
     "wifi_setup.py": {
         "t._(ACCOUNT_HELP)",                 # N_() there (#279)
@@ -349,13 +354,12 @@ def _quoting_lines():
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
             "credit empty": ("settings", credit.EMPTY_TEXT),
-            "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
-            "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
+            "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT)}
 
 
 @pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
                                    "new code", "credit half", "credit low", "credit empty",
-                                   "sign-in session", "sign in later"])
+                                   "sign-in session"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
 def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
     """The lines that tell the user what to say -- the no-model lines

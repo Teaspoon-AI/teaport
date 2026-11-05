@@ -1,30 +1,35 @@
 #
 # "Connect your OpenRouter account" (#282): OpenRouter's sign-in (OAuth PKCE) from the
-# owner's Settings, through Teaspoon's static page (web/connect/index.html) and back.
+# owner's Settings, back through Teaspoon's static page (web/connect/index.html), or,
+# without that page, with the code OpenRouter shows pasted into Settings.
 #
 # What has to hold:
-#   - The button is offered on the Settings site only, for an OpenRouter endpoint, and
-#     only while the static page answers as itself (asked from the box, the answer kept
-#     for a while); otherwise the AI account step says so and the paste field stays.
-#   - Start (the owner's session) gives OpenRouter's sign-in address: the static page as
-#     callback_url, an S256 challenge of a verifier only the box holds, a state that
-#     carries the Settings origin and a nonce under the box's signature; and a fresh
-#     session cookie.
-#   - /settings/openrouter: a GET (from the static page, no cookie: SameSite=Strict) shows
-#     a Finish button and spends nothing; its POST needs the session and the Settings
-#     origin, a state this box signed for its own origin and the live nonce. It is spent
-#     there, once, whatever comes of it; the code and verifier are exchanged; the key is
-#     checked and saved as a pasted one is (the key file, the starter warnings' end).
+#   - The button is offered on the Settings site, for an OpenRouter endpoint, unless the
+#     key is set where Settings cannot change it. The static page decides only the way
+#     back: with it, a callback and a signed state; without it (not hosted, not HTTPS, a
+#     garbled answer), no callback and no state, and the code is pasted. Asking for the
+#     page never takes the AI account step down, and is one ask at a time.
+#   - Start (the owner's session) gives OpenRouter's sign-in address with an S256
+#     challenge of a verifier only the box holds, and a fresh session cookie.
+#   - /settings/openrouter: a GET (no cookie: SameSite=Strict) shows a Finish button and
+#     spends nothing; the page's referrer policy is same-origin, as a form under
+#     no-referrer posts `Origin: null`, which is refused. Its POST needs the session and
+#     the Settings origin, a state this box signed for its own origin and the live
+#     nonce; it is spent there, once; the code and verifier are exchanged; the key is
+#     saved as a pasted one is.
 #   - A refused sign-in, a refused key, a late or replayed finish, a forged state: a plain
-#     message, nothing saved, paste still there. The owner saying no at OpenRouter: a
-#     plain message.
-#   - The code the static page shows, pasted in Settings, finishes the same sign-in.
-#   - ai_account.exchange_code: the documented request, the key from the answer, plain
-#     reasons, no redirect followed.
-#   - No key, code or verifier in the journal or the access log.
-#   - The static page: a strict CSP whose hashes match its inline script and style, no
+#     message, nothing saved, paste still there, no developer text. A check with no
+#     answer does not stop the key OpenRouter just gave. A key OpenClaw did not take is
+#     held for "Save it again", in memory, for a while.
+#   - A pasted code: one that is no code spends nothing; with no sign-in waiting, say so.
+#   - The end of Wi-Fi setup offers it through "open my settings"' own code, where that
+#     is usable and the box has no key of the owner's.
+#   - ai_account._request: a garbled answer is OSError; a dripping server is cut at the
+#     deadline. exchange_code: the documented request, plain reasons.
+#   - No key, code or verifier in the journal; every ...token=, code= and state= out of
+#     the access log.
+#   - The static page: current with its catalogs (13 languages) and its CSP hashes, no
 #     third-party anything, the box's path, and it goes on only to a home address.
-#   - The setup page points at Settings for the sign-in (setup mode has no internet).
 #
 # No test talks to OpenRouter or to the static page's host: openrouter_connect._fetch,
 # openrouter_connect.exchange, ai_account._post and config_ui.check_key are fakes, and
@@ -39,8 +44,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 
 import httpx
@@ -51,16 +59,19 @@ import test_settings_access as sa  # noqa: E402  (its pinned-pipecat check runs 
 
 import appliance  # noqa: E402
 from loguru import logger  # noqa: E402
+from pipecat.frames.frames import TTSSpeakFrame  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+from tempdirs import tempdir  # noqa: E402
 from teaport_brain import (  # noqa: E402
     ai_account, config_ui, gateway_server, i18n, openrouter_connect, settings_access, wifi_setup,
+    wifi_voice,
 )
 
 FAKE_KEY = "sk-or-v1-" + "7" * 64          # what the made-up exchange hands back
 FAKE_CODE = "c0de-" + "a1" * 12             # a made-up sign-in code
 PAGE = (b'<!doctype html><html><head>' + openrouter_connect.PAGE_MARK
         + b'</head><body></body></html>')
-WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web", "connect",
-                   "index.html")
+EN = i18n.get("en")
 
 
 def _setup(page=(200, PAGE)):
@@ -78,7 +89,9 @@ def _setup(page=(200, PAGE)):
     openrouter_connect._fetch = fetch
     openrouter_connect._probe = None
     openrouter_connect._pending = None
+    openrouter_connect._held = None
     openrouter_connect._clock = lambda: 5000.0
+    ai_account.save_key = _REAL_SAVE
     exchanged = []
 
     def exchange(code, verifier, timeout=None):
@@ -88,6 +101,9 @@ def _setup(page=(200, PAGE)):
     exchange.answer = (FAKE_KEY, "")
     openrouter_connect.exchange = exchange
     return home, check, checks, fetched, exchanged
+
+
+_REAL_SAVE = ai_account.save_key
 
 
 def _client(cookie=None, origin=sa.ORIGIN, fetch_site=None, proto="https"):
@@ -131,9 +147,13 @@ async def _start(c) -> dict[str, str]:
     return dict(urllib.parse.parse_qsl(url.query))
 
 
-# ------------------------------------------------------------------ the whole round trip
+def _esc(text: str) -> str:
+    return text.replace("'", "&#x27;").replace('"', "&quot;")
 
-def test_the_owner_connects_and_the_key_is_saved_as_a_pasted_one():
+
+# ------------------------------------------------------------------ the round trip
+
+def test_the_owner_connects_through_the_page_and_the_key_is_saved_as_a_pasted_one():
     async def run():
         home, check, checks, fetched, exchanged = _setup()
         lines = []
@@ -141,24 +161,23 @@ def test_the_owner_connects_and_the_key_is_saved_as_a_pasted_one():
         try:
             async with _client(cookie=_session()) as c:
                 account = (await c.get("/settings/api/account")).json()
-                assert account["connect"] == {"offered": True, "pending": False}
+                assert account["connect"] == {"offered": True, "page": True, "pending": False,
+                                              "retry": False}
                 assert account["text"]["connect"] == "Connect your OpenRouter account"
                 r = await c.post("/settings/api/openrouter/start")
                 cookie = r.headers["set-cookie"].lower()
                 for part in ("httponly", "secure", "samesite=strict", "path=/settings"):
                     assert part in cookie, cookie  # a fresh hour for the round trip
-                assert r.headers["cache-control"] == "no-store"
+                assert r.headers["cache-control"] == "no-store" and r.json()["page"] is True
                 q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.json()["url"]).query))
             pending = openrouter_connect._pending
-            assert q["callback_url"] == "https://get.teaspoon.tech/connect/"
+            assert q["callback_url"] == "https://get.teaspoon.tech/connect/index.html"
             assert q["code_challenge_method"] == "S256" and q["key_label"] == "Teaport"
             want = base64.urlsafe_b64encode(hashlib.sha256(pending.verifier.encode()).digest())
             assert q["code_challenge"] == want.rstrip(b"=").decode()
             assert 43 <= len(pending.verifier) <= 128 and pending.verifier not in r.text
             head, nonce, _sig = q["state"].split(".")
             assert openrouter_connect._unb64(head).decode() == sa.ORIGIN and nonce == pending.nonce
-            async with _client(cookie=_session()) as c:
-                assert (await c.get("/settings/api/account")).json()["connect"]["pending"] is True
             # The static page sends the phone here: another site's navigation, so no cookie.
             landing = f"/settings/openrouter?code={FAKE_CODE}&state={urllib.parse.quote(q['state'])}"
             async with _client(origin=None, fetch_site="cross-site") as c:
@@ -166,7 +185,10 @@ def test_the_owner_connects_and_the_key_is_saved_as_a_pasted_one():
                     got = await c.get(landing)
                     assert got.status_code == 200 and "Finish" in got.text, got.text
                     assert got.headers["cache-control"] == "no-store"
-                    assert got.headers["referrer-policy"] == "no-referrer"
+                    # The form must post with the Settings origin, not `Origin: null`.
+                    assert got.headers["referrer-policy"] == "same-origin"
+                    assert '<meta name="referrer" content="same-origin">' in got.text
+                    assert "no-referrer" not in got.text
             assert openrouter_connect._pending is pending and exchanged == []
             # Its button: the Settings page's own POST, with the session.
             async with _client(cookie=_session(), fetch_site="same-origin") as c:
@@ -191,6 +213,73 @@ def test_the_owner_connects_and_the_key_is_saved_as_a_pasted_one():
     asyncio.run(run())
 
 
+def test_without_the_page_the_code_openrouter_shows_is_pasted_into_settings():
+    async def run():
+        for page in ((404, b"Not Found"), (200, b"<html>something else</html>"),
+                     TimeoutError("no answer")):
+            home, _c, _cs, fetched, exchanged = _setup(page=page)
+            async with _client(cookie=_session()) as c:
+                account = (await c.get("/settings/api/account")).json()
+                assert account["connect"] == {"offered": True, "page": False, "pending": False,
+                                              "retry": False}, page
+                assert "OpenRouter then shows a code" in account["text"]["connect_note_code"]
+                r = await c.post("/settings/api/openrouter/start")
+                assert r.status_code == 200 and r.json()["page"] is False
+                q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.json()["url"]).query))
+                # OpenRouter's no-callback mode: no callback_url and no state (it is not
+                # returned there); the challenge is required and is there.
+                assert set(q) == {"code_challenge", "code_challenge_method", "key_label"}, q
+                verifier = openrouter_connect._pending.verifier
+                assert (await c.get("/settings/api/account")).json()["connect"]["pending"] is True
+                done = await c.post("/settings/api/openrouter/code", json={"code": f" {FAKE_CODE} "})
+                assert done.status_code == 200 and done.json()["ok"] is True, done.text
+                assert done.json()["pending"] is False
+                assert exchanged == [(FAKE_CODE, verifier)] and _key_file(home) == FAKE_KEY
+                # Asked again only after a while.
+                await c.get("/settings/api/account")
+                assert len(fetched) == 1, page
+                openrouter_connect._clock = lambda: 5000.0 + openrouter_connect.PROBE_FAILED_SECS + 1
+                await c.get("/settings/api/account")
+                assert len(fetched) == 2, page
+        # Not an https:// address: not asked at all; the sign-in still works, with a code.
+        _home, _c, _cs, fetched, _ex = _setup()
+        os.environ["TEAPORT_OPENROUTER_CONNECT_URL"] = "http://example.invalid/"
+        try:
+            async with _client(cookie=_session()) as c:
+                connect = (await c.get("/settings/api/account")).json()["connect"]
+                assert connect["offered"] is True and connect["page"] is False
+            assert fetched == []
+        finally:
+            del os.environ["TEAPORT_OPENROUTER_CONNECT_URL"]
+    asyncio.run(run())
+
+
+def test_where_a_key_from_the_sign_in_could_not_be_saved_it_is_not_offered():
+    async def run():
+        _home, _c, _cs, fetched, _ex = _setup()
+        # The operator's /config (the token, the brain's own port): not offered, nothing asked.
+        async with _client(origin=None, proto=None) as c:
+            got = await c.get("/api/account", headers={"authorization": f"Bearer {sa.TOKEN}"})
+            assert got.status_code == 200 and got.json()["connect"]["offered"] is False
+        assert fetched == []
+        # A key set elsewhere (not brain.env): the paste says so; no button, no start.
+        os.environ["LLM_API_KEY"] = "sk-or-v1-" + "5" * 64
+        try:
+            async with _client(cookie=_session()) as c:
+                account = (await c.get("/settings/api/account")).json()
+                assert account["offered"] is True and account["connect"]["offered"] is False
+                assert (await c.post("/settings/api/openrouter/start")).status_code == 409
+        finally:
+            del os.environ["LLM_API_KEY"]
+        # Not an OpenRouter endpoint: neither.
+        with open(os.path.join(config_ui.ETC_DIR, "brain.env"), "w") as f:
+            f.write("LLM_BASE_URL=https://api.example.invalid/v1\n")
+        async with _client(cookie=_session()) as c:
+            assert (await c.get("/settings/api/account")).json()["offered"] is False
+            assert (await c.post("/settings/api/openrouter/start")).status_code == 409
+    asyncio.run(run())
+
+
 def test_the_finish_needs_the_session_the_origin_and_this_boxs_live_state():
     async def run():
         home, *_rest, exchanged = _setup()
@@ -201,6 +290,10 @@ def test_the_finish_needs_the_session_the_origin_and_this_boxs_live_state():
         async with _client() as c:
             r = await c.post("/settings/openrouter", data=form)
             assert r.status_code == 401 and "open my settings" in r.text
+        # What a form under a no-referrer page sends: Origin: null. Refused, so the page
+        # must not be one (the round trip above checks it is same-origin).
+        async with _client(cookie=_session(), origin="null", fetch_site="same-origin") as c:
+            assert (await c.post("/settings/openrouter", data=form)).status_code == 401
         # Another origin, or one a browser marks as another site's: not the owner's page.
         async with _client(cookie=_session(), origin="https://evil.example") as c:
             assert (await c.post("/settings/openrouter", data=form)).status_code == 401
@@ -241,10 +334,16 @@ def test_the_finish_needs_the_session_the_origin_and_this_boxs_live_state():
     asyncio.run(run())
 
 
+def test_the_finish_form_fits_the_longest_code_and_state():
+    origin = "https://" + "a" * 63 + ".local:65535"  # longer than any front door name
+    state = openrouter_connect.make_state(origin, "n" * 22)
+    body = urllib.parse.urlencode({"code": "%" * ai_account.CODE_MAX_CHARS, "state": state})
+    assert len(body.encode()) < openrouter_connect.FORM_MAX_BYTES, len(body)
+
+
 def test_every_failure_is_said_plainly_and_saves_nothing():
     async def run():
         home, check, _checks, _fetched, exchanged = _setup()
-        en = i18n.get("en")
         cases = [
             ("exchange", (None, ai_account.SIGN_IN_REFUSED), "OpenRouter didn't accept the sign-in"),
             ("exchange", (None, ai_account.UNREACHABLE), "the AI service didn't answer"),
@@ -265,74 +364,236 @@ def test_every_failure_is_said_plainly_and_saves_nothing():
                 r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
             assert r.status_code == 400, r.text
             assert "couldn&#x27;t connect your OpenRouter account" in r.text, r.text
-            assert words.replace("'", "&#x27;") in r.text and "paste a key" in r.text, r.text
-            assert f"{words.replace(chr(39), '&#x27;')}. You can try again" in r.text, r.text
+            assert f"{_esc(words)}. You can try again" in r.text and "paste a key" in r.text, r.text
             assert _key_file(home) is None
             assert openrouter_connect._pending is None  # spent: a code works once
+            assert openrouter_connect._held is None     # a refused key is not kept
         # The owner said no at OpenRouter (no code comes back).
         async with _client(origin=None) as c:
             r = await c.get("/settings/openrouter")
-            assert r.status_code == 200 and en._(openrouter_connect.NOT_CONNECTED_TEXT).replace(
-                "'", "&#x27;") in r.text
+            assert r.status_code == 200 and _esc(EN._(openrouter_connect.NOT_CONNECTED_TEXT)) in r.text
         assert len(exchanged) == len(cases)  # one each; the "no" page exchanged nothing
+        # The save itself broke (an env file not written): plain words, no developer text.
+        async def broken(request, body, issued=False):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail="write brain.env: config_apply rc=3")
+        real = config_ui.save_values
+        config_ui.save_values = broken
+        try:
+            async with _client(cookie=_session()) as c:
+                q = await _start(c)
+                r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+            assert r.status_code == 400 and "config_apply" not in r.text and "brain.env" not in r.text
+            assert _esc(EN._(openrouter_connect.SAVE_BROKE)) in r.text
+        finally:
+            config_ui.save_values = real
     asyncio.run(run())
 
 
-def test_the_code_the_static_page_shows_can_be_pasted_in_settings():
+def test_a_key_openrouter_just_gave_is_not_thrown_away():
+    async def run():
+        home, check, _checks, _fetched, exchanged = _setup()
+        # The check got no answer: the key came from OpenRouter a moment ago, so it is saved.
+        check.answer = ai_account.Check(ai_account.UNKNOWN, ai_account.UNREACHABLE)
+        async with _client(cookie=_session()) as c:
+            q = await _start(c)
+            r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+        assert r.status_code == 200 and _key_file(home) == FAKE_KEY
+        # A pasted key with the same check still needs "Save anyway" (unchanged).
+        async with _client(cookie=_session()) as c:
+            put = await c.put("/settings/api/config", json={"store": "brain_env",
+                                                            "values": {"LLM_API_KEY": sa.FAKE_KEY}})
+            assert put.status_code == 400 and put.json()["key_check"]["state"] == "unknown"
+        # OpenClaw did not take it (both or neither): held, and "Save it again" saves it.
+        home, check, *_rest = _setup()
+        tries = []
+
+        async def refused_once(key, base_url):
+            tries.append(key)
+            if len(tries) == 1:
+                raise ai_account.NotSaved(ai_account.NOT_SHARED, "openclaw said no")
+            return await _REAL_SAVE(key, base_url)
+
+        ai_account.save_key = refused_once
+        lines = []
+        sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+        try:
+            async with _client(cookie=_session()) as c:
+                q = await _start(c)
+                r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+                assert r.status_code == 400 and _esc(EN._(ai_account.NOT_SHARED)).rstrip(".") in r.text
+                assert _key_file(home) is None
+                account = (await c.get("/settings/api/account")).json()
+                assert account["connect"]["retry"] is True and account["connect"]["pending"] is False
+                again = await c.post("/settings/api/openrouter/retry")
+                assert again.status_code == 200 and again.json() == {
+                    "ok": True, "message": EN._(openrouter_connect.CONNECTED_TEXT), "retry": False}
+                assert tries == [FAKE_KEY, FAKE_KEY] and _key_file(home) == FAKE_KEY
+                # Nothing held any more.
+                gone = await c.post("/settings/api/openrouter/retry")
+                assert gone.status_code == 400 and gone.json()["message"] == EN._(
+                    openrouter_connect.NOT_HELD_TEXT)
+            # Held for a while only.
+            tries.clear()
+            async with _client(cookie=_session()) as c:
+                q = await _start(c)
+                await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+                openrouter_connect._clock = lambda: 5000.0 + openrouter_connect.HELD_SECS + 1
+                assert (await c.post("/settings/api/openrouter/retry")).status_code == 400
+            async with _client() as c:  # the session, as everywhere in Settings
+                assert (await c.post("/settings/api/openrouter/retry")).status_code == 401
+        finally:
+            logger.remove(sink)
+            ai_account.save_key = _REAL_SAVE
+        assert FAKE_KEY not in "\n".join(lines)
+    asyncio.run(run())
+
+
+def test_a_pasted_code_is_checked_before_it_spends_the_sign_in():
     async def run():
         home, *_rest, exchanged = _setup()
         async with _client(cookie=_session()) as c:
             r = await c.post("/settings/api/openrouter/code", json={"code": FAKE_CODE})
-            assert r.status_code == 400 and r.json()["ok"] is False and "expired" in r.json()["message"]
+            assert r.status_code == 400 and r.json()["message"] == EN._(openrouter_connect.NO_SIGN_IN_TEXT)
             await _start(c)
-            verifier = openrouter_connect._pending.verifier
-            r = await c.post("/settings/api/openrouter/code", json={"code": f"  {FAKE_CODE} "})
-            assert r.status_code == 200 and r.json() == {
-                "ok": True, "message": i18n.get("en")._(openrouter_connect.CONNECTED_TEXT)}
-            assert exchanged == [(f"  {FAKE_CODE} ", verifier)] and _key_file(home) == FAKE_KEY
+            pending = openrouter_connect._pending
+            for bad in ("", "   ", "two words", "x" * (ai_account.CODE_MAX_CHARS + 1)):
+                r = await c.post("/settings/api/openrouter/code", json={"code": bad})
+                assert r.status_code == 400 and r.json()["message"] == EN._(
+                    openrouter_connect.NOT_A_CODE_TEXT) and r.json()["pending"] is True, bad
+            assert openrouter_connect._pending is pending and exchanged == []  # nothing spent
+            r = await c.post("/settings/api/openrouter/code", content=b"not json",
+                             headers={"content-type": "application/json"})
+            assert r.status_code == 400
+            # A code OpenRouter refuses spends it: the field goes (pending false).
+            openrouter_connect.exchange.answer = (None, ai_account.SIGN_IN_REFUSED)
+            r = await c.post("/settings/api/openrouter/code", json={"code": FAKE_CODE})
+            assert r.status_code == 400 and r.json()["pending"] is False
+            assert "OpenRouter didn&#x27;t accept" not in r.text  # JSON, not HTML
+            assert "OpenRouter didn't accept the sign-in" in r.json()["message"]
         async with _client() as c:  # the session, as everywhere in Settings
             assert (await c.post("/settings/api/openrouter/code", json={"code": FAKE_CODE})).status_code == 401
     asyncio.run(run())
 
 
-def test_the_button_shows_only_while_the_static_page_answers_as_itself():
+# ------------------------------------------------------------------ asking for the page
+
+class _Garbage:
+    """A TCP server that answers whatever it is asked with `reply`, then `drip` bytes
+    one at a time, `every` seconds apart."""
+
+    def __init__(self, reply: bytes, drip: bytes = b"", every: float = 0.0):
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(4)
+        self.port = self.srv.getsockname()[1]
+        self.reply, self.drip, self.every = reply, drip, every
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+                conn.sendall(self.reply)
+                for b in self.drip:
+                    time.sleep(self.every)
+                    conn.sendall(bytes([b]))
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+    def close(self):
+        self.srv.close()
+
+
+def test_a_garbled_or_dripping_answer_is_no_answer_and_the_paste_field_stays():
+    for reply in (b"NOT HTTP AT ALL\r\n\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\n\r\nshort",
+                  b"HTTP/1.1 200 OK\r\nX: " + b"a" * 70000 + b"\r\n\r\n"):
+        srv = _Garbage(reply)
+        try:
+            try:
+                ai_account._request(f"http://127.0.0.1:{srv.port}/", None, 3)
+                raise AssertionError(f"no error for {reply[:20]!r}")
+            except OSError:
+                pass
+        finally:
+            srv.close()
+    # A server that drips its body a byte at a time: cut at the deadline, not days later.
+    srv = _Garbage(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n", drip=b"x" * 1000, every=0.2)
+    try:
+        t0 = time.monotonic()
+        try:
+            ai_account._request(f"http://127.0.0.1:{srv.port}/", None, 1.0)
+            raise AssertionError("a dripping answer was read to the end")
+        except OSError:
+            pass
+        assert time.monotonic() - t0 < 2.5
+    finally:
+        srv.close()
+
     async def run():
-        for page in ((404, b"Not Found"), (200, b"<html>something else</html>"),
-                     TimeoutError("no answer")):
-            _home, _c, _cs, fetched, _ex = _setup(page=page)
-            async with _client(cookie=_session()) as c:
-                account = (await c.get("/settings/api/account")).json()
-                assert account["connect"] == {"offered": False, "pending": False}, page
-                assert account["text"]["connect_off"].startswith("Signing in with OpenRouter")
-                assert (await c.post("/settings/api/openrouter/start")).status_code == 409
-                # Asked again only after a while.
-                await c.get("/settings/api/account")
-                assert len(fetched) == 1, page
-                openrouter_connect._clock = lambda: 5000.0 + openrouter_connect.PROBE_FAILED_SECS + 1
-                await c.get("/settings/api/account")
-                assert len(fetched) == 2, page
-        # Turned off (not an https:// address): not asked at all.
-        _home, _c, _cs, fetched, _ex = _setup()
-        os.environ["TEAPORT_OPENROUTER_CONNECT_URL"] = "http://example.invalid/"
+        _setup()
+        srv = _Garbage(b"NOT HTTP AT ALL\r\n\r\n")
+        real = openrouter_connect.__dict__["_fetch"]
+        calls = []
+
+        def fetch(url):  # the real probe, at the garbage server
+            calls.append(url)
+            return ai_account._deadline(lambda: ai_account._request(
+                f"http://127.0.0.1:{srv.port}/", None, 2), 2)
+
+        openrouter_connect._fetch = fetch
         try:
             async with _client(cookie=_session()) as c:
-                assert (await c.get("/settings/api/account")).json()["connect"]["offered"] is False
-            assert fetched == []
+                for _ in range(2):
+                    got = await c.get("/settings/api/account")
+                    assert got.status_code == 200 and got.json()["offered"] is True
+                    assert got.json()["connect"]["page"] is False
+            assert len(calls) == 1  # the failure was remembered
+            # Whatever breaks in the sign-in's state, the account step stays.
+            def boom(request, env):
+                raise RuntimeError("unexpected")
+            real_status = openrouter_connect.status
+            openrouter_connect.status = boom
+            try:
+                async with _client(cookie=_session()) as c:
+                    got = await c.get("/settings/api/account")
+                    assert got.status_code == 200 and got.json()["offered"] is True
+                    assert got.json()["connect"]["offered"] is False
+            finally:
+                openrouter_connect.status = real_status
         finally:
-            del os.environ["TEAPORT_OPENROUTER_CONNECT_URL"]
-        # The operator's /config (the token, the brain's own port): the sign-in could not
-        # come back there, so it is not offered, and nothing is asked.
-        async with _client(origin=None, proto=None) as c:
-            got = await c.get("/api/account", headers={"authorization": f"Bearer {sa.TOKEN}"})
-            assert got.status_code == 200 and got.json()["connect"]["offered"] is False
-        assert fetched == []
-        # Not an OpenRouter endpoint: neither.
-        with open(os.path.join(config_ui.ETC_DIR, "brain.env"), "w") as f:
-            f.write("LLM_BASE_URL=https://api.example.invalid/v1\n")
-        async with _client(cookie=_session()) as c:
-            assert (await c.get("/settings/api/account")).json()["offered"] is False
-            assert (await c.post("/settings/api/openrouter/start")).status_code == 409
+            openrouter_connect._fetch = real
+            srv.close()
     asyncio.run(run())
+
+
+def test_the_page_is_asked_for_one_at_a_time():
+    _setup()
+    started, release, calls = threading.Event(), threading.Event(), []
+
+    def slow(url):
+        calls.append(url)
+        started.set()
+        release.wait(5)
+        return 200, PAGE
+
+    openrouter_connect._fetch = slow
+    first = []
+    t = threading.Thread(target=lambda: first.append(openrouter_connect.ready()))
+    t.start()
+    assert started.wait(5)
+    # While that one runs, others take what was last known (nothing yet), at once.
+    assert openrouter_connect.ready() is None and len(calls) == 1
+    release.set()
+    t.join(5)
+    assert first == ["https://get.teaspoon.tech/connect/index.html"]
+    assert openrouter_connect.ready() == first[0] and len(calls) == 1
 
 
 # ------------------------------------------------------------------ the exchange
@@ -372,7 +633,6 @@ def test_the_exchange_sends_the_documented_request_and_reads_the_key():
 
 def test_a_post_follows_no_redirect():
     import http.server
-    import threading
     seen = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -383,9 +643,8 @@ def test_a_post_follows_no_redirect():
             seen.append((self.command, self.path, self.rfile.read(int(self.headers["Content-Length"]))))
             self.send_response(307)
             self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
             self.end_headers()
-
-        do_GET = do_POST
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -396,11 +655,15 @@ def test_a_post_follows_no_redirect():
         srv.shutdown()
 
 
-def test_the_sign_in_never_reaches_the_access_log():
+def test_no_secret_in_a_url_reaches_the_access_log():
+    for name in ("token", "access_token", "gateway_token", "auth_token", "code", "state"):
+        for sep in ("?", "&"):
+            line = f'"GET /settings/openrouter{"?x=1" if sep == "&" else ""}{sep}{name}=s3cr3t HTTP/1.1"'
+            assert "s3cr3t" not in gateway_server._redact(line), line
     line = f'"GET /settings/openrouter?code={FAKE_CODE}&state=abc.def.0123 HTTP/1.1"'
     assert gateway_server._redact(line) == '"GET /settings/openrouter?code=<redacted>&state=<redacted> HTTP/1.1"'
-    assert gateway_server._redact('"POST /settings/api/openrouter/start HTTP/1.1"') == \
-        '"POST /settings/api/openrouter/start HTTP/1.1"'
+    for kept in ('"POST /settings/api/openrouter/start HTTP/1.1"', '"GET /talk/status?client=a HTTP/1.1"'):
+        assert gateway_server._redact(kept) == kept
 
 
 def test_gateway_server_mounts_the_routes_before_the_settings_code():
@@ -408,10 +671,84 @@ def test_gateway_server_mounts_the_routes_before_the_settings_code():
     assert paths.index(openrouter_connect.LANDING_PATH) < paths.index("/settings/{code}")
 
 
+# ------------------------------------------------------------------ the end of Wi-Fi setup
+
+def _setup_voice(screen, phrases=True):
+    v = wifi_voice.WifiSetupVoice(
+        run=lambda *a: None, status_path=os.path.join(tempdir(), "s.json"),
+        phrases=[settings_access.SettingsPhrase(screen=lambda: screen)] if phrases else ())
+    said = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, TTSSpeakFrame):
+            said.append(frame.text)
+
+    async def on_network():
+        return True
+
+    v.push_frame = push
+    v.box_on_network = on_network
+    v.state = "running"
+    return v, said
+
+
+def test_the_end_of_wifi_setup_offers_to_connect_the_account():
+    async def run():
+        home, *_rest = _setup()
+        screen = sa.Screen()
+        v, said = _setup_voice(screen)
+        await v._announce({"phase": "connected", "target": "Home"})
+        assert len(said) == 1, said
+        assert said[0].startswith("I'm connected to Home, and I'm online again. ")
+        assert said[0].endswith(EN._(settings_access.CONNECT_SHOWN_TEXT)), said
+        title, lines, _secs, link = screen.shown[-1]
+        assert title == "Settings" and lines[0] == "Connect OpenRouter" and link.startswith(
+            f"{sa.ORIGIN}/settings/")  # the same code "open my settings" makes
+        assert lines[2] == f"Code {settings_access._live.code.code}"
+        # Without a screen that draws it: the address and the code, read out.
+        _setup()
+        v, said = _setup_voice(sa.Screen(qr=False))
+        await v._announce({"phase": "connected", "target": "Home"})
+        assert "Now let's connect your OpenRouter account. In your phone's browser" in said[0]
+        # Not offered: a key was typed on the setup page (its own line), the owner has a
+        # key of their own, the phrase is not heard here, or Settings is not set up.
+        for case in ("typed", "own key", "no phrase", "no settings site"):
+            home, *_rest = _setup()
+            screen = sa.Screen()
+            v, said = _setup_voice(screen, phrases=case != "no phrase")
+            status = {"phase": "connected", "target": "Home"}
+            if case == "typed":
+                status["account"] = {"result": "saved", "reason": "", "ours": True}
+            elif case == "own key":
+                with open(os.path.join(home, "llm_key"), "w") as f:
+                    f.write("sk-or-v1-" + "3" * 64)
+            elif case == "no settings site":
+                settings_access.SETTINGS_PORT = None
+            await v._announce(status)
+            assert screen.shown == [] and len(said) == 1, (case, said)
+            assert "OpenRouter" not in said[0], (case, said)
+        settings_access.SETTINGS_PORT = sa.PORT
+    asyncio.run(run())
+
+
+def test_the_setup_page_says_the_sign_in_comes_after_setup():
+    sa._setup()
+    later = EN._(wifi_setup.SIGN_IN_LATER)
+    env = {"TEAPORT_FRONTDOOR_HOST": sa.HOST, "TEAPORT_SETTINGS_PORT": "8443"}
+    os.environ.update(env)
+    try:
+        assert _esc(later) in wifi_setup.render_account(EN)
+        del os.environ["TEAPORT_SETTINGS_PORT"]  # no Settings site (an older box)
+        assert "signing in" not in wifi_setup.render_account(EN)
+    finally:
+        for k in env:
+            os.environ.pop(k, None)
+
+
 # ------------------------------------------------------------------ the static page
 
 def _web() -> str:
-    with open(WEB, encoding="utf-8") as f:
+    with open(openrouter_connect.WEB_PAGE, encoding="utf-8") as f:
         return f.read()
 
 
@@ -419,7 +756,8 @@ def _hash(text: str) -> str:
     return base64.b64encode(hashlib.sha256(text.encode()).digest()).decode()
 
 
-def test_the_static_page_is_strict_and_self_contained():
+def test_the_static_page_is_current_strict_and_self_contained():
+    assert openrouter_connect.main(["--check"]) == 0, "run: python -m teaport_brain.openrouter_connect"
     page = _web()
     assert openrouter_connect.PAGE_MARK.decode() in page
     csp = re.search(r'http-equiv="Content-Security-Policy" content="([^"]+)"', page).group(1)
@@ -429,12 +767,21 @@ def test_the_static_page_is_strict_and_self_contained():
     assert len(script) == len(style) == 1
     assert policy == {"default-src": "'none'", "script-src": f"'sha256-{_hash(script[0])}'",
                       "style-src": f"'sha256-{_hash(style[0])}'", "base-uri": "'none'",
-                      "form-action": "'none'"}, ("re-hash the page's inline blocks", policy)
+                      "form-action": "'none'"}, policy
     assert '<meta name="referrer" content="no-referrer">' in page
     assert not re.search(r"\b(?:src|href)=\"(?:https?:)?//", page)  # nothing from elsewhere
     assert f'var PATH = "{openrouter_connect.LANDING_PATH}";' in page
-    assert "Code from OpenRouter" in page  # the field's name on the Settings page
-    assert i18n.get("en")._(config_ui.ACCOUNT_TEXT["code"]) == "Code from OpenRouter"
+    # Its words, in every language the box speaks, from the catalogs; the field it names
+    # is the Settings field's name in that language.
+    table = json.loads(re.search(r"/\*strings\*/(.*?)/\*end\*/", page, re.S).group(1))
+    assert len(table) == 13 and set(table["en"]) == set(openrouter_connect.PAGE_TEXT)
+    for lang, words in table.items():
+        t = i18n.get(lang.replace("-", "_"))
+        assert t._(config_ui.ACCOUNT_TEXT["code"]) in words["t-carry"], lang
+    # The markup's English is the catalog's English (the page without its script).
+    for k, v in table["en"].items():
+        if k != "copied":
+            assert f'id="{k}"' in page and v in page, k
 
 
 def test_the_static_page_goes_on_only_to_a_home_address():
@@ -470,26 +817,6 @@ def test_the_static_page_goes_on_only_to_a_home_address():
                                     check=True, timeout=30).stdout)
     assert got.pop("garbage") is None
     assert {k: got[state(k)] for k in cases} == cases
-
-
-# ------------------------------------------------------------------ setup mode
-
-def test_the_setup_page_points_at_settings_for_the_sign_in():
-    sa._setup()
-    en = i18n.get("en")
-    later = en._(wifi_setup.SIGN_IN_LATER)
-    env = {"TEAPORT_FRONTDOOR_HOST": sa.HOST, "TEAPORT_SETTINGS_PORT": "8443"}
-    os.environ.update(env)
-    try:
-        assert later.replace('"', "&quot;") in wifi_setup.render_account(en)
-        os.environ["TEAPORT_OPENROUTER_CONNECT_URL"] = "http://off.invalid/"
-        assert "signing in" not in wifi_setup.render_account(en)
-        del os.environ["TEAPORT_OPENROUTER_CONNECT_URL"]
-        del os.environ["TEAPORT_SETTINGS_PORT"]  # no Settings site (an older box)
-        assert "signing in" not in wifi_setup.render_account(en)
-    finally:
-        for k in env:
-            os.environ.pop(k, None)
 
 
 if __name__ == "__main__":

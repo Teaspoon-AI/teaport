@@ -233,19 +233,18 @@ ACCOUNT_HELP = N_("Leave this empty to keep the account Teaport has now. To use 
 
 # Signing in with OpenRouter instead (#282) cannot happen here: the phone on the setup
 # network has no internet to reach OpenRouter, and the box none to finish the sign-in.
-# Settings can, once both are back on the home network.
-SIGN_IN_LATER = N_("To connect your OpenRouter account by signing in instead, finish "
-                   "setting up Wi-Fi, then say \"open my settings\".")
+# Settings can, once both are back on the home network: with no key typed here, the box
+# offers it by itself once it is online (wifi_voice, openrouter_connect.offer_after_setup).
+SIGN_IN_LATER = N_("To connect your OpenRouter account by signing in instead, leave this "
+                   "empty and finish setting up Wi-Fi. Then Teaport shows you how.")
 
 
 def sign_in_later() -> bool:
-    """Whether the account step points at Settings for OpenRouter's sign-in: the box has
-    a Settings site (settings_access.available's two settings, read here without its
-    import, which this unit cannot afford) and the sign-in is not turned off
-    (openrouter_connect.callback_url's setting)."""
+    """Whether the account step points at OpenRouter's sign-in after setup: the box has a
+    Settings site (settings_access.available's two settings, read here without its
+    import, which this unit cannot afford)."""
     return (bool((setting("TEAPORT_FRONTDOOR_HOST") or "").strip())
-            and bool(setting("TEAPORT_SETTINGS_PORT"))
-            and (setting("TEAPORT_OPENROUTER_CONNECT_URL") or "").lower().startswith("https://"))
+            and bool(setting("TEAPORT_SETTINGS_PORT")))
 
 
 def render_account(t: i18n.T) -> str:

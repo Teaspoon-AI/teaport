@@ -744,6 +744,18 @@ class WifiSetupVoice(PhraseVoice):
             return
         self.notes.add_notice(f"Wi-Fi setup ended: {outcome}")
 
+    async def _offer_account(self, line: str) -> bool:
+        """Online, with no key typed on the setup page: offer to connect the owner's
+        OpenRouter account where Settings is usable here and the box has no key of the
+        owner's (openrouter_connect.offer_after_setup, owner decision on #282). True when
+        it was said, with `line` first."""
+        from teaport_brain import openrouter_connect
+        try:
+            return await openrouter_connect.offer_after_setup(self, line)
+        except Exception as e:  # noqa: BLE001 -- the connected line is said regardless
+            logger.warning(f"wifi setup: the account offer failed ({e!r})")
+            return False
+
     async def _announce(self, status: dict) -> None:
         phase, t = status["phase"], self.t
         network = status.get("target") or t._("your network")
@@ -778,6 +790,8 @@ class WifiSetupVoice(PhraseVoice):
             if account:
                 line += " " + t._(ACCOUNT_SAVED_TEXT if saved else ACCOUNT_NOT_SAVED_TEXT
                                   if self.settings_usable else ACCOUNT_NOT_SAVED_PLAIN_TEXT)
+            elif await self._offer_account(line):
+                return  # said, with the Settings code to connect the account (#282)
             await self.say(line)
         elif phase == "timeout":
             self.state = "idle"

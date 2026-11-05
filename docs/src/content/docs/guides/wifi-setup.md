@@ -18,7 +18,7 @@ If the device has no internet connection, put it in setup mode: it opens a tempo
 
 Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no internet, either phrase starts setup mode without the agent: the device asks whether to go into setup mode, and after you say yes, it opens its setup network and says that it is in setup mode.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:514-516,756#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
+<!-- source: brain/teaport_brain/wifi_voice.py:5-13#039c023d; brain/teaport_brain/wifi_voice.py:514-516,768#aced4884; brain/teaport_brain/config_schema.toml:150#c71fe78e -->
 
 With `TEAPORT_SETUP_ON_FIRST_BOOT` on, a new device does this by itself. When it has never
 been online and still has no internet a minute after it starts, it goes into setup mode
@@ -33,7 +33,7 @@ you plug in a network cable, it leaves setup mode by itself.
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1753-1760#389fa64a; brain/teaport_brain/wifi_voice.py:845-849#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1753-1760#389fa64a; brain/teaport_brain/wifi_voice.py:859-863#e2d218b7 -->
 
 ## Join the setup network
 
@@ -45,7 +45,7 @@ A device with a screen shows, under the title "Setup mode", the setup network's 
 
 Say "repeat" to hear the network's name, the password, and the address read out. A device without a screen reads them out straight away. Some phones open the page on their own after they join the setup network; if yours does not, use the address.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:279-326#d6a50544; brain/teaport_brain/wifi_voice.py:878#d902fb7c; brain/teaport_brain/wifi_setup.py:552-563#3f154da2; brain/teaport_brain/wifi_setup.py:682-693#01afe627; brain/teaport_brain/wifi_setup.py:100#bf4c222f; brain/teaport_brain/wifi_setup.py:16-20#a67a8952 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:279-326#d6a50544; brain/teaport_brain/wifi_voice.py:892#d902fb7c; brain/teaport_brain/wifi_setup.py:551-562#3f154da2; brain/teaport_brain/wifi_setup.py:681-692#01afe627; brain/teaport_brain/wifi_setup.py:100#bf4c222f; brain/teaport_brain/wifi_setup.py:16-20#a67a8952 -->
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
@@ -57,17 +57,17 @@ When the device's language model endpoint is OpenRouter, the setup page also has
 
 The setup network has no internet, so the device checks the key after it joins your network and is online. It saves the key only if OpenRouter accepts it and, on a device with OpenClaw, OpenClaw takes it too, as [One key for OpenClaw too](/guides/configuration/#one-key-for-openclaw-too) describes. When it says that it is connected, it also says whether your AI account is connected. If the key did not work, the device keeps the account it had; say "open my settings" to try again from your phone, as [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone) shows.
 
-Signing in to OpenRouter instead of pasting a key does not work in setup mode: neither the phone nor the device can reach the internet there. When the device has a settings site, the section says so and points to "open my settings" after the device is online, as [Connect your OpenRouter account](/guides/configuration/#connect-your-openrouter-account) shows.
+Signing in to OpenRouter instead of pasting a key does not work in setup mode: neither the phone nor the device can reach the internet there. When the device has a settings site, the section says so: leave the key empty, and when the device is online it offers the sign-in by itself, as [Connect your OpenRouter account](/guides/configuration/#connect-your-openrouter-account) shows.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:233-238#5f596203 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:234-239#33fb3a49 -->
 
-<!-- source: brain/teaport_brain/wifi_setup.py:228-231#85aa669c; brain/teaport_brain/wifi_setup.py:621-633#26e73012; brain/teaport_brain/wifi_setup.py:754-758#9432370e; brain/teaport_brain/wifi_voice.py:112-117#48b27b3c; systemd/teaport-wifi-setup.service.in:31-35#ddd3d10e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:228-231#85aa669c; brain/teaport_brain/wifi_setup.py:620-632#26e73012; brain/teaport_brain/wifi_setup.py:753-757#9432370e; brain/teaport_brain/wifi_voice.py:112-117#48b27b3c; systemd/teaport-wifi-setup.service.in:31-35#ddd3d10e -->
 
 ## If the device connects
 
 The page tells you that the device is joining your network, so switch your phone back to it. The device leaves setup mode and says that it is connected to your network and online again; a screen shows "Connected to" and the network's name under the title "Wi-Fi" for a few seconds.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:316-325#99955446; brain/teaport_brain/wifi_voice.py:777-780#fc4592e5; brain/teaport_brain/wifi_setup.py:716-717#bd5d3568; brain/teaport_brain/wifi_setup.py:102#296b6e77 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:315-324#99955446; brain/teaport_brain/wifi_voice.py:789-792#fc4592e5; brain/teaport_brain/wifi_setup.py:715-716#bd5d3568; brain/teaport_brain/wifi_setup.py:102#296b6e77 -->
 
 ## If the join fails
 
@@ -91,7 +91,7 @@ sudo systemctl stop teaport-wifi-setup
 
 The device takes the setup network down, undoes a half-finished join, and restores the previous connection.
 
-<!-- source: systemd/teaport-wifi-setup.service.in:65-67#70ebb3ad; brain/teaport_brain/wifi_setup.py:636#21bb505f -->
+<!-- source: systemd/teaport-wifi-setup.service.in:65-67#70ebb3ad; brain/teaport_brain/wifi_setup.py:635#21bb505f -->
 
 ## What's next
 
