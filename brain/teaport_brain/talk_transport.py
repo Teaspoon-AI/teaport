@@ -27,8 +27,9 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     # Set by build_agent_session for a client that asked (?features=pause: the room
     # bridge): it is told {"type": "pause", "on": ...} as playout pauses and goes on, so
     # it does not take the quiet speaker for the reply's end (#255). Sent here, on the
-    # transport's own socket as the pause is set, so it can never come after the "clear"
-    # of the barge-in that drops the pause -- which ends it on the client too.
+    # transport's own socket as the pause is set, so it comes in order with the "clear" of
+    # the barge-in that drops the pause, which ends it on the client too; a pause said
+    # while that clear was being written is said over after it (_drop_pause).
     pause_notice = False
 
     def __init__(self, *args, **kwargs):
