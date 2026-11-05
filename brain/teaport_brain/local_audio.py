@@ -695,6 +695,7 @@ class FaceTap:
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self._bed_since = self._audio_t = None
+        self._paused_speaking = False
         self._mouth = 0.0
         self._emit({"mouth": 0.0})
         self._state = "idle"
@@ -1096,7 +1097,9 @@ class Playback:
         """The marks heard by `by` since the last call, in order, each with when.
         `stream`: the queue is pinned on the stream (else on the card's frames)."""
         out = []
-        landed = self._landing() if stream else None
+        # What has come of the stream: written or queued. Not the resampler's held tail,
+        # which a pause can pad the card before.
+        landed = self._streamed + self._pending_bytes // (DEVICE_CHANNELS * 2)
         while queue and self._start is not None:
             if stream and queue[0][0] >= landed:
                 # Its audio has not come: where it plays is not known yet (a pause may
@@ -1750,6 +1753,16 @@ class Pause:
         return self._since is not None and self._clock() - self._since < PAUSE_TRUST_SECS
 
 
+def conversation_busy(play: "Playback", face: "FaceTap", owed: dict, hold: bool,
+                      pause: Pause, now: float) -> bool:
+    """Whether an awake conversation is still going, for its keep-alive: the bot being
+    heard (or its echo dying away), an answer owed, a call holding it, or a barge-in
+    pause in its reply (#255)."""
+    waiting = any(deadline > now for deadline in owed.values())
+    return (play.speaking or face.voiced or waiting or hold or pause.on
+            or not play.echo_free(now))
+
+
 def paused(m: dict, pause: Pause, face: "FaceTap") -> None:
     """A {"type": "pause", "on": ...} message: the brain's barge-in pause began or ended
     (#255). The restart and the idle timer read it off `pause`; the face speaks again at
@@ -1991,9 +2004,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 raise Ungated(f"no hello from the brain in {HELLO_SECS:g} s")
             if alive is None:
                 continue
-            waiting = any(deadline > now for deadline in owed.values())
-            why = alive.over(busy=play.speaking or face.voiced or waiting or hold["on"]
-                             or pause.on or not play.echo_free(now))
+            why = alive.over(busy=conversation_busy(play, face, owed, hold["on"], pause, now))
             if why:
                 logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps")
                 return why

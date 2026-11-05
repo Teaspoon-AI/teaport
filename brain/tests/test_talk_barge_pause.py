@@ -496,7 +496,7 @@ async def test_a_pause_is_told_once_though_announced_again():
         assert rig.told() == [True, False], rig.wire.texts
 
 
-async def test_a_cut_pause_says_nothing_more_the_clear_ends_it():
+async def test_a_cut_pause_is_ended_after_the_clear():
     async with NoticeRig() as rig:
         await rig.speak()
         await _at(rig, 0.6)
@@ -505,17 +505,20 @@ async def test_a_cut_pause_says_nothing_more_the_clear_ends_it():
         await rig.task.queue_frame(InterruptionFrame())
         await _at(rig, 1.6)
         types = [m.get("type") for m in rig.wire.texts]
-        assert types.count("pause") == 1 and "clear" in types, rig.wire.texts
-        assert types.index("pause") < types.index("clear")
+        assert "clear" in types and types.index("pause") < types.index("clear"), types
+        # ...and, after the clear, that it is over (review round 2: a pause said while the
+        # clear was being written would come after it).
+        assert rig.told() == [True, False], rig.wire.texts
+        assert len(types) - 1 - types[::-1].index("pause") > types.index("clear"), types
         # The next reply's pause is told again: the cut ended the last one.
         await rig.speak()
         await _at(rig, 0.6)
         await rig.pauser.on_onset(True)
         for _ in range(100):
-            if len(rig.told()) == 2:
+            if len(rig.told()) == 3:
                 break
             await asyncio.sleep(0.01)
-        assert rig.told() == [True, True], rig.wire.texts
+        assert rig.told() == [True, False, True], rig.wire.texts
 
 
 def _pause_times(rig):

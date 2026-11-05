@@ -339,6 +339,22 @@ def test_the_face_speaks_again_when_a_paused_reply_goes_on():
     face.interrupted()                              # the reply was cut meanwhile
     face.paused(False)
     assert face._state == "listening", "a cut reply does not come back"
+    face.state("speaking")
+    face.paused(True)
+    face.ended()                                    # the session ended paused
+    face.paused(False)                              # (a stray "off" in the next)
+    assert face._state == "idle", "a reply from an ended session does not come back"
+
+
+def test_a_barge_in_pause_keeps_an_awake_conversation_busy():
+    """The keep-alive does not end a conversation on a pause's quiet (#255)."""
+    quiet, pause = _Quiet(), la.Pause()
+    assert not la.conversation_busy(quiet, quiet, {}, False, pause, 0.0)
+    pause.set(True)
+    assert la.conversation_busy(quiet, quiet, {}, False, pause, 0.0)
+    pause.set(False)
+    assert la.conversation_busy(quiet, quiet, {}, True, pause, 0.0), "a call's hold"
+    assert la.conversation_busy(quiet, quiet, {"c": 5.0}, False, pause, 0.0), "owed"
 
 
 def test_a_pause_message_reaches_the_restart_and_the_face():
@@ -1689,38 +1705,6 @@ def test_a_conversation_on_hold_for_a_call_does_not_sleep(monkeypatch):
     asyncio.run(run())
 
 
-def test_a_barge_in_pause_keeps_the_conversation_awake_and_a_clear_ends_it(monkeypatch):
-    """#255: the brain's {"type": "pause", "on": true} -- the reply paused for the user,
-    the speaker quiet -- is no silence for the keep-alive to end the conversation on.
-    The barge-in that cuts the reply ("clear") ends the pause here too."""
-    flag, _ = _wake_card(monkeypatch)
-    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.3)
-    ends = []
-
-    async def run():
-        async def on_connect(ws, n):
-            await ws.send(HELLO)
-            if n == 1:
-                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
-                await ws.send(json.dumps({"type": "pause", "on": True}))
-                await _drain(ws, 1.0)                   # 3x the keep-alive, paused
-                ends.append("still up")
-                await ws.send(json.dumps({"type": "clear"}))
-            await _drain(ws)
-
-        server, url, count = await _talk(on_connect)
-        monkeypatch.setattr(la, "URL", url)
-        bridge = asyncio.create_task(la.run_bridge())
-        assert await _until(lambda: ends, 3)
-        assert count[0] == 1                            # not slept while it was paused
-        assert await _until(lambda: count[0] == 2, 2)   # cut, then quiet: it sleeps
-        bridge.cancel()
-        await asyncio.gather(bridge, return_exceptions=True)
-        server.close()
-
-    asyncio.run(run())
-
-
 def test_a_call_that_takes_the_engine_is_waited_out_without_a_wasted_dial(monkeypatch):
     """#111 item 4, seen live 2026-10-08 01:11:09: the brain closed the asleep room
     session for a call (YIELD), the bridge asked /talk/status at once, heard "no call"
@@ -2111,6 +2095,49 @@ def test_phonemes_across_two_gaps_in_a_clause_keep_their_audio():
     # (300 ms in) is ~116 ms into the second part and "o" (500 ms in) ~116 into the third.
     assert abs(got["a"] - (starts[1] + 0.116)) <= 0.03, (got, starts)
     assert abs(got["o"] - (starts[2] + 0.116)) <= 0.03, (got, starts)
+
+
+def test_a_mark_in_the_resamplers_held_tail_waits_for_it():
+    """Review round 2, A: the resampler holds back the tail of what was pushed until
+    the next push; a pause pads the card before it. A phoneme in that tail, asked for
+    early (a large face advance), is not shown on the pause's silence."""
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50], ["e", 195, 240]])     # "e" in the held tail
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    for _ in range(int(0.8 / 0.02)):                       # the clause, then a pause
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t + 0.3) == ["h"], "the tail's phoneme on silence"
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)   # it goes on
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["e"]
+
+
+def test_a_session_s_end_ends_its_stream(monkeypatch):
+    """run_session drops what its marks were waiting for once it is over."""
+    _fake_card(monkeypatch, ARECORD)
+    ended = []
+    monkeypatch.setattr(la.Playback, "end_stream", lambda self: ended.append(True))
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.close()                           # the brain ends the session
+            else:
+                await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: ended, 3)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
 
 
 def test_the_end_of_a_session_drops_marks_past_its_audio():

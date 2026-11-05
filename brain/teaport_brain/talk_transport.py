@@ -34,6 +34,7 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._told_paused = False
+        self._unsay = False
 
     async def _announce_pause(self, *, lag: float, tail: float, paused: bool = True,
                               upstream: bool = True):
@@ -45,7 +46,17 @@ class TalkOutputTransport(PausablePlayout, FastAPIWebsocketOutputTransport):
 
     def _drop_pause(self):
         super()._drop_pause()
-        self._told_paused = False            # the "clear" with it ends it on the client
+        # The "clear" with it ends it on the client -- but a pause said while that clear
+        # was being written would come after it: say it is over (process_frame).
+        self._unsay = self._told_paused
+        self._told_paused = False
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if self._unsay:
+            self._unsay = False
+            await self.send_message(OutputTransportMessageUrgentFrame(
+                message={"type": "pause", "on": False}))
 
     async def write_audio_frame(self, frame) -> bool:
         # One audio block per call (MediaSender's audio_chunk_size, 40 ms at pipecat's
