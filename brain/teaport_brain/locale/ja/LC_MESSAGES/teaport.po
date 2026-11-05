@@ -763,3 +763,6 @@ msgstr "OpenRouter アカウントにまだクレジットがないため、open
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "AI アカウントは接続されましたが、まだクレジットがありません。OpenRouter のウェブサイトでクレジットを追加すると、答えられるようになります。"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "すみません、今はお答えできません。回答に使っているアカウントに対応が必要で、もう一度試しても解決しません。直すには「設定を開いて」と言ってください。"

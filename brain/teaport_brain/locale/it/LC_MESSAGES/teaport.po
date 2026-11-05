@@ -666,3 +666,6 @@ msgstr "Il tuo account OpenRouter non ha ancora credito, quindi Teaport non può
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Il tuo account IA è collegato, ma non ha ancora credito. Aggiungine sul sito di OpenRouter e poi potrò rispondere."
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "Scusa, in questo momento non posso rispondere: l’account che uso per le mie risposte ha bisogno di attenzione, e riprovare non servirà. Di’ «apri le impostazioni» per sistemarlo."

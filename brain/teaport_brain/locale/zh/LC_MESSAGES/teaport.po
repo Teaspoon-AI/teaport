@@ -658,3 +658,6 @@ msgstr "你的 OpenRouter 账户还没有余额，所以在你到 openrouter.ai/
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "你的 AI 账户已连接，但还没有余额。到 OpenRouter 网站充值后，我就能回答了。"
+
+msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
+msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处理，再试一次也没有用。说“打开设置”就可以解决。"

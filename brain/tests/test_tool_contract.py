@@ -308,6 +308,58 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
     assert got["properties"].run_llm is False
 
 
+def test_open_settings_goes_where_the_settings_phrase_is_heard(monkeypatch):
+    """The room and Talk, with the front door known (settings_access.heard_here): the
+    phrase's surfaces. Never a phone call, never a bridge relaying someone far away."""
+    monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: True)
+    for front_end, via, offered in (("room", None, True), ("talk", None, True),
+                                    ("sip", None, False), ("talk", "discord", False),
+                                    (None, None, False)):
+        ctx = tools.ToolContext(has_tts=True, front_end=front_end, via=via)
+        assert ("open_settings" in _names(tools.active_tools(ctx))) == offered, (front_end, via)
+    room = tools.ToolContext(has_tts=True, front_end="room")
+    monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: False)
+    assert "open_settings" not in _names(tools.active_tools(room))    # no front door
+    monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: True)
+    _with(monkeypatch, open_settings=False)
+    assert "open_settings" not in _names(tools.active_tools(room))    # switched off
+
+
+def test_the_open_settings_tool_is_the_phrases_opening_and_keeps_the_model_quiet():
+    """It calls the session's one opening (SettingsPhrase.open on its PhraseVoice), which
+    says what to do itself; the model says nothing after it."""
+    opened = []
+
+    async def open_settings():
+        opened.append(True)
+
+    async def run(opener):
+        params = _Params(_LLM(), {})
+        got = {}
+
+        async def cb(result, **kw):
+            got.update(result=result, **kw)
+        params.result_callback = cb
+        await tools._open_settings(params, open_settings=opener)
+        return got
+
+    got = asyncio.run(run(open_settings))
+    assert opened == [True] and got["result"]["ok"]
+    assert got["properties"].run_llm is False
+    got = asyncio.run(run(None))
+    assert got["result"]["ok"] is False and not opened[1:]
+
+
+def test_the_session_hands_the_tool_the_phrases_own_opening():
+    """agent_session binds open_settings to SettingsPhrase.open on the session's
+    PhraseVoice: one opening for the phrase and the tool (no second copy)."""
+    import inspect
+    from teaport_brain import agent_session
+    src = inspect.getsource(agent_session)
+    assert "open_settings=(functools.partial(settings_phrase.open, phrases)" in src
+    assert "async def open(" in inspect.getsource(agent_session.SettingsPhrase)
+
+
 def _filler_call(captions_ahead):
     """What a silent model's consult pushes through the wrapper, in order: the handler
     sends the call OpenClaw runs."""

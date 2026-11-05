@@ -436,20 +436,21 @@ _QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": 
 
 
 def _quoting_lines():
-    from teaport_brain import credit, openrouter_connect, settings_access
+    from teaport_brain import credit, llm_error_speaker, openrouter_connect, settings_access
     from teaport_brain.llm_error_speaker import NO_MODEL_SETTINGS_TEXT, NO_MODEL_WIFI_TEXT
     return {"no model": ("start", NO_MODEL_WIFI_TEXT), "again": ("start", wifi_voice.AGAIN_TEXT),
             "offline": ("start", settings_access.OFFLINE_TEXT),
             "no account": ("settings", NO_MODEL_SETTINGS_TEXT),
             "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
+            "account": ("settings", llm_error_speaker.ACCOUNT_SETTINGS_TEXT),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
             "credit empty": ("settings", credit.EMPTY_TEXT),
             "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
             "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
 
 
-@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
+@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "account", "key not saved",
                                    "new code", "credit half", "credit low", "credit empty",
                                    "sign-in session", "sign in later"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
