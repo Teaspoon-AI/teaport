@@ -641,8 +641,8 @@ msgstr "Gerade wartet keine Anmeldung auf einen Code. Tippe auf Dein OpenRouter-
 msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
 msgstr "Dieser Link führt zu keinem Teaport in einem Heimnetz, deshalb geht diese Seite damit nicht weiter."
 
-msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
-msgstr "Wenn du dein OpenRouter-Konto lieber per Anmeldung verbinden möchtest, lass das Feld leer und richte das WLAN fertig ein. Danach zeigt dir Teaport, wie es geht."
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "Wenn du dein OpenRouter-Konto lieber per Anmeldung verbinden möchtest, lass das Feld leer und richte das WLAN fertig ein. Danach zeigt dir Teaport, wie es geht, oder du sagst „Öffne die Einstellungen“."
 
 msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
 msgstr "Du meldest dich auf diesem Handy bei OpenRouter an und erlaubst Teaport den Zugriff. OpenRouter zeigt dir dann einen Code: Kopiere ihn, geh zurück zu den Einstellungen von Teaport und füge ihn bei Code von OpenRouter ein."

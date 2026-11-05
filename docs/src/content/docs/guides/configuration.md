@@ -78,7 +78,7 @@ The button shows only on the settings site, at the port `TEAPORT_SETTINGS_PORT` 
 
 Setup mode can't use the sign-in, because neither the phone nor the device has internet there. When Wi-Fi setup ends without a key on the setup page, and the device has no key of your own, the device offers it: it says so out loud and shows the settings QR code on its screen, the same code that "open my settings" shows. A device without a screen that draws it reads out the address and the code instead.
 
-<!-- source: brain/teaport_brain/openrouter_connect.py:232-246#2d6faee6; brain/teaport_brain/settings_access.py:94-99#d3d45cfa -->
+<!-- source: brain/teaport_brain/openrouter_connect.py:232-247#4ad57aee; brain/teaport_brain/settings_access.py:94-99#d3d45cfa -->
 
 ## Change a setting in a configuration file
 

@@ -234,12 +234,13 @@ async def offer_after_setup(voice, lead: str) -> bool:
     where "open my settings" is usable here and the box has no key of the owner's, say
     `lead` and offer to connect the account -- the Settings code, through the phrase's own
     path (settings_access.SettingsPhrase.open). False, nothing said, otherwise."""
-    from teaport_brain import credit
     phrase = next((p for p in getattr(voice, "phrases", ())
                    if isinstance(p, settings_access.SettingsPhrase)), None)
     if phrase is None or not voice.settings_usable:
         return False
-    if credit.MONITOR.state() == credit.OWN or not connectable(await config_ui.brain_env()):
+    env = await config_ui.brain_env()
+    if not ai_account.sign_in_after_setup(config_ui.endpoint(env), env,
+                                          settings_access.available()):
         return False
     logger.info("openrouter connect: offered at the end of Wi-Fi setup")
     await phrase.open(voice, lead=lead, connect=True)
@@ -297,7 +298,8 @@ def start(callback: str | None) -> str:
     """A new sign-in (the one before can no longer finish): its address at OpenRouter.
     With `callback` (the static page), OpenRouter sends the phone there; without, it shows
     the code to copy (no state then: it is not returned)."""
-    global _pending
+    global _pending, _held
+    _held = None  # a new sign-in: the key an older one left is not saved after it
     verifier = secrets.token_urlsafe(48)  # 64 characters: RFC 7636 asks for 43 to 128
     challenge = _b64(hashlib.sha256(verifier.encode()).digest())
     nonce = secrets.token_urlsafe(16)
@@ -333,9 +335,20 @@ def _take(nonce: str | None) -> Pending | None:
 
 
 def _held_key() -> str | None:
-    if _held is None or _clock() >= _held[1]:
-        return None
-    return _held[0]
+    global _held
+    if _held is not None and _clock() >= _held[1]:
+        _held = None  # past its time: let go of the string too
+    return None if _held is None else _held[0]
+
+
+def _forget_held(key: str) -> None:
+    """After any key was saved, whichever page saved it (ai_account.SAVED_HOOKS): "Save
+    it again" must not put an older key back over it."""
+    global _held
+    _held = None
+
+
+ai_account.SAVED_HOOKS.append(_forget_held)
 
 
 # The exchange (ai_account.exchange_code); replaced in tests: none talks to OpenRouter.
@@ -359,7 +372,6 @@ async def _save(request: Request, key: str) -> tuple[bool, str]:
         logger.warning(f"openrouter connect: the key could not be saved ({e.detail})")
         status, content = 500, {"errors": {"LLM_API_KEY": t._(SAVE_BROKE)}}
     if status == 200:
-        _held = None
         logger.info("openrouter connect: the owner's OpenRouter account is connected")
         return True, t._(CONNECTED_TEXT)
     check = content.get("key_check")
@@ -530,7 +542,9 @@ def _csp_hash(text: str) -> str:
 
 def render_page(text: str) -> str:
     """The static page with its words (page_strings) and its CSP's hashes current."""
-    table = json.dumps(page_strings(), ensure_ascii=False, sort_keys=True, indent=0)
+    # Inside <script>: no "<" (a "</script>" in a translation would end it).
+    table = json.dumps(page_strings(), ensure_ascii=False, sort_keys=True, indent=0).replace(
+        "<", "\\u003c")
     text = _STRINGS.sub(lambda m: m.group(1) + table + m.group(2), text, count=1)
     script = re.search(r"<script>(.*?)</script>", text, re.S).group(1)
     style = re.search(r"<style>(.*?)</style>", text, re.S).group(1)

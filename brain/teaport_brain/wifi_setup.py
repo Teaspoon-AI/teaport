@@ -234,17 +234,23 @@ ACCOUNT_HELP = N_("Leave this empty to keep the account Teaport has now. To use 
 # Signing in with OpenRouter instead (#282) cannot happen here: the phone on the setup
 # network has no internet to reach OpenRouter, and the box none to finish the sign-in.
 # Settings can, once both are back on the home network: with no key typed here, the box
-# offers it by itself once it is online (wifi_voice, openrouter_connect.offer_after_setup).
+# offers it by itself once it is online (wifi_voice, openrouter_connect.offer_after_setup),
+# where "open my settings" is heard -- which this page cannot know, so the line names the
+# phrase as the other way. The quoted words are the phrase (tests/test_i18n.py).
 SIGN_IN_LATER = N_("To connect your OpenRouter account by signing in instead, leave this "
-                   "empty and finish setting up Wi-Fi. Then Teaport shows you how.")
+                   "empty and finish setting up Wi-Fi. Then Teaport shows you how, or you "
+                   "can say \"open my settings\".")
 
 
 def sign_in_later() -> bool:
-    """Whether the account step points at OpenRouter's sign-in after setup: the box has a
-    Settings site (settings_access.available's two settings, read here without its
-    import, which this unit cannot afford)."""
-    return (bool((setting("TEAPORT_FRONTDOOR_HOST") or "").strip())
+    """Whether the account step says the sign-in comes after setup: the rule the offer
+    itself follows (ai_account.sign_in_after_setup), with what this unit can read -- its
+    environment (brain.env loaded by the unit), and the Settings site's two settings
+    (settings_access.available's, read here without its import, which this unit cannot
+    afford)."""
+    site = (bool((setting("TEAPORT_FRONTDOOR_HOST") or "").strip())
             and bool(setting("TEAPORT_SETTINGS_PORT")))
+    return ai_account.sign_in_after_setup(setting("LLM_BASE_URL"), None, site)
 
 
 def render_account(t: i18n.T) -> str:

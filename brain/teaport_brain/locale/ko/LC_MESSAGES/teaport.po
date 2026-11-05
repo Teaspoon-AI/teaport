@@ -750,8 +750,8 @@ msgstr "코드를 기다리는 로그인이 없어요. OpenRouter 계정 연결�
 msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
 msgstr "이 링크는 집 네트워크의 Teaport로 연결되지 않아서, 이 페이지는 더 진행하지 않아요."
 
-msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
-msgstr "로그인으로 OpenRouter 계정을 연결하려면 여기를 비워 두고 Wi-Fi 설정을 마치세요. 그다음 Teaport가 방법을 알려 드려요."
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "로그인으로 OpenRouter 계정을 연결하려면 여기를 비워 두고 Wi-Fi 설정을 마치세요. 그다음 Teaport가 방법을 알려 드리거나, '설정 열어 줘'라고 말하면 돼요."
 
 msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
 msgstr "이 휴대폰에서 OpenRouter에 로그인하고 Teaport를 승인해요. 그러면 OpenRouter에 코드가 나와요. 복사해서 Teaport 설정으로 돌아와 OpenRouter에서 받은 코드에 붙여 넣으세요."

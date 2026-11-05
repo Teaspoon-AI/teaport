@@ -649,8 +649,8 @@ msgstr "Сейчас нет входа, который ждёт код. Нажм
 msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
 msgstr "Эта ссылка не ведёт к Teaport в домашней сети, поэтому страница не будет по ней переходить."
 
-msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
-msgstr "Чтобы подключить аккаунт OpenRouter через вход, оставьте это поле пустым и закончите настройку Wi-Fi. Потом Teaport покажет, как это сделать."
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "Чтобы подключить аккаунт OpenRouter через вход, оставьте это поле пустым и закончите настройку Wi-Fi. Потом Teaport покажет, как это сделать, или скажите «открой настройки»."
 
 msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
 msgstr "Вы входите в OpenRouter на этом телефоне и разрешаете доступ Teaport. Затем OpenRouter показывает код: скопируйте его, вернитесь в настройки Teaport и вставьте его в поле «Код от OpenRouter»."

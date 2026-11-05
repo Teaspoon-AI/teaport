@@ -641,8 +641,8 @@ msgstr "现在没有等待代码的登录。点按“连接你的 OpenRouter 账
 msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
 msgstr "这个链接不是指向家庭网络里的 Teaport，所以这个页面不会继续跳转。"
 
-msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
-msgstr "如果想改为登录来连接你的 OpenRouter 账户，请把这里留空，然后完成 Wi-Fi 设置。之后 Teaport 会告诉你怎么做。"
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "如果想改为登录来连接你的 OpenRouter 账户，请把这里留空，然后完成 Wi-Fi 设置。之后 Teaport 会告诉你怎么做，你也可以说“打开设置”。"
 
 msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
 msgstr "你会在这部手机上登录 OpenRouter 并同意 Teaport 访问。之后 OpenRouter 会显示一个代码：复制它，回到 Teaport 的设置，把它粘贴到“OpenRouter 给的代码”里。"

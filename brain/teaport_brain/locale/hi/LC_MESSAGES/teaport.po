@@ -746,8 +746,8 @@ msgstr "कोई साइन-इन कोड का इंतज़ार न
 msgid "This link doesn't lead to a Teaport on a home network, so this page won't go on with it."
 msgstr "यह लिंक किसी घरेलू नेटवर्क पर Teaport तक नहीं ले जाता, इसलिए यह पेज आगे नहीं बढ़ेगा।"
 
-msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how."
-msgstr "साइन इन करके अपना OpenRouter खाता कनेक्ट करने के लिए इसे खाली छोड़ें और Wi-Fi सेटअप पूरा करें। फिर Teaport आपको तरीका बताएगा।"
+msgid "To connect your OpenRouter account by signing in instead, leave this empty and finish setting up Wi-Fi. Then Teaport shows you how, or you can say \"open my settings\"."
+msgstr "साइन इन करके अपना OpenRouter खाता कनेक्ट करने के लिए इसे खाली छोड़ें और Wi-Fi सेटअप पूरा करें। फिर Teaport आपको तरीका बताएगा, या आप “सेटिंग्स खोलो” बोल सकते हैं।"
 
 msgid "You sign in to OpenRouter on this phone and approve Teaport. OpenRouter then shows a code: copy it, come back to Teaport's settings, and paste it into Code from OpenRouter."
 msgstr "आप इस फ़ोन पर OpenRouter में साइन इन करके Teaport को मंज़ूरी देंगे। फिर OpenRouter एक कोड दिखाएगा: उसे कॉपी करें, Teaport की सेटिंग्स पर वापस आएँ, और उसे OpenRouter से मिला कोड में पेस्ट करें।"

@@ -449,6 +449,49 @@ def test_a_key_openrouter_just_gave_is_not_thrown_away():
     asyncio.run(run())
 
 
+def test_a_held_key_is_never_saved_over_a_newer_one():
+    async def run():
+        home, *_rest = _setup()
+        calls = []
+
+        async def refused_first(key, base_url):
+            calls.append(key)
+            if len(calls) == 1:
+                raise ai_account.NotSaved(ai_account.NOT_SHARED, "openclaw said no")
+            return await _REAL_SAVE(key, base_url)
+
+        ai_account.save_key = refused_first
+        try:
+            async with _client(cookie=_session()) as c:
+                q = await _start(c)
+                await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+                assert (await c.get("/settings/api/account")).json()["connect"]["retry"] is True
+                # The owner pastes another key, and it saves: the held one is let go of
+                # (ai_account.SAVED_HOOKS: whichever page saved).
+                put = await c.put("/settings/api/config", json={"store": "brain_env",
+                                                                "values": {"LLM_API_KEY": sa.FAKE_KEY}})
+                assert put.status_code == 200 and _key_file(home) == sa.FAKE_KEY
+                assert (await c.get("/settings/api/account")).json()["connect"]["retry"] is False
+                r = await c.post("/settings/api/openrouter/retry")
+                assert r.status_code == 400 and _key_file(home) == sa.FAKE_KEY
+                # A new sign-in lets go of one too.
+                calls.clear()
+                q = await _start(c)
+                await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+                assert openrouter_connect._held is not None
+                await _start(c)
+                assert openrouter_connect._held is None
+                # And one past its time is dropped, string and all, when looked at.
+                calls.clear()
+                q = await _start(c)
+                await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
+                openrouter_connect._clock = lambda: 5000.0 + openrouter_connect.HELD_SECS + 1
+                assert openrouter_connect._held_key() is None and openrouter_connect._held is None
+        finally:
+            ai_account.save_key = _REAL_SAVE
+    asyncio.run(run())
+
+
 def test_a_pasted_code_is_checked_before_it_spends_the_sign_in():
     async def run():
         home, *_rest, exchanged = _setup()
@@ -571,6 +614,46 @@ def test_a_garbled_or_dripping_answer_is_no_answer_and_the_paste_field_stays():
             openrouter_connect._fetch = real
             srv.close()
     asyncio.run(run())
+
+
+def test_a_request_leaves_no_timer_and_a_stalled_handshake_is_cut():
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    timers = lambda: [t for t in threading.enumerate() if isinstance(t, threading.Timer)]  # noqa: E731
+    before = len(timers())
+    try:
+        for _ in range(3):
+            assert ai_account._request(f"http://127.0.0.1:{srv.server_port}/", None, 30) == (200, b"ok")
+        time.sleep(0.1)
+        assert len(timers()) == before  # each request's cut was cancelled when it ended
+    finally:
+        srv.shutdown()
+    # A server that takes the connection and never answers the TLS handshake.
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(4)  # the kernel completes the TCP connect; nobody ever reads or writes
+    try:
+        t0 = time.monotonic()
+        try:
+            ai_account._request(f"https://127.0.0.1:{silent.getsockname()[1]}/", None, 1.0)
+            raise AssertionError("a stalled handshake did not end")
+        except OSError:
+            pass
+        assert time.monotonic() - t0 < 2.5
+    finally:
+        silent.close()
 
 
 def test_the_page_is_asked_for_one_at_a_time():
@@ -731,18 +814,81 @@ def test_the_end_of_wifi_setup_offers_to_connect_the_account():
     asyncio.run(run())
 
 
-def test_the_setup_page_says_the_sign_in_comes_after_setup():
-    sa._setup()
-    later = EN._(wifi_setup.SIGN_IN_LATER)
-    env = {"TEAPORT_FRONTDOOR_HOST": sa.HOST, "TEAPORT_SETTINGS_PORT": "8443"}
-    os.environ.update(env)
-    try:
-        assert _esc(later) in wifi_setup.render_account(EN)
-        del os.environ["TEAPORT_SETTINGS_PORT"]  # no Settings site (an older box)
-        assert "signing in" not in wifi_setup.render_account(EN)
-    finally:
-        for k in env:
-            os.environ.pop(k, None)
+def test_an_offer_that_breaks_after_speaking_is_not_said_again():
+    async def run():
+        _setup()
+        v, said = _setup_voice(sa.Screen())
+        real = settings_access.SettingsPhrase.open
+
+        async def speaks_then_breaks(self, voice, lead="", connect=False):
+            await voice.say(lead)
+            raise RuntimeError("the screen went away")
+
+        settings_access.SettingsPhrase.open = speaks_then_breaks
+        try:
+            await v._announce({"phase": "connected", "target": "Home"})
+        finally:
+            settings_access.SettingsPhrase.open = real
+        assert said == ["I'm connected to Home, and I'm online again."], said
+        # Broken before anything was said: the line is said, once.
+        _setup()
+        v, said = _setup_voice(sa.Screen())
+
+        async def breaks(self, voice, lead="", connect=False):
+            raise RuntimeError("no code")
+
+        settings_access.SettingsPhrase.open = breaks
+        try:
+            await v._announce({"phase": "connected", "target": "Home"})
+        finally:
+            settings_access.SettingsPhrase.open = real
+        assert said == ["I'm connected to Home, and I'm online again."], said
+    asyncio.run(run())
+
+
+def test_the_setup_page_promises_the_offer_only_where_the_box_makes_it():
+    """The page's line and the offer follow one rule (ai_account.sign_in_after_setup):
+    each case below is the same for both, the page reading what the setup unit can."""
+    later = _esc(EN._(wifi_setup.SIGN_IN_LATER))
+    env = {"TEAPORT_FRONTDOOR_HOST": sa.HOST, "TEAPORT_SETTINGS_PORT": str(sa.PORT),
+           "LLM_BASE_URL": "https://openrouter.ai/api/v1"}
+
+    async def offered() -> bool:
+        screen = sa.Screen()
+        v, said = _setup_voice(screen)
+        await v._announce({"phase": "connected", "target": "Home"})
+        return screen.shown != []
+
+    async def run():
+        for case, promised in (("no key", True), ("starter key", True), ("own key", False),
+                               ("not openrouter", False), ("no settings site", False)):
+            home, *_rest = _setup()
+            os.environ.update(env)
+            try:
+                if case in ("starter key", "own key"):
+                    key = "sk-or-v1-" + "4" * 64
+                    with open(os.path.join(home, "llm_key"), "w") as f:
+                        f.write(key)
+                    if case == "starter key":  # the provisioned key's marker (credit.py)
+                        os.makedirs(os.path.join(home, ".local", "state", "teaport"), exist_ok=True)
+                        with open(os.path.join(home, ".local", "state", "teaport",
+                                               "starter_key_sha256"), "w") as f:
+                            f.write(hashlib.sha256(key.encode()).hexdigest())
+                elif case == "not openrouter":
+                    os.environ["LLM_BASE_URL"] = "https://api.example.invalid/v1"
+                    with open(os.path.join(config_ui.ETC_DIR, "brain.env"), "w") as f:
+                        f.write("LLM_BASE_URL=https://api.example.invalid/v1\n")
+                elif case == "no settings site":
+                    del os.environ["TEAPORT_SETTINGS_PORT"]
+                    settings_access.SETTINGS_PORT = None
+                page = later in wifi_setup.render_account(EN)
+                offer = await offered()
+                assert (page, offer) == (promised, promised), (case, page, offer)
+            finally:
+                settings_access.SETTINGS_PORT = sa.PORT
+                for k in env:
+                    os.environ.pop(k, None)
+    asyncio.run(run())
 
 
 # ------------------------------------------------------------------ the static page
@@ -782,6 +928,18 @@ def test_the_static_page_is_current_strict_and_self_contained():
     for k, v in table["en"].items():
         if k != "copied":
             assert f'id="{k}"' in page and v in page, k
+
+
+def test_a_translation_cannot_end_the_pages_script():
+    real = openrouter_connect.page_strings
+    openrouter_connect.page_strings = lambda: {"en": {"title": "a </script><b>x"}}
+    try:
+        out = openrouter_connect.render_page(_web())
+    finally:
+        openrouter_connect.page_strings = real
+    assert out.count("</script>") == 1 and "\\u003c/script>\\u003cb>x" in out
+    script = re.search(r"<script>(.*?)</script>", out, re.S).group(1)
+    assert f"'sha256-{_hash(script)}'" in out  # the hash follows the escaped text
 
 
 def test_the_static_page_goes_on_only_to_a_home_address():

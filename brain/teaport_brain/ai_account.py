@@ -238,42 +238,67 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _cut_at(base, deadline: float):
-    """`base` (an http.client connection class) whose socket is shut down at `deadline`
-    (time.monotonic): every read after that ends at once. urllib's own timeout bounds
+class _Cutter:
+    """One request's deadline (time.monotonic) and the timers that enforce it, cancelled
+    when the request is over (_request)."""
+
+    def __init__(self, deadline: float):
+        self.deadline = deadline
+        self.timers: list[threading.Timer] = []
+
+    def cancel(self) -> None:
+        for timer in self.timers:
+            timer.cancel()
+
+
+def _cut_at(base, cutter: _Cutter):
+    """`base` (an http.client connection class) whose socket is shut down at the
+    cutter's deadline: every read after that ends at once. urllib's own timeout bounds
     each socket wait, not the whole: a server dripping a byte per wait could hold a
-    request -- and the thread _deadline left it on -- for days."""
+    request -- and the thread _deadline left it on -- for days. The cut is armed before
+    connecting, and the connect timeout is what is left, so the TCP connect and the TLS
+    handshake (on the plain socket, which the cut shuts down) are inside it too."""
     class Cut(base):
         def connect(self):
-            super().connect()
-            timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._cut)
+            left = cutter.deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("the request took too long")
+            self.timeout, self._late = left, False
+            timer = threading.Timer(left, self._cut)
             timer.daemon = True
+            cutter.timers.append(timer)
             timer.start()
+            super().connect()
+            if self._late:  # the deadline passed while there was no socket yet to cut
+                self.close()
+                raise TimeoutError("the request took too long")
 
         def _cut(self):
+            self._late = True
             try:
-                self.sock.shutdown(socket.SHUT_RDWR)
-            except (OSError, AttributeError):  # closed already, or never opened
+                if self.sock is not None:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:  # closed already
                 pass
     return Cut
 
 
 class _CutHTTP(urllib.request.HTTPHandler):
-    def __init__(self, deadline: float):
+    def __init__(self, cutter: _Cutter):
         super().__init__()
-        self.deadline = deadline
+        self.cutter = cutter
 
     def http_open(self, req):
-        return self.do_open(_cut_at(http.client.HTTPConnection, self.deadline), req)
+        return self.do_open(_cut_at(http.client.HTTPConnection, self.cutter), req)
 
 
 class _CutHTTPS(urllib.request.HTTPSHandler):
-    def __init__(self, deadline: float):
+    def __init__(self, cutter: _Cutter):
         super().__init__()
-        self.deadline = deadline
+        self.cutter = cutter
 
     def https_open(self, req):
-        return self.do_open(_cut_at(http.client.HTTPSConnection, self.deadline), req,
+        return self.do_open(_cut_at(http.client.HTTPSConnection, self.cutter), req,
                             context=self._context)
 
 
@@ -310,7 +335,15 @@ def _request(url: str, key: str | None, timeout: float,
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=body, headers=headers,
                                  method="GET" if body is None else "POST")
-    opener = urllib.request.build_opener(_NoRedirects, _CutHTTP(deadline), _CutHTTPS(deadline))
+    cutter = _Cutter(deadline)
+    opener = urllib.request.build_opener(_NoRedirects, _CutHTTP(cutter), _CutHTTPS(cutter))
+    try:
+        return _open(opener, req, timeout, deadline)
+    finally:
+        cutter.cancel()
+
+
+def _open(opener, req, timeout: float, deadline: float) -> tuple[int, bytes]:
     try:
         with opener.open(req, timeout=timeout) as r:  # noqa: S310 -- http(s) only
             return r.status, _read(r, deadline)
@@ -626,7 +659,18 @@ async def _save_locked(key: str, openrouter: bool, sharing: bool) -> Saved:
     except OSError as e:
         logger.warning(f"ai account: the key was saved, but its state could not be written ({e!r})")
         gen = agent_key.generation()
+    for hook in SAVED_HOOKS:
+        try:
+            hook(key)
+        except Exception as e:  # noqa: BLE001 -- the save stands
+            logger.warning(f"ai account: a hook after the save failed ({e!r})")
     return Saved(key, prev_file, prev, openrouter, gen)
+
+
+# Called with the key after every save that went through (save_key), whichever page
+# made it: whatever holds a key for a later save lets go of it, so an older key is never
+# saved over this one (openrouter_connect's held sign-in key, #282).
+SAVED_HOOKS: list = []
 
 
 # Where an environment copy of LLM_API_KEY comes from (shadowed): every reader prefers it
@@ -668,6 +712,22 @@ async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_S
         except NotSaved as e:
             return Check(UNKNOWN, e.reason, data=result.data)
     return result
+
+
+def sign_in_after_setup(base_url: str | None, brain_env: dict | None, settings_site: bool) -> bool:
+    """Whether the end of Wi-Fi setup offers OpenRouter's sign-in (#282): the box has a
+    Settings site, its endpoint is OpenRouter's, no key is set where Settings cannot change
+    it (shadowed: `brain_env` as for that), and the box has no key of the owner's (none, or
+    the starter key: credit.on_starter). The one rule for the offer
+    (openrouter_connect.offer_after_setup, which also needs "open my settings" heard where
+    it is said) and for the setup page's line about it (wifi_setup), each passing what it
+    can read: the setup unit cannot read brain.env apart from its environment (None), so
+    there a copy in brain.env counts as set elsewhere and the page promises nothing the
+    box might not do."""
+    from teaport_brain import credit  # it imports this module
+    key = current_key()
+    return (settings_site and is_openrouter(base_url)
+            and shadowed(brain_env) != ELSEWHERE and (not key or credit.on_starter(key)))
 
 
 def adopt_blocking(key: str, base_url: str | None) -> Check:

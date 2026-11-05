@@ -354,12 +354,13 @@ def _quoting_lines():
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
             "credit empty": ("settings", credit.EMPTY_TEXT),
-            "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT)}
+            "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
+            "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
 
 
 @pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "key not saved",
                                    "new code", "credit half", "credit low", "credit empty",
-                                   "sign-in session"])
+                                   "sign-in session", "sign in later"])
 @pytest.mark.parametrize("lang", i18n.catalogs())
 def test_the_phrase_a_line_quotes_starts_setup_in_its_language(lang, which):
     """The lines that tell the user what to say -- the no-model lines

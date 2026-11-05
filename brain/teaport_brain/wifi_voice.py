@@ -352,6 +352,7 @@ class PhraseVoice(FrameProcessor):
         self._bot_speaking = False
         self._quiet_since = -math.inf
         self._said: deque = deque(maxlen=8)  # (when, normalized line)
+        self.says = 0  # lines say() has started: whether a step got as far as speaking
 
     @property
     def t(self) -> i18n.T:
@@ -359,6 +360,7 @@ class PhraseVoice(FrameProcessor):
 
     # -- speaking
     async def say(self, text: str) -> None:
+        self.says += 1
         self.note_said(text)
         await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
 
@@ -748,13 +750,15 @@ class WifiSetupVoice(PhraseVoice):
         """Online, with no key typed on the setup page: offer to connect the owner's
         OpenRouter account where Settings is usable here and the box has no key of the
         owner's (openrouter_connect.offer_after_setup, owner decision on #282). True when
-        it was said, with `line` first."""
+        it was said, with `line` first -- or once anything was said before it broke, so
+        the line is never said twice."""
         from teaport_brain import openrouter_connect
+        before = self.says
         try:
             return await openrouter_connect.offer_after_setup(self, line)
         except Exception as e:  # noqa: BLE001 -- the connected line is said regardless
             logger.warning(f"wifi setup: the account offer failed ({e!r})")
-            return False
+            return self.says != before
 
     async def _announce(self, status: dict) -> None:
         phase, t = status["phase"], self.t
