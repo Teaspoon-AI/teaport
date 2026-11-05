@@ -309,7 +309,7 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
 
 
 def test_open_settings_goes_where_the_settings_phrase_is_heard(monkeypatch):
-    """The room and Talk, with the front door known (settings_access.heard_here): the
+    """The room and Talk, with the Settings site set up (settings_access.available): the
     phrase's surfaces. Never a phone call, never a bridge relaying someone far away."""
     monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: True)
     for front_end, via, offered in (("room", None, True), ("talk", None, True),
@@ -319,7 +319,12 @@ def test_open_settings_goes_where_the_settings_phrase_is_heard(monkeypatch):
         assert ("open_settings" in _names(tools.active_tools(ctx))) == offered, (front_end, via)
     room = tools.ToolContext(has_tts=True, front_end="room")
     monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: False)
-    assert "open_settings" not in _names(tools.active_tools(room))    # no front door
+    assert "open_settings" not in _names(tools.active_tools(room))    # no Settings site
+    # The real check is the Settings site's (not merely the front door's).
+    from teaport_brain import settings_access
+    monkeypatch.setitem(tools.HOST_CHECKS, "settings", tools._settings_available)
+    monkeypatch.setattr(settings_access, "available", lambda: False)
+    assert "open_settings" not in _names(tools.active_tools(room))
     monkeypatch.setitem(tools.HOST_CHECKS, "settings", lambda: True)
     _with(monkeypatch, open_settings=False)
     assert "open_settings" not in _names(tools.active_tools(room))    # switched off
@@ -327,11 +332,15 @@ def test_open_settings_goes_where_the_settings_phrase_is_heard(monkeypatch):
 
 def test_the_open_settings_tool_is_the_phrases_opening_and_keeps_the_model_quiet():
     """It calls the session's one opening (SettingsPhrase.open on its PhraseVoice), which
-    says what to do itself; the model says nothing after it."""
+    says what to do itself; the model says nothing after it, and is told what happened:
+    Settings not opened (offline, unavailable) is not reported as done."""
+    from teaport_brain import settings_access as sa
     opened = []
+    outcome = [sa.OPENED_SHOWN]
 
     async def open_settings():
         opened.append(True)
+        return outcome[0]
 
     async def run(opener):
         params = _Params(_LLM(), {})
@@ -344,10 +353,19 @@ def test_the_open_settings_tool_is_the_phrases_opening_and_keeps_the_model_quiet
         return got
 
     got = asyncio.run(run(open_settings))
-    assert opened == [True] and got["result"]["ok"]
+    assert opened == [True] and got["result"]["ok"] and "camera" in got["result"]["note"]
     assert got["properties"].run_llm is False
+    outcome[0] = sa.OPENED_READ_OUT
+    got = asyncio.run(run(open_settings))
+    assert got["result"]["ok"] and "read out" in got["result"]["note"]
+    for failed, words in ((sa.NOT_OFFLINE, "no network"), (sa.NOT_UNAVAILABLE, "can't be reached")):
+        outcome[0] = failed
+        got = asyncio.run(run(open_settings))
+        assert got["result"]["ok"] is False and words in got["result"]["error"], failed
+        assert got["properties"].run_llm is False   # the line was said already
+    n = len(opened)
     got = asyncio.run(run(None))
-    assert got["result"]["ok"] is False and not opened[1:]
+    assert got["result"]["ok"] is False and len(opened) == n
 
 
 def test_the_session_hands_the_tool_the_phrases_own_opening():

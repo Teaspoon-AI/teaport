@@ -402,6 +402,11 @@ async def test_a_failure_lands_as_its_record():
     b.land(HN_REQ, None, "call-hn", failure="error", detail="HTTP 402 Payment Required")
     tool = json.loads(ctx.get_messages()[-1]["content"])
     assert tool["status"] == "error" and "billing" in tool["error"]
+    assert "open_settings" not in tool["error"]          # this book has no open_settings
+    bs, ctxs, _ = book()
+    bs.settings = True                                   # one that has (the room, Talk)
+    bs.land(HN_REQ, None, "call-hn", failure="error", detail="HTTP 402 Payment Required")
+    assert "open_settings" in json.loads(ctxs.get_messages()[-1]["content"])["error"]
     b2, ctx2, _ = book()
     b2.land(HN_REQ, None, "call-hn", failure="error", detail="req-140223 failed")
     assert "billing" not in json.loads(ctx2.get_messages()[-1]["content"])["error"]

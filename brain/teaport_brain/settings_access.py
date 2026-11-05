@@ -113,6 +113,12 @@ _live: pairing.LiveCode | None = None
 _screen: display.Screen | None = None  # the screen showing the current code
 
 
+# What SettingsPhrase.open did: the code on the screen, the address and code read out,
+# or neither -- the box on no network, or no Settings site / no code to be had.
+OPENED_SHOWN, OPENED_READ_OUT = "shown", "read out"
+NOT_OFFLINE, NOT_UNAVAILABLE = "offline", "unavailable"
+
+
 def heard_here() -> bool:
     """Whether "open my settings" is listened for: the box has a front door. Where its
     Settings site is not set up yet, the phrase says so (available)."""
@@ -440,9 +446,11 @@ class SettingsPhrase:
         await self.open(voice)
         return True
 
-    async def open(self, voice, lead: str = "", connect: bool = False) -> None:
-        """Show a code (or say how to get there without a screen). `lead`: said first, in
-        the same breath. `connect`: the code is for connecting the owner's OpenRouter
+    async def open(self, voice, lead: str = "", connect: bool = False) -> str:
+        """Show a code (or say how to get there without a screen), and say so; returns
+        what happened (OPENED_SHOWN, OPENED_READ_OUT, NOT_OFFLINE, NOT_UNAVAILABLE), which
+        the open_settings tool tells the model (the phrase needs none). `lead`: said first,
+        in the same breath. `connect`: the code is for connecting the owner's OpenRouter
         account (the end of Wi-Fi setup, wifi_voice, #282): the screen and the voice say
         so (CONNECT_SHOWN_TEXT, CONNECT_SPOKEN_TEXT); where no code can be made, only
         `lead` is said -- the caller checked usable() first."""
@@ -459,20 +467,20 @@ class SettingsPhrase:
             # reaches it. (No internet is no reason: the phone needs the home network.)
             logger.info("settings: asked for, but the box is on no network")
             await say("" if connect else t._(OFFLINE_TEXT))
-            return
+            return NOT_OFFLINE
         from teaport_brain import credit
         credit.MONITOR.poke()  # the owner is at the account (a top-up): read again soon
         if not available():
             logger.warning("settings: no Settings site on this box (TEAPORT_SETTINGS_PORT "
                            "unset) -- run install.sh without --only to set it up")
             await say("" if connect else t._(UNAVAILABLE_TEXT))
-            return
+            return NOT_UNAVAILABLE
         try:
             offer = start()
         except pairing.PairingUnavailable as e:
             logger.warning(f"settings: no code: {e.reason}")
             await say("" if connect else t._(UNAVAILABLE_TEXT))
-            return
+            return NOT_UNAVAILABLE
         secs = max(1.0, offer.expires_at - _clock())
         screen = _screen = _screen or self._new_screen()
         minutes = max(1, math.ceil(secs / 60))
@@ -482,7 +490,7 @@ class SettingsPhrase:
                                                       qr=offer.link):
             logger.info("settings: code shown" + (" to connect OpenRouter" if connect else ""))
             await say(t._(CONNECT_SHOWN_TEXT if connect else SHOWN_TEXT))
-            return
+            return OPENED_SHOWN
         logger.info("settings: no screen draws the code -- reading it out")
         address = (wifi_voice.spoken_address(pairing.FRONTDOOR_HOST, t) + " "
                    + t.p("spell", "slash") + " settings")
@@ -493,3 +501,4 @@ class SettingsPhrase:
                                    secs=max(0.0, offer.expires_at - _clock()) + 60)
         await say(t._(CONNECT_SPOKEN_TEXT if connect else SPOKEN_TEXT).format(
             address=address, code=code))
+        return OPENED_READ_OUT

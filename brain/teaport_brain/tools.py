@@ -1439,14 +1439,24 @@ async def _open_settings(params: FunctionCallParams, open_settings=None):
     """The settings phrase's own path ("open my settings", settings_access.py): the code on
     the screen, or the address read out, and the line that says what to do -- spoken by
     the session's PhraseVoice, so the model says nothing after it."""
+    from teaport_brain import settings_access as sa
     if open_settings is None:
         await params.result_callback({"ok": False, "error": "settings can't be opened here"})
         return
-    await open_settings()
-    await params.result_callback(
-        {"ok": True, "note": "Done: you have already told the user how to open your "
-                             "settings on their phone. Say nothing more now."},
-        properties=no_inference())
+    outcome = await open_settings()
+    if outcome in (sa.OPENED_SHOWN, sa.OPENED_READ_OUT):
+        how = ("a code on your screen for their phone's camera" if outcome == sa.OPENED_SHOWN
+               else "an address and a code, read out, for their phone's browser")
+        result = {"ok": True, "note": f"Done: you gave the user {how}, and told them what "
+                                      "to do. Never repeat a code or an address. Say "
+                                      "nothing more now."}
+    else:
+        why = ("you are on no network, so no phone can reach you; you told the user how to "
+               "get you online" if outcome == sa.NOT_OFFLINE
+               else "settings can't be reached from a phone on this box right now; you told "
+                    "the user so")
+        result = {"ok": False, "error": f"Settings did not open: {why}. Say nothing more now."}
+    await params.result_callback(result, properties=no_inference())
 
 
 async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None):
@@ -1586,8 +1596,8 @@ TOOLS: tuple[Tool, ...] = (
          setting("TEAPORT_TOOL_PAIR_DEVICE"), frozenset({"agent", "room_or_talk", "host:pairing"}),
          hint="pair_device (connect the user's laptop or phone to you: it shows a code on "
               "your screen for its camera)"),
-    # room_or_talk + host:settings -- where the "open my settings" phrase is heard (the
-    # owner's surfaces, the front door known): the same opening, for any wording.
+    # room_or_talk + host:settings -- where "open my settings" is usable (the owner's
+    # surfaces, the Settings site set up): the same opening, for any wording.
     Tool(OPEN_SETTINGS, lambda ctx: functools.partial(_open_settings,
                                                       open_settings=ctx.open_settings),
          setting("TEAPORT_TOOL_OPEN_SETTINGS"), frozenset({"room_or_talk", "host:settings"}),
@@ -1637,11 +1647,12 @@ def _pairing_set_up() -> bool:
     return pairing.available()
 
 
-def _settings_heard() -> bool:
-    # Where "open my settings" is listened for (settings_access.heard_here): the tool goes
-    # where the phrase goes.
+def _settings_available() -> bool:
+    # The Settings site is set up (settings_access.available: the front door and its
+    # Settings port). Stricter than where the phrase is heard (heard_here), which also
+    # answers "Settings can't be reached here": the model is never offered a dead end.
     from teaport_brain import settings_access
-    return settings_access.heard_here()
+    return settings_access.available()
 
 
 def _wifi_setup_installed() -> bool:
@@ -1652,7 +1663,7 @@ def _wifi_setup_installed() -> bool:
 # "host:<part>" needs: is that part installed on this box. Checked per session.
 HOST_CHECKS: dict[str, Callable[[], bool]] = {"wifi_setup": _wifi_setup_installed,
                                               "pairing": _pairing_set_up,
-                                              "settings": _settings_heard}
+                                              "settings": _settings_available}
 
 
 def _has(need: str, ctx: ToolContext) -> bool:

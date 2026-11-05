@@ -1754,7 +1754,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Open the box's Settings by voice in any words (\"I need to change my AI key\"): the model calls the same opening as the \"open my settings\" phrase, a code on the screen for the phone's camera (or the address read out on a box without a screen). Only where the phrase is heard: a room conversation or a Talk session, never on a phone call or through the Discord bridge, and only with the front door (TEAPORT_FRONTDOOR_HOST). The phrase itself works with or without a model."
+help = "Open the box's Settings by voice in any words (\"I need to change my AI key\"): the model calls the same opening as the \"open my settings\" phrase, a code on the screen for the phone's camera (or the address read out on a box without a screen). Only where the phrase is heard: a room conversation or a Talk session, never on a phone call or through the Discord bridge, and only where the Settings site is set up (TEAPORT_FRONTDOOR_HOST and TEAPORT_SETTINGS_PORT, written by the full installer). The phrase itself works with or without a model."
 
 # ---- talk client context notes
 

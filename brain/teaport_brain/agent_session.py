@@ -1239,7 +1239,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                 judge=llm.judge_cut if llm is not None else None,
                 gist=llm.judge_gist if llm is not None else None,
                 decline=llm.judge_decline if llm is not None else None,
-                settings=any(t.name == "open_settings" for t in session_tools))
+                settings=any(t.name == "open_settings" for t in session_tools)
+                and settings_access.usable([settings_phrase]))
     if llm is not None:
         llm.owed = owed
     ledger.on_reply_text = owed.reply_text

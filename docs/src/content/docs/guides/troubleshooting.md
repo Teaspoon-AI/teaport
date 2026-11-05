@@ -551,8 +551,8 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 no credit or allowance left. For example, a key that reached its spending limit.
 Every request fails until you change the key or the account, so asking again
 does not help. teaport says this once, and on later failed turns it says that
-it still can't answer. In the room and in Talk, it also tells you to say "open my
-settings" to fix it. On a phone call it only says that the account can be fixed on
+it still can't answer. In the room and in Talk, on a device whose settings site is
+set up, it also tells you to say "open my settings" to fix it. On a phone call it only says that the account can be fixed on
 its configuration page. For other failures, such as a provider that is busy or slow,
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
