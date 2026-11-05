@@ -475,10 +475,13 @@ def _account_note(key: str, base_url: str, record: dict, timeout: float) -> str:
     passed the check and whose agent turns then failed with 402). Two readings:
       * GET /api/v1/credits (total_credits minus total_usage, 0 or less: none). OpenRouter
         documents it for management keys; when it answers the key all the same, it is
-        what counts, a paid account spent to nothing included;
+        what counts, a paid account spent to nothing included -- except a total of 0
+        beside a record that says the account has paid (is_free_tier false): the two
+        disagree (zeros for a key not allowed to read the balance?), so nothing is said;
       * otherwise the key's record (`record`): is_free_tier (the account has never paid
         for credit) with no limit of its own. An account given credit without paying
-        would read as none here; the key is saved all the same, only the note is wrong.
+        would read as none here, as would a free account answering with a :free model;
+        the key is saved all the same, only the note is wrong.
     Nothing read either way (no answer, a refusal, a shape not read): nothing said -- the
     key was checked already. `timeout`: what is left of the check's deadline; under
     MIN_REQUEST_SECS, /credits is not asked."""
@@ -495,7 +498,7 @@ def _account_note(key: str, base_url: str, record: dict, timeout: float) -> str:
                         f"({type(e).__name__})")
     total, used = _number(data.get("total_credits")), _number(data.get("total_usage"))
     if total is not None and used is not None:
-        empty = total - used <= 0
+        empty = total - used <= 0 and (total > 0 or record.get("is_free_tier") is not False)
     else:
         empty = record.get("is_free_tier") is True and record.get("limit") is None
     if empty:

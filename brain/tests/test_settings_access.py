@@ -470,6 +470,10 @@ def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
                 got = ai_account.check_key(FAKE_KEY, base, account=True)
                 assert got.state == ai_account.WORKS, credits
                 assert got.note == (ai_account.NO_ACCOUNT_CREDIT if none else ""), (record, credits)
+        # A total of 0 beside a record that says the account has paid: they disagree, so
+        # nothing is said (a never-paid account's 0 is the case above).
+        ai_account._get = Provider({"/key": paid, "/credits": empty})
+        assert ai_account.check_key(FAKE_KEY, base, account=True).note == ""
         # Not read (refused -- OpenRouter documents it for management keys --, no answer, a
         # shape not read): the key's record decides: never paid, no limit of its own.
         for credits in ((403, {"error": {"message": "Only management keys can perform this operation"}}),

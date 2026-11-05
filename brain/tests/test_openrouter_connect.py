@@ -413,13 +413,13 @@ def test_an_account_with_no_credit_is_connected_and_said():
         # record, then the account's credit -- connected, and said.
         home, *_rest = _setup()
         real = (config_ui.check_key, ai_account._get, ai_account._sleep)
-        config_ui.check_key = ai_account.check_key
-        ai_account._get = p = sa.Provider([
-            (401, {"error": {"message": "User not found."}}),
-            (200, {"data": {"limit": None, "usage": 0, "is_free_tier": True}}),
-            (200, {"data": {"total_credits": 0, "total_usage": 0}})])
-        ai_account._sleep = lambda secs: None
         try:
+            config_ui.check_key = ai_account.check_key
+            ai_account._get = p = sa.Provider([
+                (401, {"error": {"message": "User not found."}}),
+                (200, {"data": {"limit": None, "usage": 0, "is_free_tier": True}}),
+                (200, {"data": {"total_credits": 0, "total_usage": 0}})])
+            ai_account._sleep = lambda secs: None
             async with _client(cookie=_session()) as c:
                 q = await _start(c)
                 r = await c.post("/settings/openrouter", data={"code": FAKE_CODE, "state": q["state"]})
