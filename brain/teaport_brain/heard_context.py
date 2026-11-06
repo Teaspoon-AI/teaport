@@ -103,6 +103,29 @@ def _is_reply(m) -> bool:
     return m.get("role") == "assistant" and has_speech(msg_text(m))
 
 
+def append_to_last_turn(context, words: str) -> bool:
+    """Append `words` to the caller's newest message in `context`, in place: the words
+    nobody was heard saying after that turn's commit, which are its own
+    (barge_pause.py, WORDS NOBODY SPOKE, #22). In place, as the turn-text corrector
+    rewrites a committed turn (turn_text.py): no message is added, removed or moved, so
+    the positional windows here, the reply hold's merge and owed.py's see the context
+    they would have; the reply asked on the turn is kept. A user-role message that is
+    not the caller's (owed.is_caller_message: an injected order or notice, a Talk
+    client's app event, a connect or wake cue) is passed over. False, and nothing
+    changed, when there is no message of the caller's or `words` is empty."""
+    # Here, not at the top: owed imports this module.
+    from teaport_brain.owed import is_caller_message
+
+    words = (words or "").strip()
+    if not words:
+        return False
+    for m in reversed(context.get_messages()):
+        if is_caller_message(m):
+            _set_msg_text(m, f"{msg_text(m).strip()} {words}")
+            return True
+    return False
+
+
 def drop_from_context(context, doomed) -> None:
     """Remove `doomed` from `context`, matched by identity (the dicts are live, and two
     messages can read the same). Anything that removes messages the corrector may have
