@@ -248,8 +248,10 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # (FaceTap passes them on only to an avatar that draws them). mood asks the brain to let
 # the model tag a reply's mood (mood_tag.py), which FaceTap passes on to an avatar that
 # takes moods. typing asks for the thinking sound's key presses (FaceTap passes them on
-# to an avatar that types).
-FEATURES = ("volume", "restart", "local", "phonemes", "mood", "typing")
+# to an avatar that types). pause asks to be told when a barge-in pause stops the voice
+# and when it goes on ({"type": "pause", "on": ...}; Pause), so the silence of a pause
+# is not taken for the reply's end.
+FEATURES = ("volume", "restart", "local", "phonemes", "mood", "typing", "pause")
 # ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
 WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
@@ -387,6 +389,7 @@ class FaceTap:
         self._moods = deque(maxlen=4)
         self._matching = None
         self._cut = None         # the utterance a barge-in cut off
+        self._paused_speaking = False  # speaking when a barge-in pause stopped the voice
         self._mood_now = None    # [mood, utterance, last sent] of the reply being heard
         self._drawn_at = {}      # feature -> when the avatar's features were last read for it
         self._drawn = {}         # feature -> whether it said it takes it
@@ -627,9 +630,23 @@ class FaceTap:
         self._moods.clear()
         self._matching = self._mood_now = None
         self._cut = self._utt
+        self._paused_speaking = False
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
+
+    def paused(self, on: bool) -> None:
+        """A barge-in pause (#255): the voice stops mid-reply, and the speaker's quiet or
+        the user's words may take the face off speaking meanwhile. At its end the face
+        speaks again, so the resumed audio's mouth and phonemes are drawn -- unless the
+        reply was cut meanwhile (interrupted)."""
+        if on:
+            self._paused_speaking = self._paused_speaking or self._state == "speaking"
+            return
+        if self._paused_speaking:
+            self._activity()
+            self.state("speaking")
+        self._paused_speaking = False
 
     def quiet(self) -> None:
         """The speech has been heard out: idle, or thinking while the thinking sound plays."""
@@ -678,6 +695,7 @@ class FaceTap:
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self._bed_since = self._audio_t = None
+        self._paused_speaking = False
         self._mouth = 0.0
         self._emit({"mouth": 0.0})
         self._state = "idle"
@@ -944,16 +962,30 @@ class Playback:
         self._start: float | None = None
         self._written = 0      # frames handed to the card
         self.wrote_at = clock()  # when pump() last handed the card a chunk (the watchdog)
+        # The brain's audio as a stream: frames of it handed to the card (not counting the
+        # silence _take pads with), and the padding so far as breakpoints -- (stream
+        # position, padding frames before it) -- so a stream position maps to the card
+        # (_card_pos). Phonemes and played key presses are pinned on the stream: a
+        # barge-in pause (the brain stops sending, #255) or an underrun that pads the card
+        # in the middle of a clause then moves them with the audio they belong to,
+        # instead of leaving them on the silence.
+        self._streamed = 0
+        self._pad = 0
+        self._pads: list[tuple[int, int]] = []
         self._sound_end = 0    # frame position just past the last non-silent chunk
         # [frame position, mouth level, voiced, hiss] for every chunk not yet heard.
         self._levels: deque[list] = deque()
-        # (frame position, symbol) of every phoneme not yet heard, in order; and the hiss
-        # of the chunks the last mouth_due delivered.
+        # (stream position, symbol) of every phoneme not yet heard, in order; and the
+        # hiss of the chunks the last mouth_due delivered.
         self._phones: deque[tuple[int, str]] = deque()
         self.hiss = 0.0
-        # (frame position, (letter, of typing played)) of every key press of the thinking
-        # sound not yet heard
-        self._keys: deque[tuple[int, tuple[str, bool]]] = deque()
+        # (stream position, (letter, True, pin order)) of every key press of the thinking
+        # sound played and not yet heard; and (card frame position, (letter, False, pin
+        # order)) of every press of typing not being played (anchor "now": on the card's
+        # clock)
+        self._keys: deque[tuple[int, tuple[str, bool, int]]] = deque()
+        self._keys_now: deque[tuple[int, tuple[str, bool, int]]] = deque()
+        self._key_seq = 0      # pin order: two presses due at once come in it
         self.synced = False
 
     def push(self, relay_audio: bytes, voiced: bool = False) -> None:
@@ -1009,7 +1041,10 @@ class Playback:
         carries their clicks), or, with anchor "now", after the message: typing that is
         not being played (the bot or the user is talking) is still seen -- as if it
         played: where it would land with nothing queued ahead of it, the lead the played
-        typing has too (not after the speech queued, nor ahead of the typing just played)."""
+        typing has too (not after the speech queued, nor ahead of the typing just played).
+        Pinned on the card's clock, such a press is not moved by a gap the brain's audio
+        has later (a pause, an underrun): played presses pinned before it, which are,
+        can then come after it."""
         if not isinstance(keys, list):
             return
         played = anchor != "now"
@@ -1018,7 +1053,7 @@ class Playback:
         elif self._start is None:
             return
         else:
-            base = max(self._landing(queued=False),
+            base = max(self._landing(queued=False) + self._pad,
                        round((self._clock() - self._start) * DEVICE_RATE))
         marks = []
         for k in keys:
@@ -1027,16 +1062,27 @@ class Playback:
             except (TypeError, ValueError, IndexError):
                 continue
             if letter and math.isfinite(ms) and ms >= 0:
-                marks.append((ms, (letter, played)))
-        self._pin(self._keys, base, marks)
+                self._key_seq += 1
+                marks.append((ms, (letter, played, self._key_seq)))
+        self._pin(self._keys if played else self._keys_now, base, marks)
 
     def _landing(self, queued: bool = True) -> int:
-        """Where the next pushed audio lands: after what is written, what is queued (or,
-        not `queued`, where it would with nothing queued ahead of it), and what the
-        resampler still holds of earlier pushes."""
+        """Where the next pushed audio lands on the stream: after what is written, what
+        is queued (or, not `queued`, where it would with nothing queued ahead of it), and
+        what the resampler still holds of earlier pushes."""
         held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
         ahead = self._pending_bytes // (DEVICE_CHANNELS * 2) if queued else 0
-        return self._written + ahead + held
+        return self._streamed + ahead + held
+
+    def _card_pos(self, pos: int) -> int:
+        """The card frame a stream position plays at: plus the padding written before it
+        -- all of it so far, for audio not written yet."""
+        pad = 0
+        for at, total in self._pads:
+            if at > pos:
+                break
+            pad = total
+        return pos + pad
 
     @staticmethod
     def _pin(queue: deque, base: int, marks) -> None:
@@ -1047,11 +1093,20 @@ class Playback:
             queue.append((pos, value))
             last = pos
 
-    def _due(self, queue: deque, by: float) -> list[tuple[str, float]]:
-        """The marks heard by `by` since the last call, in order, each with when."""
+    def _due(self, queue: deque, by: float, stream: bool = True) -> list[tuple[str, float]]:
+        """The marks heard by `by` since the last call, in order, each with when.
+        `stream`: the queue is pinned on the stream (else on the card's frames)."""
         out = []
+        # What has come of the stream: written or queued. Not the resampler's held tail,
+        # which a pause can pad the card before.
+        landed = self._streamed + self._pending_bytes // (DEVICE_CHANNELS * 2)
         while queue and self._start is not None:
-            heard = self._start + queue[0][0] / DEVICE_RATE
+            if stream and queue[0][0] >= landed:
+                # Its audio has not come: where it plays is not known yet (a pause may
+                # pad the card before it). Audio that has come plays with no pad ahead.
+                break
+            pos = self._card_pos(queue[0][0]) if stream else queue[0][0]
+            heard = self._start + pos / DEVICE_RATE
             if heard > by:
                 break
             out.append((queue.popleft()[1], heard))
@@ -1063,7 +1118,19 @@ class Playback:
 
     def keys_due(self, by: float) -> list[tuple[str, float]]:
         """The key presses heard by `by` since the last call: (letter, when heard)."""
-        return [(letter, heard) for (letter, _), heard in self._due(self._keys, by)]
+        due = self._due(self._keys, by) + self._due(self._keys_now, by, stream=False)
+        due.sort(key=lambda d: (d[1], d[0][2]))
+        return [(letter, heard) for (letter, _, _), heard in due]
+
+    def end_stream(self) -> None:
+        """The session is over: what it sent still plays, but no more of its audio comes.
+        A phoneme or key press pinned past all of it would wait for the next session's
+        audio, and hold that one's marks behind it: they go."""
+        end = self._landing()
+        while self._phones and self._phones[-1][0] >= end:
+            self._phones.pop()
+        while self._keys and self._keys[-1][0] >= end:
+            self._keys.pop()
 
     def clear(self) -> None:
         """Barge-in: drop what has not been handed to the card yet."""
@@ -1071,9 +1138,10 @@ class Playback:
         self._pending_bytes = 0
         # ...and the phonemes and key presses of that audio (what the card already has
         # still plays; the presses of typing not played belong to no audio, and stay)
-        while self._phones and self._phones[-1][0] >= self._written:
+        while self._phones and self._phones[-1][0] >= self._streamed:
             self._phones.pop()
-        self._keys = deque(k for k in self._keys if k[0] < self._written or not k[1][1])
+        while self._keys and self._keys[-1][0] >= self._streamed:
+            self._keys.pop()
         # A fresh resampler: the old one holds the tail of the interrupted speech.
         self._resampler = soxr.ResampleStream(RELAY_RATE, DEVICE_RATE, 1, dtype="int16")
         self._rs_in = self._rs_out = 0
@@ -1100,9 +1168,26 @@ class Playback:
             if not seg[0]:
                 self._pending.popleft()
         self._pending_bytes -= len(out)
+        self._streamed += len(out) // (DEVICE_CHANNELS * 2)
         # Short tail of a reply, or nothing: pad with silence so the card's clock never
-        # stops (the capture side dies without it).
+        # stops (the capture side dies without it). The stream after it plays that much
+        # later on the card.
+        if len(out) < CHUNK_BYTES:
+            self._pad += (CHUNK_BYTES - len(out)) // (DEVICE_CHANNELS * 2)
+            if self._pads and self._pads[-1][0] == self._streamed:
+                self._pads[-1] = (self._streamed, self._pad)
+            else:
+                self._pads.append((self._streamed, self._pad))
+            self._prune_pads()
         return bytes(out.ljust(CHUNK_BYTES, b"\0")), voiced
+
+    def _prune_pads(self) -> None:
+        """Keep the breakpoints a pinned mark can still need: the last one at or before
+        the earliest mark, and every one after it."""
+        marks = [q[0][0] for q in (self._phones, self._keys) if q]
+        first = min(marks) if marks else self._streamed
+        while len(self._pads) > 1 and self._pads[1][0] <= first:
+            self._pads.pop(0)
 
     @property
     def written(self) -> int:
@@ -1645,6 +1730,46 @@ class KeepAlive:
 
 # How often Restart looks at the speaker while it waits.
 RESTART_POLL_SECS = 0.05
+# A pause the brain said is on and has not said is over is believed this long: past the
+# brain's own guard on a pause (barge_pause.PAUSE_GUARD_S, 8 s), so a lost "off" cannot
+# hold a restart or the idle timer for good.
+PAUSE_TRUST_SECS = 10.0
+
+
+class Pause:
+    """A barge-in pause in the brain (#255): the speaker is quiet, but the reply is not
+    over -- it goes on from where it stopped. From {"type": "pause"} messages; a "clear"
+    (the barge-in that cut the reply) ends it."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._since = None
+
+    def set(self, on: bool) -> None:
+        self._since = self._clock() if on else None
+
+    @property
+    def on(self) -> bool:
+        return self._since is not None and self._clock() - self._since < PAUSE_TRUST_SECS
+
+
+def conversation_busy(play: "Playback", face: "FaceTap", owed: dict, hold: bool,
+                      pause: Pause, now: float) -> bool:
+    """Whether an awake conversation is still going, for its keep-alive: the bot being
+    heard (or its echo dying away), an answer owed, a call holding it, or a barge-in
+    pause in its reply (#255)."""
+    waiting = any(deadline > now for deadline in owed.values())
+    return (play.speaking or face.voiced or waiting or hold or pause.on
+            or not play.echo_free(now))
+
+
+def paused(m: dict, pause: Pause, face: "FaceTap") -> None:
+    """A {"type": "pause", "on": ...} message: the brain's barge-in pause began or ended
+    (#255). The restart and the idle timer read it off `pause`; the face speaks again at
+    its end."""
+    on = bool(m.get("on"))
+    pause.set(on)
+    face.paused(on)
 
 
 class Restart:
@@ -1657,7 +1782,8 @@ class Restart:
     goes back, is not it: the goodbye can queue right behind that line, and ending at
     the gap between the two would cut it off. So: wait for an utterance that started
     after the restart was armed (up to RESTART_SPEECH_WAIT_SECS — the model may say
-    nothing), then for the speaker to go quiet.
+    nothing), then for the speaker to go quiet -- not paused for the user (Pause: the
+    goodbye goes on from where it stopped, #255).
 
     Armed `said`, the goodbye has played already: the brain's own end_conversation, sent
     once the model's goodbye was heard out without the model calling it (goodbye.py,
@@ -1666,8 +1792,10 @@ class Restart:
     RESTART_SPEECH_WAIT_SECS after the box said it was going to sleep, and take the next
     reply, to words said meanwhile, for the goodbye."""
 
-    def __init__(self, play: "Playback", face: FaceTap, clock=time.monotonic):
+    def __init__(self, play: "Playback", face: FaceTap, clock=time.monotonic,
+                 pause: Pause | None = None):
         self._play, self._face, self._clock = play, face, clock
+        self._pause = pause
         self._seen: set = set()            # assistant utterances captioned so far
         self._before: set | None = None    # ... those seen when the restart was armed
         self.goodbye = False               # an utterance newer than that was captioned
@@ -1693,6 +1821,8 @@ class Restart:
 
     def _heard_out(self) -> bool:
         play, face = self._play, self._face
+        if self._pause is not None and self._pause.on:
+            return False                    # paused for the user: the goodbye goes on
         return not (play.speaking or face.voiced) and play.echo_free(self._clock())
 
     async def wait(self) -> None:
@@ -1797,6 +1927,9 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
             if kind == "clear":
                 play.clear()
                 face.interrupted()
+                pause.set(False)
+            elif kind == "pause":
+                paused(m, pause, face)
             elif kind == "phonemes":
                 play.phonemes(m.get("at_ms"), m.get("phonemes"))
             elif kind == "keys":
@@ -1863,7 +1996,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 if final:
                     logger.info(f"{role}: {quoted(text)}")
 
-    restart = Restart(play, face)
+    pause = Pause()
+    restart = Restart(play, face, pause=pause)
 
     async def restart_when_heard_out():
         await restart.wait()
@@ -1882,9 +2016,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 raise Ungated(f"no hello from the brain in {HELLO_SECS:g} s")
             if alive is None:
                 continue
-            waiting = any(deadline > now for deadline in owed.values())
-            why = alive.over(busy=play.speaking or face.voiced or waiting or hold["on"]
-                             or not play.echo_free(now))
+            why = alive.over(busy=conversation_busy(play, face, owed, hold["on"], pause, now))
             if why:
                 logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps")
                 return why
@@ -1920,6 +2052,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
         return None
     finally:
         card.sink = None
+        play.end_stream()
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

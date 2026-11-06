@@ -321,6 +321,54 @@ def test_face_follows_a_turn():
     ]
 
 
+def test_the_face_speaks_again_when_a_paused_reply_goes_on():
+    """#255 review: the speaker is quiet through a barge-in pause, so the face goes idle
+    (or listening to the user's words); at the pause's end it speaks again, so the
+    resumed audio's mouth is drawn -- not after a cut."""
+    clock = _Clock()
+    face, sent = _face(clock)
+    face.state("speaking")
+    face.paused(True)
+    face.user("hold on", False)                     # the user, over the paused reply
+    face.quiet()
+    face.paused(False)
+    sent.clear()
+    face.mouth(0.8)
+    assert sent and sent[0] == {"mouth": 0.8}, sent
+    face.paused(True)
+    face.interrupted()                              # the reply was cut meanwhile
+    face.paused(False)
+    assert face._state == "listening", "a cut reply does not come back"
+    face.state("speaking")
+    face.paused(True)
+    face.ended()                                    # the session ended paused
+    face.paused(False)                              # (a stray "off" in the next)
+    assert face._state == "idle", "a reply from an ended session does not come back"
+
+
+def test_a_barge_in_pause_keeps_an_awake_conversation_busy():
+    """The keep-alive does not end a conversation on a pause's quiet (#255)."""
+    quiet, pause = _Quiet(), la.Pause()
+    assert not la.conversation_busy(quiet, quiet, {}, False, pause, 0.0)
+    pause.set(True)
+    assert la.conversation_busy(quiet, quiet, {}, False, pause, 0.0)
+    pause.set(False)
+    assert la.conversation_busy(quiet, quiet, {}, True, pause, 0.0), "a call's hold"
+    assert la.conversation_busy(quiet, quiet, {"c": 5.0}, False, pause, 0.0), "owed"
+
+
+def test_a_pause_message_reaches_the_restart_and_the_face():
+    clock = _Clock()
+    face, sent = _face(clock)
+    pause = la.Pause(clock)
+    face.state("speaking")
+    la.paused({"type": "pause", "on": True}, pause, face)
+    face.quiet()
+    assert pause.on
+    la.paused({"type": "pause", "on": False}, pause, face)
+    assert not pause.on and face._state == "speaking"
+
+
 def test_face_mouth_sends_only_real_moves_and_keeps_an_open_mouth_alive():
     clock = _Clock()
     face, sent = _face(clock)
@@ -411,7 +459,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes,mood,typing&client=local-audio"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes,mood,typing,pause&client=local-audio"
                          f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
@@ -1054,6 +1102,49 @@ def test_restart_waits_for_the_goodbye_not_a_line_spoken_before_the_call(monkeyp
     assert fired == 3, f"restart fired after step {fired}, not after the goodbye"
 
 
+def test_restart_waits_out_a_barge_in_pause_in_the_goodbye(monkeypatch):
+    """#255: the user talks over the goodbye; the brain pauses it (the speaker goes
+    quiet, {"type": "pause", "on": true}) and goes on when they stop. The quiet of the
+    pause is not the goodbye's end."""
+    monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
+    play, pause = _Quiet(), la.Pause()
+    restart = la.Restart(play, play, pause=pause)
+
+    def goodbye():
+        restart.arm()
+        restart.caption("u2")
+        play.speaking = play.sounding = True
+
+    def paused():
+        pause.set(True)
+        play.speaking = play.sounding = False                    # the speaker is quiet
+
+    def goes_on():
+        pause.set(False)
+        play.speaking = play.sounding = True
+
+    def goodbye_done():
+        play.speaking = play.sounding = False
+
+    fired = _restart_fired(restart, [(0.1, goodbye), (0.3, paused), (0.1, goes_on),
+                                     (0.1, goodbye_done)])
+    assert fired == 3, f"restart fired after step {fired}, not after the goodbye"
+
+
+def test_a_pause_the_brain_never_ends_is_believed_only_so_long():
+    clock = _Clock()
+    pause = la.Pause(clock)
+    pause.set(True)
+    assert pause.on
+    clock.t += la.PAUSE_TRUST_SECS - 0.1
+    assert pause.on
+    clock.t += 0.2
+    assert not pause.on, "a lost 'off' must not hold the restart or the idle timer for good"
+    pause.set(True)
+    pause.set(False)
+    assert not pause.on
+
+
 def test_restart_without_a_goodbye_waits_then_goes(monkeypatch):
     monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
     monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 0.3)
@@ -1084,6 +1175,31 @@ def test_a_goodbye_already_said_sleeps_once_the_speaker_is_quiet(monkeypatch):
     fired = _restart_fired(restart, [(0.1, tail_playing), (0.1, quiet), (0.1, lambda: None)])
     assert fired == 1, f"fired after step {fired}, not once the speaker was quiet"
     assert restart.kind == "sleep"
+
+
+def test_a_goodbye_already_said_still_waits_out_a_barge_in_pause(monkeypatch):
+    """#221 with #255: the brain's own end_conversation ("said") while the brain has the
+    reply paused for the user. The pause's quiet is not the goodbye's end: the session
+    ends only once the pause is over and the speaker is quiet."""
+    monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 30.0)
+    play, pause = _Quiet(), la.Pause()
+    restart = la.Restart(play, play, pause=pause)
+
+    def armed_while_paused():
+        pause.set(True)
+        restart.arm("sleep", said=True)
+
+    def goes_on():
+        pause.set(False)
+        play.speaking = play.sounding = True
+
+    def done():
+        play.speaking = play.sounding = False
+
+    fired = _restart_fired(restart, [(0.2, armed_while_paused), (0.1, goes_on),
+                                     (0.1, done), (0.1, lambda: None)])
+    assert fired == 2, f"fired after step {fired}, not once the paused goodbye played out"
 
 
 def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
@@ -1208,7 +1324,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes,mood,typing&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes,mood,typing,pause&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
@@ -1217,7 +1333,7 @@ def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     import urllib.parse
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url()).query)
-    assert q["features"] == ["volume,restart,local,phonemes,mood,typing,sleep"]
+    assert q["features"] == ["volume,restart,local,phonemes,mood,typing,pause,sleep"]
     assert q["wake"] == ["hey teaport, привет чайник"] and "awake" not in q
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url(awake=True)).query)
     assert q["awake"] == ["1"]
@@ -1831,6 +1947,7 @@ def test_key_presses_come_due_on_the_typing_they_ride_or_after_their_message():
     play.pump()                                              # all played: nothing queued
     play.keys([["a", 50]], anchor="now")                     # typing not played...
     play.keys([["b", 50]])                                   # ...and the same press played
+    play.push(_tone(24000, 0.2).tobytes())                   # (the typing it rides)
     (a, at), (b, bt) = play.keys_due(clock.t + 1)
     assert (a, b) == ("a", "b") and abs(at - bt) < 0.002     # line up
     # (after the card's lead, and what the resampler still holds: its ~35 ms of delay)
@@ -1988,6 +2105,159 @@ def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():
     play.push((rng.standard_normal(4800) * 6000).astype("<i2").tobytes())   # never vouched for
     play.pump()
     assert play.mouth_due(clock.t) == 0.0 and play.hiss == 0.0
+
+
+def test_phonemes_after_a_pause_in_their_clause_come_with_their_audio():
+    """A barge-in pause (#255: the brain stops sending) or an underrun stops the audio
+    partway into a clause whose phonemes are already pinned; the card plays padded
+    silence meanwhile. The phonemes of the clause's rest are heard when that audio
+    plays, not on the silence."""
+    play, clock, sunk = _playback()
+    t0 = clock.t
+    play.phonemes(0, [["h", 0, 50], ["a", 300, 350]])         # 0 ms and 300 ms in
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)       # the first 200 ms of it
+    for _ in range(int(0.9 / 0.02)):                          # 0.9 s: 200 ms play, then
+        play.pump()                                           # 700 ms of padded silence
+        clock.t += 0.02
+    play.push(_tone(24000, 0.3).tobytes(), voiced=True)       # the rest, after the pause
+    play.pump()
+    # When the rest started on the card: the first sound after the run of silence.
+    silent = [c == bytes(len(c)) for c in sunk]
+    first_gap = silent.index(True)
+    rest = first_gap + silent[first_gap:].index(False)
+    resumed = t0 + rest * la.CHUNK_MS / 1000
+    assert play.phonemes_due(t0 + 0.01) == ["h"]
+    # 300 ms of audio in: ~100 ms into the rest, plus the resampler's ~16 ms it held back
+    # of the first part and played after the pause.
+    assert play.phonemes_due(resumed + 0.09) == [], "the pause's silence moved no mouth"
+    assert play.phonemes_due(resumed + 0.13) == ["a"]
+    assert resumed - t0 >= 0.85, f"the rest played {resumed - t0:.2f}s in"
+
+
+def test_key_presses_of_played_typing_after_a_gap_come_with_their_clicks():
+    """The same for the thinking sound's key presses pinned on its audio; a press of
+    typing not being played (anchor "now") stays on the card's clock, and two due at
+    once come in the order they were pinned."""
+    play, clock, sunk = _playback()
+    t0 = clock.t
+    play.keys([["a", 0], ["b", 300]])                         # on the typing that comes
+    play.push(_tone(24000, 0.2).tobytes())
+    for _ in range(int(0.9 / 0.02)):
+        play.pump()
+        clock.t += 0.02
+    play.push(_tone(24000, 0.3).tobytes())
+    play.pump()
+    silent = [c == bytes(len(c)) for c in sunk]
+    first_gap = silent.index(True)
+    resumed = t0 + (first_gap + silent[first_gap:].index(False)) * la.CHUNK_MS / 1000
+    assert [k for k, _ in play.keys_due(t0 + 0.01)] == ["a"]
+    assert play.keys_due(resumed + 0.09) == [], "the gap's silence typed nothing"
+    assert [k for k, _ in play.keys_due(resumed + 0.13)] == ["b"]
+    play.keys([["n", 0]], anchor="now")                       # not played: as if now
+    assert [k for k, _ in play.keys_due(clock.t + 0.3)] == ["n"]
+
+
+def test_a_mark_is_not_due_before_its_audio_is_on_the_card():
+    """#255 review: LOCAL_AUDIO_FACE_ADVANCE_MS may reach past the card's lead: a phoneme
+    of audio not written yet would come due on a pause's silence. It waits for its
+    audio."""
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50]])                # its audio has not come
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t + 0.3) == [], "due on silence"
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    play.pump()
+    assert play.phonemes_due(clock.t + 0.3) == ["h"]
+
+
+def test_phonemes_across_two_gaps_in_a_clause_keep_their_audio():
+    """Two pauses in one clause: the pad breakpoints a pinned mark still needs are kept
+    (_prune_pads), so the third part's phoneme lands on the third part's audio."""
+    play, clock, sunk = _playback()
+    t0 = clock.t
+    play.phonemes(0, [["h", 0, 50], ["a", 300, 350], ["o", 500, 550]])
+    for secs in (0.2, 0.2, 0.2):                    # three parts, a gap after the first two
+        play.push(_tone(24000, secs).tobytes(), voiced=True)
+        for _ in range(int(0.6 / 0.02)):
+            play.pump()
+            clock.t += 0.02
+    starts, prev = [], True
+    for i, c in enumerate(sunk):
+        silent = c == bytes(len(c))
+        if prev and not silent:
+            starts.append(t0 + i * la.CHUNK_MS / 1000)
+        prev = silent
+    assert len(starts) == 3, starts
+    got = {}
+    for t in [t0 + k * 0.005 for k in range(400)]:
+        for sym in play.phonemes_due(t):
+            got[sym] = t
+    # Each part leaves the resampler's ~16 ms to play at the start of the next, so "a"
+    # (300 ms in) is ~116 ms into the second part and "o" (500 ms in) ~116 into the third.
+    assert abs(got["a"] - (starts[1] + 0.116)) <= 0.03, (got, starts)
+    assert abs(got["o"] - (starts[2] + 0.116)) <= 0.03, (got, starts)
+
+
+def test_a_mark_in_the_resamplers_held_tail_waits_for_it():
+    """Review round 2, A: the resampler holds back the tail of what was pushed until
+    the next push; a pause pads the card before it. A phoneme in that tail, asked for
+    early (a large face advance), is not shown on the pause's silence."""
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50], ["e", 195, 240]])     # "e" in the held tail
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    for _ in range(int(0.8 / 0.02)):                       # the clause, then a pause
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t + 0.3) == ["h"], "the tail's phoneme on silence"
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)   # it goes on
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["e"]
+
+
+def test_a_session_s_end_ends_its_stream(monkeypatch):
+    """run_session drops what its marks were waiting for once it is over."""
+    _fake_card(monkeypatch, ARECORD)
+    ended = []
+    monkeypatch.setattr(la.Playback, "end_stream", lambda self: ended.append(True))
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.close()                           # the brain ends the session
+            else:
+                await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: ended, 3)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+
+
+def test_the_end_of_a_session_drops_marks_past_its_audio():
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50], ["a", 900, 950]])  # "a" past the audio that comes
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    play.end_stream()
+    for _ in range(30):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["h"]
+    play.phonemes(0, [["n", 0, 50]])                 # the next session's first
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    for _ in range(10):
+        play.pump()
+        clock.t += 0.02
+    assert play.phonemes_due(clock.t) == ["n"], "held behind the last session's mark"
 
 
 def test_a_barge_in_drops_the_phonemes_of_the_audio_it_drops():

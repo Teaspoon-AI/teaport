@@ -1133,6 +1133,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     tts.voice_clock = voice_clock
     if reply_gate is not None:
         reply_gate.voice_clock = voice_clock
+    if voice_clock is not None and "pause" in client_features \
+            and hasattr(transport_output, "pause_notice"):
+        # Told when a barge-in pause stops the voice and when it goes on
+        # (talk_transport.TalkOutputTransport.pause_notice: the room bridge asks).
+        transport_output.pause_notice = True
     heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
     if reply_gate is not None:
         # A commit that finds the gate still armed continues the turn whose reply it
