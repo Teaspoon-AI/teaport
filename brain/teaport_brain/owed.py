@@ -240,8 +240,9 @@ STAY_SILENT_SCHEMA = FunctionSchema(
 
 # What a consult that produced no answer is recorded as: the tool result's status and
 # the record's outcome, in plain words the model can say (#80: each kind says what
-# actually happened). A failure has no terms: one statement, a reply about it heard to
-# its end closes it (Owed.tla RUNCLOSE = "about").
+# actually happened). A failure's terms are its statement's own, without the hedge and
+# the settings hint (Record.make): a reply about it heard to its end closes it (Owed.tla
+# RUNCLOSE = "about").
 _ACTION_HEDGE = (" If it was something visible (a message, poll or post), it may have gone "
                  "through anyway: ask them to check rather than saying it failed.")
 
@@ -468,6 +469,29 @@ def terms_of(item: str, request: str) -> frozenset:
 _POLARITY = frozenset({"yes", "no", "not"})
 
 
+# The words of a failure's statement that name what failed (failure_outcome): its terms.
+# Its other words are ones any reply says ("ai", "service", "ran", "hit": "Are you an
+# AI?" would close an owed billing failure, unjudged), and the hedge and the settings
+# hint are instructions riding with it.
+_FAILURE_TERMS = frozenset({"billing", "credit", "error", "empty"})
+
+
+def _terms(outcome: str, request: str, failure: Optional[str]) -> frozenset:
+    """A record's terms (Record.terms). A failure's are the words of its statement that
+    name what failed (_FAILURE_TERMS): without them a reply that tells a failure in its
+    own words ("a billing problem, want me to open your settings?") shared nothing with
+    a record of no terms, so it never closed it nor counted a cut, and the note rode
+    every turn (formal audit C1, 11-05). A timeout or an unknown outcome names none, and
+    a telling of any failure in other words ("something went wrong") none of them: those
+    lean on the request's words and the record's own run, as before. The words can come
+    up by chance ("your credit card statement"): such a reply is about it, as one
+    sharing a word with the request always was."""
+    if not failure:
+        return terms_of(outcome, request)
+    core = outcome.replace(_ACTION_HEDGE, "").replace(BILLING_SETTINGS_HINT, "")
+    return terms_of(core, request) & _FAILURE_TERMS
+
+
 # ------------------------------------------------------------------------- the record
 
 @dataclass
@@ -496,8 +520,7 @@ class Record:
     @classmethod
     def make(cls, key, request, outcome, failure=None, ids=(), **kw) -> "Record":
         return cls(key=key, request=request, outcome=outcome, failure=failure,
-                   ids=tuple(ids) or (key,),
-                   terms=frozenset() if failure else terms_of(outcome, request), **kw)
+                   ids=tuple(ids) or (key,), terms=_terms(outcome, request, failure), **kw)
 
     @property
     def asked(self) -> str:
@@ -527,9 +550,10 @@ class Record:
         its question, or one term by chance ("sunny days" in how a heat pump works, with
         a forecast owed), is no telling of it -- the judges, which read about(), keep it
         owed, but a cut counted or a dismissal of that reply read against it would end it
-        unheard. A result with no terms (a failure's plain record) falls back on about()."""
+        unheard. A failure is one statement, so a reply about it tells all of it (Owed.tla
+        PlayGot "tell"), and a result with no terms falls back on about() as well."""
         terms = self.terms - _POLARITY
-        if not terms:
+        if self.failure or not terms:
             return self.about(text)
         shared = terms_of(text or "", "") & terms
         if len(shared) >= min(2, len(terms)):
@@ -1027,7 +1051,7 @@ class Owed:
                                 else {"status": status, "error": outcome})
         self._rewrite_duplicates(key)
         question = _question_of(self._questions.pop(key, None),
-                                terms_of(outcome, "") | terms_of(request, ""))
+                                _terms(outcome, "", failure) | terms_of(request, ""))
         rec = self._owe(Record.make(key, request, outcome, failure=failure, question=question),
                         f"landed ({failure or 'answer'}); tool result "
                         f"{'rewritten' if rewrote else 'not found'}")

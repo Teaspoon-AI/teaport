@@ -137,8 +137,9 @@ ApplyClaim(r) ==
 
 (***************************************************************************)
 (* cancel_setup(call_id), and the await of the cancelled task, as one step *)
-(* (sip_server.py:663). What the cancellation does depends on where the    *)
-(* bring-up is:                                                            *)
+(* (sip_server.py:708: the handler awaits cancel_and_wait INLINE in the     *)
+(* reader, which this module's reader model already states). What the       *)
+(* cancellation does depends on where the bring-up is:                      *)
 (*   new    -- never ran, or waiting out the teardown tasks: nothing (no   *)
 (*             claim was taken)                                            *)
 (*   settle -- inside ARBITER.acquire: CallClaim.start's except releases   *)
@@ -405,8 +406,11 @@ BuConfirmed ==
                    wrongTeardown, replaced, overlap>>
 
 \* A failed bring-up hangs up and tears its own call down, guarded by call_id:
-\* "never confirmed" (no `confirmed` within 10 s of call.answer) or "STT
-\* unavailable" (greet() could not reach the engine).
+\* "never confirmed" (no `confirmed` within 10 s of call.answer), "STT
+\* unavailable" (greet() could not reach the engine), or -- since #277 -- no model
+\* to answer with (sip_server.py:947-960: the short line is said in full, then the
+\* call ends). The third is the second's shape here: answered, then its own
+\* teardown from the bring-up task; what it says first is out of scope.
 BuFail ==
     /\ \/ bpc = "ring" /\ ~ringAns
        \/ bpc = "greet"
