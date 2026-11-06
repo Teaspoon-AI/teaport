@@ -3010,7 +3010,7 @@ The monitors:
 |---|---|---|---|---|
 | `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ | ✓ |
 | `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
-| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275, and the default configuration until A2) | ✓ | ✓ | ✗ |
+| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275, and until A2 a session with the judge and segment turn text) | ✓ | ✓ | ✗ |
 | `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
 | `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | ✗ (not checked in the timed rows) |
 
@@ -3062,9 +3062,8 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
   (the PR #232 review).
 - `NoUnjudgedWords`: **words said over a paused reply are the judge's to decide.**
   `quietWindow`, 10 states. Also the shipped gate in a session that asked for no progress
-  report, where `watch_heard` declines and the pauser resumes on its window: with the
-  judge on, the default configuration until audit A2 (segment mode, no speculative
-  reply), now `REPORT = "notAsked"` (`ut_judge_noReport_nounjudged`, the same model as
+  report, where `watch_heard` declines and the pauser resumes on its window: until
+  audit A2 a session with the judge on, segment turn text and no speculative reply, now `REPORT = "notAsked"` (`ut_judge_noReport_nounjudged`, the same model as
   this row by construction, kept to name the configuration). Since A2 every session with
   the judge asks for the report (`REPORT = "asked"`, every other row):
 

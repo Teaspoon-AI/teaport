@@ -1312,6 +1312,7 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
 
     talk = build_agent_session(_Transport())          # no supports_playout_pause
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
+    assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 
 async def test_the_judge_s_session_asks_for_the_report_its_heard_out_wait_needs():
@@ -1344,7 +1345,6 @@ async def test_the_judge_s_session_asks_for_the_report_its_heard_out_wait_needs(
         assert not talk.stt.transcription_progress, "nothing asks: not asked"
     finally:
         bp.JUDGE, speculate.ENABLED = saved
-    assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 
 async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_pauser():

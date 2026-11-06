@@ -178,11 +178,12 @@
 (*                       caller's speech out (the engine's report has       *)
 (*                       passed it: every word of it is in), #275.          *)
 (* JUDGE = "quietWindow" -- the shipped gate with the resume on a timer of  *)
-(*                       quiet alone (before #275, and the default          *)
-(*                       configuration until A2, which asked for no         *)
-(*                       progress report: REPORT = "notAsked"): a word the  *)
-(*                       engine returns after it lands on the resumed       *)
-(*                       reply, which no gate holds, and cuts it unjudged.  *)
+(*                       quiet alone (before #275, and until A2 a session   *)
+(*                       with the judge and segment turn text, which asked  *)
+(*                       for no progress report: REPORT = "notAsked"): a    *)
+(*                       word the engine returns after it lands on the      *)
+(*                       resumed reply, which no gate holds, and cuts it    *)
+(*                       unjudged.                                          *)
 (* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
 (*                       resume (0.8 s of quiet) can come first.            *)
 (* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
@@ -674,7 +675,7 @@ Judged == JUDGE /= "off" /\ JudgeWindow
 \* An over-approximation: the wait is the pauser's own (barge_pause.py HEARD OUT), not
 \* the judge's, so the code waits with TEAPORT_BARGE_JUDGE off too, and only where the
 \* STT will answer (stt.watch_heard: a session that asked for the engine's report, or
-\* a sliced one -- REPORT: every session with the pauser asks, since audit A2). Without
+\* a sliced one -- REPORT: every session with the judge asks, since audit A2). Without
 \* a judge no property here reads `unheard`, so tying the wait to JUDGE loses nothing a
 \* row checks.
 HeardOutWait == JUDGE \notin {"off", "quietWindow"} /\ REPORT = "asked"

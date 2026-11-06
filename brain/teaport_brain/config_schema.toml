@@ -1114,7 +1114,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
+help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause. With it on, a pause also waits for the speech engine to have transcribed what was said over it (so a word it returns late is still judged): a cough over the reply holds it a little longer, at most 2.5 s (TEAPORT_BARGE_PAUSE_RESUME_S)."
 
 [[settings]]
 name = "TEAPORT_STOP_WORDS"
