@@ -807,7 +807,8 @@ Commit ==
                    vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
-\* the liveness property, never forced.
+\* the liveness property, never forced. A consult still running ends with it (#122,
+\* BoundedOpenAILLMService.end_with_session), which is what Land's ~ended is in the code.
 SessionEnd ==
     /\ ~ended
     /\ ended' = TRUE

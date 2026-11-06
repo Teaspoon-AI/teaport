@@ -20,11 +20,14 @@
 #
 import asyncio
 import datetime
+import http.client
 import json
 import os
 import re
 import shutil
 import signal
+import socket
+import threading
 import urllib.error
 import urllib.request
 import uuid
@@ -463,7 +466,80 @@ async def settle() -> None:
         await asyncio.gather(*list(_ENDING), return_exceptions=True)
 
 
-def _completions_sync(message: str, token: str, timeout: float) -> str | None:
+class _Hangup:
+    """One warm-lane request's connection, held so that cancelling the consult closes it
+    (#122). The request runs in an executor thread (_completions_sync), and cancelling the
+    asyncio task that waits on it stops only the wait: urllib stays blocked on the socket
+    until the agent's turn ends, so OpenClaw ran the whole turn for an answer nobody would
+    hear. Its docs: disconnecting the HTTP client cancels the agent run. So the cancel path
+    (hang_up, on the event loop) closes the connection while the thread is blocked on it.
+
+    Thread-safe by construction: as it connects, the thread hands over a DUPLICATE of the
+    socket's descriptor (connected), and the cancel path only ever shuts that one down.
+    shutdown() acts on the connection, not the descriptor: the server reads the close,
+    the thread's blocked read returns at once, and urllib's own descriptor stays urllib's
+    to close. Closing it instead from here would race urllib's close, and a descriptor
+    number reused in between would be someone else's socket. One lock orders the hand-over,
+    the hang-up and the release, so the duplicate is never touched after it is closed, and
+    a hang-up that comes before the connect has finished stops the request there."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sock = None      # the duplicate: ours alone to shut down and close
+        self._cut = False
+
+    def connected(self, sock) -> None:
+        """In the thread, connected: hand over the duplicate -- or, hung up already, go no
+        further (urllib closes the connection and raises URLError)."""
+        with self._lock:
+            if self._cut:
+                raise ConnectionAbortedError("the consult was cancelled")
+            self._sock = socket.fromfd(sock.fileno(), sock.family, sock.type, sock.proto)
+
+    def hang_up(self) -> None:
+        """On the event loop: the consult no longer waits on this request. Does nothing
+        once the request is over (released)."""
+        with self._lock:
+            self._cut = True
+            if self._sock is not None:
+                try:
+                    self._sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass   # the other end closed it first
+
+    def release(self) -> None:
+        """In the thread, the request over: the duplicate is closed."""
+        with self._lock:
+            sock, self._sock = self._sock, None
+        if sock is not None:
+            sock.close()
+
+
+def _hangup_opener(hangup: _Hangup):
+    """urllib's default opener, but each connection reports to `hangup` once connected."""
+    def held(connection):
+        class Held(connection):
+            def connect(self):
+                super().connect()
+                hangup.connected(self.sock)
+        return Held
+
+    class HTTP(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(held(http.client.HTTPConnection), req)
+
+    class HTTPS(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(held(http.client.HTTPSConnection), req,
+                                context=self._context)
+
+    return urllib.request.build_opener(HTTP, HTTPS)
+
+
+def _completions_sync(message: str, token: str, timeout: float,
+                      hangup: _Hangup | None = None) -> str | None:
+    """`hangup`: the consult's, which closes this request's connection when the consult
+    is cancelled (#122)."""
     body = json.dumps({"model": agent_model(),
                        "messages": [{"role": "user", "content": message}]}).encode()
     req = urllib.request.Request(
@@ -471,8 +547,13 @@ def _completions_sync(message: str, token: str, timeout: float) -> str | None:
         headers={"Authorization": f"Bearer {token}",
                  "Content-Type": "application/json"},
         method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
+    urlopen = urllib.request.urlopen if hangup is None else _hangup_opener(hangup).open
+    try:
+        with urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+    finally:
+        if hangup is not None:
+            hangup.release()
     choices = d.get("choices") or []
     text = ((choices[0].get("message") or {}).get("content") if choices else "") or ""
     return text.strip() or None
@@ -547,10 +628,17 @@ async def _completions_consult(message: str, *,
         remaining = deadline - loop.time()
         if remaining < 5:
             break
+        hangup = _Hangup()
         try:
             text = await asyncio.wait_for(
-                loop.run_in_executor(None, _completions_sync, message, token, remaining),
+                loop.run_in_executor(None, _completions_sync, message, token, remaining,
+                                     hangup),
                 timeout=remaining + 0.5)
+        except asyncio.CancelledError:
+            # The consult was cancelled (its session ended, #122): hang up, which is what
+            # stops the agent's run -- the thread would wait out the whole turn.
+            hangup.hang_up()
+            raise
         except Exception as e:  # noqa: BLE001 — warm lane is best-effort by design
             failure, detail, answered, retry = _warm_lane_error(e)
             outcome = ConsultOutcome(None, failure, detail)

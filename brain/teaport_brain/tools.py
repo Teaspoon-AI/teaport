@@ -713,7 +713,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     `owed` (the session's owed.Owed): the placeholder tool result is rewritten to it,
     and it is owed to the caller until they hear it. Runs as a session-lifecycle
     task (params.llm.create_task) — a barge-in or the user moving on to another topic
-    does NOT cancel the in-flight consult. `fut` is the relay's answer (consult_bridge),
+    does NOT cancel the in-flight consult; the session's end does (#122, end_with_session
+    in services.py). `fut` is the relay's answer (consult_bridge),
     None when the session has no relay: then the consult goes straight to the agent."""
     from teaport_brain import consult_bridge
 
@@ -739,8 +740,6 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             await llm.push_frame(OutputTransportMessageUrgentFrame(message=message))
         except Exception:  # noqa: BLE001
             pass
-
-    await working(False)
 
     async def deliver(outcome: oc.ConsultOutcome):
         """Land the outcome (owed.Owed), narrator first."""
@@ -775,6 +774,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         await deliver(outcome)
 
     try:
+        # Inside the try: a session ending while this is said still stops the narrator.
+        await working(False)
         if fut is None:
             # No relay on this session (ToolContext.relay): nothing was sent, so nothing
             # can ack. Straight to the agent, with the whole budget (#78).
@@ -807,7 +808,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         await deliver(oc.ConsultOutcome(
             None, "timeout", f"no result within {_ASYNC_CONSULT_TIMEOUT:.0f}s"))
     except asyncio.CancelledError:
-        raise  # session teardown
+        raise  # session teardown (end_with_session): no outcome, and nothing lands
     except Exception as e:  # noqa: BLE001
         logger.warning(f"openclaw_agent_consult(async) failed: {e!r}")
         try:
@@ -818,7 +819,13 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
-        await working(True)
+        if asyncio.current_task().cancelling():
+            # The session is ending (#122): nothing more goes into its pipeline, not even
+            # the "done" -- the client is gone or going. The owed book closes the consult
+            # with the session (Owed.close_session), as it did one that ran on.
+            _count_consult(gate, -1)
+        else:
+            await working(True)
 
 
 def _consult_args(arguments) -> dict | None:
@@ -906,9 +913,13 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # the answer when it lands (owed.py). This is the pattern mature voice platforms use
     # for slow sub-agent delegation.
     if owed is not None:
-        params.llm.create_task(_consult_and_land(
+        consult = params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
             message=_consult_message(args), tts=tts))
+        # Cancelled when the session ends, not left running into its teardown (#122).
+        end_with_session = getattr(params.llm, "end_with_session", None)
+        if end_with_session is not None:
+            end_with_session(consult)
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome lands later (owed.py), rewriting this tool

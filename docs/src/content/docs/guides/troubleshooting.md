@@ -581,7 +581,7 @@ failures usually pass.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1515-1528#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:152#d3cc622a; install.sh:1515-1528#c562c839 -->
 
 **Fix**
 

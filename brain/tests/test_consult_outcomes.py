@@ -45,7 +45,7 @@ class _Warm:
         self.replies = list(replies)
         self.calls = 0
 
-    def __call__(self, message, token, timeout):
+    def __call__(self, message, token, timeout, hangup=None):
         self.calls += 1
         r = self.replies.pop(0)
         if isinstance(r, BaseException):
