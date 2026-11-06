@@ -556,7 +556,9 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
     logger.remove()
     logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
     try:
-        for peeks in (True, False):
+        # The peek's preview before the verdict, the verdict before the preview (the
+        # turn is then the peek's, not its commit's), and no peek at all.
+        for peeks, verdict_first in ((True, False), (True, True), (False, False)):
             lines.clear()
             s = Service(peeks=peeks)
             await created(s)
@@ -566,8 +568,11 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
                     await audio(s, 1000)
                     await vad_stop(s)
                     end = s._peek.at_ms
+                    if verdict_first:
+                        await verdict(s)
                     await preview(s, end, "" if word == "yes" else " sure")
-                    await verdict(s)
+                    if not verdict_first:
+                        await verdict(s)
                 else:
                     await turn(s)
                     end = s._sent_samples * 1000 // 16000
@@ -575,9 +580,78 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
                 if word == "yes":
                     await delta(s, " yes", end - 100)
                 await progress(s, end)
-            assert [t for t, _ in s.finals()] == ["yes"] * 4 + ["sure"], (peeks, s.finals())
-            assert list(s._seg_window) == [""] * 5, (peeks, list(s._seg_window))
-            assert not [m for m in lines if "caller was heard in" in m], (peeks, lines)
+            mode = (peeks, verdict_first)
+            assert [t for t, _ in s.finals()] == ["yes"] * 4 + ["sure"], (mode, s.finals())
+            assert list(s._seg_window) == [""] * 5, (mode, list(s._seg_window))
+            assert not [m for m in lines if "caller was heard in" in m], (mode, lines)
+    finally:
+        logger.remove()
+
+
+async def test_a_late_final_takes_back_its_own_miss_and_no_other():
+    # The turn's final settles after later segments were counted: what it takes back
+    # is its own entry -- not the newest, not the oldest miss in the window.
+    s = Service(peeks=True)
+    await created(s)
+    ats = []
+    for _ in range(3):              # a miss that stays, the turn, a miss counted after it
+        await vad_start(s)
+        await audio(s, 1000)
+        await vad_stop(s)
+        ats.append(s._peek.at_ms)
+        await verdict(s)
+        await preview(s, ats[-1], "")
+        if len(ats) == 1:
+            await progress(s, ats[0])          # settles with no words: stays a miss
+    assert list(s._seg_window) == ["vad"] * 3, list(s._seg_window)
+    await delta(s, " yes", ats[1] - 100)       # the second turn's word, late
+    await progress(s, ats[1])
+    assert s.finals() == [("yes", NO_STOP)], s.finals()
+    assert list(s._seg_window) == ["vad", "", "vad"], list(s._seg_window)
+    await progress(s, ats[2])
+    assert list(s._seg_window) == ["vad", "", "vad"], list(s._seg_window)
+
+
+async def test_a_miss_gone_from_the_window_has_nothing_to_take_back():
+    # Its entry aged out of the window, or the window started over (a reconnect, the
+    # wake gate): nothing is cleared -- above all not the newest entry, where a
+    # negative place would land.
+    s = Service()
+    t = SimpleNamespace(noted=s._note_segment("vad"))
+    for _ in range(12):
+        s._note_segment("vad")
+    s._unmiss(t)
+    assert list(s._seg_window) == ["vad"] * 12, list(s._seg_window)
+    s = Service()
+    t = SimpleNamespace(noted=s._note_segment("vad"))
+    s._reset_empty_rate()
+    s._note_segment("vad")
+    s._unmiss(t)
+    assert list(s._seg_window) == ["vad"], list(s._seg_window)
+
+
+async def test_a_warning_stands_but_its_episode_counts_what_stayed_missed():
+    # A final can settle after a segment with words judged the window: the warning is
+    # logged and stays so, but the episode's count is corrected, and its recovery line
+    # does not report as lost what was heard after all.
+    from loguru import logger
+
+    lines = []
+    logger.remove()
+    logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
+    try:
+        s = Service()
+        turns = [SimpleNamespace(noted=s._note_segment("vad")) for _ in range(3)]
+        s._note_segment("")
+        assert ["3 of the last 4" in m for m in lines if "caller was heard in" in m] == [True]
+        for t in turns[:2]:
+            s._unmiss(t)
+        assert s._rate_episode == [1, 4], s._rate_episode
+        s._unmiss(turns[0])                    # once only
+        assert s._rate_episode == [1, 4], s._rate_episode
+        s._note_segment("")
+        back = [m for m in lines if "coming back with words again" in m]
+        assert len(back) == 1 and "1 of the last 5 empty, 1 of 5 over the episode" in back[0], back
     finally:
         logger.remove()
 
