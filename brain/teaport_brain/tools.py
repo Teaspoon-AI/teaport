@@ -627,34 +627,48 @@ _NOT_GERUNDS = frozenset(
 _STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
                        "\u00ab": "\u00bb"}
 _STATUS_STOPS = " .!?…,;:—–-"
-# A two-word phrase ending on a particle that needs an object is a verb with the object
-# missing ("Looking up…", "looking into", "checking on"): "Sure — looking up." sounds
-# complete and says nothing. Not the particles a whole phrasal verb ends on ("logging
-# in", "checking out", "calling back"), nor "up" or "on" after a verb they complete
-# ("signing up", "following up", "holding on").
-_DANGLING = frozenset("into for at about through with to from of by on".split())
+_STATUS_QUOTE_MARKS = "\"'()[]\u201c\u201d\u2018\u2019\u00ab\u00bb"
+# A phrase ending where a word should follow stops mid-thought: on a preposition or a
+# particle that needs an object ("Looking up…", "looking into", "looking up flights
+# to"), or on an article or a possessive ("looking up the…"). "Sure — looking up the."
+# sounds finished and is broken. Not the particles a whole phrasal verb ends on
+# ("logging in", "checking out", "calling back"), nor "up", "on" or "in" after a verb
+# they complete ("signing up", "holding on", "checking in"). Not "this", "that" or
+# "her" either: they end a phrase as pronouns ("looking into that", "calling her").
+_DANGLING = frozenset(
+    "into for at about through with to from of by a an the my your his their our its"
+    .split())
 _UP_TAKES_AN_OBJECT = frozenset(
     "looking pulling picking digging bringing calling ringing".split())
 _WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging".split())
+_WHOLE_WITH_IN = frozenset(
+    "logging checking signing plugging filling joining dropping breaking settling "
+    "tuning".split())
 # The listener named in the third person, as an instruction to the agent names them
 # ("informing the user", "near the caller", "the user's calendar"). Refused wherever it
 # stands, except before a word that makes "user" or "caller" part of a thing's name
-# ("the user manual", "the caller ID").
+# ("the user manual", "the caller ID"), and that only where no verb aimed at the
+# listener comes first: "showing the user names of nearby cafes" is the listener.
 _LISTENER_AS_A_NAME = (
     "manual manuals guide guides id ids interface interfaces name names agreement "
     "agreements forum forums group groups base documentation docs experience list lists")
 _ABOUT_THE_LISTENER = re.compile(
-    r"\bthe\s+(?:user|caller)s?\b(?!\s+(?:" + "|".join(_LISTENER_AS_A_NAME.split())
+    r"\b(?:giving|showing|sending|telling|emailing|texting|messaging|asking)\s+the\s+"
+    r"(?:user|caller)s?\b"
+    r"|\bthe\s+(?:user|caller)s?\b(?!\s+(?:" + "|".join(_LISTENER_AS_A_NAME.split())
     + r")\b)", re.I)
 
 
-def _dangling(verb: str, particle: str) -> bool:
-    """`verb particle` stops where its object should be ("looking up", "checking on")."""
-    if particle == "up":
-        return verb in _UP_TAKES_AN_OBJECT
-    if particle == "on":
-        return verb not in _WHOLE_WITH_ON
-    return particle in _DANGLING
+def _dangling(before: str, last: str) -> bool:
+    """A phrase ending `before last` stops where a word should follow ("looking up",
+    "flights to", "up the")."""
+    if last == "up":
+        return before in _UP_TAKES_AN_OBJECT
+    if last == "on":
+        return before not in _WHOLE_WITH_ON
+    if last == "in":
+        return before not in _WHOLE_WITH_IN
+    return last in _DANGLING
 
 
 def _unquoted(text: str) -> str:
@@ -677,8 +691,8 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     -ing word, or naming the listener in the third person ("... for the user": written
     for the agent, the register #120 is about), it is "" and the plain lines are said.
     Only the edges are tidied: spacing, a pair of quotes around all of it, the closing
-    stop the frames add, and the first capital. A verb and a particle with its object
-    missing ("Looking up…") is plain lines too.
+    stop the frames add, and the first capital. A phrase that stops where a word should
+    follow ("Looking up…", "looking up the…") is plain lines too.
 
     English only (#300). The -ing test is what tells a phrase that fits "Sure — ..." and
     "Still ..." from one that does not, and only in English is a test that cheap. In
@@ -706,8 +720,10 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first.lower()) or len(first) < 5
             or first.lower() in _NOT_GERUNDS):
         return "", "no -ing word first"
-    if len(words) == 2 and _dangling(*(w.lower() for w in words)):
-        return "", "a fragment"
+    # A one-word phrase is a gerund ("checking"), whole; anything longer may stop short.
+    if len(words) >= 2 and _dangling(*(w.lower().strip(_STATUS_QUOTE_MARKS)
+                                       for w in words[-2:])):
+        return "", "ends mid-thought"
     if _ABOUT_THE_LISTENER.search(text):
         return "", "not said to the listener"
     # The gerund opens a sentence's second half ("Sure — looking ..."): lowercased when

@@ -220,7 +220,7 @@ async def test_a_verb_missing_its_object_gets_the_plain_lines():
     for fragment in ("Looking up…", "looking up...", "Looking up.", "looking into",
                      "checking on", "working on", '"Looking up..."', "'looking up'"):
         assert _ack(fragment) == "On it.", fragment
-        assert tools._status_phrase(fragment, "en") == ("", "a fragment"), fragment
+        assert tools._status_phrase(fragment, "en") == ("", "ends mid-thought"), fragment
     # Round 2: a trailing "…" alone decides nothing (bare "checking" is said too), and a
     # phrasal verb that is whole without an object is said.
     for whole in ("checking", "checking…", "Looking it up…", "Checking traffic…",
@@ -229,6 +229,23 @@ async def test_a_verb_missing_its_object_gets_the_plain_lines():
                   "calling back", "holding on", "checking up on that", "looking into it"):
         phrase = tools._status_phrase(whole, "en")[0]
         assert phrase and _ack(whole) == f"Sure — {phrase}.", (whole, _ack(whole))
+
+
+async def test_a_phrase_that_stops_mid_thought_gets_the_plain_lines():
+    """Review of #329, round 3: a longer phrase that stops where a word should follow
+    was said ("Sure — looking up flights to.", "Sure — looking up the.")."""
+    for short in ("looking up flights to", "looking up the…", "looking up the...",
+                  "looking up flights for", "reading the news for my", "checking up on",
+                  "looking up flights in", "finding a table at", 'looking up "the',
+                  "booking a room with a"):
+        assert tools._status_phrase(short, "en") == ("", "ends mid-thought"), short
+        assert _ack(short) == "On it.", short
+        assert tools._progress_line(short, 0, EN) == "Still on it.", short
+    # A pronoun ends a phrase whole, and so does a phrasal verb with its own particle.
+    for whole in ("looking up flights to Denver", "looking into that", "looking into this",
+                  "calling her", "checking in", "logging in", "holding on",
+                  "looking it up", "checking on your order", "picking the kids up"):
+        assert _ack(whole) == f"Sure — {whole}.", (whole, _ack(whole))
 
 
 async def test_the_listener_named_in_the_third_person_is_refused():
@@ -247,6 +264,12 @@ async def test_the_listener_named_in_the_third_person_is_refused():
                    "asking the User to confirm"):
         assert tools._status_phrase(agents, "en") == ("", "not said to the listener"), agents
         assert _ack(agents) == "On it.", agents
+    # Round 3: after a verb aimed at the listener, "the user" is the listener whatever
+    # follows, even a word that could make it a thing's name.
+    for agents in ("showing the user names of nearby cafes",
+                   "giving the user list of options", "sending the user ID and password",
+                   "telling the caller name of the shop", "emailing the users guide"):
+        assert tools._status_phrase(agents, "en") == ("", "not said to the listener"), agents
     for listeners in ("checking the user manual for the router",
                       "looking up the caller ID for that number",
                       "reading the user guide", "checking the users forum"):
