@@ -45,9 +45,10 @@ from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.services.openai.llm import OpenAILLMService  # noqa: E402
 
-from teaport_brain import llm_text_guard, owed  # noqa: E402
+from teaport_brain import llm_text_guard, owed, services  # noqa: E402
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame  # noqa: E402
 from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
+from teaport_brain.mood_tag import MoodTag  # noqa: E402
 from teaport_brain.services import BoundedOpenAILLMService  # noqa: E402
 
 ASK = "Edit the note to say Thursday instead of Wednesday."
@@ -214,6 +215,26 @@ async def _run(processors, *steps):
     await task.cancel()
     await runner
     return sink.frames
+
+
+def _answer(llm, ctx, result=None):
+    """A step: the assistant aggregator's ask for the answer to the call's result, pushed
+    up, once the ledger has settled the reply before it; waited for until its End."""
+    async def step(sink):
+        for f in sink.frames:
+            reply = getattr(f, "owed_reply", None)
+            if reply is not None and not reply.settled:
+                llm.owed.settle(reply, None, cut=False, audio=False)
+        ctx.add_message({"role": "tool", "tool_call_id": "call-t",
+                         "content": json.dumps(result or {"time": "noon"})})
+        n = sink.ends() + 1
+        await llm.queue_frame(LLMContextFrame(context=ctx), FrameDirection.UPSTREAM)
+        await _until(lambda: sink.ends() >= n, "the answer's End")
+    return step
+
+
+async def _result(params):
+    await params.result_callback({"ok": True})
 
 
 def _texts(frames):
@@ -390,20 +411,154 @@ async def test_a_tool_round_answers_whoever_began_it():
         else:
             asked = LLMContextFrame(context=ctx)
 
-        async def answer(sink):     # the assistant aggregator's ask, pushed up
-            for f in sink.frames:       # ...once the ledger has settled the reply before
-                reply = getattr(f, "owed_reply", None)
-                if reply is not None and not reply.settled:
-                    llm.owed.settle(reply, None, cut=False, audio=False)
-            ctx.add_message({"role": "tool", "tool_call_id": "call-t",
-                             "content": json.dumps({"time": "noon"})})
-            n = sink.ends() + 1
-            await llm.queue_frame(LLMContextFrame(context=ctx), FrameDirection.UPSTREAM)
-            await _until(lambda: sink.ends() >= n, "the answer's End")
-        frames = await _run([llm], asked, answer)
+        frames = await _run([llm], asked, _answer(llm, ctx))
         n = len(provider.requests)
         assert n == (3 if expect else 2), (first, n)
         assert _texts(frames) == expect, (first, _texts(frames))
+
+
+async def test_an_answer_after_the_model_spoke_beside_its_call_is_left_alone():
+    """Review round 1's finding: "That's all, goodnight." -- "Goodnight!" and
+    end_conversation in one completion, then an empty answer to the result, which is
+    right: the goodbye has been said. A round that has spoken owes nothing more, so no
+    retry and no "Could you say that again?" as the box goes to sleep. The same for
+    "Got it" with remember: the line would have the caller say it again, and the fact
+    saved twice."""
+    for said, tool in (("Goodnight!", "end_conversation"), ("Got it.", "remember")):
+        ctx = _context({"role": "user", "content": "That's all, goodnight."})
+        provider = _Provider([_chunk(said), _chunk(tool=tool), _chunk(finish="tool_calls")],
+                             EMPTY)
+        llm, _ = _llm(provider, ctx)
+        llm.register_function(tool, _result)
+        frames = await _run([llm, LLMTextGuard()], LLMContextFrame(context=ctx),
+                            _answer(llm, ctx, {"ok": True}))
+        assert len(provider.requests) == 2, (tool, len(provider.requests))
+        assert _texts(frames) == [said], (tool, _texts(frames))
+
+
+async def test_no_recovery_after_the_tools_that_end_the_session_or_settle_a_call():
+    """end_conversation and restart_session are called with no line before them, and the
+    session ends once their answer has played; answer_phone_call's results include ones
+    that ask for nothing to be said (the caller hung up, the call left ringing). An empty
+    answer after any of them is not recovered."""
+    from teaport_brain import tools
+    assert services._NO_RECOVERY_AFTER <= set(tools.TOOLS_BY_NAME), (
+        sorted(services._NO_RECOVERY_AFTER - set(tools.TOOLS_BY_NAME)))
+    for tool in sorted(services._NO_RECOVERY_AFTER):
+        ctx = _context({"role": "user", "content": "That's all, goodnight."})
+        provider = _Provider([_chunk(tool=tool), _chunk(finish="tool_calls")], EMPTY)
+        llm, _ = _llm(provider, ctx)
+        llm.register_function(tool, _result)
+        frames = await _run([llm, LLMTextGuard()], LLMContextFrame(context=ctx),
+                            _answer(llm, ctx, {"ok": True}))
+        assert len(provider.requests) == 2, (tool, len(provider.requests))
+        assert not _texts(frames), (tool, _texts(frames))
+
+
+async def test_a_consult_landing_during_the_first_attempt_is_not_in_its_retry():
+    """The retry is the request as it went out: a consult that lands while the first
+    attempt streams rewrites its placeholder in the live context (Owed._rewrite), and
+    the retry must not carry that answer without its note -- the book counts the reply
+    as carrying the first render's records (none), so the record stays owed and its
+    landing run tells it, once."""
+    ctx = _consulted({"role": "assistant", "content": "I'm looking into it."},
+                     {"role": "user", "content": ASK})
+    provider = _Provider(EMPTY, SAID)
+    llm, gate = _llm(provider, ctx)
+    asked = []
+    gate.ask = lambda keys, purpose, context: asked.append((tuple(keys), purpose))
+    sent = []       # each request's tool results as it went out (its dicts are live)
+
+    def request(n):
+        sent.append([m["content"] for m in provider.requests[-1]["messages"]
+                     if m.get("role") == "tool"])
+        if n == 1:
+            llm.owed.land(CONSULT, "It opens at nine.", "call-c")
+    provider.on_request = request
+    frames = await _run([llm], LLMContextFrame(context=ctx))
+    assert len(provider.requests) == 2, f"asked {len(provider.requests)} times"
+    assert sent == [[json.dumps({"status": "working_in_background"})]] * 2, sent
+    reply = next(f.owed_reply for f in frames if isinstance(f, LLMFullResponseStartFrame))
+    assert reply.noted == () and [r.key for r in llm.owed.owed()] == ["call-c"]
+    assert asked == [(("call-c",), "run")], asked
+    assert _texts(frames) == [ANSWER], _texts(frames)
+
+
+async def test_a_slow_or_capped_empty_reply_gets_the_line_at_once():
+    """No retry when it would cost too much or change nothing: a first attempt that took
+    longer than _RETRY_WITHIN_S (the caller has waited that long already), or one that
+    ended on the token cap (finish_reason=length: the same request hits it again)."""
+    class _Slow(_Stream):
+        async def _gen(self):
+            await asyncio.sleep(0.3)
+            for c in self._chunks:
+                yield c
+
+    def slow_provider():
+        provider = _Provider(EMPTY, SAID)
+        create = provider.create
+
+        async def slow(**params):
+            stream = await create(**params)
+            return _Slow(stream._chunks)
+        provider.create = slow
+        return provider
+
+    within = services._RETRY_WITHIN_S
+    services._RETRY_WITHIN_S = 0.2
+    try:
+        for name, provider in (("slow", slow_provider()),
+                               ("length", _Provider([_chunk(""), _chunk(finish="length")],
+                                                    SAID))):
+            ctx = _context({"role": "user", "content": ASK})
+            llm, _ = _llm(provider, ctx)
+            with _Log() as log:
+                frames = await _run([llm, LLMTextGuard()], LLMContextFrame(context=ctx))
+            assert len(provider.requests) == 1, (name, len(provider.requests))
+            assert _texts(frames) == [LINE], (name, _texts(frames))
+            assert not log.having("asking once more"), name
+    finally:
+        services._RETRY_WITHIN_S = within
+
+
+async def test_a_mood_emoji_alone_is_retried_and_a_bracket_tag_is_moodtags():
+    """Through MoodTag as the session has it: a reply of only the mood emoji the prompt
+    asks for is wordless, so it is retried (and answered), and twice gets one line --
+    MoodTag's own bare-tag line does not add a second. A reply of only a bracketed tag
+    has letters, so it is not retried: MoodTag strips it and speaks the line itself."""
+    emoji = [_chunk("\U0001F622"), _chunk(finish="stop")]
+    tag = [_chunk("[mood: sad]"), _chunk(finish="stop")]
+    for name, replies, asks, expect in (("emoji, then the answer", (emoji, SAID), 2, [ANSWER]),
+                                        ("emoji twice", (emoji,), 2, [LINE]),
+                                        ("a bracket tag", (tag,), 1, [LINE])):
+        ctx = _context({"role": "user", "content": ASK})
+        provider = _Provider(*replies)
+        llm, _ = _llm(provider, ctx)
+        frames = await _run([llm, MoodTag(), LLMTextGuard()], LLMContextFrame(context=ctx))
+        assert len(provider.requests) == asks, (name, len(provider.requests))
+        assert [t.strip() for t in _texts(frames) if t.strip()] == expect, (
+            name, _texts(frames))
+
+
+async def test_with_the_guard_off_the_service_still_recovers():
+    """TEAPORT_LLM_TEXT_GUARD=0: no guard in the pipeline, so nothing cuts a collapse --
+    it is retried like any reply with no words -- and the line, pushed by the service
+    itself, goes to the TTS with no leading space."""
+    enabled = llm_text_guard.ENABLED
+    llm_text_guard.ENABLED = False
+    try:
+        for name, replies, expect in (("a collapse, then the answer",
+                                       ([_chunk("." * 60), _chunk(finish="stop")], SAID),
+                                       ["." * 60, ANSWER]),
+                                      ("nothing twice", (EMPTY,), [LINE])):
+            ctx = _context({"role": "user", "content": ASK})
+            provider = _Provider(*replies)
+            llm, _ = _llm(provider, ctx)
+            frames = await _run([llm], LLMContextFrame(context=ctx))
+            assert len(provider.requests) == 2, (name, len(provider.requests))
+            assert _texts(frames) == expect, (name, _texts(frames))
+    finally:
+        llm_text_guard.ENABLED = enabled
 
 
 async def test_an_adopted_speculation_is_retried_on_its_context():

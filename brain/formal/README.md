@@ -333,6 +333,14 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   guard speaks its recovery line for anything it empties; `MoodTag` alone could take a
   reply that is only a mood tag, and that run's turn would stay set until the next
   interruption.
+- **A caller's reply that came back empty is asked once more** (#15,
+  `BoundedOpenAILLMService._recover_nothing`), inside the same completion: one reply, one
+  `Issue`, one render. The model has one rendered request per reply, and the retry keeps
+  that: it re-sends the request as the first attempt sent it, copied at the send
+  (`_as_sent`), never rendered again. So a consult landing during the first attempt (its
+  placeholder rewritten in place) is not in the retry either; the reply's `noted` is the
+  first render's, the record stays owed, and its landing run tells it. Not for a run of
+  ours, whose `SILENT` outcome stays as modelled.
 - **The note's placement and texts** (`render`): the measured texts; the run line first,
   the re-offer line last (where rounds 4 and 5 measured it).
 - **The heard quote.** A cut reply that carried the note and closed nothing has its
