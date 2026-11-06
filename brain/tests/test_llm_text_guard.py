@@ -525,7 +525,14 @@ async def test_a_leading_emoticon_is_kept_whole():
                          ([":Peru's capital is Lima."], "Peru's capital is Lima."),
                          ([":Done."], "Done."), ([":D'accord."], "D'accord."),
                          ([":(laughs) Sure."], "(laughs) Sure."), ([":[Sure.]"], "[Sure.]"),
-                         ([":D sure."], ":D sure."), ([":3"], ":3"), ([":(."], ":(.")):
+                         ([":D sure."], ":D sure."), ([":3"], ":3"), ([":(."], ":(."),
+                         # ...a LATIN word: CJK has no spaces, so a face against the next
+                         # word is ordinary there, and Cyrillic and Devanagari keep it too.
+                         ([":)好的，我来帮你。"], ":)好的，我来帮你。"),
+                         ([":Dはい、わかりました。"], ":Dはい、わかりました。"),
+                         ([";)Хорошо."], ";)Хорошо."), ([":)नमस्ते।"], ":)नमस्ते।"),
+                         ([":Désolé, pouvez-vous répéter ?"], "Désolé, pouvez-vous répéter ?"),
+                         ([":Perdón."], "Perdón."), ([":Pérou."], "Pérou.")):
         h = Guard()
         await h.feed(LLMFullResponseStartFrame())
         for d in deltas:
@@ -557,7 +564,8 @@ async def test_an_emoticon_split_across_deltas_is_kept_whole():
                          ([":", "P", "eru's capital is Lima."], "Peru's capital is Lima."),
                          ([":", "D", " sure."], ":D sure."), ([":D", "one."], "Done."),
                          ([":", "(laughs) Sure."], "(laughs) Sure."), ([":(", "laughs)"], "(laughs)"),
-                         ([":)", " Sure."], ":) Sure."),
+                         ([":)", " Sure."], ":) Sure."), ([":", ")好的。"], ":)好的。"),
+                         ([":)", "好的。"], ":)好的。"), ([":", "Désolé."], "Désolé."),
                          ([":\n", "Okay"], "Okay"), ([":", "\n", "Okay."], "Okay."),
                          (["=\n", "Hello."], "=\nHello."), (["<|end|>:", ")"], ":)")):
         said = []

@@ -191,8 +191,12 @@ _MAX_HOLDBACK = 4
 # that, ":Peru's capital is Lima." kept its colon -- the text a #15 retry streams when
 # its first attempt was a lone ":", still held below (#187 review). The price: a face
 # glued to the next word (":)Sure") loses its colon, as every face did before #178.
+# A LATIN word, not `\w`, which matches every script's letters: CJK has no spaces, so a
+# face against the next word is ordinary in the ja and zh rooms (":)\u597d\u7684"), and `\w` took
+# its colon there, and in Cyrillic and Devanagari too (#187 review round 2).
 _LEADING_PUNCT = re.compile(
-    r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*](?![\w']))[\s.,;:!?\u2026])+")
+    r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*](?![0-9A-Za-z_'\u00c0-\u024f]))"
+    r"[\s.,;:!?\u2026])+")
 # ...nor into one split across deltas (#187): the strip judges one frame at a time, so
 # ":" then ")" lost the colon all the same, the lone ":" having no closer in view. While
 # the strip is still stripping, a delta that ends in an opener, or in an opener and a
