@@ -64,6 +64,7 @@ from teaport_brain.conversation_log import quoted
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS
 from teaport_brain.wifi_setup import NO_WIFI_DEVICE, PAGE_FAILED
+from teaport_brain.wifi_setup import hand_language as hand_screen_language
 from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 (tests)
 
 UNIT = "teaport-wifi-setup"
@@ -313,9 +314,10 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
                        "setup network. Then, in your phone's browser, go to the address "
                        "on my screen and pick your Wi-Fi. Say repeat if you'd like me to "
                        "read the details.")
-        # Without a code the screen's network line is the name only where the font
-        # draws it as it is; a folded one would read wrong, so it is spelled instead.
-        if display.fold_ascii(ssid) == ssid:
+        # Without a code the screen's network line is the name only where the screen
+        # draws it as it is (display's rule, with what the unit asked of the avatar:
+        # "unicode"); a folded one would read wrong, so it is spelled instead.
+        if display.screen_text(ssid, status.get("unicode")) == ssid:
             return t._("On your phone, join the Wi-Fi network shown on my screen, using "
                        "the password shown there. Then, in your phone's browser, go to "
                        "the address on my screen and pick your Wi-Fi. Say repeat if you'd "
@@ -459,8 +461,10 @@ class WifiSetupVoice(PhraseVoice):
 
     def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
                  lang_fn=lambda: "en-us", alive=None, online=None, model: bool = True,
-                 on_network=None, **kw):
+                 on_network=None, hand_language=None, **kw):
         super().__init__(lang_fn=lang_fn, clock=clock, **kw)
+        # How the unit learns the voice's language for its screens (wifi_setup).
+        self._hand_language = hand_language or hand_screen_language
         # The session has a model (#277). Without one the phrase works online too: the
         # rule that leaves it to the model online has no model to leave it to.
         self.model = model
@@ -597,6 +601,12 @@ class WifiSetupVoice(PhraseVoice):
         _first_boot().setup_started()
         await self.say(self.t._(WELCOME_TEXT) if welcome
                        else self.t._("Okay. Give me a moment to look for networks."))
+        # The box's screen begins in the voice's language (#207): the unit reads it from
+        # here, as nothing else reaches it through config_apply.
+        try:
+            await asyncio.to_thread(self._hand_language, self.t.lang)
+        except OSError as e:
+            logger.warning(f"wifi setup: could not hand the screens their language: {e}")
         rc, err = await self._run("restart", UNIT)
         if rc != 0:
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")

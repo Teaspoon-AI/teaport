@@ -443,12 +443,15 @@ class FakeAvahi:
             proc.wait()
 
 
-def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None):
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None,
+               lang=None, page_lang=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
-    the exception instead when the run raised one."""
+    the exception instead when the run raised one. `lang`: the language the brain handed
+    over (an i18n.T); `page_lang`: the page's, posted as its form does (?lang=)."""
     status = _Recorded(tempdir())
-    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
+    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1",
+                     lang=lang)
     _no_avahi(setup, avahi)
     result = {}
 
@@ -468,8 +471,10 @@ def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", ava
             page = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/hotspot-detect.html").read().decode()
             assert 'value="home"' in page and ssid not in page
             body = urllib.parse.urlencode(post[posted]).encode()
-            reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect", body).read().decode()
-            assert "Joining" in reply
+            query = f"?lang={page_lang}" if page_lang else ""
+            reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect{query}",
+                                           body).read().decode()
+            assert i18n.get(page_lang or "en")._("Teaport is joining") in reply
             posted += 1
     t.join(5)
     assert setup.server is None or setup.server.server_address[0] == "127.0.0.1"
@@ -483,6 +488,31 @@ def test_a_good_join_ends_connected():
     assert [s["phase"] for s in seen] == ["scanning", "ap_up", "joining", "connected"]
     assert seen[1]["password"] == "47190352" and seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
     assert ("join", "home", "homepass1", False) in nm.events and nm.events[-1] == ("ap_delete",)
+
+
+def test_a_join_request_as_the_setup_network_is_announced_is_kept():
+    """A phone asks the moment "ap_up" is written (that is when the voice and the page
+    know the network is back): its request is the one to follow, not one to clear as
+    stale -- once at the start, and again when the network comes back after a failure."""
+    status = _Recorded(tempdir())
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    setup = ws.Setup(nm, status, port=0, minutes=0.2, bind="127.0.0.1")
+    _no_avahi(setup)
+    setup.serve = lambda: None    # no page: the request is put as the page puts it
+    record = status.set
+
+    def set_and_ask(phase, **kw):
+        record(phase, **kw)
+        if phase == "ap_up":      # the page's POST, landing right after the status write
+            setup.request = ("home", "wrongpass" if "failed" not in
+                             [s["phase"] for s in status.history] else "homepass1", False)
+            setup.wake.set()
+
+    status.set = set_and_ask
+    assert setup.run("teaport-9e35", "47190352") == 0
+    assert [s["phase"] for s in status.history] == [
+        "scanning", "ap_up", "joining", "failed", "ap_up", "joining", "connected"]
+    assert ("join", "home", "homepass1", False) in nm.events
 
 
 def test_a_failed_join_brings_the_setup_network_back_with_the_reason():
@@ -541,10 +571,10 @@ def test_a_stop_during_the_clean_up_finishes_it_and_the_result_stands():
     assert nm.events[-2:] == [("ap_delete",), ("ap_delete",)]
 
 
-def _screen(avatar=True, events=None, qr=True, qr_max=53):
+def _screen(avatar=True, events=None, qr=True, qr_max=53, unicode=False):
     """A Screen recording what it sends (into `events` too, as ("screen", ...), when
     given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes,
-    up to `qr_max` bytes."""
+    up to `qr_max` bytes; `unicode`: and every script (its fallback fonts, #207)."""
     sent = []
 
     def send(ev, path):
@@ -553,7 +583,8 @@ def _screen(avatar=True, events=None, qr=True, qr_max=53):
             events.append(("screen", ev["screen"]))
         return True
 
-    feats = {"screen": 1, **({"qr": 1, "qr_max_bytes": qr_max} if qr else {})} if avatar else {}
+    feats = {"screen": 1, **({"qr": 1, "qr_max_bytes": qr_max} if qr else {}),
+             **({"unicode": 1} if unicode else {})} if avatar else {}
     return display.Screen("wifi-setup", send=send, features=lambda path: feats), sent
 
 
@@ -573,7 +604,7 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
     assert shown[1]["lines"] == ["Joining", "home"]
     # The last word: up for its seconds after the unit has exited, not taken down.
     assert sent[-1]["lines"] == ["Connected to", "home"]
-    assert sent[-1]["title"] == ws.CONNECTED_TITLE == "Wi-Fi"   # setup mode is over
+    assert sent[-1]["title"] == "Wi-Fi"   # setup mode is over
     assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
     assert "homepass1" not in json.dumps(sent)       # the user's own password: never
 
@@ -668,6 +699,156 @@ def test_a_folded_name_without_a_code_is_shown_folded():
     assert sent[0]["lines"][2] == seen[1]["url"] == f"http://{wifi.AP_ADDRESS}"
 
 
+# ------------------------------------------------------------------ the screen's script (#207)
+
+RU = i18n.get("ru")
+
+
+def _screens(sent):
+    """(title, lines) of each screen shown, refreshes aside."""
+    shown = [(s["title"], s["lines"]) for s in sent if s.get("lines")]
+    return [x for i, x in enumerate(shown) if i == 0 or x != shown[i - 1]]
+
+
+@pytest.mark.parametrize("qr", [True, False])
+def test_without_unicode_every_screen_is_ascii_english_whatever_the_language(qr):
+    """An avatar without fallback fonts gets today's screens, word for word, whatever
+    the voice's language and the page's, and whatever the names are written in."""
+    screen, sent = _screen(qr=qr)
+    nm = FakeNM([(False, "the password did not work", "Дом"), (True, "", "Café ☕")])
+    rc, seen = _run_setup(nm, screen=screen, ssid="Кухня", lang=RU, page_lang="ja",
+                          post=[{"ssid": "Дом", "password": "wrongpass"},
+                                {"ssid": "Café ☕", "password": "homepass1"}])
+    assert rc == 0 and seen[1]["unicode"] is False
+    details = ["Network  " + ("(scan the code)" if qr else "your network"),
+               "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
+    assert _screens(sent) == [
+        ("Setup mode", details), ("Setup mode", ["Joining", "your network"]),
+        ("Setup mode", ["Could not join", "your network"]), ("Setup mode", details),
+        ("Setup mode", ["Joining", "Cafe"]), ("Wi-Fi", ["Connected to", "Cafe"])]
+    assert all((s.get("title") or "").isascii() and all(line.isascii() for line in s.get("lines", []))
+               for s in sent)
+
+
+def test_with_unicode_the_names_and_the_readers_words_reach_the_avatar_unchanged():
+    screen, sent = _screen(unicode=True)
+    nm = FakeNM([(False, "the password did not work", "Дом"), (True, "", "Дом")])
+    rc, seen = _run_setup(nm, screen=screen, ssid="Кухня", lang=RU, page_lang="ru",
+                          post=[{"ssid": "Дом", "password": "wrongpass"},
+                                {"ssid": "Дом", "password": "homepass1"}])
+    assert rc == 0 and seen[1]["unicode"] is True
+    title = RU.p("screen", "Setup mode")
+    # The name as it is: no "(scan the code)" in its place, though the code is there.
+    details = [f"{RU.p('screen', 'Network')}  Кухня", f"{RU.p('screen', 'Password')}  47190352",
+               f"http://{wifi.AP_ADDRESS}"]
+    assert _screens(sent) == [
+        (title, details), (title, [RU.p("screen", "Joining"), "Дом"]),
+        (title, [RU.p("screen", "Could not join"), "Дом"]), (title, details),
+        (title, [RU.p("screen", "Joining"), "Дом"]),
+        (RU.p("screen", "Wi-Fi"), [RU.p("screen", "Connected to"), "Дом"])]
+    assert title == "Режим подключения" and details[0] == "Сеть  Кухня"   # translated
+    assert sent[0]["qr"] == "WIFI:T:WPA;S:Кухня;P:47190352;;"
+
+
+@pytest.mark.parametrize("ssid", ["東京\u3000カフェ", "Café\u00a0Box", "my  box"])
+def test_a_name_written_with_its_own_spaces_is_shown_as_it_is(ssid):
+    """An ideographic space, a no-break space or two spaces are how the name is written:
+    a screen that draws every script shows it so, not "(scan the code)" in its place."""
+    screen, sent = _screen(unicode=True)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid)
+    assert sent[0]["lines"][0] == f"Network  {ssid}" and sent[0]["qr"]
+    assert "shown on my screen" in wv.instructions(dict(seen[1], qr=False), EN)
+
+
+def test_the_screens_follow_the_voice_then_the_page_that_asked_for_the_join():
+    """Before any phone has asked for anything, the voice's language is all there is;
+    the screens after a join request are read by the phone's holder, in the language of
+    the page they asked from (chosen there, or their phone's own)."""
+    ja = i18n.get("ja")
+    screen, sent = _screen(unicode=True)
+    rc, _ = _run_setup(FakeNM([(True, "", "home")]), screen=screen, lang=RU, page_lang="ja",
+                       post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    shown = _screens(sent)
+    # The words themselves, not just what the catalogs say: a catalog gone missing (the
+    # English msgid back) fails here.
+    assert shown[0][0] == "Режим подключения"
+    assert shown[1] == ("セットアップモード", ["接続中", "home"])
+    assert shown[2] == (ja.p("screen", "Wi-Fi"), ["接続済み", "home"])
+    # Nothing handed over: English, as before.
+    screen, sent = _screen(unicode=True)
+    _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert sent[0]["title"] == "Setup mode" and sent[0]["lines"][0] == "Network  teaport-9e35"
+
+
+def test_the_password_line_fits_in_the_readers_words():
+    ja = display.ScreenText(True, i18n.get("ja"))
+    assert ws.password_line("47190352", ja) == "パスワード  47190352"
+    assert ws.password_line("k7mq-x4tn-p9wr", ja) == "パス  k7mq-x4tn-p9wr"   # 2 columns a kana
+    for lang in i18n.catalogs():
+        s = display.ScreenText(True, i18n.get(lang))
+        for pw in ("47190352", "k7mq-x4tn-p9wr"):
+            assert display.columns(ws.password_line(pw, s)) <= ws.SCREEN_LINE_CHARS, (lang, pw)
+    # English to an avatar without the fonts, whatever the reader's language.
+    assert ws.password_line("47190352", display.ScreenText(False, RU)) == "Password  47190352"
+
+
+def test_the_language_the_brain_hands_over_is_for_one_start_only():
+    path = os.path.join(tempdir(), "state", ws.LANG_FILE)
+    assert ws.handed_language(path).lang == "en"                  # none: English
+    ws.hand_language("pt_BR", path)
+    assert ws.handed_language(path).lang == "pt_BR"
+    # Taken as it is read: the next start (the config page, a systemctl) has none.
+    assert not os.path.exists(path) and ws.handed_language(path).lang == "en"
+    ws.hand_language("xx", path)
+    assert ws.handed_language(path).lang == "en"                  # no such catalog
+    # A handover no start took in time (a start that failed) is not the next one's.
+    ws.hand_language("ja", path)
+    later = time.time() + ws.LANG_FRESH_SECS + 1
+    assert ws.handed_language(path, now=lambda: later).lang == "en"
+    assert os.listdir(os.path.dirname(path)) == []                # no temporary left either
+    assert ws.lang_path().endswith(os.path.join(".local", "state", "teaport", ws.LANG_FILE))
+
+
+def test_a_name_with_a_newline_is_one_line_on_any_screen():
+    """A hidden network's name is typed on the page: a newline in it must not become a
+    second line drawn over the next, where every script is drawn either."""
+    screen, sent = _screen(unicode=True)
+    rc, _ = _run_setup(FakeNM([(True, "", "Evil\nLine")]), screen=screen,
+                       post=[{"ssid": "", "other": "Evil\nLine", "password": "homepass1"}])
+    assert rc == 0
+    assert _screens(sent)[-1] == ("Wi-Fi", ["Connected to", "Evil Line"])
+
+
+def test_the_voice_hands_its_language_over_before_it_starts_the_unit(monkeypatch):
+    monkeypatch.setattr(wv, "POLL_SECS", 0.02)
+
+    async def run():
+        v = _Voice(os.path.join(tempdir(), "s.json"), lang_fn=lambda: "es")
+        calls = []
+        v._hand_language = lambda lang: calls.append(("hand", lang))
+        run_unit = v._run
+
+        async def run_and_note(action, unit):
+            calls.append((action, unit))
+            return await run_unit(action, unit)
+
+        v._run = run_and_note
+        await v._heard("set up wifi")
+        await v._heard("sí")
+        await v._stop_following()
+        return calls
+
+    assert asyncio.run(run())[:2] == [("hand", "es"), ("restart", wv.UNIT)]
+
+
+def test_a_name_the_screen_draws_is_pointed_at():
+    """A "unicode" screen shows the name as it is: the voice points at it, as for ASCII."""
+    st = {"ssid": "Кухня", "password": "47190352", "screen": True}
+    assert "on my screen" not in wv.instructions(st, EN)      # folded to nothing: spelled
+    assert "shown on my screen" in wv.instructions(dict(st, unicode=True), EN)
+
+
 LOCAL_SAID = "go to teaport dash nine E three five dot local, and pick your Wi-Fi."
 BARE_SAID = "go to one zero dot four two dot zero dot one, and pick your Wi-Fi."
 
@@ -725,9 +906,11 @@ def test_an_avahi_publish_that_exits_at_once_is_not_shown(monkeypatch):
     assert setup.avahi is None
 
 
-@pytest.mark.parametrize("ssid", ["東京-box", "mybox"])
+# A name the screen draws as it is (a "unicode" avatar) is still not an address to type:
+# the .local name is for an ASCII host name only (page_url).
+@pytest.mark.parametrize("ssid", ["東京-box", "mybox", "teaport-東京", "teaport-my box"])
 def test_a_folded_or_custom_name_gets_the_bare_address_even_with_avahi(ssid):
-    screen, sent = _screen()
+    screen, sent = _screen(unicode=True)
     avahi = FakeAvahi()
     _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid, avahi=avahi)
     avahi.kill()
@@ -906,8 +1089,8 @@ def test_the_phrase(text, hit):
 class _Voice(wv.WifiSetupVoice):
     """The processor without a pipeline: speech is collected, tasks are asyncio's."""
 
-    def __init__(self, status_path, results=None):
-        self.calls, self.said = [], []
+    def __init__(self, status_path, results=None, lang_fn=lambda: "en-us"):
+        self.calls, self.said, self.handed = [], [], []
         results = results or {}
 
         async def run(action, unit):
@@ -916,7 +1099,8 @@ class _Voice(wv.WifiSetupVoice):
 
         async def offline():
             return False
-        super().__init__(run=run, status_path=status_path, online=offline)
+        super().__init__(run=run, status_path=status_path, online=offline, lang_fn=lang_fn,
+                         hand_language=self.handed.append)
 
     async def say(self, text):
         self.said.append(text)

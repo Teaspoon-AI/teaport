@@ -77,6 +77,7 @@ class Voice(wv.WifiSetupVoice):
 
     def __init__(self, path, results=None, alive=True, gate=None, online=False, **kw):
         self.calls, self.pushed = [], []
+        self.handed = []  # the languages handed to the unit's screens (never the real file)
         self.alive, self.online = alive, online
         results, gate = results or {}, gate or {}
 
@@ -92,7 +93,8 @@ class Voice(wv.WifiSetupVoice):
         async def is_online():
             return self.online
 
-        super().__init__(run=run, status_path=path, alive=is_alive, online=is_online, **kw)
+        super().__init__(run=run, status_path=path, alive=is_alive, online=is_online,
+                         hand_language=self.handed.append, **kw)
 
     @property
     def said(self):

@@ -28,13 +28,22 @@
 # nothing shows and nothing else changes. No Pipecat import: wifi_setup.py runs alone
 # on a box short of memory.
 #
-# The avatar draws with Pillow's built-in font unless it was given one (--font), and
-# that font is Latin only: text for it is kept to ASCII — names, digits, and a word or
-# two of English; fold_ascii() folds a network name into it. The voice and the phone page
-# speak the user's language.
+# Text in the user's script only where the avatar draws it (#207). The avatar's own font
+# (Pillow's built-in one, Aileron, unless it was given one with --font) is ASCII only;
+# where the box has fallback fonts (DejaVu Sans, Noto Sans and its Arabic, Devanagari and
+# CJK families, ...) it draws every other character with them, and its features file
+# says "unicode". One rule for every text the brain puts on a screen, screen_text(): as it
+# is to an avatar that says "unicode", else folded into ASCII (fold_ascii). A screen's own
+# words (a title, "Network") go through ScreenText: in the reader's language where the
+# avatar says "unicode", else in English -- folded, a translation would be nothing
+# ("Пароль") or wrong. A held screen is re-sent to whatever avatar is there by then: one
+# that no longer says "unicode" gets what it cannot draw folded (Screen._put). A box
+# without those fonts gets ASCII English screens, as before.
+# The voice and the phone page speak the user's language whatever the screen draws.
 #
 import json
 import os
+import re
 import socket
 import threading
 import unicodedata
@@ -92,6 +101,123 @@ def fold_ascii(text: str, fallback: str = "your network") -> str:
     return " ".join(kept.split()) or fallback
 
 
+# What no screen draws as text, whatever its fonts: controls (a newline would start a
+# second line over the next one), surrogates, and the bidi embedding, override and
+# isolate controls (U+202A-202E, U+2066-2069), which would turn the rest of the line
+# around. Whitespace that is a control (a tab, a newline, a line separator) is a space, a
+# run of it one; the spaces a name is written with (U+0020 as many as it has, U+00A0,
+# U+3000) are its own and stay, as do the marks and joiners scripts need (ZWJ, ZWNJ).
+_NOT_TEXT = frozenset(("Cc", "Cs"))
+_BIDI_CONTROLS = frozenset(map(chr, (*range(0x202A, 0x202F), *range(0x2066, 0x206A))))
+_CONTROL_SPACE = re.compile("[\t\n\v\f\r\x1c-\x1f\x85\u2028\u2029]+")
+
+
+def screen_text(text: str, unicode, fallback: str = "") -> str:
+    """`text` (a network's name, a caller id) as it goes on a screen: as it is when the
+    avatar says "unicode" (`unicode`: its features' value, or whether it draws "unicode"),
+    but for what no screen draws (_NOT_TEXT, _BIDI_CONTROLS, _CONTROL_SPACE); else folded
+    into ASCII (fold_ascii). `fallback` when nothing but spaces is left. The one rule for
+    text on the avatar (#207): every sender asks it, so no two can disagree."""
+    if not unicode:
+        return fold_ascii(text, fallback)
+    kept = "".join(c for c in _CONTROL_SPACE.sub(" ", text)
+                   if unicodedata.category(c) not in _NOT_TEXT and c not in _BIDI_CONTROLS)
+    # Something to see: not only spaces and the zero-width format marks (Cf) kept for
+    # what they join, which alone draw nothing.
+    seen = any(not c.isspace() and unicodedata.category(c) != "Cf" for c in kept)
+    return kept if seen else fallback
+
+
+def _ascii(text: str) -> str:
+    return text if text.isascii() else fold_ascii(text, "")
+
+
+class ScreenText:
+    """One screen's text for the avatar as it is when the screen is made: names through
+    screen_text(), and the screen's own words through p(), as i18n.T.p() -- in `t`'s
+    language (an i18n.T) to an avatar that says "unicode", else in English, the msgid
+    itself. Made once per screen, so its words and its names agree."""
+
+    def __init__(self, unicode, t=None):
+        self.unicode, self._t = bool(unicode), t
+
+    def text(self, text: str, fallback: str = "") -> str:
+        return screen_text(text, self.unicode, fallback)
+
+    def p(self, context: str, msgid: str) -> str:
+        return self._t.p(context, msgid) if self.unicode and self._t else msgid
+
+
+_VS16, _ZWJ, _ZWNJ = "\ufe0f", "\u200d", "\u200c"
+
+
+def _is_regional(c: str) -> bool:
+    return "\U0001F1E6" <= c <= "\U0001F1FF"
+
+
+def _is_skin_tone(c: str) -> bool:
+    return "\U0001F3FB" <= c <= "\U0001F3FF"
+
+
+def _width(c: str) -> int:
+    if unicodedata.category(c) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+
+
+def columns(text: str) -> int:
+    """About how much of a line `text` takes, in columns of the avatar's 10 px font (an
+    average Latin letter): a CJK character, a Hangul syllable or an emoji (East Asian wide
+    or fullwidth, or drawn as an emoji: VS16 after it) two; a mark drawn on or under its
+    letter (an accent, a virama, a vowel sign above or below) or an invisible joiner none;
+    anything else one, a vowel sign beside its letter (ा ि ी ो) too. An estimate, for the
+    length budgets of the screens' own words (wifi_setup.SCREEN_WORD_COLUMNS) and for
+    cut(): the panel's own check is the avatar's."""
+    total = last = 0
+    for c in text:
+        if c == _VS16:
+            total += 1 if last == 1 else 0   # the character before it, drawn as an emoji
+            last = 2
+            continue
+        if _is_skin_tone(c) and last:
+            continue                         # it colors the emoji before it
+        width = _width(c)
+        total += width
+        last = width or last
+    return total
+
+
+def _clusters(text: str) -> list[str]:
+    """`text` in the pieces a cut must not split (near enough Unicode's grapheme
+    clusters): a letter with its marks, a conjunct (a virama joins the next letter), an
+    emoji sequence (ZWJ, VS16), a flag (two regional indicators)."""
+    out: list[str] = []
+    for c in text:
+        prev = out[-1][-1] if out else ""
+        if out and (unicodedata.category(c) in ("Mn", "Mc", "Me") or c in (_ZWJ, _ZWNJ)
+                    or prev == _ZWJ
+                    or (unicodedata.combining(prev) == 9                 # 9: a virama
+                        and unicodedata.category(c).startswith("L"))
+                    or _is_skin_tone(c)
+                    or (_is_regional(c) and len(out[-1]) == 1 and _is_regional(prev))):
+            out[-1] += c
+        else:
+            out.append(c)
+    return out
+
+
+def cut(text: str, max_columns: int) -> str:
+    """`text` cut to at most `max_columns` (columns()), between clusters (_clusters): no
+    letter loses its marks, and no virama, joiner or half a flag is left at the end."""
+    kept, used = [], 0
+    for cluster in _clusters(text):
+        used += columns(cluster)
+        if used > max_columns:
+            break
+        kept.append(cluster)
+    return "".join(kept).rstrip()
+
+
 def send(event: dict, path: str = SOCK) -> bool:
     """One event to the avatar. False when it is not there (or not keeping up)."""
     try:
@@ -125,7 +251,18 @@ class Screen:
     # the clear or the newer show that replaced it. And every one asks the avatar first:
     # one that does not draw screens is sent nothing, take-downs included.
     def _put(self, event: dict) -> bool:
-        return self.draws("screen") and bool(self._send(event, self._path))
+        found = self._features(self._path)
+        if not found.get("screen"):
+            return False
+        if not found.get("unicode") and "lines" in event["screen"]:
+            # Made for an avatar that drew every script, held, and now going to one that
+            # does not (it restarted without its fallback fonts): what it cannot draw is
+            # folded on the way (#207). ASCII goes as it is, so the screens made for such
+            # an avatar go byte for byte.
+            screen = event["screen"]
+            event = {"screen": {**screen, "title": _ascii(screen.get("title", "")),
+                                "lines": [_ascii(line) for line in screen["lines"]]}}
+        return bool(self._send(event, self._path))
 
     def draws(self, feature: str) -> bool:
         """Whether the avatar is up and draws `feature` ("screen", "qr")."""
@@ -272,11 +409,10 @@ class CallFace:
     def _event(self) -> dict:
         call = {"state": self.state, "ttl": CALL_TTL_SECS}
         if self.state == RINGING and self._caller:
-            # Sent with every ringing re-send (the avatar reads it only with ringing). An
-            # avatar without fallback fonts draws ASCII only: a name all in other scripts
-            # folds to nothing, and the handset is shown alone.
-            caller = (self._caller if self._features(self._path).get("unicode")
-                      else fold_ascii(self._caller, fallback=""))
+            # Sent with every ringing re-send (the avatar reads it only with ringing), and
+            # asked of the avatar each time (screen_text): to one without fallback fonts,
+            # a name all in other scripts folds to nothing, and the handset is shown alone.
+            caller = screen_text(self._caller, self._features(self._path).get("unicode"))
             if caller:
                 call["caller"] = caller[:CALLER_MAX_CHARS]
         return {"call": call}

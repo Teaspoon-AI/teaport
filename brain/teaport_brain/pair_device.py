@@ -18,7 +18,8 @@
 # The code is only ever drawn, never spoken: a Talk user or a voice in the room could be
 # overheard, and the link is the owner's access. So without a screen that draws QR codes
 # (display.Screen.fits_qr) nothing is asked for and the tool says the box cannot show it.
-# The screen text is ASCII English (the avatar's font, display.py), as Wi-Fi setup's is.
+# The screen's own words are English, ASCII; the paired device's name follows display's
+# rule (screen_text, #207): as it is where the avatar draws every script, else folded.
 #
 # Asking again while a pairing goes on puts its new code up (pairing gives a new code in
 # the same pairing, which goes on watching for a device the old code brings in), and the
@@ -49,7 +50,9 @@ from teaport_brain import display, pairing
 SCREEN_ID = "pair"
 SCREEN_TITLE = "Pair"
 PAIRED_SCREEN_SECS = 10.0
-DEVICE_MAX_CHARS = 24
+# The paired device's name on the screen: at most this many columns (display.cut, which
+# never leaves half a letter, conjunct or emoji at the end).
+DEVICE_MAX_COLUMNS = 24
 
 # What start() says.
 SHOWN, NO_SCREEN, UNAVAILABLE, STOPPED = "shown", "no_screen", "unavailable", "stopped"
@@ -269,7 +272,8 @@ class DevicePairing:
             # A screen taken down meanwhile (cancel() while the device was confirmed)
             # still says so.
             screen = screen or self._new_screen()
-            device = display.fold_ascii(result.device or "", fallback="")[:DEVICE_MAX_CHARS]
+            device = display.cut(display.screen_text(result.device or "", screen.draws("unicode")),
+                                 DEVICE_MAX_COLUMNS)
             # Up for a while on its own: the held code goes with it, and close() below
             # has nothing held left to take down.
             screen.show(SCREEN_TITLE, ["Paired", device] if device else ["Paired"],

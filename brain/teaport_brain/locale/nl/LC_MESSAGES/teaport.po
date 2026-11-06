@@ -166,6 +166,58 @@ msgstr "Die netwerknaam is te lang."
 msgid "Wi-Fi passwords are 8 to 63 characters."
 msgstr "Wifiwachtwoorden hebben 8 tot 63 tekens."
 
+# The box's screen in Wi-Fi setup (wifi_setup.py, #207): its titles, and the words beside
+# a network's name and the setup password. Shown only by a screen that draws every script
+# (the avatar says "unicode"); any other shows them in English. Each has a length budget
+# in columns of a 21-column line: a CJK character, a Hangul syllable or an emoji takes
+# two; a mark drawn on or under its letter (an accent, a virama, a vowel sign above or
+# below) none; anything else one, a vowel sign beside its letter (ा ि ी ो) too
+# (display.columns). tests/test_i18n.py holds every translation to its budget.
+#. Translators: the title while setup mode is on; at most 18 columns.
+msgctxt "screen"
+msgid "Setup mode"
+msgstr "Verbindingsmodus"
+
+#. Translators: the title once the box has left setup mode for the user's Wi-Fi; at most 18 columns.
+msgctxt "screen"
+msgid "Wi-Fi"
+msgstr "Wifi"
+
+#. Translators: before the setup network's name ("Network  teaport-ab12"); at most 7 columns.
+msgctxt "screen"
+msgid "Network"
+msgstr "Netwerk"
+
+#. Translators: before the setup password, when both fit on one line; at most 11 columns.
+msgctxt "screen"
+msgid "Password"
+msgstr "Wachtwoord"
+
+#. Translators: the short Password, before the default 14-character password; at most 5 columns.
+msgctxt "screen"
+msgid "Pass"
+msgstr "Code"
+
+#. Translators: after Network, in place of a name the screen cannot draw; at most 15 columns.
+msgctxt "screen"
+msgid "(scan the code)"
+msgstr "(scan de code)"
+
+#. Translators: above the name of the network being joined; at most 18 columns.
+msgctxt "screen"
+msgid "Joining"
+msgstr "Verbinden met"
+
+#. Translators: above the name of the network joined; at most 18 columns.
+msgctxt "screen"
+msgid "Connected to"
+msgstr "Verbonden met"
+
+#. Translators: above the name of the network that could not be joined; at most 18 columns.
+msgctxt "screen"
+msgid "Could not join"
+msgstr "Verbinden mislukt"
+
 msgctxt "digit"
 msgid "0"
 msgstr "nul"

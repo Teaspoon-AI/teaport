@@ -34,9 +34,11 @@
 #
 # The setup network's name and password, and then how the join goes, are also on the
 # box's display if it has one (display.py: the OLED avatar's screens), with a QR code
-# that a phone camera joins the setup network from (wifi_qr) — the text in English and
-# ASCII, which its built-in font draws (network names folded into it); the voice and
-# the page speak the user's language.
+# that a phone camera joins the setup network from (wifi_qr). Its text follows display's
+# one rule (#207): where the avatar says "unicode", the screen's words are in the
+# reader's language and network names are as they are; elsewhere both are ASCII English
+# (names folded). The reader's language is the voice's until a phone asks for a join,
+# then that page's (Setup.lang); the voice and the page speak the user's language.
 #
 # The brain (wifi_voice.py) starts this unit, points at the screen (or, without one,
 # speaks the network, the password and the address), and follows status.json in the unit's RuntimeDirectory (phase: scanning,
@@ -61,6 +63,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -68,7 +71,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from teaport_brain import ai_account, conversation_log, display, i18n
 from teaport_brain.i18n import N_
-from teaport_brain.settings import setting
+from teaport_brain.settings import setting, state_dir
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
@@ -96,11 +99,21 @@ STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
-# The display's lines: what wifi_voice says aloud, for reading off the box.
-SCREEN_TITLE = "Setup mode"
-# After it: the box has left setup mode and is on the user's network.
-CONNECTED_TITLE = "Wi-Fi"
+# The display's lines: what wifi_voice says aloud, for reading off the box, under the
+# title "Setup mode", then "Wi-Fi" once the box has left setup mode and is on the
+# user's network (Setup._run; their words are the catalogs' "screen" entries, #207).
 CONNECTED_SCREEN_SECS = 10
+# The voice's language, handed to this unit by the brain as it starts it (hand_language,
+# from wifi_voice): the unit is started through config_apply, which passes nothing on. A
+# file in the run user's state directory, which the brain and this unit share (both run
+# as that user). It is good for one start, the next within LANG_FRESH_SECS, and the unit
+# removes it as it reads it: a start nobody handed a language to (the config page, a
+# systemctl by hand, a voice start that never ran) does not inherit an old one, and its
+# screens begin in English, as does one whose file names no catalog.
+LANG_FILE = "wifi-setup-lang"
+# config_apply starts the unit two seconds after the brain asks; the voice gives up on a
+# unit that has not reported in a minute (wifi_voice.START_TIMEOUT_SECS).
+LANG_FRESH_SECS = 120.0
 # How long avahi-publish must stay up before its .local name is shown.
 PUBLISH_SETTLE_SECS = 0.2
 # The status reason when the page's server cannot start; English only (see _run).
@@ -115,6 +128,48 @@ SSID = setting("WIFI_SETUP_SSID", default="")
 
 def log(msg: str) -> None:
     print(f"[wifi-setup] {msg}", flush=True)
+
+
+# ------------------------------------------------------------------ the screens' language
+
+def lang_path() -> str:
+    return os.path.join(state_dir(), LANG_FILE)
+
+
+def hand_language(lang: str, path: str | None = None) -> None:
+    """The brain, about to start this unit: its screens begin in `lang` (a catalog's
+    name, i18n.T.lang: the voice's). Written whole or not at all (a temporary file of its
+    own, renamed into place); raises OSError when it cannot be."""
+    path = path or lang_path()
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(lang + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def handed_language(path: str | None = None, now=time.time) -> i18n.T:
+    """The language the brain handed over for this start (hand_language), taken: the file
+    goes as it is read. English without one, or with one older than LANG_FRESH_SECS."""
+    path = path or lang_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            age = now() - os.fstat(f.fileno()).st_mtime
+            lang = f.read(64).strip() if abs(age) <= LANG_FRESH_SECS else ""
+    except (OSError, ValueError):
+        lang = ""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    return i18n.chosen(lang) or i18n.get(i18n.SOURCE_LANG)
 
 
 # ------------------------------------------------------------------ the box's identity
@@ -355,14 +410,38 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
 
 # The screen's line for the password: "Password  <it>" while that stays inside the panel's
 # width (about 21 characters of the avatar's 10 px font: "Network  teaport-ab12" is 111
-# of its 124 px), else "Pass  <it>" -- the default's 14 characters with "Password" would
-# scroll sideways, which a password must not.
+# of its 124 px; display.columns counts other scripts in the same units), else
+# "Pass  <it>" -- the default's 14 characters with "Password" would scroll sideways,
+# which a password must not.
 SCREEN_LINE_CHARS = 21
+# How many columns (display.columns) each of the screen's own words may take, in every
+# language (#207): what keeps its line inside SCREEN_LINE_CHARS. Each catalog's
+# translator comment gives the same number, and tests/test_i18n.py holds every
+# translation to it. A word on a line of its own, a title too, gets three columns less
+# than the line: the fallback fonts' letters (DejaVu Sans: Cyrillic, accented Latin) are
+# wider than the avatar's own. A word before a value gets what the value leaves.
+_ALONE = SCREEN_LINE_CHARS - 3
+SCREEN_WORD_COLUMNS = {
+    "Setup mode": _ALONE,
+    "Wi-Fi": _ALONE,                                               # the "connected" title
+    "Network": SCREEN_LINE_CHARS - 2 - len(SSID_PREFIX + "ab12"),  # 7: the setup name
+    "Password": SCREEN_LINE_CHARS - 2 - 8,                         # 11: the shortest password
+    "Pass": SCREEN_LINE_CHARS - 2 - (GROUPS * GROUP_LEN + GROUPS - 1),  # 5: the default
+    # In the name's place after "Network": no longer than the English, whose line fits
+    # (narrow parentheses and spaces: the columns overcount it).
+    "(scan the code)": 15,
+    "Joining": _ALONE,
+    "Connected to": _ALONE,
+    "Could not join": _ALONE,
+}
 
 
-def password_line(password: str) -> str:
-    line = f"Password  {password}"
-    return line if len(line) <= SCREEN_LINE_CHARS else f"Pass  {password}"
+def password_line(password: str, text: display.ScreenText | None = None) -> str:
+    """The password's line, its word in `text`'s language (English without one)."""
+    s = text or display.ScreenText(False)
+    line = f"{s.p('screen', 'Password')}  {password}"
+    return (line if display.columns(line) <= SCREEN_LINE_CHARS
+            else f"{s.p('screen', 'Pass')}  {password}")
 
 
 # What the Wi-Fi join string escapes with a backslash: the backslash itself, ; , : and ".
@@ -424,9 +503,14 @@ class Setup:
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
                  bind: str | None = None, screen: display.Screen | None = None,
-                 account: str | None = None):
+                 account: str | None = None, lang: i18n.T | None = None):
         self.nm, self.status, self.port = nm, status, port
         self.screen = screen
+        # The language of whoever reads the screen (_text): the voice's to begin with
+        # (`lang`, handed_language), then that of the page a phone last asked for a join
+        # from -- its holder reads the screens that follow, and chose that language, or
+        # their phone did. The details shown before then have only the voice's to go by.
+        self.lang = lang or i18n.get(i18n.SOURCE_LANG)
         # The AI endpoint the account step's key is for (LLM_BASE_URL), when the step is
         # offered (an OpenRouter endpoint: main); None, and the page has no such step.
         self.account = account
@@ -512,6 +596,7 @@ class Setup:
                                       extra=remember)
                 self._send(200, render_joining(ssid, t), extra=remember)
                 setup.key = parse_key(body) if setup.account is not None else ""
+                setup.lang = t  # the screens from here on (_text)
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 
@@ -558,12 +643,13 @@ class Setup:
         """The page's address, the one the screen shows, the status carries and the voice
         reads -- decided here only, each time it is shown, so the three never disagree.
         http://teaport-ab12.local while avahi-publish is running for exactly that name
-        and the screen's font draws it as it is (an ASCII teaport-... name); otherwise
-        the bare address, which always works (avahi missing or gone, a folded or custom
-        name)."""
+        and it is a host name anyone can type (a teaport-... name of ASCII letters,
+        digits and hyphens); otherwise the bare address, which always works (avahi
+        missing or gone, a custom name). Not display's rule (#207): the address is typed
+        on a phone and spelled by the voice, so it is ASCII whatever the screen draws."""
         published = (self.avahi is not None and self.avahi.poll() is None
                      and self.avahi_name == ssid)
-        if published and ssid.startswith(SSID_PREFIX) and display.fold_ascii(ssid) == ssid:
+        if published and re.fullmatch(re.escape(SSID_PREFIX) + r"[A-Za-z0-9-]+", ssid):
             return f"http://{ssid}.local"
         return f"http://{self.address}"
 
@@ -611,9 +697,15 @@ class Setup:
             self.server.shutdown()
         self.nm.ap_delete()
 
-    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None,
-              title: str = SCREEN_TITLE) -> bool:
+    def _show(self, title: str, lines: list[str], secs: float | None = None,
+              qr: str | None = None) -> bool:
         return bool(self.screen and self.screen.show(title, lines, secs, qr=qr))
+
+    def _text(self) -> display.ScreenText:
+        """display's rule for the next screen, asked of the avatar now (it can restart
+        between screens): the reader's words and names as they are where it says
+        "unicode", else English and ASCII."""
+        return display.ScreenText(bool(self.screen and self.screen.draws("unicode")), self.lang)
 
     def _address_arrives(self, dev: str) -> bool:
         deadline = time.monotonic() + ADDRESS_WAIT_SECS
@@ -659,9 +751,13 @@ class Setup:
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
-        # The display's font draws ASCII only: a name outside it is folded.
-        shown_ssid = display.fold_ascii(ssid)
         while True:
+            # A request left from before (a second tap while the last join began) is
+            # dropped now, while the setup network is down and no new one can come: from
+            # here on every request is kept. Not after "ap_up" is written -- that is when
+            # phones are told the network is back, and one asking at once would be lost.
+            self.request = None
+            self.wake.clear()
             ok, err = self.nm.ap_up(dev, ssid, password)
             if not ok:
                 log(f"setup network failed: {err}")
@@ -691,18 +787,22 @@ class Setup:
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
             # name, whatever the font can draw -- and is sent only to an avatar that
-            # draws one that long at a size a phone scans (fits_qr). A name the font
-            # cannot draw as it is (folded, it would read wrong) points at the code
-            # when there is one.
+            # draws one that long at a size a phone scans (fits_qr). A name the screen
+            # does not draw as it is (folded, it would read wrong) points at the code
+            # when there is one. The status carries "unicode" too: the voice works out
+            # what the screen shows by the same rule (display.screen_text).
+            s = self._text()
             code = wifi_qr(ssid, password)
             code = code if self.screen and self.screen.fits_qr(code) else None
-            name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
-            shown = self._show([f"Network  {name}", password_line(password), url], qr=code)
+            name = s.text(ssid, "your network")
+            if name != ssid and code:
+                name = s.p("screen", "(scan the code)")
+            shown = self._show(s.p("screen", "Setup mode"),
+                               [f"{s.p('screen', 'Network')}  {name}", password_line(password, s),
+                                url], qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
-                            qr=shown and code is not None)
-            self.request = None
-            self.wake.clear()
+                            qr=shown and code is not None, unicode=shown and s.unicode)
             while not self.wake.wait(timeout=1.0):
                 if time.monotonic() >= self.deadline:
                     self.status.set("timeout")
@@ -711,7 +811,9 @@ class Setup:
             target, pw, hidden = self.request
             time.sleep(1.5)  # let the "joining" page reach the phone first
             self.status.set("joining", target=target)
-            self._show(["Joining", display.fold_ascii(target)])
+            s = self._text()  # in the language of the page that asked (self.lang)
+            self._show(s.p("screen", "Setup mode"),
+                       [s.p("screen", "Joining"), s.text(target, "your network")])
             self.unpublish()
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
@@ -720,8 +822,10 @@ class Setup:
                 account = self._adopt_key()
                 self.status.set("connected", target=target,
                                 **({"account": account} if account else {}))
-                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS,
-                           title=CONNECTED_TITLE)
+                s = self._text()
+                self._show(s.p("screen", "Wi-Fi"),
+                           [s.p("screen", "Connected to"), s.text(target, "your network")],
+                           secs=CONNECTED_SCREEN_SECS)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")
@@ -733,7 +837,9 @@ class Setup:
             self.status.set("failed", target=target, reason=why)
             # Held until the setup network is back and its details replace it (or the
             # way out takes it down).
-            self._show(["Could not join", display.fold_ascii(target)])
+            s = self._text()
+            self._show(s.p("screen", "Setup mode"),
+                       [s.p("screen", "Could not join"), s.text(target, "your network")])
             if time.monotonic() >= self.deadline:
                 self.status.set("timeout")
                 self._put_back()
@@ -755,14 +861,17 @@ def main(argv=None) -> int:
     run_id = args.run_id or f"{int(time.time())}-{random.randrange(1 << 16):04x}"
     os.makedirs(args.status_dir, exist_ok=True)
     status = Status(args.status_dir, run_id)
+    lang = handed_language()
     log(f"run {run_id}: setup network {ssid}, page on port {args.port}, "
-        f"{'flash-time' if PASSWORD.strip() == password else 'random'} password")
+        f"{'flash-time' if PASSWORD.strip() == password else 'random'} password, "
+        f"screens in {lang.lang}")
     # The account step only for an OpenRouter endpoint (OpenRouter keys only, #283); the
     # unit reads brain.env for it (teaport-wifi-setup.service).
     base_url = setting("LLM_BASE_URL")
     setup = Setup(nm, status, port=args.port, minutes=args.minutes,
                   screen=display.Screen("wifi-setup"),
-                  account=base_url if ai_account.is_openrouter(base_url) else None)
+                  account=base_url if ai_account.is_openrouter(base_url) else None,
+                  lang=lang)
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 
