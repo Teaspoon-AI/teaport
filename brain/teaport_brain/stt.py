@@ -106,6 +106,42 @@ TEAPORT_TTFS_P99 = 0.8
 # on room noise never reach it.
 _EMPTY_FINAL_RUN = 5
 
+# THE EMPTY RATE (#29). The run above is the shape of a dead microphone, and it is blind
+# to an engine that fails INTERMITTENTLY: live 2026-09-10 06:17, 6 of 21 segments came
+# back empty -- 29% of the call, ~43 s of speech -- in ones and twos between healthy
+# segments, so the run reset every time and nothing said so. So the service also keeps
+# the last _EMPTY_RATE_WINDOW segments the caller was heard in (_note_segment) and warns,
+# once per episode, when at least _EMPTY_RATE_MISSES and _EMPTY_RATE_WARN of them came
+# back with no words; the episode ends, with one line, when the share falls to
+# _EMPTY_RATE_CLEAR. Log only: whether the caller should HEAR about it is an owner's
+# decision (#29), not this detector's. It is judged only on a segment that came back
+# WITH words -- intermittent is misses with words between them -- so a run of misses is
+# the run's alone: a mic that dies mid-call is named as a mic, not first as the engine.
+#
+#   window 12  a minute or two of conversation: one cough or door is a small share of
+#              it, and an episode that is over ages out of it in a dozen segments.
+#   misses 3   two can be a cough and a breath over the bot, which barge_pause.py
+#              resumes on as routine; so a quiet call's single early empty never trips
+#              it, and nothing under 4 segments (3 misses and the words that judge
+#              them) is judged at all.
+#   warn 40%   the rule is both: at least 3 misses AND at least 40% of the window,
+#              judged only on a segment with words. Early in a call, while the window
+#              holds 7 segments or fewer, the 3 misses bind; after that the share does
+#              -- 4 misses of 8 to 10, 5 of 11 or a full 12 -- so 3 misses after a dozen
+#              healthy segments (12 W, then EWEWEW) stay silent. The 2026-09-10 call
+#              opened EMPTY, words, EMPTY, words, EMPTY (as #29 quotes it) and trips at
+#              its next words: 3 of 6 if its sixth segment had words, 4 of 7 if it was
+#              a miss too (its misses came in ones and twos). Its 29% overall is under
+#              the line: a loss spread evenly at that rate (4 of a dozen) never trips
+#              it, and a line low enough to (a third) would trip on 3 coughs in a
+#              call's first 9 segments.
+#   clear 20%  half the warn line, so a share hovering at 40% is one episode and one
+#              recovery line, not a pair every few segments; 2 of a full window.
+_EMPTY_RATE_WINDOW = 12
+_EMPTY_RATE_MISSES = 3
+_EMPTY_RATE_WARN = 0.4
+_EMPTY_RATE_CLEAR = 0.2
+
 # What closes the engine-side segment (forces the final): Smart Turn's VERDICT on the
 # VAD stop, not the raw stop.
 #
@@ -847,6 +883,9 @@ class _Peek:
     # text may hold them: the turn that adopts it waits on its own final (_owed_before).
     owed: bool = False
     dropped: bool = False      # the caller resumed: it is no one's
+    # Its preview's miss ("" for words) for THE EMPTY RATE, held until it is adopted;
+    # None: not counted (no preview yet, or one that is evidence of nothing).
+    tally: Optional[str] = None
     turn: Optional["_Turn"] = None    # the turn that adopted it
 
 
@@ -882,6 +921,9 @@ class _Turn:
     holds: bool = False
     # When its commit went out (the wall clock its final's timeout counts from).
     sent_at: float = 0.0
+    # Its preview's place in THE EMPTY RATE's count (_note_segment), for its final to make
+    # a miss good (_unmiss); None: not counted.
+    noted: Optional[int] = None
 
 
 def _words_of(text: str) -> list:
@@ -1077,6 +1119,12 @@ class TeaportSTTService(WebsocketSTTService):
         self._interim_buffer: str = ""
         # Consecutive finals that carried no words at all — see _handle_message.
         self._empty_finals = 0
+        # THE EMPTY RATE: the last segments the caller was heard in, each the boundary
+        # line's miss ("" for words: see _note_segment), and the episode it warned for,
+        # [empty, counted] since the warning (None: none open).
+        self._seg_window: deque = deque(maxlen=_EMPTY_RATE_WINDOW)
+        self._seg_noted = 0        # segments ever put in it: a commit's place (noted)
+        self._rate_episode: Optional[list] = None
         # Backstop for a segment whose VAD stop never came — see _STRANDED_INTERIM_SECS.
         self._stranded_task = None
         # Per-segment accounting for the commit/final boundary — see _log_segment.
@@ -1954,15 +2002,109 @@ class TeaportSTTService(WebsocketSTTService):
         # In slice mode a turn with words in hand is never wordless, so the interims
         # since the last line were the open turn's, which this commit does not close; and
         # a peek is a commit at a VAD stop too (THE PEEK), adopted or not.
+        missed = ""
         if not engine_text and self._seg_interims and answer == "done":
             logger.warning(line + " — engine streamed interims then returned no text")
+            missed = "streamed"
         elif (not engine_text and secs > 0.3
               and (why in _VAD_STOP_COMMITS or why.startswith("peek"))):
             logger.warning(line + " — audio in, no words out")
+            missed = "vad"
         else:
             logger.debug(line)
+        # THE EMPTY RATE counts the two misses above against the segments that came back
+        # with words. An empty this logs at debug -- a tail, the engine's own close of
+        # room noise, a sliver under 0.3 s -- is evidence of nothing, and is not counted
+        # either way. A peek is no turn until it is adopted, and none at all if the
+        # caller resumes (THE PEEK): it is counted at its adoption (_adopt_peek), as a
+        # segment held over a resume is not counted until it closes.
+        if engine_text or missed:
+            peek = commit.peek if commit is not None else None
+            if peek is not None and peek.turn is None:
+                peek.tally = missed
+            else:
+                noted = self._note_segment(missed)
+                if commit is not None and commit.turn is not None:
+                    commit.turn.noted = noted
         self._seg_bytes = 0
         self._seg_interims = 0
+
+    def _note_segment(self, missed: str) -> Optional[int]:
+        """THE EMPTY RATE: one segment the caller was heard in, and what came back for it
+        -- `missed` "" for words, else the boundary line's shape: "streamed" (interims
+        streamed, final EMPTY: the engine had words and returned none) or "vad" (audio in,
+        no interims, no final, on a commit that followed a VAD stop: the brain's own VAD
+        said speech and the STT said nothing -- teagram-engine#7's shape: the 2026-09-10
+        call's six misses all had 0 interims). The two point at different owners, so the
+        warning keeps them apart.
+
+        The VAD qualifier is the commit's reason, the one verdict of the VAD's that
+        reaches this service per segment: a "vad" miss is never a dead microphone in a
+        quiet room (2026-08-21: the VAD stayed QUIET), whose empties close on no VAD stop
+        and are left to the run. How sure Silero was (conf 0.89 against a 0.15 gate at
+        06:17) does not reach it: the VAD's frames carry no confidence, and the onset
+        test's marks (speech_onset.VoiceMarks) could say it only with per-segment
+        bookkeeping this does not keep.
+
+        Words are the engine's, before the echo guard: a segment of the bot's own voice
+        heard back counts as words, as it resets the run. Not while a wake gate is
+        asleep, as the run is not (#116): the room's quiet is all it should hear, and the
+        window counts from the wake. In slice mode the miss is the preview's, which the
+        turn's final can still make good: _settle_turn takes the miss back out when it
+        brings words (_unmiss), so a turn the caller was heard whole in is no miss. Returns
+        the segment's place in the count (None: not counted), which _unmiss finds it by."""
+        if self.wake_gate is not None and self.wake_gate.asleep:
+            self._reset_empty_rate()
+            return None
+        w = self._seg_window
+        w.append(missed)
+        self._seg_noted += 1
+        noted = self._seg_noted - 1
+        n = len(w)
+        empty = sum(1 for m in w if m)
+        if self._rate_episode is not None:
+            self._rate_episode[0] += bool(missed)
+            self._rate_episode[1] += 1
+            if empty / n <= _EMPTY_RATE_CLEAR:
+                e, t = self._rate_episode
+                logger.info(f"{self}: segments are coming back with words again -- {empty} "
+                            f"of the last {n} empty, {e} of {t} over the episode")
+                self._rate_episode = None
+            return noted
+        # Judged on words only (the note above _EMPTY_RATE_WINDOW): a miss may be the
+        # start of a run, which the run reports. Nor on the words that end a run it
+        # reported, whose empties _close then clears from the window.
+        if (missed or empty < _EMPTY_RATE_MISSES or empty / n < _EMPTY_RATE_WARN
+                or self._empty_finals >= _EMPTY_FINAL_RUN):
+            return noted
+        vad = sum(1 for m in w if m == "vad")
+        logger.warning(
+            f"{self}: {empty} of the last {n} segments the caller was heard in came back "
+            f"with no words -- the engine is dropping speech intermittently: {vad} VAD "
+            f"said speech, STT said nothing (audio in, no interims, no final); "
+            f"{empty - vad} interims streamed, final EMPTY")
+        self._rate_episode = [empty, n]
+        return noted
+
+    def _unmiss(self, turn: "_Turn") -> None:
+        """THE EMPTY RATE: a slice turn's final brought words its preview had not, so the
+        caller was heard after all -- the preview's miss, if still in the window, is
+        words. The episode's own tally is left as it counted; the next segment judges the
+        window as it now stands."""
+        noted = turn.noted
+        if noted is None:
+            return
+        w = self._seg_window
+        at = noted - (self._seg_noted - len(w))
+        if 0 <= at < len(w) and w[at]:
+            w[at] = ""
+
+    def _reset_empty_rate(self) -> None:
+        """THE EMPTY RATE starts over, its episode closed without a line: the session or
+        the conversation it was about is gone, or a run that reported itself has said
+        it is over (_close)."""
+        self._seg_window.clear()
+        self._rate_episode = None
 
     async def _push_if_speech_decoded(self):
         """Tell the stop strategy, once per VAD stop, that the engine has transcribed
@@ -2244,6 +2386,9 @@ class TeaportSTTService(WebsocketSTTService):
         late = {id(w) for w in self._open_words[peek.seen:]} if peek.previewed else set()
         peek.turn = self._turn_at(peek.at_ms, peek.n, peek.commit.at)
         peek.commit.why = f"peek+{why}"
+        if peek.tally is not None:
+            # A turn now: its preview counts (THE EMPTY RATE; _log_segment).
+            peek.turn.noted = self._note_segment(peek.tally)
         logger.debug(f"{self}: VAD stop {peek.n}'s peek adopted ({why}), "
                      f"{'its preview in hand' if peek.previewed else 'its preview to come'}")
         if peek.previewed:
@@ -2647,6 +2792,8 @@ class TeaportSTTService(WebsocketSTTService):
         [TURN] line. `timed_out`: the final never came (_finalize_turns), and the turn
         settles as its provisional text."""
         final = "".join(w[0] for w in turn.words).strip()
+        if final:
+            self._unmiss(turn)
         if timed_out:
             self._final_timeouts += 1
             if self._settle_through is None:
@@ -2970,8 +3117,10 @@ class TeaportSTTService(WebsocketSTTService):
             self._peek = None
             self._peek_wanted = None
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
-            # reconnect plus 1 after is not 5 finals of the same microphone.
+            # reconnect plus 1 after is not 5 finals of the same microphone. Nor is the
+            # rate's window the new session's (THE EMPTY RATE).
             self._empty_finals = 0
+            self._reset_empty_rate()
             # The buffer it would have committed is gone, and the socket with it --
             # and so are the dones its commits were owed.
             await self._cancel_stranded_commit()
@@ -3068,6 +3217,9 @@ class TeaportSTTService(WebsocketSTTService):
             if self._empty_finals >= _EMPTY_FINAL_RUN:
                 logger.info(f"{self}: hearing speech again after "
                             f"{self._empty_finals} empty finals")
+                # Its empties are this run's, reported and now over: left in the rate's
+                # window they would warn "intermittent" at the next word (THE EMPTY RATE).
+                self._reset_empty_rate()
             self._empty_finals = 0
         result = msg
         if text and self.echo_guard is not None:
