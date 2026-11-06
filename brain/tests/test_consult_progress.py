@@ -214,28 +214,51 @@ async def test_only_a_word_written_to_open_a_sentence_is_lowercased():
         assert _ack(name) == "On it.", name
 
 
-async def test_a_two_word_fragment_gets_the_plain_lines():
-    """Review of #329: "Looking up…" became "Sure — looking up.", which sounds whole."""
-    for fragment in ("Looking up…", "looking up...", "looking into", "checking…",
-                     '"Looking up..."', "checking on"):
+async def test_a_verb_missing_its_object_gets_the_plain_lines():
+    """Review of #329: "Looking up…" became "Sure — looking up.", which sounds whole.
+    A verb with a particle that needs an object, and nothing after it, is a fragment."""
+    for fragment in ("Looking up…", "looking up...", "Looking up.", "looking into",
+                     "checking on", "working on", '"Looking up..."', "'looking up'"):
         assert _ack(fragment) == "On it.", fragment
         assert tools._status_phrase(fragment, "en") == ("", "a fragment"), fragment
-    assert _ack("checking") == "Sure — checking."
-    assert _ack("Looking it up…") == "Sure — looking it up."
+    # Round 2: a trailing "…" alone decides nothing (bare "checking" is said too), and a
+    # phrasal verb that is whole without an object is said.
+    for whole in ("checking", "checking…", "Looking it up…", "Checking traffic…",
+                  "Checking flights...", "Booking it…", "Searching now…", "logging in",
+                  "signing up", "following up", "backing up", "checking out",
+                  "calling back", "holding on", "checking up on that", "looking into it"):
+        phrase = tools._status_phrase(whole, "en")[0]
+        assert phrase and _ack(whole) == f"Sure — {phrase}.", (whole, _ack(whole))
 
 
-async def test_the_listener_is_refused_only_as_the_one_addressed():
-    """Review of #329: any mention of "the user" was refused ("the user manual") and
-    "for the users" passed. Refused: the listener named in the third person, as an
-    instruction to the agent names them."""
+async def test_the_listener_named_in_the_third_person_is_refused():
+    """Review of #329: round 1 refused "the user" only after a few verbs, so "informing
+    the user" passed. Refused wherever the listener is named in the third person, the
+    way an instruction to the agent names them; said where "user" or "caller" is part
+    of a thing's name."""
     for agents in ("summarizing the latest news headlines for the user",
                    "summarizing the news for the users", "sending the email to the user",
-                   "checking the user's calendar", "checking with the caller's bank",
-                   "reading the messages to the caller"):
+                   "checking the user's calendar", "checking the users' accounts",
+                   "checking with the caller's bank", "reading the messages to the caller",
+                   "finding pastry shops near the user", "booking a table on behalf of the user",
+                   "informing the user", "helping the user find a plumber",
+                   "checking what the user asked", "updating the user", "emailing the user",
+                   "texting the caller", "finding coffee near the caller", "looking up the user",
+                   "asking the User to confirm"):
         assert tools._status_phrase(agents, "en") == ("", "not said to the listener"), agents
+        assert _ack(agents) == "On it.", agents
     for listeners in ("checking the user manual for the router",
-                      "looking up the caller ID for that number"):
+                      "looking up the caller ID for that number",
+                      "reading the user guide", "checking the users forum"):
         assert _ack(listeners) == f"Sure — {listeners}.", listeners
+
+
+async def test_names_ending_in_ing_are_no_gerund():
+    for name in ("Wyoming weather this weekend", "Beijing time right now",
+                 "Lansing weather tomorrow", "Redding weather", "Fleming book reviews",
+                 "Ewing theater tickets", "Corning stock", "Boeing stock price"):
+        assert _ack(name) == "On it.", name
+    assert _ack("Reading the news") == "Sure — reading the news."
 
 
 async def test_the_second_line_claims_nothing():

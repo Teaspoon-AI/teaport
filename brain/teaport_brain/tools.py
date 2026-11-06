@@ -619,25 +619,42 @@ _NOT_GERUNDS = frozenset(
     # Names that open a phrase as a gerund would ("Wyoming weather this weekend").
     # Others can still pass, lowercased ("Sure — lansing weather."): the schema asks for
     # a verb, and the slip is one odd line, as for "meeting".
-    + "wyoming beijing nanjing chongqing kunming peking boeing viking sterling stirling"
-    .split())
+    + "wyoming beijing nanjing chongqing kunming peking boeing viking sterling stirling "
+      "lansing redding fleming ewing corning irving kipling darjeeling kettering woking "
+      "ealing epping".split())
 # A quote is taken off only as a pair around the whole phrase: one closing a quotation
 # inside it stays ('searching for "best tacos"', which goes out as a caption on Talk).
 _STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
                        "\u00ab": "\u00bb"}
 _STATUS_STOPS = " .!?…,;:—–-"
-# A two-word phrase ending on one of these is a verb with its object missing ("Looking
-# up…"): "Sure — looking up." sounds complete and says nothing.
-_DANGLING = frozenset(
-    "up into for at on over out through about after around down with to in off from of "
-    "by back".split())
+# A two-word phrase ending on a particle that needs an object is a verb with the object
+# missing ("Looking up…", "looking into", "checking on"): "Sure — looking up." sounds
+# complete and says nothing. Not the particles a whole phrasal verb ends on ("logging
+# in", "checking out", "calling back"), nor "up" or "on" after a verb they complete
+# ("signing up", "following up", "holding on").
+_DANGLING = frozenset("into for at about through with to from of by on".split())
+_UP_TAKES_AN_OBJECT = frozenset(
+    "looking pulling picking digging bringing calling ringing".split())
+_WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging".split())
 # The listener named in the third person, as an instruction to the agent names them
-# ("... for the user", "the caller's bank"), not any mention ("the user manual", "the
-# caller ID").
+# ("informing the user", "near the caller", "the user's calendar"). Refused wherever it
+# stands, except before a word that makes "user" or "caller" part of a thing's name
+# ("the user manual", "the caller ID").
+_LISTENER_AS_A_NAME = (
+    "manual manuals guide guides id ids interface interfaces name names agreement "
+    "agreements forum forums group groups base documentation docs experience list lists")
 _ABOUT_THE_LISTENER = re.compile(
-    r"\b(?:for|to|with|tell|tells|telling|ask|asking|remind|reminding|show|showing|let|"
-    r"letting|notify|notifying|give|giving|send|sending)\s+the\s+(?:user|caller)s?\b"
-    r"|\bthe\s+(?:user|caller)(?:['\u2019]s\b|s['\u2019])", re.I)
+    r"\bthe\s+(?:user|caller)s?\b(?!\s+(?:" + "|".join(_LISTENER_AS_A_NAME.split())
+    + r")\b)", re.I)
+
+
+def _dangling(verb: str, particle: str) -> bool:
+    """`verb particle` stops where its object should be ("looking up", "checking on")."""
+    if particle == "up":
+        return verb in _UP_TAKES_AN_OBJECT
+    if particle == "on":
+        return verb not in _WHOLE_WITH_ON
+    return particle in _DANGLING
 
 
 def _unquoted(text: str) -> str:
@@ -660,8 +677,8 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     -ing word, or naming the listener in the third person ("... for the user": written
     for the agent, the register #120 is about), it is "" and the plain lines are said.
     Only the edges are tidied: spacing, a pair of quotes around all of it, the closing
-    stop the frames add, and the first capital. A two-word fragment ("Looking up…") is
-    plain lines too.
+    stop the frames add, and the first capital. A verb and a particle with its object
+    missing ("Looking up…") is plain lines too.
 
     English only (#300). The -ing test is what tells a phrase that fits "Sure — ..." and
     "Still ..." from one that does not, and only in English is a test that cheap. In
@@ -677,8 +694,7 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
         return "", "not text"
     if lang != i18n.SOURCE_LANG:
         return "", f"a {lang} session"
-    spaced = " ".join(value.split())
-    text = _unquoted(spaced)
+    text = _unquoted(" ".join(value.split()))
     words = text.split()
     if not words:
         return "", "none"
@@ -690,8 +706,7 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first.lower()) or len(first) < 5
             or first.lower() in _NOT_GERUNDS):
         return "", "no -ing word first"
-    if len(words) <= 2 and (spaced.rstrip(" \"'\u201d\u2019\u00bb").endswith(("…", "..."))
-                            or words[-1].lower() in _DANGLING):
+    if len(words) == 2 and _dangling(*(w.lower() for w in words)):
         return "", "a fragment"
     if _ABOUT_THE_LISTENER.search(text):
         return "", "not said to the listener"
