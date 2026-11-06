@@ -609,7 +609,8 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
     """A /talk session's end when the arbiter gives its slot to another (Claim.end).
     Silent only where nothing is lost: a client replacing its own session, one already
     gone, or a room mic that was asleep. A live Talk session a phone call ends is told
-    first."""
+    first. One that said yes to a call and could not be put on hold (HOLD_FAILED) is told
+    too, unless the hold's own line already was."""
     if why == arb.REPLACED:
         _close_with(websocket, TAKEN_CLOSE_CODE, REPLACED_CLOSE_REASON)
     elif why == arb.REAPED:
@@ -619,6 +620,24 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
     elif why == arb.CALL_IN and (room or asleep):
         logger.info("phone call — closing the asleep mic session to free the speech engine")
         _close_with(websocket, YIELD_CLOSE_CODE, YIELD_CLOSE_REASON)
+    elif why == arb.HOLD_FAILED:
+        # It said yes to the call and could not be put on hold. Nothing was asked of a room
+        # that is asleep, so that one closes silently. A live one is told, unless the hold's
+        # own "back in a moment" already played: no second goodbye.
+        if asleep:
+            logger.info("phone call — the asleep mic session could not be held, closing it")
+        elif session is not None and not getattr(session, "hold_line_said", False):
+            logger.info("phone call — the session could not be put on hold, telling it, "
+                        "then ending it")
+            await session.say_last_line(arb.call_line(
+                getattr(session.tts, "espeak_language", None)), CALL_LINE_MAX_SECS)
+        else:
+            logger.info("phone call — the session could not be put on hold after it said "
+                        "so, ending it")
+        if room:
+            _close_with(websocket, YIELD_CLOSE_CODE, YIELD_CLOSE_REASON)
+        else:
+            _close_with(websocket, CALL_CLOSE_CODE, CALL_CLOSE_REASON)
     elif why == arb.CALL_IN:
         logger.info("phone call — telling the Talk session, then ending it")
         if session is not None:
