@@ -3025,6 +3025,41 @@ on as well (`NoUnjudgedWords` too), and the witnesses (`ut_talk_pause_reach`, `u
 pause and the judging are reached without it. The room's own turn timing (`ROOM_*`, #159) and
 `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
+### Words nobody spoke (#22): not modelled yet
+
+The model has no row for a final with no VAD span. `Interject` is any transcript,
+unguarded by `userSpeaking`, so the model does produce words after a `Commit` with no
+`VadStart` between them, and `StartTurn` takes them as it takes any (`cut = "empty"`:
+the reply in flight is dropped before it plays, merged on SIP). That was the code
+until #22. What the model cannot say is which of those words nobody spoke:
+`VadStart` stands for speech, the VAD's start and the onset test as one event, and
+nothing records whether the words that follow belong to it, to speech before it, or to
+none.
+
+As shipped, words that come after a turn that committed words, before its reply plays,
+with no turn open and no speech heard whose words have not been closed, start no turn
+and go into the committed message in place (`barge_pause.py`, WORDS NOBODY SPOKE;
+`heard_context.append_to_last_turn`). "Closed" is per VAD stop: a close stamped with a
+stop after the speech, carrying words (or a wordless close after a NO_STOP final of
+those words). That keeps a turn for the final of speech whose VAD stop the re-applied
+finalize ended the turn on (`Resume`, then `VadStop`'s retry): its start came before
+that end, so a rule keyed on "no VAD start since the turn ended" would have swallowed
+it, where on SIP its turn start is what drops the unplayed reply and merges.
+`test_zero_length_final.py` pins the rule and those edges on the real controller, and
+the shape itself through the real STT, aggregator, fence and gate on each wiring.
+
+A row needs: a ghost for speech heard whose words have not closed (set by `VadStart`,
+cleared by a commit or close carrying its words -- which `EARLY_FINAL`'s words and the
+re-applied stop make a per-stop fact, not a flag), an environment action for words with
+no such speech, a monitor for a `StartTurn` on them while the last commit's `reply` is
+pending and the bot is silent (the 0 % cut), and a constant for the two designs: one
+row failing it as written, one holding it as shipped beside every property
+`ut_shipped_all` and `ut_talk_shipped_all` check (`NoMissedBargeIn` above all: the rule
+stands down while the bot is audible, except in a tail's own segment, where a stop
+word still cuts). The ghost has to be threaded through every action, and this change was
+written where TLC could not be run (no Java runtime), so the row is left for the next
+change to `UserTurn.tla` rather than added unchecked.
+
 ### Known limits of this model
 
 - **`Inference` requires `~userSpeaking`**, which the controller does not: the guard is on

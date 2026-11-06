@@ -86,7 +86,8 @@ from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.settings import setting
 from teaport_brain.followup_gate import FollowupGate, FollowupTrigger, TurnCommitMark
 from teaport_brain.owed import Owed, caller_asked
-from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
+from teaport_brain.heard_context import (HeardContextCorrector, append_to_last_turn,
+                                         drop_overtaken_tool_calls)
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
 from teaport_brain.mood_tag import MoodTag
@@ -1037,10 +1038,16 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_speech_heard(watch)
 
+    # Words nobody was heard saying, after a committed turn and before its reply plays,
+    # are that turn's: into its message, not a turn that cuts the reply at 0% (#22,
+    # barge_pause.py WORDS NOBODY SPOKE). Whether anyone was heard is the VAD's start or
+    # its onset test, the same two the reply hold listens to.
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
         min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn,
-        on_speech_heard=_speech_heard)
+        on_speech_heard=_speech_heard,
+        on_tail_words=lambda words: append_to_last_turn(context, words))
     start_strategy.taken_words = taken_words
+    vad_analyzer.onset_listeners.append(start_strategy.on_onset)
 
     context_aggregator = LLMContextAggregatorPair(
         context,

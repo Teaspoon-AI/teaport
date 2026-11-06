@@ -182,6 +182,7 @@ from teaport_brain.endpointing import (
     SpeechHeardFrame,
 )
 from teaport_brain.settings import setting
+from teaport_brain.taken_turn import is_taken
 from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
@@ -661,11 +662,61 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
     return True
 
 
+# WORDS NOBODY SPOKE (#22). After a turn is committed the STT can return words with no
+# speech under them: the engine closing a segment of its own on the line's silence or
+# noise, a tail it decoded twice, the backstop's commit of a segment no VAD stop
+# closed. Logged live as zero-length lines ('Okay.' [23.3-23.3], 'Fake.' [11.0-11.0],
+# the "fig" of "fiddle fig") -- and each was a new user turn: the bot not speaking yet,
+# one word is a turn, and the turn start's interruption cut the reply in flight before a
+# word of it played (LEDGER "CUT heard~0%"). The model was then asked again on the
+# question plus the fragment, a second later: as one message on SIP (the reply hold's
+# TurnMerge: the reply had not played), as two on Talk and the room.
+#
+# Such words are a TAIL: they start no turn and interrupt nothing, and a tail's final
+# goes into the committed turn's own message (on_tail_words; agent_session:
+# heard_context.append_to_last_turn), in place, the reply asked on it kept. That is what
+# a sliced turn does with a word of a committed turn that arrives after the commit (stt.py
+# TURN TEXT: "it is that turn's final's"; turn_text.py "corrected": the record rewritten,
+# no restart). Not the reply hold's merge, which drops the unplayed reply and asks again:
+# that is for words the caller went on to say, and nothing says these were.
+#
+# A tail is a transcript that arrives
+#
+#   * with no user turn open (an open turn's words are its own, as ever),
+#   * after a turn that committed words, before the bot is next audible -- the reply's
+#     wait, the only time one word could cut it at 0 % -- or in a tail's segment begun
+#     there (its final can come late: the backstop's, 1.5 s on), and
+#   * with no speech heard for it: no VAD start and no onset (the VAD analyzer's
+#     faster test, speech_onset.py) whose words have not been closed yet.
+#
+# "Closed": a close stamped with a VAD stop after that speech, carrying words -- the
+# final itself, or the wordless close of a stop whose words the engine's own close had
+# already returned (the commonest order on the box). A wordless close alone answers
+# nothing: in slice mode an empty provisional closes the stop and its words follow
+# (stt.py _settle_turn), and they are a turn. An unstamped final (another STT, or words
+# handed back) closes the speech heard before the latest VAD stop -- not speech the VAD
+# still hears: a turn committed on the caller's first words while they talk on (the
+# strategy concluding before their stop) has the rest of them still to come, and those
+# start a turn of their own after its re-applied finalize.
+#
+# So none of these is a tail: words after a VAD start (a real new utterance), or after
+# an onset the VAD's start missed (a short "Fig." after a pause: the caller spoke after
+# the commit, and on SIP the reply hold holds the reply for it and merges -- the onset
+# and the VAD start are one event to it, and to formal/UserTurn.tla); the final of the
+# speech whose VAD stop the turn's re-applied finalize ended on (keep_barge_in_reachable);
+# words over the bot, where the barge-in rules stand -- and where a stop word ends a
+# tail's segment as it ends anything (#216); words after the reply has played; the
+# session's first words. A tail left with nowhere to go (no on_tail_words, or no
+# message of the caller's to take it) is dropped. Every tail's final goes on record
+# (TakenWords).
 class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
     """The brain's barge-in rule, plus:
 
       * over the speaking bot, paused or not, an utterance made only of stop words
         starts the turn whatever its length (#216);
+      * words nobody was heard saying, after a committed turn and before its reply
+        plays, start no turn: they are that turn's (WORDS NOBODY SPOKE, above; a final's
+        words to on_tail_words);
 
     and while playout is paused (PlayoutPauseFrame):
 
@@ -677,21 +728,118 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         heard the speech out (SpeechHeardFrame, on_speech_heard).
 
     Anything else counts words exactly as MinWordsUserTurnStartStrategy does, so a
-    backchannel ("yeah") still does not cut the bot, and the pause it caused resumes."""
+    backchannel ("yeah") still does not cut the bot, and the pause it caused resumes.
+    on_onset is for the VAD analyzer's onset listeners (agent_session)."""
 
     def __init__(self, *, stop_words=STOP_WORDS, on_final_without_turn=None,
-                 on_speech_heard=None, **kwargs):
+                 on_speech_heard=None, on_tail_words=None, **kwargs):
         super().__init__(**kwargs)
         self._stop_words = tuple(stop_words)
         self._on_final_without_turn = on_final_without_turn
         self._on_speech_heard = on_speech_heard
+        # (words) -> bool: a tail's final words into the committed turn's message, True
+        # if placed (WORDS NOBODY SPOKE).
+        self._on_tail_words = on_tail_words
         # taken_turn.TakenWords, where the session keeps one (agent_session).
         self.taken_words = None
         self._playout_paused = False
         self._pause_t0 = None
         self._would_end_at = None
+        # WORDS NOBODY SPOKE. A user turn is open, and a final with words came in it
+        # (cleared by a taken one: the closer drops the turn's words). The last turn
+        # committed words and the bot has not been audible since: its reply is awaited.
+        # The bot audible (BotStarted/StoppedSpeaking, kept across turns, unlike
+        # MinWords' own flag). VAD stops counted, as the STT stamps them; the count at
+        # the latest speech heard (VAD start or onset) whose words no close has carried
+        # yet, None when there is none; and whether a final with words has come since
+        # that speech. A tail's segment is open: its first words came in the wait.
+        self._turn_open = False
+        self._turn_words = False
+        self._reply_due = False
+        self._audible = False
+        self._stops = 0
+        self._heard_at = None
+        self._worded = False
+        self._tail_open = False
+
+    async def on_onset(self, started: bool):
+        """speech_onset.SpeechOnsetMixin listener: speech began (or ended) on the onset
+        test. Called in the user aggregator's task, between the frames it processes."""
+        if started:
+            self._heard()
+
+    def _heard(self):
+        self._heard_at, self._worded, self._tail_open = self._stops, False, False
+
+    def _closed(self, stop_n):
+        """A close with words, stamped `stop_n`: the speech heard before that stop has
+        had its words. Unstamped (None), it is taken as closing the stops counted so
+        far -- never speech the VAD still hears, whose rest is still to come."""
+        if stop_n is None:
+            stop_n = self._stops
+        if stop_n != NO_STOP and self._heard_at is not None and self._heard_at < stop_n:
+            self._heard_at = None
+
+    def _note(self, frame: Frame):
+        """The state WORDS NOBODY SPOKE reads, from every frame but a transcript's words
+        (_handle_transcription)."""
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._heard()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._stops += 1
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._audible, self._reply_due = True, False
+        elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
+            self._audible = False
+        elif isinstance(frame, (SegmentDoneFrame, SegmentResetFrame)):
+            self._tail_open = False
+            if isinstance(frame, SegmentDoneFrame) and self._worded:
+                self._closed(frame.stop_n)
+        elif is_taken(frame):
+            self._turn_words = False
+
+    async def handle_user_turn_started(self):
+        await super().handle_user_turn_started()
+        self._turn_open, self._turn_words = True, False
+        self._reply_due = self._tail_open = False
+
+    async def handle_user_turn_stopped(self):
+        await super().handle_user_turn_stopped()
+        self._turn_open = False
+        self._reply_due = self._turn_words
+
+    def _tail(self, frame) -> bool:
+        """WORDS NOBODY SPOKE: `frame`'s words are a tail."""
+        text = (frame.text or "").strip()
+        if not text or self._turn_open or self._heard_at is not None:
+            return False
+        if self._tail_open:
+            return not (self._bot_speaking and self.stops(text))
+        return self._reply_due and not self._audible
+
+    async def _take_tail(self, frame) -> ProcessFrameResult:
+        text = frame.text.strip()
+        final = isinstance(frame, TranscriptionFrame)
+        if not self._tail_open:
+            # info: the live measure of how often it happens, beside the cuts it spares.
+            logger.info(f"{self}: {quoted(text)} with no speech heard for it, after a "
+                        "committed turn and before its reply plays -- that turn's words, "
+                        "not a new turn (#22)")
+        self._tail_open = not final
+        await self.trigger_reset_aggregation()      # a final's words leave the aggregation
+        if final:
+            placed = self._on_tail_words is not None and self._on_tail_words(text)
+            logger.info(f"{self}: the tail {quoted(text)} "
+                        + ("joins the committed turn's message" if placed
+                           else "is dropped: no message of the caller's to join"))
+            if self.taken_words is not None:
+                await self.taken_words.took(
+                    text, "joined to the committed turn: no speech was heard for them"
+                    if placed else "dropped: no speech was heard for them")
+        return ProcessFrameResult.CONTINUE
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        self._note(frame)
         if isinstance(frame, PlayoutPauseFrame):
             if frame.paused:
                 if not self._playout_paused:
@@ -735,12 +883,22 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             await self._on_final_without_turn()
 
     async def _handle_transcription(self, frame):
+        if self._tail(frame):
+            return await self._take_tail(frame)
         result = await self._count(frame)
-        if (result != ProcessFrameResult.STOP and isinstance(frame, TranscriptionFrame)
-                and (frame.text or "").strip() and self.taken_words is not None):
+        worded = isinstance(frame, TranscriptionFrame) and (frame.text or "").strip()
+        if (result != ProcessFrameResult.STOP and worded
+                and self.taken_words is not None):
             # A final that starts no turn: the aggregator drops its words (the guard's
             # reset), and they go on record as dropped (taken_turn.TakenWords).
             await self.taken_words.took(frame.text, "dropped by the barge-in guard")
+        if worded:
+            # After the count: a turn this final opens is open now, and the speech it
+            # carries was heard before it, not after (WORDS NOBODY SPOKE).
+            self._worded, self._tail_open = True, False
+            self._closed(getattr(frame, "stop_n", None))
+            if self._turn_open:
+                self._turn_words = True
         return result
 
     async def _count(self, frame):

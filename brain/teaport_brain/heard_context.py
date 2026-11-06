@@ -103,6 +103,31 @@ def _is_reply(m) -> bool:
     return m.get("role") == "assistant" and has_speech(msg_text(m))
 
 
+def append_to_last_turn(context, words: str) -> bool:
+    """Append `words` to the caller's newest message in `context`, in place: the words
+    nobody was heard saying after that turn's commit, which are its own
+    (barge_pause.py, WORDS NOBODY SPOKE, #22). In place, as the turn-text corrector
+    rewrites a committed turn (turn_text.py): no message is added, removed or moved, so
+    the positional windows here, the reply hold's merge and owed.py's see the context
+    they would have; the reply asked on the turn is kept. An injected order
+    (SYSTEM_NOTICE_TAG, a user-role message that is not the caller's) is passed over.
+    False, and nothing changed, when there is no such message or `words` is empty."""
+    words = (words or "").strip()
+    if not words:
+        return False
+    for m in reversed(context.get_messages()):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        text = msg_text(m).strip()
+        if text.startswith(SYSTEM_NOTICE_TAG):
+            continue
+        if not text:
+            return False
+        _set_msg_text(m, f"{text} {words}")
+        return True
+    return False
+
+
 def drop_from_context(context, doomed) -> None:
     """Remove `doomed` from `context`, matched by identity (the dicts are live, and two
     messages can read the same). Anything that removes messages the corrector may have
