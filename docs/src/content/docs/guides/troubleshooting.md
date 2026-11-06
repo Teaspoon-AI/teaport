@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2017#2ca3ef5a; install.sh:2399-2468#8db50552 -->
+<!-- source: install.sh:2015#2ca3ef5a; install.sh:2416-2485#8db50552 -->
 
 ## The page opens but nothing happens
 
@@ -201,7 +201,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:1892-1905#c562c839 -->
+<!-- source: install.sh:1890-1903#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -232,7 +232,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:1911-1915#bf1269bd -->
+<!-- source: install.sh:1909-1913#bf1269bd -->
 
 **Fix**
 
@@ -263,7 +263,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1743-1755#a65c0a82 -->
+<!-- source: install.sh:1741-1753#a65c0a82 -->
 
 **Fix**
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2399-2468#8db50552; install.sh:2271-2316#cd323bfa -->
+<!-- source: install.sh:2416-2485#8db50552; install.sh:2288-2333#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2488-2492#3c1e6011; install.sh:2586-2589#b1e28ef5 -->
+<!-- source: install.sh:2505-2509#3c1e6011; install.sh:2580-2583#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -506,7 +506,7 @@ miss the endpoint or the key.
 The installer offers `gpt-oss-120b` as the default value. That default is wrong
 for OpenRouter.
 
-<!-- source: install.sh:1994#2e67295a; install.sh:2007-2010#cefd034b -->
+<!-- source: install.sh:1992#2e67295a; install.sh:2005-2008#cefd034b -->
 
 ## teaport says it can't answer questions yet
 
@@ -581,7 +581,7 @@ failures usually pass.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1892-1905#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1890-1903#c562c839 -->
 
 **Fix**
 

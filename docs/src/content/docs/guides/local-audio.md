@@ -23,7 +23,7 @@ sudo systemctl disable --now teaport-local-audio
 
 A bridge you disabled stays off when the installer runs again without the flag.
 
-<!-- source: install.sh:65-66,3164-3167#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
+<!-- source: install.sh:65-66,3158-3161#22836ff1; systemd/teaport-local-audio.service.in:6-7,14#65fb5796 -->
 
 ## Talk to the agent
 
@@ -47,7 +47,7 @@ To send the bridge back to sleep when you are done, say "that's all", "goodnight
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1485-1496#d37a478f; brain/teaport_brain/config_schema.toml:1864-1876#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1483-1494#d37a478f; brain/teaport_brain/config_schema.toml:1864-1876#44d773d1 -->
 
 ## Echo
 
