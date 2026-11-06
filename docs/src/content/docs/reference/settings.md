@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2775#b8277c48 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2776#34c2552c -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -333,7 +333,7 @@ In `/etc/teaport/engine.env`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `KOKORO_RESERVE_FPT` | — | The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. One of `6`, `12`. The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident. *Set by the installer.* |
+| `KOKORO_RESERVE_FPT` | by `TEAPORT_AGENT`: 8 at `openclaw`, 12 at `none` | The engine memory reserve. 8 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. 6 is what the installer wrote with an agent before 8, and is still a valid value. One of `6`, `8`, `12`. The default is what the installer writes, from the same check that sets TEAPORT_AGENT: whether an agent is present. Unset, the engine's own default (50) OOMs an 8 GB device. The installer rewrites it on every run, a hand edit in engine.env included, so it is not editable here: re-run install.sh to change what is resident. *Set by the installer.* |
 | `ENGINE_PORT` | **8000** port (1–65535) | --serve. TEAPORT_URL and ENGINE_TTS_URL in brain.env must follow it. *Set by the installer.* |
 | `ENGINE_DELAY` | **480** | --delay to the engine binary. *Set by the installer.* |
 | `TTS_CTX` | **192** | --tts-ctx to the engine binary. *Set by the installer.* |

@@ -305,6 +305,11 @@ class FollowupGate(FrameProcessor):
         self._clear.set()
         # Lines being watched to completion — see Delivery and watch_delivery.
         self._deliveries: list = []
+        # How many interruptions have passed here, and the next one's event. The session's
+        # own line goes in only once its interruption has got here (interrupted_since):
+        # below the TTS and the transport, so it can no longer cut that line (#293).
+        self.interruptions = 0
+        self._interrupted = asyncio.Event()
         # For the session arbiter's view of a room mic without wake words: whether the
         # user has taken a turn at all, and when anyone (user or bot) last spoke or the
         # model last answered (time.monotonic(); refreshed while that is still going on).
@@ -516,6 +521,12 @@ class FollowupGate(FrameProcessor):
         if d in self._deliveries:
             self._deliveries.remove(d)
 
+    async def interrupted_since(self, seen: int) -> None:
+        """Until an interruption has passed here since `interruptions` was `seen`: by then
+        it has settled, as cut, every line watched before it (AgentSession.own_line)."""
+        while self.interruptions <= seen:
+            await self._interrupted.wait()
+
     def _settle_deliveries(self, interrupted: bool, *, only_if_spoke: bool = False):
         for d in list(self._deliveries):
             if only_if_spoke and not d.spoke:
@@ -666,6 +677,9 @@ class FollowupGate(FrameProcessor):
             # which the caller heard none of. A claimant's queued completion is flushed
             # with it, so its claim goes too.
             self._settle_deliveries(interrupted=True)
+            self.interruptions += 1
+            self._interrupted.set()
+            self._interrupted = asyncio.Event()
             self.release_claim()
             self._refresh()
         elif isinstance(frame, FunctionCallInProgressFrame):

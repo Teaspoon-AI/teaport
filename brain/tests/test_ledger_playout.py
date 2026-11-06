@@ -3,7 +3,7 @@
 # pipecat's TTS service and output transport actually present frames, which the other
 # ledger scripts (hermetic, no processor identity) leave out.
 #
-# Three things only the live pipeline shows, and this file drives all of them:
+# Four things only the live pipeline shows, and this file drives all of them:
 #
 #   - Every frame is sighted once per processor, and the ledger is told which
 #     processor the TTS and the output transport are. It reads the LLM stream at the
@@ -17,6 +17,9 @@
 #   - Untagged audio is the transport's own rebuild of every chunk it played (first
 #     sighted below it). The thinking sound's typing is not TTS audio at all (a plain
 #     OutputAudioRawFrame, never bot speech) and takes no part.
+#   - One InterruptionFrame is sighted at every processor too, over ~40 ms, and its
+#     broadcast sibling at those above the user aggregator. The ledger cuts at each
+#     sighting up to the TTS's own, and never after (#18, cases o).
 #
 # Each case is one of the review's findings on PR #13's ledger, in the frame shape the
 # pipeline produces (a shape the TTS cannot produce -- a context starting while an
@@ -25,9 +28,12 @@
 # Run: python test_ledger_playout.py   (or via pytest test_suite.py)
 #
 import asyncio
+import contextlib
 import os
 import sys
 from types import SimpleNamespace
+
+from loguru import logger
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
@@ -807,6 +813,255 @@ async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():
     left = [m["content"] for m in ctx.m if m["role"] == "assistant"]
     assert left[1] == "\U0001F44D" and left[0] != ANSWER and ANSWER.startswith(left[0]), (
         f"the tool call's emoji was taken for the cut reply's message: {left}")
+
+
+# ---- #18: one interruption, sighted at every processor -------------------------------
+
+JUDGE = SimpleNamespace(name="BargeInJudge#0")          # above the user aggregator
+FENCE = SimpleNamespace(name="CutReplyFenceHead#0")     # just below it: the first sighting
+LLM = SimpleNamespace(name="BoundedOpenAILLMService#0")
+STT = SimpleNamespace(name="EngineSTTService#0")        # further up: the sibling's path
+
+
+def interruption():
+    """A broadcast InterruptionFrame (FrameProcessor.broadcast_frame): the frame sent
+    down and the one sent up, each naming the other. Returns (down, up)."""
+    down, up = InterruptionFrame(), InterruptionFrame()
+    down.broadcast_sibling_id, up.broadcast_sibling_id = up.id, down.id
+    return down, up
+
+
+@contextlib.contextmanager
+def ledger_warnings():
+    """The ledger's warnings (loguru) logged inside the block, as a list that fills."""
+    got = []
+    sink = logger.add(lambda m: got.append(m.record["message"]), level="WARNING",
+                      filter=lambda r: r["message"].startswith("LEDGER"))
+    try:
+        yield got
+    finally:
+        logger.remove(sink)
+
+
+async def test_o_a_reply_that_starts_while_the_interruption_travels_is_charted():
+    """#18, live 2026-09-04 18:05. The caller barges in on R1. The InterruptionFrame is
+    sighted at every processor in turn -- the frame sent down from the user aggregator
+    through the LLM, the TTS and the transport, its broadcast sibling up through the STT,
+    ~40 ms in all -- and the TTS takes up the next response as soon as it has handled it:
+    here a deferred post-tool completion (#17) the LLM started after the interruption
+    passed it. Its Start and text are read at the TTS while the same frame is still on
+    its way through the processors below. A cut at each of those sightings wiped it: its
+    End took the "cancelled completion" branch, its context opened anonymous, and it
+    played in full, charted nowhere. The interruption is cut at each sighting up to the
+    TTS's own, never after; a NEW interruption cuts the reply as ever."""
+    for cut_again in (False, True):
+        f1, end1 = response(R1, 0.0)
+        down, up = interruption()
+        start2, end2 = LLMFullResponseStartFrame(), LLMFullResponseEndFrame()
+        if cut_again:
+            # A genuinely new interruption, a second into ANSWER.
+            down2, up2 = interruption()
+            tail = [(down2, 3.0, ABOVE), (up2, 3.001, JUDGE), (down2, 3.02, TTS),
+                    (down2, 3.025, BELOW), (down2, 3.03, OUT), (up2, 3.031, STT)]
+        else:
+            tail = [(copy(3.24), 5.24, AFTER), *siblings(BotStoppedSpeakingFrame, 5.6)]
+        L = ledger()
+        with ledger_warnings() as warned:
+            await feed(L, f1 + [
+                (started("A"), 0.2, BELOW), at(audio(4.0, "A"), 0.2), drained(end1, 0.25),
+                *siblings(BotStartedSpeakingFrame, 0.3),    # R1 plays 0.3-4.3
+                (down, 1.300, ABOVE),                       # the first sighting: R1 cut
+                (up, 1.302, JUDGE),                         # the broadcast's other frame
+                (down, 1.330, TTS),                         # the TTS handles it ...
+                (start2, 1.331, TTS),                       # ... and takes up the next
+                (LLMTextFrame(ANSWER), 1.332, TTS),
+                (down, 1.333, BELOW), (down, 1.335, OUT), (up, 1.336, STT),
+                (down, 1.337, AFTER),
+                (end2, 1.9, TTS),
+                (started("B"), 1.91, BELOW), at(audio(3.24, "B"), 1.91), drained(end2, 1.95),
+                *siblings(BotStartedSpeakingFrame, 2.0),    # ANSWER plays 2.0-5.24
+            ] + tail)
+        utts = bot(L)
+        assert [u.text for u in utts] == [R1, ANSWER], (
+            f"cut_again={cut_again}: {[u.text[:24] for u in utts]} (the reply that began "
+            f"inside the interruption's propagation was wiped by a later sighting of it)")
+        assert utts[0].interrupted and 0.2 < utts[0].heard_fraction < 0.3, utts[0].heard_fraction
+        ans = utts[1]
+        if cut_again:
+            assert ans.interrupted and 0.25 < ans.heard_fraction < 0.4, ans.heard_fraction
+        else:
+            assert not ans.interrupted and ans.heard_fraction >= 0.99, ans.heard_fraction
+            assert abs(ans.t_start - 2.0) < 0.01 and abs(ans.t_end - 5.24) < 0.01, (
+                ans.t_start, ans.t_end)
+        assert not L._turns and not L._queue and L._gen is None
+        assert not warned, warned
+
+
+async def test_o_the_tts_output_ahead_of_the_interruption_is_no_turn_behind_it():
+    """What the TTS pushed before it handled the interruption still reaches the processor
+    below it after the TTS's sighting -- the TTS awaits its audio task's cancel before it
+    passes the frame on -- and that processor's reset flushes what it has not handled. A
+    cut at that processor's sighting swept it; with no cut there, it is dropped until
+    the interruption's next sighting (TranscriptLedger._interruption). Kept, the cut
+    context's chunk and a context the TTS began just before the cut would sit ahead of
+    the next reply in the transport's layout: that reply dated seconds late, and not
+    over when its window closes. A window the transport opens as the frame comes down
+    credits the cut context's chunk a few ms of playout: no "charted nowhere" for that."""
+    f1, end1 = response(R1, 0.0)
+    f2, end2 = response(R2, 1.4)
+    down, up = interruption()
+    L = ledger()
+    with ledger_warnings() as warned:
+        await feed(L, f1 + [
+            (started("A"), 0.2, BELOW), at(audio(1.0, "A"), 0.2),
+            *siblings(BotStartedSpeakingFrame, 0.3),
+            (down, 1.0, ABOVE),
+            at(audio(1.0, "A"), 1.01),              # ahead of it: the TTS's cut sweeps it
+            *siblings(BotStartedSpeakingFrame, 1.012),  # ... after 8 ms of "playout"
+            (down, 1.02, TTS),
+            at(audio(1.0, "A"), 1.021),             # pushed before, read after the TTS's
+            (started("Z"), 1.022, BELOW), at(audio(1.0, "Z"), 1.022),
+            (TTSStoppedFrame(context_id="Z"), 1.023, BELOW),
+            (down, 1.025, BELOW),                   # the hop below has it: what it reads
+            (down, 1.03, OUT), (up, 1.031, STT),    #   from now on is the TTS's new output
+        ] + f2 + [
+            (started("B"), 1.6, BELOW), at(audio(1.5, "B"), 1.6), drained(end2, 1.65),
+            *siblings(BotStartedSpeakingFrame, 1.7),  # R2 plays 1.7-3.2
+            (copy(1.5), 3.2, AFTER),
+            *siblings(BotStoppedSpeakingFrame, 3.55),
+        ])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
+    r2 = utts[1]
+    assert not r2.interrupted and r2.heard_fraction >= 0.99, r2.heard_fraction
+    assert abs(r2.t_start - 1.7) < 0.01 and abs(r2.t_end - 3.2) < 0.01, (r2.t_start, r2.t_end)
+    assert not L._turns and not L._fifo, (L._turns, L._fifo)
+    assert not warned, f"unplayed chunks of a cut context warned: {warned}"
+
+
+async def test_o_what_reached_the_tts_ahead_of_the_interruption_goes_with_it():
+    """Why the TTS's sighting cuts too, not only the first: a spoken notice sent before
+    the interruption reaches the TTS while the frame is still on its way down to it, and
+    the TTS flushes it with its queue when the frame gets there. Cut at the first
+    sighting alone, it stayed queued, and the next context to open -- here the notice
+    said after the barge-in -- claimed it: charted under the flushed notice's words. (A
+    reply's End re-push would correct the claim; a notice has none.)"""
+    flushed, said_now = "One moment, I'm still listening.", "Sorry, go ahead."
+    down, up = interruption()
+    L = await feed(ledger(), [
+        (down, 1.0, ABOVE), (up, 1.001, JUDGE),
+        (TTSSpeakFrame(flushed), 1.01, TTS),        # ahead of the frame: flushed with it
+        (down, 1.02, TTS), (down, 1.025, BELOW), (down, 1.03, OUT),
+        (TTSSpeakFrame(said_now), 1.2, TTS),        # after it
+        (started("N"), 1.3, BELOW), at(audio(1.0, "N"), 1.3),
+        (TTSStoppedFrame(context_id="N"), 1.31, BELOW),
+        *siblings(BotStartedSpeakingFrame, 1.4),
+        (copy(1.0), 2.4, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.75),
+    ])
+    assert [u.text for u in bot(L)] == [said_now], [u.text for u in bot(L)]
+    assert not L._queue, list(L._queue)
+
+
+async def test_o_a_cancelled_completions_end_finds_no_stream_at_the_tts():
+    """LedgerPlayout.tla LlmCancelEnd: the LLM cancels the completion it streams as the
+    interruption passes it, and its End -- pushed from a finally, before the LLM passes
+    the interruption on -- reaches the TTS AHEAD of the interruption. The cut at the
+    interruption's first sighting, above the LLM, is what makes that End find no stream.
+    A cut read only at the TTS's sighting would close the cut reply on it as a finished
+    response: its fragment handed to the gist judge, queued for the next context, and
+    settled as the whole answer (formal/Owed.tla, partialRecord)."""
+    from teaport_brain.owed import Reply
+    down, up = interruption()
+    start = LLMFullResponseStartFrame()
+    start.owed_reply = Reply("caller")
+    L = ledger()
+    got, told = [], []
+    L.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got.append((cut, audio, text))
+    L.on_reply_text = lambda r, t: told.append(t)
+    await feed(L, [
+        (start, 0.0, TTS), (LLMTextFrame("Tomorrow in Austin looks"), 0.1, TTS),
+        (down, 0.5, ABOVE), (up, 0.501, JUDGE),
+        (LLMFullResponseEndFrame(), 0.51, TTS),     # the cancelled completion's End
+        (down, 0.52, TTS), (down, 0.53, BELOW), (down, 0.54, OUT),
+    ])
+    assert L._gen is None and not L._queue, (L._gen, list(L._queue))
+    assert told == [], f"a cancelled completion's fragment went to the gist judge: {told}"
+    assert got == [(True, False, None)], got
+
+
+async def test_o_a_completion_begun_as_the_interruption_reaches_the_llm_is_cancelled():
+    """Review of #18: the LLM starts a completion while the interruption is still on
+    its way to it (2-3 ms from the user aggregator live). Its Start and text reach the
+    TTS after the frame's first sighting; then the LLM sights the frame, cancels, and
+    pushes the End ahead of it. Cut at the first sighting and the TTS's alone, the
+    stream had reopened by then: the End closed the fragment as a finished reply -- the
+    gist judge asked on it, and the TTS's cut settling it with the fragment as its
+    whole text (Owed.tla, partialRecord). Every sighting up to the TTS's cuts, the LLM's
+    among them, before its cancel."""
+    from teaport_brain.owed import Reply
+    down, up = interruption()
+    start = LLMFullResponseStartFrame()
+    start.owed_reply = Reply("caller")
+    L = ledger()
+    got, told = [], []
+    L.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got.append((cut, audio, text))
+    L.on_reply_text = lambda r, t: told.append(t)
+    await feed(L, [
+        (down, 0.500, FENCE), (up, 0.5005, JUDGE),  # the first sighting
+        (start, 0.501, TTS), (LLMTextFrame("It will be sunny."), 0.5015, TTS),
+        (down, 0.503, LLM),                         # the LLM sights it, and cancels
+        (LLMFullResponseEndFrame(), 0.504, TTS),    # the cancelled End, ahead of it
+        (down, 0.505, ABOVE), (down, 0.506, TTS), (down, 0.507, BELOW),
+    ])
+    assert told == [], f"a cancelled completion's fragment went to the gist judge: {told}"
+    assert got == [(True, False, None)], got
+    assert L._gen is None and not L._queue, (L._gen, list(L._queue))
+
+
+async def test_o_a_pause_announced_while_the_interruption_travels_ends_with_it():
+    """The transport drops a pause when the interruption reaches it, and says nothing
+    (playout_pause.PausablePlayout._drop_pause): the ledger's cut is what ends it. A pause
+    the transport announced after the TTS's cut, as the frame was on its way to it, is
+    the cut reply's -- the interruption's later sightings end it. Left standing, the
+    ledger's playout clock stays at the pause: the next reply plays and is never over."""
+    f1, end1 = response(R1, 0.0)
+    f2, end2 = response(R2, 2.0)
+    down, up = interruption()
+    L = await feed(ledger(), f1 + [
+        (started("A"), 0.2, BELOW), at(audio(4.0, "A"), 0.2), drained(end1, 0.25),
+        *siblings(BotStartedSpeakingFrame, 0.3),
+        (down, 1.0, ABOVE), (down, 1.02, TTS),
+        (PlayoutPauseFrame(paused=True), 1.025, AFTER),   # the barge-in pauser's, just in
+        (down, 1.03, BELOW), (down, 1.035, OUT), (down, 1.04, AFTER),
+    ] + f2 + [
+        (started("B"), 2.2, BELOW), at(audio(1.5, "B"), 2.2), drained(end2, 2.25),
+        *siblings(BotStartedSpeakingFrame, 2.3),          # R2 plays 2.3-3.8
+        (copy(1.5), 3.8, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 4.15),
+    ])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
+    assert not utts[1].interrupted and abs(utts[1].t_end - 3.8) < 0.01, utts[1].t_end
+
+
+async def test_o_a_context_that_plays_and_charts_nothing_is_logged():
+    """The guard #18 asked for: a context that claims no response (anonymous, entry None)
+    charts nothing by design -- and when its audio PLAYS, the caller heard words the
+    transcript does not have (PlayedIsCharted). Said at the chart, once its playout is
+    known, so the TTS's unplayed chunks a barge-in leaves behind (the case above) say
+    nothing."""
+    L = ledger()
+    with ledger_warnings() as warned:
+        await feed(L, [
+            (started("Q"), 0.2, BELOW), at(audio(1.0, "Q"), 0.2),   # no response expected
+            *siblings(BotStartedSpeakingFrame, 0.3),
+            (copy(1.0), 1.3, AFTER),
+            (TTSStoppedFrame(context_id="Q"), 1.3, BELOW),
+            *siblings(BotStoppedSpeakingFrame, 1.65),
+        ])
+    assert bot(L) == []
+    assert len(warned) == 1 and "charted nowhere" in warned[0], warned
 
 
 def main():
