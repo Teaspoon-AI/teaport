@@ -1092,6 +1092,13 @@ class TeaportSTTService(WebsocketSTTService):
         self._end_through = -1
         self._audio_through = -1
         self._final_through = 0
+        # Turns settled before their final -- the backstop, the pause's cap -- whose
+        # provisional went out with words their preview vouched for, not yet sent: those
+        # words were delivered, and arrive later. Until the bounds pass each (no word it
+        # vouched for can come), a late one is its, not the next turn's, and a later
+        # preview's front is trimmed of them (_early_taker, _past_earlier;
+        # formal/SttSlice.tla EARLY = "kept").
+        self._early: list = []
         self._warned: set = set()
         # Turns whose final equalled what was pushed, and those whose did not. And the
         # newest turn's final, where it dropped words the provisional had (or timed out
@@ -2547,7 +2554,15 @@ class TeaportSTTService(WebsocketSTTService):
         goes_on = self._goes_on(w, self._last_piece)
         if not goes_on:
             self._spend_later()                       # the word before is whole now
-        if end < self._final_through and not goes_on:
+        early = self._early_taker(w, goes_on)
+        if early is not None:
+            # A word a turn settled early vouched for: its provisional delivered it, and
+            # the turn after it must not deliver it again.
+            if not goes_on:
+                logger.debug(f"{self}: {quoted(piece.strip())}, late, is the word VAD stop "
+                             f"{early.stop_n}'s provisional already had (settled early)")
+            target = early
+        elif end < self._final_through and not goes_on:
             # A word of a turn already settled: the engine's end_through_ms did not hold,
             # or that turn's final timed out. Kept, not lost: the open turn has it --
             # never a later turn, whose stretch it is not in (its correction would add it
@@ -2567,6 +2582,32 @@ class TeaportSTTService(WebsocketSTTService):
         self._last_piece = (start, end, target)
         (target.words if target is not None else self._open_words).append(w)
         return target is not None
+
+    def _early_taker(self, w: tuple, goes_on: bool) -> Optional[_Turn]:
+        """The turn settled early (_early) main piece `w` is the late word of, if any: the
+        rest of a word one took, or a word one's preview vouched for -- ending before
+        its position, or past it by the margin's rule (_vouch) -- which that spends."""
+        if goes_on:
+            last = self._last_piece[2]
+            return last if any(t is last for t in self._early) else None
+        for turn in self._early:
+            if (w[1] < turn.at_ms and self._claim_expected(turn, w[0])) or self._vouch(turn, *w):
+                return turn
+        return None
+
+    def _keep_early(self, turn: _Turn):
+        """`turn` settled before its final: keep its unspent vouching if its provisional
+        delivered those words (_early)."""
+        if turn.expect and not turn.deferred and turn.pushed:
+            self._early.append(turn)
+
+    def _prune_early(self):
+        """Forget a turn settled early once no word it vouched for can come: the end bound
+        _VOUCH_MS past its position and the start bound at it -- what its final would
+        have waited for -- or every such word in."""
+        self._early = [t for t in self._early
+                       if t.expect and not (t.at_ms + _VOUCH_MS <= self._end_through
+                                            and t.at_ms <= self._audio_through)]
 
     def _spend_later(self):
         """The word last filed to a turn whose preview did not have it, whole now (its
@@ -2684,7 +2725,8 @@ class TeaportSTTService(WebsocketSTTService):
         more, so an earlier preview that missed a word the later one has does not stop
         the trim, nor one the later preview lacks, and a later word that only reads the
         same is never taken."""
-        owed = [k for t in self._turns if t.previewed and t.at_ms < at for k in t.expect]
+        owed = [k for t in (*self._early, *self._turns)
+                if t.previewed and t.at_ms < at for k in t.expect]
         if not owed:
             return delta
         pieces = re.findall(r"\s*\S+", delta)
@@ -2736,6 +2778,7 @@ class TeaportSTTService(WebsocketSTTService):
         end_through_ms has passed -- no word of it can come any more -- or whose final
         has timed out (TURN TEXT); then time the oldest still waiting."""
         async with self._finals_lock:
+            self._prune_early()
             while self._turns and self._turns[0].previewed:
                 turn = self._turns[0]
                 final = (turn.at_ms <= self._end_through if not turn.expect
@@ -2746,6 +2789,8 @@ class TeaportSTTService(WebsocketSTTService):
                 self._turns.popleft()
                 self._final_through = turn.at_ms
                 await self._settle_turn(turn, timed_out=not final)
+                if not final:
+                    self._keep_early(turn)
             await self._time_final()
 
     async def close_held(self) -> bool:
@@ -3014,6 +3059,7 @@ class TeaportSTTService(WebsocketSTTService):
                 self._audio_through = -1
                 self._decoded_ms = -1
                 self._final_through = 0
+                self._early = []
                 self._last_piece = None
                 self._spending = None
                 # Handshake: the engine is single-model and just acknowledges this --

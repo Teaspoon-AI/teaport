@@ -443,6 +443,9 @@ run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek
 run SttSlice.tla ss_heard           "(expected: holds — AS SHIPPED, the heard-out watch (#275): answered once both bounds are the margin past the voice end, no word of the speech comes after)"
 run SttSlice.tla ss_heard_reach     "(expected: FAILS HeardAllSent — witness: the watch is answered with the caller's later words still to come)"
 run SttSlice.tla ss_heard_endOnly   "(expected: FAILS NoWordAfterHeard — the end bound alone, as before 3a46b6c (its smaller margin not shown): a word the voice end falls inside comes after the answer)"
+run SttSlice.tla ss_heard_final     "(expected: FAILS NoWordAfterHeard — a proposal, rejected 2026-11-06: a turn's final past the voice end answers the watch; a word stamped at the commit, inside the margin, is the next turn's and still to come)"
+run SttSlice.tla ss_early_shipped   "(expected: FAILS NoDoubleDeliver — BEFORE AUDIT A3: a turn settled early (the backstop, the pause's cap) forgets the words its provisional delivered; late, they go to the open turn and the next preview asks them again)"
+run SttSlice.tla ss_early_kept      "(expected: holds — AS SHIPPED (A3): a turn settled early keeps its vouched words, for the late word and the trim, until the bounds pass it; ~4.8M states)"
 if [ "$FULL" = 1 ]; then
   limit=$FULL_ROW_TIMEOUT
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"

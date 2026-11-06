@@ -117,6 +117,17 @@
 (* model does not check: that no interim of the speech before it comes      *)
 (* later is an engine premise (formal/README.md).                           *)
 (*                                                                          *)
+(* AN EARLY SETTLE (EARLY; stt.py _final_overdue's backstop and close_held, *)
+(* audit A3): the oldest turn waiting on its final settles at any time, on  *)
+(* the words in hand (EarlySettle).                                         *)
+(* EARLY = "off"      -- none (every row but the ss_early ones).            *)
+(*         "shipped"  -- before A3: a late word its provisional delivered   *)
+(*                       goes to the open turn, and the next preview asks   *)
+(*                       it again (fails NoDoubleDeliver).                  *)
+(*         "kept"     -- as shipped: the settled turn keeps its unspent     *)
+(*                       vouched words for the late word and the trim until *)
+(*                       the bounds pass it (Kept; stt.py _early).          *)
+(*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
 (* MaxCommits, pos <= MaxPos, stops <= MaxStops, one watch.                 *)
 (***************************************************************************)
@@ -175,7 +186,10 @@ brain == <<commits, turns, open, seen, speaking, stops, peekIdx, atStop, split,
            lateInterim>>
 
 \* THE HEARD-OUT WATCH: its own constant and variables, apart from the slicing's.
-CONSTANT HEARD   \* "off" | "shipped" | "endOnly"
+CONSTANT HEARD   \* "off" | "shipped" | "endOnly" | "final"
+\* AN EARLY SETTLE (EARLY; stt.py _final_overdue's backstop and the pause cap's
+\* close_held): its own constant, apart from DESIGN.
+CONSTANT EARLY   \* "off" | "shipped" | "kept"
 VARIABLES
     watchAt,     \* the pauser's watch out: the voice end it was placed at, or 0
     heardAt,     \* the watch the STT answered (SpeechHeardFrame): its voice end, or 0
@@ -380,14 +394,24 @@ Close ==
     /\ atStop' = 0
     /\ UNCHANGED <<engine, chan, seen, speaking, stops, lateInterim>>
 
+\* A turn settled early ("kept", stt.py _early): its provisional went out with words its
+\* preview vouched for, unsent then; until the bounds pass it, those words are still its
+\* own -- already delivered.
+Kept(t) == EARLY = "kept" /\ t.final /\ t.timedOut /\ ~t.deferred /\ t.asked /= {}
+           /\ ~Bounded(t, seen)
+
 \* The turns a delta for word i may go to, oldest first: _slice_delta's rule -- ends
-\* before it, or vouched for -- or ("arrival") any turn whose preview has not come.
+\* before it, or vouched for -- or ("arrival") any turn whose preview has not come. A
+\* settled turn takes none: a late word goes to the open turn -- unless the turn was
+\* settled early and still vouches for it (Kept).
 Takers(i) == CASE DESIGN = "arrival"   -> {k \in 1..Len(turns) : ~turns[k].previewed}
                [] DESIGN = "endMargin" -> {k \in 1..Len(turns) :
                                              ~turns[k].final /\ E[i] < turns[k].at + M}
                [] OTHER -> {k \in 1..Len(turns) :
-                              ~turns[k].final
-                              /\ (E[i] < turns[k].at \/ Vouched(turns[k], i))}
+                              \/ /\ ~turns[k].final
+                                 /\ (E[i] < turns[k].at \/ Vouched(turns[k], i))
+                              \/ /\ Kept(turns[k]) /\ i \in turns[k].expect
+                                 /\ (E[i] < turns[k].at \/ Vouched(turns[k], i))}
 MinOf(X) == CHOOSE k \in X : \A j \in X : k <= j
 
 \* An interim of word i is late if a closed turn's position is past its end.
@@ -414,7 +438,8 @@ RecvDelta ==
 \* owed words the preview lacks: with words unique and in time order, this subtraction.
 Owed(at) == IF DESIGN = "noTrim" THEN {}
             ELSE UNION {turns[j].expect : j \in {j \in 1..Len(turns) :
-                            turns[j].previewed /\ ~turns[j].final /\ turns[j].at < at}}
+                            turns[j].previewed /\ turns[j].at < at
+                            /\ (~turns[j].final \/ Kept(turns[j]))}}
 
 \* _handle_preview: the provisional text is the words in hand that end before the
 \* position, then the preview's, less what an earlier turn still expects. A turn's (or a
@@ -478,10 +503,34 @@ HeardFire ==
     /\ heardAt' = watchAt /\ watchAt' = 0
     /\ UNCHANGED <<watched, engine, chan, brain>>
 
+\* An early settle (EARLY /= "off"): the oldest turn waiting on its final settles now,
+\* timed out, on the words in hand -- the 6 s backstop of the wall clock, or the reply's
+\* pause at its cap (close_held) -- with words of it still to come.
+EarlySettle ==
+    /\ EARLY /= "off"
+    /\ \E k \in 1..Len(turns) :
+          /\ turns[k].previewed /\ ~turns[k].final
+          /\ \A j \in 1..(k - 1) : turns[j].final
+          /\ turns' = [turns EXCEPT ![k].final = TRUE, ![k].fwords = turns[k].words,
+                                    ![k].timedOut = TRUE]
+    /\ UNCHANGED <<engine, chan, commits, open, seen, speaking, stops, peekIdx, atStop,
+                   split, lateInterim>>
+
+\* HEARD = "final" (a proposal, rejected 2026-11-06): a turn's final, not timed out, whose
+\* position is past the watch answers it too. Fails NoWordAfterHeard: a word stamped at or
+\* past the commit, inside the margin, is the next turn's and still to come. Waiting for
+\* the start bound as well would make it HeardFire's own condition.
+FinalFire ==
+    /\ HEARD = "final" /\ watchAt /= 0
+    /\ \E k \in 1..Len(turns) : turns[k].final /\ ~turns[k].timedOut /\ turns[k].at >= watchAt
+    /\ heardAt' = watchAt /\ watchAt' = 0
+    /\ UNCHANGED <<watched, engine, chan, brain>>
+
 Next == \/ /\ \/ Feed \/ Decode \/ Emit \/ Report \/ Preview
               \/ Speak \/ Stop \/ Close \/ RecvDelta \/ RecvPreview \/ RecvProgress
+              \/ EarlySettle
            /\ UNCHANGED hvars
-        \/ Watch \/ HeardFire
+        \/ Watch \/ HeardFire \/ FinalFire
 
 Spec == Init /\ [][Next]_vars
 

@@ -839,6 +839,55 @@ async def test_a_preview_soon_after_a_commit_does_not_ask_the_turn_befores_word_
     assert not s._turns and s.corrections() == [], s.corrections()
 
 
+async def _settled_early(s):
+    """The oldest turn waiting on its final settles now on the words in hand: the
+    backstop's wall clock (the pause's cap, close_held, takes the same path)."""
+    was, stt_mod._FINAL_BACKSTOP_SECS = stt_mod._FINAL_BACKSTOP_SECS, 0.0
+    try:
+        await progress(s, 0)
+    finally:
+        stt_mod._FINAL_BACKSTOP_SECS = was
+
+
+async def test_a_turn_settled_early_keeps_its_vouched_word_from_the_next_turn():
+    # Audit A3 (2026-11-05): the backstop (or the pause's cap) settled the first turn
+    # before the word its preview vouched for came. Its provisional delivered that word.
+    # The next commit's preview has it at its front, and the word, late, ends inside the
+    # first turn's margin: neither may deliver it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " further?")
+    assert s.finals() == [("further?", 1)]
+    await _settled_early(s)
+    assert not s._turns, "settled"
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " further? Okay.")
+    assert s.finals() == [("further?", 1), ("Okay.", 2)], s.finals()
+    await delta(s, " further", 1150, start=800)
+    await delta(s, "?", 1150, start=800)
+    await delta(s, " Okay", 1800, start=1500)
+    await delta(s, ".", 1800, start=1500)
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert not s._turns and s.corrections() == [], s.corrections()
+    assert not s._early, "forgotten once the bounds passed it"
+
+
+async def test_a_late_word_below_a_turn_settled_early_is_not_delivered_again():
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " so")
+    assert s.finals() == [("so", 1)]
+    await _settled_early(s)
+    interims = list(s.interims())
+    await delta(s, " so", 900)                     # late, below the settled turn
+    assert s.interims() == interims and not s._open_words, (
+        "a word its provisional delivered, announced again for the open turn")
+    await delta(s, " later", 1500)                 # the caller's next word: the open turn's
+    assert s._open_words and s._open_words[0][0] == " later"
+
+
 async def test_the_turn_before_s_words_are_trimmed_past_one_its_preview_missed():
     # The earlier preview missed its turn's first word but had its second; the later
     # preview has both. The second is the earlier turn's and is not asked again; the
@@ -1674,10 +1723,12 @@ async def test_a_timeout_says_what_it_waited_for_and_a_backstop_after_it_is_coun
         stt_mod.logger.remove(sink)
 
 
-async def test_a_timed_out_turn_s_late_word_goes_to_the_open_turn_not_the_next():
+async def test_a_timed_out_turn_s_late_words_are_its_own_not_the_next_or_the_open():
     # After the wall-clock backstop (an engine that stopped reporting), the timed-out
     # turn's words come at last, with the next turn not yet final: they are not that
-    # turn's (they end before its stretch) and its correction must not add them.
+    # turn's (they end before its stretch) and its correction must not add them. Nor are
+    # they the open turn's (audit A3): the timed-out turn's provisional, "in the
+    # kitchen.", delivered them, and a later commit would deliver them again.
     saved = stt_mod._FINAL_BACKSTOP_SECS
     stt_mod._FINAL_BACKSTOP_SECS = 0.3
     lines, sink = _lines()
@@ -1697,8 +1748,7 @@ async def test_a_timed_out_turn_s_late_word_goes_to_the_open_turn_not_the_next()
         await delta(s, " Thanks.", 1700, start=1500)
         await progress(s, 2000)
         assert s.corrections() == [], [(c.kind, c.final) for c in s.corrections()]
-        assert [w for w, *_ in s._open_words] == [" the", " kitchen."], s._open_words
-        assert any("was settled" in m for m in lines), lines
+        assert s._open_words == [], s._open_words
     finally:
         stt_mod._FINAL_BACKSTOP_SECS = saved
         stt_mod.logger.remove(sink)
