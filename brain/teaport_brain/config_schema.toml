@@ -1236,7 +1236,7 @@ min = 1
 default = 12
 read = "startup"
 tier = "diag"
-help = "How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted."
+help = "How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. It is also the longest that words no speech was detected for, heard after a turn and before its reply plays, are added to that turn rather than start a new one."
 
 # ---- agent consult
 
