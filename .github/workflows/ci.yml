@@ -222,13 +222,14 @@ jobs:
     # Pinned to v1.7.4 (TLC 2.19, rev 5a47802) -- the exact jar every verdict in the
     # suite was established against -- by tag + sha256 rather than "latest", so a new
     # tlaplus release can't change a verdict here without a deliberate re-pin (and a
-    # local re-run of the 60-row suite to confirm it first). Job name is plain
+    # local re-run of the default suite -- every `run` line in brain/formal/check.sh,
+    # a few hundred rows -- to confirm it first). Job name is plain
     # `formal` (no matrix) so a future branch-protection rule can name it directly,
     # same as the `brain (<runner>)` note above.
     runs-on: ubuntu-latest
     # The rows take ~20 min here; 40 leaves room for one hung row to reach check.sh's own
     # per-row limit (TLC_ROW_TIMEOUT, 600 s) and be reported by name before the job dies.
-    timeout-minutes: 40 # shared runner pays cold JVM starts x56 the local desktop didn't; see download retry below
+    timeout-minutes: 40 # shared runner pays a cold JVM start per row (check.sh's count) the local desktop didn't; see download retry below
     env:
       TLA_TAG: v1.7.4
       TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88

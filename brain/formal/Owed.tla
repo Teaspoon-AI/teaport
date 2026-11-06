@@ -122,7 +122,7 @@
 (*                  that played through with an item untold (RUNCLOSE       *)
 (*                  "terms").                                               *)
 (*                                                                          *)
-(* RUNCLOSE: what closes an item with no terms (a failure, a bare "done"). *)
+(* RUNCLOSE: what closes an item told whole (a failure, a bare "done").    *)
 (*   "uncut" -- DESIGN.md §3 as written: a run that played to the end       *)
 (*              uncut closes the record, whatever it said.                  *)
 (*   "terms" -- an item with terms is closed by its terms, from a run as    *)
@@ -130,14 +130,29 @@
 (*   "about" -- as "terms", and a term-less item also by ANY noted reply    *)
 (*              heard to its end (played through, or cut after its last     *)
 (*              word) that is about the record (it shares a non-common word *)
-(*              with the request: owed._about) -- the failure the caller's  *)
-(*              own turn told in full is not re-offered (Fable's review).   *)
+(*              with the request or the failure's own statement:            *)
+(*              owed.Record.about) -- the failure the caller's own turn     *)
+(*              told in full is not re-offered (Fable's review).            *)
 (*                                                                          *)
 (* OUTCOME: "items" -- two items with terms (a two-story list); "failure"   *)
-(*   -- one term-less item (the consult failed). The lexical premise for    *)
-(*   the latter: a reply about the record heard to its end told it -- a     *)
-(*   failure is one statement, told whole or not at all (no "part"), and    *)
-(*   the telling is the reply (a question after it, cut, reads owed).       *)
+(*   -- one item the consult's failure states (no answer). The lexical      *)
+(*   premise for the latter: every telling of it is about it, and a reply   *)
+(*   about the record heard to its end told it -- a failure is one          *)
+(*   statement, told whole or not at all (no "part"), and the telling is    *)
+(*   the reply (a question after it, cut, reads owed). The code makes the   *)
+(*   first half true for a telling that names what failed, by giving the    *)
+(*   record those words as terms (owed._terms: "billing", "credit",         *)
+(*   "error", "empty"): one naming nothing of the request is about it       *)
+(*   (formal audit C1, 2026-11-05). A telling in other words ("it timed     *)
+(*   out", "something went wrong") still is not: the residual. As           *)
+(*   failNotAbout shows, it keeps the record owed after it was heard, and   *)
+(*   later turns carrying the note may tell it again (RetellOnce falls      *)
+(*   too), until the record's run, its eviction or the conversation's end.  *)
+(*   "failNotAbout" (MUT) -- before C1: the record has no terms, and a      *)
+(*                  telling that names nothing of the request is about it  *)
+(*                  only when it is the record's own run (`mine`): such a  *)
+(*                  telling by the caller's turn never closes it nor counts *)
+(*                  as a cut telling (owed.py 9349e35..C1).                 *)
 (*                                                                          *)
 (* CLOSE: how a reply PLAYED TO ITS END closes an outcome with items (#210). *)
 (*   "lexical" -- the coverage rule as shipped in #204: min(2, |terms|) of  *)
@@ -437,11 +452,11 @@ Closes(p, n, cut, g, v) ==
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
        ELSE IF cut /\ Mut("prefixLexical") THEN g \in {"words", "all"}
        ELSE IF cut THEN v = "heard"
-       \* one term-less item. Before "about": only a run played through uncut. "about":
+       \* one item, told whole. Before "about": only a run played through uncut. "about":
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
        ELSE IF OUTCOME = "failure"
-            THEN IF RUNCLOSE = "about" THEN g = "all"
+            THEN IF RUNCLOSE = "about" THEN g = "all" /\ (p \in Runs \/ ~Mut("failNotAbout"))
                  ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
        ELSE \* the design: an uncut run, the verdict, or the backstop
             RunUncut(p, cut, g) \/ v \in {"heard", "none"} \/ Backstop(cut, g)
@@ -479,6 +494,8 @@ Finish(cut, g, arm, mk) ==
           \* a noted telling of the record, cut after its audio began (#231)
           ct == cut /\ nreg /\ st = "owed" /\ say \in {"tell", "part"} /\ g # "nothing"
                 /\ ~Mut("cutsUncounted")
+                \* failNotAbout: a failure's telling by any reply but its run is not one
+                /\ (req \in Runs \/ OUTCOME # "failure" \/ ~Mut("failNotAbout"))
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
          /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
@@ -927,7 +944,8 @@ TypeOK ==
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
                       "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
-                      "declineWrong", "cutsUncounted", "cutRecordUnread"}
+                      "declineWrong", "cutsUncounted", "cutRecordUnread",
+                      "failNotAbout"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================
