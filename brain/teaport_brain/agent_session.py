@@ -515,10 +515,14 @@ class AgentSession:
         text = await self.llm.run_inference(ctx)
         if not isinstance(text, str):
             return None
-        text = strip_urls_for_speech(llm_text_guard.fold_degenerate_chars(text)).strip()
-        if not text or llm_text_guard.is_degenerate(text):
+        # Judged RAW, as the guard's counter judges the stream (#70): the fold erases
+        # zero-width characters and collapses a dot run to "...", so a verdict on the
+        # folded text passed "Hello, thanks for calling, how can" + 895 U+200B as its
+        # truncated prefix, and a 2340-dot run as "Hi there...".
+        if llm_text_guard.is_degenerate(text):
             return None
-        return text
+        text = strip_urls_for_speech(llm_text_guard.fold_degenerate_chars(text)).strip()
+        return text or None
 
     # How long own_line lets the interruption clear the way before the line goes in; and
     # how much longer, at most, it waits for the interruption to reach the FollowupGate
