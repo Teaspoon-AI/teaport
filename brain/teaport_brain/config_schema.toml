@@ -284,7 +284,7 @@ min = 1
 default = 20
 read = "session"
 tier = "tuning"
-help = "How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box."
+help = "How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this, plus up to 2 s when an empty answer that came quickly is asked again. Raise it for a slow local llama.cpp box."
 note = "Without it the OpenAI SDK waits 600 s with no error, no log line and no audio."
 
 [[settings]]
@@ -325,7 +325,7 @@ type = "string"
 default = ""
 read = "session"
 tier = "tuning"
-help = "The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment."
+help = "The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call): after one quick retry, or straight away when there is no time to retry. Empty = the built-in English line; override it for a non-English deployment."
 
 [[settings]]
 name = "TEAPORT_LLM_ERROR_SPEECH"

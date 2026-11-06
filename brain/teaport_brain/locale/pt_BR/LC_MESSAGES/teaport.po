@@ -661,3 +661,7 @@ msgstr "Sua conta de IA está conectada, mas ainda não tem créditos. Adicione 
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "Desculpe, não consigo responder agora: a conta que uso para as minhas respostas precisa de atenção, e tentar de novo não vai adiantar. Diga “abrir as configurações” para resolver."
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "Desculpe, perdi o fio da meada. Pode repetir?"

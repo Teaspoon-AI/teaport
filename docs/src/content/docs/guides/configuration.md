@@ -38,7 +38,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:928-932#abcad8a7; brain/teaport_brain/settings_access.py:419-431#f0cd5e74 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:929-933#abcad8a7; brain/teaport_brain/settings_access.py:419-431#f0cd5e74 -->
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
@@ -222,7 +222,7 @@ The first two are said one time, at the start of a conversation in the room or i
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1006-1010#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1384-1388#1508a36d -->
 
 ## One key for OpenClaw too
 

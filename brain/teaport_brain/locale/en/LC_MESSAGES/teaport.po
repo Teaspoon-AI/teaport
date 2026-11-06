@@ -53,3 +53,7 @@ msgstr "eight"
 msgctxt "digit"
 msgid "9"
 msgstr "nine"
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr ""

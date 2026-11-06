@@ -905,6 +905,11 @@ def build_agent_session(transport, *, voice: str | None = None,
                        "without one: speech recognition, Wi-Fi setup and fixed lines only")
         llm = None
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
+    # The voice's language, read at each use (a voice switch is followed): what the lines
+    # the pipeline makes up itself are spoken in (llm_text_guard.recovery_text).
+    voice_lang = lambda: getattr(tts, "espeak_language", None)  # noqa: E731
+    if llm is not None:
+        llm.lang_fn = voice_lang
 
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
@@ -1417,8 +1422,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
         # the reply's leading [mood: x] tag, off before the guard or the TTS see it
-        MoodTag() if moods else None,
-        LLMTextGuard() if llm_text_guard.ENABLED else None,
+        MoodTag(lang_fn=voice_lang) if moods else None,
+        LLMTextGuard(lang_fn=voice_lang) if llm_text_guard.ENABLED else None,
         tts,
         # DIRECTLY below the TTS: the first processor to handle the TTS's frames is
         # where the ledger charts them, and a held reply must not be charted until it

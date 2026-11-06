@@ -661,3 +661,7 @@ msgstr "你的 AI 账户已连接，但还没有余额。到 OpenRouter 网站�
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处理，再试一次也没有用。说“打开设置”就可以解决。"
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "抱歉，我刚才走神了。你能再说一遍吗？"
