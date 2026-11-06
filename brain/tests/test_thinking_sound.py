@@ -548,9 +548,9 @@ async def test_a_session_held_for_a_phone_call_types_unheard():
 
 @_with(grace=0.0)
 async def test_a_half_duplex_phone_line_drops_the_caller_while_the_typing_is_heard():
-    """A phone call typed through (agent-first, or SIP_THINKING_SOUND on: #242) hears no
-    bot speech, but echo all the same, so the half-duplex gate (SIP_HALF_DUPLEX) mutes
-    the caller through it."""
+    """A half-duplex phone call typed through (agent-first alone: SIP_THINKING_SOUND
+    types no such call, #242) hears no bot speech, but echo all the same, so the
+    half-duplex gate (SIP_HALF_DUPLEX) mutes the caller through it."""
     from pipecat.frames.frames import InputAudioRawFrame
     from teaport_brain.sip_server import HalfDuplexInputGate
     bed, out = _bed(keys=False)

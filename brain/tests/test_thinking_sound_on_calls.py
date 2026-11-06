@@ -2,9 +2,10 @@
 # Typing on phone calls (#242): which sessions get the thinking sound's bed. Talk and the
 # room type through a long agent consult unless TEAPORT_THINKING_SOUND=0, the kill switch
 # for every front-end. A phone call types only with SIP_THINKING_SOUND on (off by
-# default), or in agent-first (TEAPORT_AGENT_FIRST), which keeps its typing whatever
-# SIP_THINKING_SOUND says: thinking_sound.enabled_for, the gate agent_session builds the
-# bed by. Turning calls on changes no routing: a call's consults stay background ones.
+# default) and no half-duplex gate on the call (SIP_HALF_DUPLEX: the caller could not stop
+# it), or in agent-first (TEAPORT_AGENT_FIRST), which keeps its typing whatever the other
+# two say, as on main: thinking_sound.enabled_for, the gate agent_session builds the bed
+# by. Turning calls on changes no routing: a call's consults stay background ones.
 #
 # And a call's bed types for no face. The OLED face types along to the room bridge's
 # session (local_audio.py announces "typing" in its ?features=); sip_server builds a call
@@ -50,8 +51,11 @@ from teaport_brain.sip_serializer import SipProtocolSerializer  # noqa: E402
 from teaport_brain.talk_transport import TalkWebsocketTransport  # noqa: E402
 
 FRONT_ENDS = ("sip", "talk", "room", None)
-EVERYWHERE = {(f, af): True for f in FRONT_ENDS for af in (False, True)}
-NOWHERE = dict.fromkeys(EVERYWHERE, False)
+# (front-end, agent-first, half-duplex): every case. Only a call has a half-duplex gate,
+# but the gate is asked the same for every front-end.
+CASES = [(f, af, hd) for f in FRONT_ENDS for af in (False, True) for hd in (False, True)]
+EVERYWHERE = dict.fromkeys(CASES, True)
+NOWHERE = dict.fromkeys(CASES, False)
 
 
 class _Switches:
@@ -72,7 +76,7 @@ class _Switches:
 
 
 def _table():
-    return {(f, af): ts.enabled_for(f, af) for f in FRONT_ENDS for af in (False, True)}
+    return {(f, af, hd): ts.enabled_for(f, af, hd) for f, af, hd in CASES}
 
 
 def test_the_setting_is_a_flag_off_by_default_beside_the_kill_switch():
@@ -84,13 +88,18 @@ def test_the_setting_is_a_flag_off_by_default_beside_the_kill_switch():
     # still turns it off.
     assert "SIP_THINKING_SOUND" in shared["help"], shared["help"]
     assert "TEAPORT_THINKING_SOUND=0" in row["help"], row["help"]
+    assert "SIP_HALF_DUPLEX" in row["help"], row["help"]       # (and that it does nothing there)
 
 
 def test_the_gate():
     with _Switches(enabled=True, sip=False):                 # the defaults
-        assert _table() == {**EVERYWHERE, ("sip", False): False}   # agent-first types on
-    with _Switches(enabled=True, sip=True):
-        assert _table() == EVERYWHERE
+        assert _table() == {**EVERYWHERE, ("sip", False, False): False,
+                            ("sip", False, True): False}     # agent-first types on
+    with _Switches(enabled=True, sip=True):                  # no half-duplex call, though
+        assert _table() == {**EVERYWHERE, ("sip", False, True): False}
+    for sip in (False, True):                                # agent-first on a half-duplex
+        with _Switches(enabled=True, sip=sip):               # call: as on main, typed
+            assert ts.enabled_for("sip", True, True) is True
     for sip in (False, True):                                # the kill switch, calls included
         with _Switches(enabled=False, sip=sip):
             assert _table() == NOWHERE
@@ -127,30 +136,38 @@ def test_the_switches_are_read_from_the_env_as_the_brain_starts():
     assert "SIP_THINKING_SOUND='maybe'" in p.stderr, p.stderr   # (warned, not silently off)
 
 
-def _build(front_end, client_features=frozenset()):
+def _build(front_end, client_features=frozenset(), half_duplex=False):
     t = TalkWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
         serializer=TeaportGatewaySerializer()))
     return agent_session.build_agent_session(t, front_end=front_end,
-                                             client_features=client_features)
+                                             client_features=client_features,
+                                             half_duplex=half_duplex)
 
 
 def test_a_call_gets_the_bed_the_gate_says_and_types_for_no_face():
-    # Built as sip_server builds a call: front_end "sip" and no client features
-    # (test_sip_call_lifecycle's test_a_call_is_built_for_no_face_...).
+    # Built as sip_server builds a call: front_end "sip", no client features, and
+    # whether the call has a half-duplex gate (test_sip_call_lifecycle's
+    # test_a_call_is_built_for_no_face_...). Keys: (enabled, sip, agent-first, half-duplex).
+    cases = ((True, False, False, False), (True, True, False, False),
+             (True, False, True, False), (True, True, True, False),
+             (True, True, False, True), (True, False, True, True), (True, True, True, True),
+             (False, True, True, False))
+
     async def run():
         beds = {}
-        for enabled, sip, agent_first in ((True, False, False), (True, True, False),
-                                          (True, False, True), (True, True, True),
-                                          (False, True, True)):
+        for enabled, sip, agent_first, half_duplex in cases:
             with _Switches(enabled, sip, agent_first):
-                beds[enabled, sip, agent_first] = _build("sip").thinking_sound
+                beds[enabled, sip, agent_first, half_duplex] = _build(
+                    "sip", half_duplex=half_duplex).thinking_sound
         with _Switches(enabled=True, sip=True):              # the room, for contrast
             room = _build("room", frozenset({"typing"})).thinking_sound
         return beds, room
     beds, room = asyncio.run(run())
-    assert beds[True, False, False] is None                  # off by default on a call
-    assert beds[False, True, True] is None                   # the kill switch
-    for key in ((True, True, False), (True, False, True), (True, True, True)):
+    typed = {k for k, bed in beds.items() if bed is not None}
+    assert typed == {(True, True, False, False),             # the flag, on a full-duplex call
+                     (True, False, True, False), (True, True, True, False),   # agent-first,
+                     (True, False, True, True), (True, True, True, True)}, typed  # half-duplex too
+    for key in typed:
         bed = beds[key]
         assert isinstance(bed, ts.ThinkingSound), key
         assert bed._keys is False, key                       # no face types for a call

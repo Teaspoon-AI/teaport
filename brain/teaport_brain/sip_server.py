@@ -202,8 +202,8 @@ _CONFIRM_SECS = 10.0
 class HalfDuplexInputGate(FrameProcessor):
     """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
     un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in. And while
-    the thinking sound's typing is heard (agent-first, or SIP_THINKING_SOUND on): no bot
-    speech, but echo all the same; the caller goes unheard, so cannot stop it either.
+    the thinking sound's typing is heard (agent-first alone: SIP_THINKING_SOUND types no
+    half-duplex call), which is no bot speech but echoes all the same.
 
     The one SIP-specific processor — passed to build_agent_session as an
     input-side processor (inserted right after transport.input())."""
@@ -883,6 +883,7 @@ async def run_connection(sock, on_ready=None):
             # the short patience, not the asleep room's.
             host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
             recording=recording,
+            half_duplex=half_duplex is not None,  # (no SIP_THINKING_SOUND typing on it)
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound
