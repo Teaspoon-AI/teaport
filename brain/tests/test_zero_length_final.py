@@ -586,6 +586,22 @@ async def test_a_tail_segment_begun_in_the_wait_stays_a_tail_once_the_reply_play
         assert rig.starts() == 2, "a stop word over the bot must cut it (#216)"
 
 
+async def test_a_reply_that_never_plays_holds_the_wait_only_so_long():
+    """A turn whose reply never became audible (an empty completion, tool calls only):
+    words with no speech under them are a tail inside _TAIL_WAIT_S of the commit, and a
+    turn of their own after it -- not folded into a message already answered."""
+    from teaport_brain.barge_pause import _TAIL_WAIT_S
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        rig.start._due_at -= _TAIL_WAIT_S - 1          # the reply due 9 s ago
+        await rig.feed(final(TAIL, NO_STOP))
+        assert rig.starts() == 1 and rig.appended == [TAIL], (rig.events, rig.appended)
+        rig.start._due_at -= 2                         # and now 11 s ago
+        await rig.feed(final("Hello?", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [TAIL], (rig.events, rig.appended)
+
+
 async def test_before_any_turn_is_committed_words_start_one():
     """Nothing is in flight to cut and no turn to hand the words to: the session's first
     words start a turn however they came (test_final_survives_turn_start's shape)."""

@@ -709,6 +709,17 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 # session's first words. A tail left with nowhere to go (no on_tail_words, or no
 # message of the caller's to take it) is dropped. Every tail's final goes on record
 # (TakenWords).
+#
+# The wait ends at the bot audible -- a filler or an error line ("let me check")
+# included: words after it are counted as ever, and one can cut the real reply still to
+# come, as on main -- or _TAIL_WAIT_S after the commit. A reply that never plays (an
+# empty completion, a turn of tool calls only) would otherwise keep it open for good,
+# and a caller the VAD missed, minutes on, would be folded into a message already
+# answered. The engine's own close and the backstops (stt.py: 1.5 s stranded, the
+# slice final's 6 s) bring a tail well inside it.
+_TAIL_WAIT_S = 10.0
+
+
 class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
     """The brain's barge-in rule, plus:
 
@@ -756,6 +767,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._turn_open = False
         self._turn_words = False
         self._reply_due = False
+        self._due_at = 0.0         # when the reply became due (_TAIL_WAIT_S)
         self._audible = False
         self._stops = 0
         self._heard_at = None
@@ -806,7 +818,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
     async def handle_user_turn_stopped(self):
         await super().handle_user_turn_stopped()
         self._turn_open = False
-        self._reply_due = self._turn_words
+        self._reply_due, self._due_at = self._turn_words, time.monotonic()
 
     def _tail(self, frame) -> bool:
         """WORDS NOBODY SPOKE: `frame`'s words are a tail."""
@@ -815,7 +827,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             return False
         if self._tail_open:
             return not (self._bot_speaking and self.stops(text))
-        return self._reply_due and not self._audible
+        return (self._reply_due and not self._audible
+                and time.monotonic() - self._due_at <= _TAIL_WAIT_S)
 
     async def _take_tail(self, frame) -> ProcessFrameResult:
         text = frame.text.strip()
