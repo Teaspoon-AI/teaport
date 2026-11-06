@@ -186,8 +186,30 @@ _MAX_HOLDBACK = 4
 # Not into an emoticon: a reply of ":)" lost its colon and went out as ")" -- to the
 # speaker (nothing) and to history, which then held a stray bracket where the model had
 # smiled (probe 2026-10-14). An emoticon is kept whole, as an emoji is: the TTS has
-# nothing to say for either, and history keeps what the model wrote.
-_LEADING_PUNCT = re.compile(r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*])[\s.,;:!?\u2026])+")
+# nothing to say for either, and history keeps what the model wrote. A closer counts only
+# when no word goes on right behind it: ":D" and ":(" are faces, ":Done." and ":(laughs)"
+# a colon before "Done." and "(laughs)" (":D'accord" one before "D'accord"). Without
+# that, ":Peru's capital is Lima." kept its colon -- the text a #15 retry streams when
+# its first attempt was a lone ":", still held below (#187 review). The price: a face
+# glued to the next word (":)Sure") loses its colon, as every face did before #178.
+# A LATIN word, not `\w`, which matches every script's letters: CJK has no spaces, so a
+# face against the next word is ordinary in the ja and zh rooms (":)\u597d\u7684"), and `\w` took
+# its colon there, and in Cyrillic and Devanagari too (#187 review round 2).
+_LEADING_PUNCT = re.compile(
+    r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*](?![0-9A-Za-z_'\u00c0-\u024f]))"
+    r"[\s.,;:!?\u2026])+")
+# ...nor into one split across deltas (#187): the strip judges one frame at a time, so
+# ":" then ")" lost the colon all the same, the lone ":" having no closer in view. While
+# the strip is still stripping, a delta that ends in an opener, or in an opener and a
+# closer the next delta can still turn into a word (":P" + "eru"), holds that back, as
+# _HOLDBACK holds a trailing "..": the next delta keeps the face or strips it, as one
+# delta would. The punctuation before it goes now, as the strip would take it anyway:
+# the hold never outgrows the face, and a face the End reaches rides its own frame. A
+# lone ":" the End reaches flushes through the strip with the fold's tail, so it is
+# still "nothing forwarded" (#16); a barge-in drops it with the rest of _pending. Only
+# text the strip is about to reach is held, so a reply that has begun is never delayed.
+# `\Z`, not `$`, which also matches before a final "\n" (":\n" lost its newline).
+_EMOTICON_OPEN = re.compile(r"[:;=]['-]?[()\[\]DPpOo3/\\|*]?\Z")
 
 # Where the repeat cut closes a sentence in the folded stream. A run of terminators
 # is one boundary; no following whitespace is required, because the live 08:32
@@ -453,7 +475,8 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
 
     def _fold_streaming(self, text: str) -> str:
-        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK."""
+        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK and
+        _EMOTICON_OPEN."""
         text = self._pending + text
         self._pending = ""
         # Before the holdback split: a held-back ".." rejoined here is the closer the
@@ -469,6 +492,15 @@ class LLMTextGuard(FrameProcessor):
             if m:
                 self._pending = m.group(0)
                 text = text[:m.start()]
+        if not self._pending and not self._forwarded:
+            # A leading emoticon's opener: held only if the strip would still reach it --
+            # every held frame, and this delta up to the opener, strips to nothing. Not
+            # in the elif chain, so a delta with a "<" in it ("<|end|>:") still reaches it.
+            m = _EMOTICON_OPEN.search(text)
+            if m and not any(_LEADING_PUNCT.sub("", t) for t in
+                             [t for _, t in self._held]
+                             + [fold_degenerate_chars(text[:m.start()])]):
+                self._pending, text = m.group(0), ""
         folded = fold_degenerate_chars(text) if text else ""
         if folded:
             self._tail = (self._tail + folded)[-8:]
