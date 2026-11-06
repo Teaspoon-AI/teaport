@@ -107,6 +107,7 @@ from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import credit
 from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
+from teaport_brain import thinking_sound
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.tasks import cancel_and_wait, wait_ended
 from teaport_brain.services import make_tts
@@ -509,6 +510,22 @@ async def run(sock_path: str):
     await run_connection(sock, on_ready=sdnotify.ready)
 
 
+def half_duplex_line() -> str:
+    """The journal's line for the half-duplex gate, said as a gateway connects. ON is the
+    line worth noticing: it means the caller cannot barge in for the whole of every
+    reply, which is otherwise invisible. Say what that costs -- and, with
+    SIP_THINKING_SOUND set, that it does nothing while the gate is on: no call types
+    (thinking_sound.enabled_for, #242), and only the help text said so."""
+    if not HALF_DUPLEX:
+        return "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
+    line = (f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
+            f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
+            f"unset SIP_HALF_DUPLEX to restore barge-in")
+    if thinking_sound.SIP_ENABLED:
+        line += ". SIP_THINKING_SOUND has no effect while half-duplex is on: no call types"
+    return line
+
+
 async def run_connection(sock, on_ready=None):
     """Serve one gateway connection until the gateway goes away: control, audio, and a
     fresh pipeline per call. Every call ends with it."""
@@ -524,15 +541,7 @@ async def run_connection(sock, on_ready=None):
     params = make_sip_params(serializer)
     connection = SipConnection(sock, serializer)
 
-    # ON is the line worth noticing in a journal: it means the caller cannot barge in
-    # for the whole of every reply, which is otherwise invisible. Say what that costs.
-    logger.info(
-        f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
-        f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
-        f"unset SIP_HALF_DUPLEX to restore barge-in"
-        if HALF_DUPLEX else
-        "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
-    )
+    logger.info(half_duplex_line())
     if STT_MAKEUP_DB:
         logger.info(f"STT makeup gain: +{STT_MAKEUP_DB:g} dB on the caller signal into the "
                     "transcriber, recovering quiet speech over the bot -- see stt.py")

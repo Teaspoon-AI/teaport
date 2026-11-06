@@ -44,7 +44,7 @@ from pipecat.frames.frames import (  # noqa: E402
 )
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams  # noqa: E402
 
-from teaport_brain import agent_session, settings  # noqa: E402
+from teaport_brain import agent_session, settings, sip_server  # noqa: E402
 from teaport_brain import thinking_sound as ts  # noqa: E402
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 from teaport_brain.sip_serializer import SipProtocolSerializer  # noqa: E402
@@ -173,6 +173,22 @@ def test_a_call_gets_the_bed_the_gate_says_and_types_for_no_face():
         assert bed._keys is False, key                       # no face types for a call
         assert bed._async is (not key[2]), key               # the routing is agent-first's alone
     assert room._keys is True                                # the room's face does type
+
+
+def test_the_journal_says_when_half_duplex_turns_the_flag_off():
+    # SIP_THINKING_SOUND set on a box with SIP_HALF_DUPLEX on types no call (the gate):
+    # the line sip_server logs as the gateway connects says so, not only the help text.
+    note = "SIP_THINKING_SOUND has no effect while half-duplex is on"
+    saved = sip_server.HALF_DUPLEX
+    try:
+        for half_duplex, sip in ((True, True), (True, False), (False, True), (False, False)):
+            sip_server.HALF_DUPLEX = half_duplex
+            with _Switches(enabled=True, sip=sip):
+                line = sip_server.half_duplex_line()
+            assert line.startswith("half-duplex input gate: " + ("ON" if half_duplex else "off"))
+            assert (note in line) is (half_duplex and sip), (half_duplex, sip, line)
+    finally:
+        sip_server.HALF_DUPLEX = saved
 
 
 def test_no_typing_message_leaves_a_call():
