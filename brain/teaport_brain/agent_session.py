@@ -86,7 +86,8 @@ from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.settings import setting
 from teaport_brain.followup_gate import FollowupGate, FollowupTrigger, TurnCommitMark
 from teaport_brain.owed import Owed, caller_asked
-from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
+from teaport_brain.heard_context import (HeardContextCorrector, append_to_last_turn,
+                                         drop_overtaken_tool_calls)
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
 from teaport_brain.mood_tag import MoodTag
@@ -554,7 +555,8 @@ class AgentSession:
             # gate inside the settle (the room's user starting a turn as the phone rings)
             # lets the line go ahead of a late own one, as on main. Two coincidences, and
             # waiting on the line's own interruption needs the task's flush probe, a
-            # change to every own line (#340).
+            # change to every own line (#340). A pipeline that has ended passes nothing
+            # on: the gate says so, and the line goes in at once, with no warning.
             if gate.interruptions == seen:
                 try:
                     await asyncio.wait_for(gate.interrupted_since(seen),
@@ -786,7 +788,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         via: str | None = None,
                         host=None,
                         run_control: bool = False,
-                        recording=None) -> AgentSession:
+                        recording=None,
+                        half_duplex: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -807,6 +810,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - input_processors: optional processors inserted right after transport.input()
       (before the debug ep_in tap) — the ONLY place a front-end injects its own
       processors. SIP passes [HalfDuplexInputGate()]; OpenClaw passes nothing.
+    - half_duplex: the call drops the caller's audio while anything plays (sip_server's
+      HalfDuplexInputGate, SIP_HALF_DUPLEX): SIP_THINKING_SOUND types no such call
+      (thinking_sound.enabled_for).
     - caption_every_final: the client drops a repeated assistant final itself, so
       CaptionTap sends every one (OpenClaw's plugin announces it with ?captions=2;
       see captions.sends_every_final). SIP leaves it off.
@@ -899,6 +905,11 @@ def build_agent_session(transport, *, voice: str | None = None,
                        "without one: speech recognition, Wi-Fi setup and fixed lines only")
         llm = None
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
+    # The voice's language, read at each use (a voice switch is followed): what the lines
+    # the pipeline makes up itself are spoken in (llm_text_guard.recovery_text).
+    voice_lang = lambda: getattr(tts, "espeak_language", None)  # noqa: E731
+    if llm is not None:
+        llm.lang_fn = voice_lang
 
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
@@ -1067,10 +1078,19 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_speech_heard(watch)
 
+    # Words nobody was heard saying, after a committed turn and before its reply plays,
+    # are that turn's: into its message, not a turn that cuts the reply at 0% (#22,
+    # barge_pause.py WORDS NOBODY SPOKE). Whether anyone was heard is the VAD's start,
+    # and where the reply hold is, its onset test too: the hold holds the reply for
+    # onset-only words and merges the turn they start (THE ONSET). Without it (Talk and
+    # the room as shipped) such words are a tail as well -- the owner's call, 2026-11-06.
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
         min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn,
-        on_speech_heard=_speech_heard)
+        on_speech_heard=_speech_heard,
+        on_tail_words=lambda words: append_to_last_turn(context, words),
+        onset_is_speech=reply_hold_enabled)
     start_strategy.taken_words = taken_words
+    vad_analyzer.onset_listeners.append(start_strategy.on_onset)
 
     context_aggregator = LLMContextAggregatorPair(
         context,
@@ -1306,11 +1326,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     if claims is not None:
         claims.taken_words = taken_words
     # Type through a long openclaw_agent_consult consult, heard while the line is quiet; the
-    # room's face types along (its bridge announces "typing"). Not on a phone call,
-    # but in agent-first: there it is all that covers the wait (tools._fallback_line).
+    # room's face types along (its bridge announces "typing"). A phone call types with
+    # SIP_THINKING_SOUND on and no half-duplex gate (#242), and in agent-first whatever
+    # they say: there it is all that covers the wait (tools._fallback_line). A call's
+    # features have no "typing", so its bed never types for the face; its typing echoes
+    # on the line like speech (sip_server's half-duplex).
     bed = (ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
                          gate=followup_gate)
-           if thinking_sound.ENABLED and (front_end != "sip" or AGENT_FIRST) else None)
+           if thinking_sound.enabled_for(front_end, AGENT_FIRST, half_duplex) else None)
     # Says something when a completion fails, in the voice's language (read live, as
     # WifiSetupVoice reads it). With no model it is always there: it answers every
     # request for a reply in the LLM's place (llm_error_speaker.py, NO MODEL AT ALL) --
@@ -1399,14 +1422,17 @@ def build_agent_session(transport, *, voice: str | None = None,
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
         # the reply's leading [mood: x] tag, off before the guard or the TTS see it
-        MoodTag() if moods else None,
-        LLMTextGuard() if llm_text_guard.ENABLED else None,
+        MoodTag(lang_fn=voice_lang) if moods else None,
+        LLMTextGuard(lang_fn=voice_lang) if llm_text_guard.ENABLED else None,
         tts,
         # DIRECTLY below the TTS: the first processor to handle the TTS's frames is
         # where the ledger charts them, and a held reply must not be charted until it
         # plays. Everything below it (the taps, the bed, the transport) sees the reply
         # only once it is going to the caller.
         reply_gate,
+        # Below the TTS and the gate: a reply that ends with nothing to play ends the
+        # wait in which words nobody spoke join its turn (barge_pause.py, THE WAIT).
+        barge_pause.UnspokenReplyTap(start_strategy.reply_unspoken),
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
         bed,  # the thinking sound's typing (above), pushed as plain audio to the transport

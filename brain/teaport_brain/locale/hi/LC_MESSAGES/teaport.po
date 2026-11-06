@@ -818,3 +818,7 @@ msgstr "आपका AI खाता जुड़ गया है, लेकि
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "माफ़ कीजिए, मैं अभी जवाब नहीं दे सकता: जिस खाते से मुझे जवाब मिलते हैं, उस पर ध्यान देने की ज़रूरत है, और फिर से कोशिश करने से कुछ नहीं होगा। इसे ठीक करने के लिए “सेटिंग्स खोलो” बोलिए।"
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "माफ़ कीजिए, मेरा ध्यान भटक गया। क्या आप वह फिर से कह सकते हैं?"

@@ -310,6 +310,9 @@ class FollowupGate(FrameProcessor):
         # below the TTS and the transport, so it can no longer cut that line (#293).
         self.interruptions = 0
         self._interrupted = asyncio.Event()
+        # The pipeline has ended (an End, Stop or Cancel passed, or cleanup): no
+        # interruption will come, and a line waiting for one goes on at once.
+        self._ended = False
         # For the session arbiter's view of a room mic without wake words: whether the
         # user has taken a turn at all, and when anyone (user or bot) last spoke or the
         # model last answered (time.monotonic(); refreshed while that is still going on).
@@ -479,11 +482,20 @@ class FollowupGate(FrameProcessor):
         if d in self._deliveries:
             self._deliveries.remove(d)
 
-    async def interrupted_since(self, seen: int) -> None:
+    async def interrupted_since(self, seen: int) -> bool:
         """Until an interruption has passed here since `interruptions` was `seen`: by then
-        it has settled, as cut, every line watched before it (AgentSession.own_line)."""
+        it has settled, as cut, every line watched before it (AgentSession.own_line).
+        True then; False as soon as the pipeline has ended, since none will come."""
         while self.interruptions <= seen:
+            if self._ended:
+                return False
             await self._interrupted.wait()
+        return True
+
+    def _end_interruption_waits(self) -> None:
+        """The pipeline is over: what waits in interrupted_since goes on."""
+        self._ended = True
+        self._interrupted.set()
 
     def _settle_deliveries(self, interrupted: bool, *, only_if_spoke: bool = False):
         for d in list(self._deliveries):
@@ -548,6 +560,7 @@ class FollowupGate(FrameProcessor):
             self._drop_run(None)
             self._cancel(self._speech_timer)
             self._speech_timer = None
+            self._end_interruption_waits()
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user = True
             self.user_heard = True
@@ -729,6 +742,7 @@ class FollowupGate(FrameProcessor):
         self._drop_answer(None)
         self._drop_run(None)
         self._cancel(self._speech_timer)
+        self._end_interruption_waits()
         if self.on_session_end is not None:
             # The session is over: a consult still running cannot report back to it.
             self.on_session_end()

@@ -724,3 +724,7 @@ msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك، �
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب الذي أستخدمه لإجاباتي يحتاج إلى مراجعة، ولن تفيد إعادة المحاولة. قل «افتح الإعدادات» لإصلاحه."
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "عذرًا، فقدتُ تسلسل أفكاري. هل يمكنك أن تقول ذلك مرة أخرى؟"
