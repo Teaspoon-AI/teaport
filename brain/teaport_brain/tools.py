@@ -404,10 +404,13 @@ OPEN_SETTINGS = FunctionSchema(
     description=(
         "Open this box's settings for the user on their phone: it shows a code on the "
         "box's screen to scan (or reads out an address where there is no screen) and tells "
-        "the user what to do itself. Call it, with no line before it, whenever the user "
-        "asks, in any words, to see or change your settings, their AI account or their key "
-        "(for example 'I need to change my AI key'). Not for their phone's settings, and "
-        "not for Wi-Fi (wifi_setup does that)."
+        "the user what to do itself. Call it, with no line before it, when the user asks, "
+        "in any words, for the settings to be opened or for something in them to be "
+        "changed: your settings, their AI account or their key (for example 'I need to "
+        "change my AI key', 'open my settings'). Not for a question about them ('How do I "
+        "open my settings?', 'Where do I change my key?'): answer that in words, and say "
+        "they can ask you to open them. Not for their phone's settings, and not for Wi-Fi "
+        "(wifi_setup does that)."
     ),
     properties={},
     required=[],
@@ -1831,8 +1834,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(OPEN_SETTINGS, lambda ctx: functools.partial(_open_settings,
                                                       open_settings=ctx.open_settings),
          setting("TEAPORT_TOOL_OPEN_SETTINGS"), frozenset({"room_or_talk", "host:settings"}),
-         hint="open_settings (show the user how to open your settings, their AI account or "
-              "key, on their phone)"),
+         hint="open_settings (open your settings, their AI account or key on their phone, "
+              "when they ask to open or change them)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
