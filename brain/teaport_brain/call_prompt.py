@@ -5,7 +5,8 @@
 # mic awake -- is the people in that conversation's to decide (the session arbiter's
 # PROMPT). The agent asks them, inside the conversation and in its language:
 #
-#   "Someone's calling me — +1 346 234 8500. Should I step away for a moment?"
+#   "Someone's calling me — Ann Smith. Should I step away for a moment?"
+#   "Someone's calling me — a number ending in 8 5 0 0. Should I step away for a moment?"
 #
 # said as the agent's own words (a TTSSpeakFrame into the context), so the model hears
 # the user's reply as the answer to it. The answer is understood the way the rest of the
@@ -21,12 +22,24 @@
 #     call is over it comes back: "Sorry about that — where were we?".
 #   * Don't pick up: the call is never answered. The caller keeps hearing it ring until
 #     they give up or their side times out -- never a busy line, never a hangup.
-#   * No answer within TEAPORT_CALL_PROMPT_SECS of the question: TEAPORT_CALL_PROMPT_DEFAULT,
+#   * No answer within TEAPORT_CALL_PROMPT_SECS of the start of the question (and never
+#     sooner than ANSWER_MIN_SECS after it has been said): TEAPORT_CALL_PROMPT_DEFAULT,
 #     "take" (pick up: the room cannot always answer, and a call let ring by nobody's
-#     choice is a call missed) or "ring". A turn still under way at the deadline (the user
-#     answering, the model about to call the tool) gets a few seconds more.
+#     choice is a call missed) or "ring". A turn still under way at the deadline (the
+#     user answering, the model about to call the tool) gets a few seconds more.
 #   * The caller hangs up while it is asked: the question is withdrawn. A late "yes" is
 #     told the caller is gone.
+#
+# The caller hears it ring all the while, and a carrier sends a call nobody answers to
+# voicemail 20-30 s in. So the answer time runs from the ring, not from the end of the
+# question, and the question is short (a number is said by its last digits:
+# session_arbiter.prompt_line). With nobody answering, the caller is connected 12-14 s
+# after it rang: the question ~3.5-6 s, the deadline 8 s after it began (~9 s for a
+# number: ANSWER_MIN_SECS after it), then "back in a moment" and the call's pipeline,
+# greeting and answer (sip_server), ~4 s. It was ~26 s while the deadline ran 12 s from
+# the end of a question that read the whole number (8 s), and the caller had given up by
+# then (seen live, 2026-11-06). Someone talking at the deadline adds up to
+# ANSWER_GRACE_SECS.
 #
 import asyncio
 
@@ -35,14 +48,19 @@ from loguru import logger
 from teaport_brain import session_arbiter as arb
 from teaport_brain.settings import setting
 
-# How long the user has to answer, from the end of the question.
+# How long the user has to answer, from the start of the question (the phone rang then).
 PROMPT_SECS = setting("TEAPORT_CALL_PROMPT_SECS")
+# However long the question took to say, the answer time ends no sooner than this after
+# it (or PROMPT_SECS, when that is shorter): time to start answering, which the grace
+# below then lets finish.
+ANSWER_MIN_SECS = 3.0
 # What happens when nobody answers: "take" (pick up) or "ring" (let it ring).
 PROMPT_DEFAULT = setting("TEAPORT_CALL_PROMPT_DEFAULT")
 # A turn in flight at the deadline gets this much longer to become the answer.
 ANSWER_GRACE_SECS = 5.0
-# How long the question itself may take to be said before its answer time starts anyway.
-QUESTION_MAX_SECS = 12.0
+# How long the question itself may take to be said before it counts as said anyway (the
+# longest, a 40-character name, takes ~6 s).
+QUESTION_MAX_SECS = 8.0
 # How long the line said on the way to the hold ("back in a moment") may take.
 STEP_AWAY_MAX_SECS = 8.0
 # What answer() made of the user's answer. TAKEN / DECLINED: it answered the question.
@@ -79,6 +97,7 @@ class CallPrompt:
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         self._pending, self._last = fut, None
+        asked_at = loop.time()
         try:
             line = arb.prompt_line(caller, self._lang())
             # A phone ringing stops the sentence it rings over: the brain's own cut.
@@ -91,8 +110,10 @@ class CallPrompt:
                     said.cancel()
                     session.followup_gate.drop_delivery(delivery)
             if not fut.done():
+                deadline = max(asked_at + PROMPT_SECS,
+                               loop.time() + min(PROMPT_SECS, ANSWER_MIN_SECS))
                 try:
-                    await asyncio.wait_for(asyncio.shield(fut), PROMPT_SECS)
+                    await asyncio.wait_for(asyncio.shield(fut), deadline - loop.time())
                 except asyncio.TimeoutError:
                     # The user may be answering right now: a turn in flight gets a little
                     # longer to reach the tool.
@@ -109,7 +130,9 @@ class CallPrompt:
             take = PROMPT_DEFAULT == "take"
             fut.set_result(take)
             self._last = CLOSED_TAKEN if take else CLOSED_RINGING
-            logger.info(f"phone call prompt: no answer within {PROMPT_SECS:g} s — "
+            waited = loop.time() - asked_at
+            logger.info(f"phone call prompt: no answer {waited:.1f} s after the question "
+                        "began — "
                         + ("taking the call" if take else "letting it ring")
                         + " (TEAPORT_CALL_PROMPT_DEFAULT)")
             return take

@@ -591,12 +591,39 @@ def speakable_caller(caller: str | None) -> str | None:
     return kept if any(ch.isalnum() for ch in kept) else None
 
 
+# A caller ID that is a phone number is said by its last this-many digits. Read whole it
+# took most of the question ("+1 346 234 8500": 8 s of a question that took 3 s without
+# it), and the question is said while the caller hears it ring -- a carrier sends them to
+# voicemail 20-30 s in. The full number is on the box's screen (display.CallFace).
+CALLER_NUMBER_DIGITS = 4
+
+
+def _number_tail(said: str) -> str | None:
+    """`said` (speakable_caller's) when it is a phone number longer than
+    CALLER_NUMBER_DIGITS: its last digits, spaced, so the voice reads them one by one
+    ("8 5 0 0", not "eight thousand five hundred"). None for a name, or a number short
+    enough to say whole (an extension)."""
+    if any(ch.isalpha() for ch in said):
+        return None
+    digits = [ch for ch in said if ch.isdigit()]
+    if len(digits) <= CALLER_NUMBER_DIGITS:
+        return None
+    return " ".join(digits[-CALLER_NUMBER_DIGITS:])
+
+
 def prompt_line(caller: str | None, espeak_language: str | None) -> str:
     """The question put to a live conversation when a call comes in. `caller`: who the
-    call is from (sip_server.caller_id); None when there is no name or number to say, or
-    nothing speakable in it: then just "someone"."""
+    call is from (sip_server.caller_id: a real display name, else the number); None when
+    there is no name or number to say, or nothing speakable in it: then just "someone".
+    A number is said by its last digits (CALLER_NUMBER_DIGITS)."""
     t = i18n.for_espeak(espeak_language)
     said = speakable_caller(caller)
+    tail = _number_tail(said) if said else None
+    if tail:
+        # Translators: {digits} are the last four digits of the caller's phone number,
+        # spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+        return t._("Someone's calling me — a number ending in {digits}. "
+                   "Should I step away for a moment?").format(digits=tail)
     if said:
         # Translators: {caller} is a name or a phone number, as the caller ID gives it.
         return t._("Someone's calling me — {caller}. Should I step away for a moment?").format(

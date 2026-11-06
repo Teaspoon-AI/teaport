@@ -347,6 +347,11 @@ msgstr "すみません、電話がかかってきたので出なければなり
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "電話がかかってきました — {caller}。少し席を外して出てもいいですか？"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "電話がかかってきました — 末尾が{digits}の番号です。少し席を外して出てもいいですか？"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "電話がかかってきました。少し席を外して出てもいいですか？"
 
