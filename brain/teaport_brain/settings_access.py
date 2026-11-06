@@ -77,12 +77,6 @@ SESSION_SECS = 3600
 SCREEN_ID, SCREEN_TITLE = "settings", "Settings"
 # The screen after the code was used: the QR code is of no more use.
 USED_SCREEN_SECS = 10.0
-# "open my settings" said as a request of its own, not inside a longer sentence. The
-# pattern already holds the utterance to a lead-in, a polite wrapper, the request and a
-# few trailing words; this is a backstop, with room for the longest of those ("Teaport,
-# est-ce que tu peux ouvrir les réglages s'il te plaît ?": 13 words by words(), which
-# splits on hyphens and apostrophes).
-PHRASE_MAX_WORDS = 16
 
 _clock = time.monotonic  # the code's clock; replaced in tests (a LiveCode reads it)
 _wall = time.time        # the session's (a cookie outlives the process)
@@ -419,16 +413,10 @@ async def redeem(code: str, request: Request) -> Response:
 # ------------------------------------------------------------------ the phrase
 
 def phrase_heard(text: str, t) -> bool:
-    """Is `text` "open my settings", in English or t's language? Its pattern
-    (wifi_voice.PATTERNS["settings"] and each catalog's) holds the request to the whole
-    utterance: a short lead-in, a polite wrapper ("can you ...", #309), the request, and
-    nothing after it but punctuation or a word like "please". So a question mark is no
-    reason to refuse it ("Can you open my settings?" is a request), and a sentence that
-    only mentions settings ("how do I open my settings?", "open my settings on the
-    phone") still is not it. At most PHRASE_MAX_WORDS words."""
+    """Is `text` "open my settings", in English or t's language, said as a request of its
+    own (wifi_voice.request_heard, which the sleep phrase shares)?"""
     from teaport_brain import wifi_voice
-    return (wifi_voice.heard("settings", text, t)
-            and wifi_voice.words(text) <= PHRASE_MAX_WORDS)
+    return wifi_voice.request_heard("settings", text, t)
 
 
 class SettingsPhrase:
@@ -439,9 +427,7 @@ class SettingsPhrase:
         self._new_screen = screen
 
     async def heard(self, voice, text: str) -> bool:
-        from teaport_brain import wifi_voice
-        t = voice.t
-        if not phrase_heard(text, t):
+        if not phrase_heard(text, voice.t):
             return False
         await self.open(voice)
         return True

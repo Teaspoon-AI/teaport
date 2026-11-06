@@ -935,14 +935,19 @@ def build_agent_session(transport, *, voice: str | None = None,
     # where the front door is known. With or without a model.
     settings_phrase = (SettingsPhrase() if front_end in ("talk", "room") and via is None
                        and settings_access.heard_here() else None)
+    # "go to sleep" (goodbye.SleepPhrase): the room's own way back to sleep, with or
+    # without a model -- where end_conversation is offered there (the bridge with wake
+    # words: client:sleep), as the goodbye backstop below. Talk has no sleep, and a phone
+    # call ends by hanging up.
+    sleep_phrase = (goodbye.SleepPhrase() if front_end == "room"
+                    and any(t.name == goodbye.TOOL for t in session_tools) else None)
+    fixed = [p for p in (settings_phrase, sleep_phrase) if p is not None]
     voice_lang = lambda: getattr(tts, "espeak_language", "en-us")  # noqa: E731
-    wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None,
-                           phrases=[settings_phrase] if settings_phrase else ())
+    wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None, phrases=fixed)
             if any(t.name == "wifi_setup" for t in session_tools) else None)
     # The session's fixed phrases, one processor (wifi_voice.PhraseVoice): Wi-Fi setup's
-    # where it is on, else one for "open my settings" alone.
-    phrases = wifi or (PhraseVoice(lang_fn=voice_lang, phrases=[settings_phrase])
-                       if settings_phrase else None)
+    # where it is on, else one for the phrases above alone.
+    phrases = wifi or (PhraseVoice(lang_fn=voice_lang, phrases=fixed) if fixed else None)
     # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
     # that tool is active (switched on, a gateway, the room or a Talk session) and a model
     # can call it.
@@ -1601,6 +1606,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
     session.goodbye_sleep = goodbye_sleep  # the room's goodbye backstop (goodbye.py), or None
+    session.sleep_phrase = sleep_phrase    # the room's "go to sleep" (goodbye.py), or None
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:
         prompt.session = session

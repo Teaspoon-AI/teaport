@@ -39,9 +39,13 @@ With `LOCAL_AUDIO_WAKE_WORDS` set to one or more phrases, the bridge holds its s
 
 Matching is exact, on whole words: "teapot" does not wake a device listening for "teaport" unless you list it too.
 
-To send the bridge back to sleep when you are done, say "that's all", "goodnight", or "go to sleep"; the agent says a short goodbye and the microphone sleeps immediately. If the agent answers with only a goodbye but doesn't go back to sleep, the microphone sleeps after that goodbye has played, unless you have started talking again. This backup understands English replies only. Both work only while wake words are set.
+To send the bridge back to sleep when you are done, say "go to sleep". The device answers "Okay, going to sleep." and the microphone sleeps after that has played. This works even when the agent can't answer, for example with no AI account set up or one that has run out of credit. Plain variants work too: "okay, go to sleep", "you can go back to sleep now", "can you go to sleep?". The phrase is understood in English and in the voice's language. A question about sleep, such as "how do I make you go to sleep?", is passed to the agent as usual. If you talk over the line, the device stays awake.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1738#3e45d0e5; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:49-54#76a042d2; brain/teaport_brain/goodbye.py:59-61#8cdaa5bc -->
+You can also say "that's all" or "goodnight"; the agent says a short goodbye and the microphone sleeps immediately. If the agent answers with only a goodbye but doesn't go back to sleep, the microphone sleeps after that goodbye has played, unless you have started talking again. This backup understands English replies only. An answer the device still owes you keeps it awake, unless all that is owed is a request that failed and you said goodbye yourself. Anything still owed is kept with the conversation for the next time you wake the device.
+
+All of this works only while wake words are set, and only on the device's own microphone: a Talk session has no sleep, and a phone call ends when you hang up.
+
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1738#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-65#8cdaa5bc; brain/teaport_brain/goodbye.py:73-86#044607b4; brain/teaport_brain/goodbye.py:437#ffd4f075; brain/teaport_brain/agent_session.py:938-943#0a35e83a -->
 
 ## The ring during a phone call
 

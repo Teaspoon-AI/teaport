@@ -552,6 +552,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:اه|ام+|إم+|يعني|من فضلك|لو سمحت|يرجى|رجاء|طيب|حسنا|يا\\s*teaport|teaport|يا\\s*تيبورت|تيبورت)\\W+){0,2}(?:(?:هل\\s+)?(?:يمكنك|ممكن|بإمكانك|بامكانك|تقدر|تقدري)\\s+)?(?:ت(?:فتح|عرض)(?:ي|ين|وا)?(?:\\s?لي)?|[وف]?(?:افتح(?:ي|وا)?(?:\\s?لي)?|اعرض(?:ي|وا)?(?:\\s?لي)?|[اأ]ظهر(?:ي|وا)?(?:\\s?لي)?|ور(?:ي)?ني|فرجيني|خذني\\s+[اإ]لى|روح\\s+على|اذهب\\s+[اإ]لى|انتقل\\s+[اإ]لى)|فتح|عرض)\\s+(?:صفح[ةه]\\s+)?(?:ال[اإأ]عدادات|[اإأ]عدادات(?:ك|ي)|الضبط|settings)(?:\\s+(?:الخاص[ةه]\\s+بك|الخاص[ةه]\\s+بي|teaport|تيبورت))?(?:[\\s,،]+(?:teaport|شكرا|شكراً|من فضلك|لو سمحت|الآن|الان|رجاء)(?=\\s|$|[.,!?؟،]))*[\\s.,!?؟؛:…،]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:اه|ام+|إم+|يعني|من فضلك|لو سمحت|يرجى|رجاء|طيب|حسنا|لا|نعم|تصبح على خير|شكرا|يا\\s*teaport|teaport|يا\\s*تيبورت|تيبورت)\\W+){0,2}(?:(?:هل\\s+)?(?:يمكنك|ممكن|بإمكانك|بامكانك|تقدر|تقدري)\\s+)?(?:[وف]?(?:اذهب|اذهبي|روح|روحي|عد|عودي|ارجع|ارجعي)\\s+(?:[اإ]لى\\s+النوم|للنوم|نام|نامي)|(?:[أا]ن\\s+)?(?:تنام|تنامي|تذهب\\s+(?:[اإ]لى\\s+النوم|للنوم)|تعود\\s+(?:[اإ]لى\\s+النوم|للنوم)|تروح\\s+تنام)|[وف]?(?:نم|نامي))(?:[\\s,،]+(?:teaport|شكرا|من فضلك|لو سمحت|الآن|الان|رجاء)(?=\\s|$|[.,!?؟،]))*[\\s.,!?؟؛:…،]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "شرطة مائلة"
@@ -732,3 +736,7 @@ msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب ا�
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "عذرًا، فقدتُ تسلسل أفكاري. هل يمكنك أن تقول ذلك مرة أخرى؟"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "حسنًا، سأخلد إلى النوم."
