@@ -556,7 +556,8 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
     logger.remove()
     logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
     try:
-        for peeks in (True, False):
+        # A peek's preview may land before its adoption (the verdict) or after it.
+        for peeks, adopted_first in ((True, False), (True, True), (False, False)):
             lines.clear()
             s = Service(peeks=peeks)
             await created(s)
@@ -566,8 +567,11 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
                     await audio(s, 1000)
                     await vad_stop(s)
                     end = s._peek.at_ms
+                    if adopted_first:
+                        await verdict(s)
                     await preview(s, end, "" if word == "yes" else " sure")
-                    await verdict(s)
+                    if not adopted_first:
+                        await verdict(s)
                 else:
                     await turn(s)
                     end = s._sent_samples * 1000 // 16000
