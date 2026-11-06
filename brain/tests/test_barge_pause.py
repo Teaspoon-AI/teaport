@@ -1291,11 +1291,6 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     out = session.ledger._output
     pauser = out.previous
     assert isinstance(pauser, BargeInPauser), f"above the SIP transport: {pauser!r}"
-    # Its heard-out watch needs the engine's report: asked for with the pauser, the
-    # speculative reply off as by default (audit A2), or it resumes on its window.
-    from teaport_brain import speculate
-    assert not speculate.ENABLED and session.stt.transcription_progress, (
-        speculate.ENABLED, session.stt.transcription_progress)
     p = session.tts
     while not isinstance(p, LLMUserAggregator):
         p = p.previous
@@ -1317,7 +1312,38 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
 
     talk = build_agent_session(_Transport())          # no supports_playout_pause
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
-    assert not talk.stt.transcription_progress, "no pauser, no speculation: not asked"
+
+
+async def test_the_judge_s_session_asks_for_the_report_its_heard_out_wait_needs():
+    # Audit A2: the pause's heard-out wait needs the engine's transcription report, which
+    # only the speculative reply asked for: with the judge on and segment turn text, a
+    # late word cut the playing reply unjudged. Asked for with the judge -- not without
+    # it (the user, 2026-11-06: there the wait only holds a cough longer).
+    from teaport_brain import barge_pause as bp, speculate
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.sip_transport import SipGatewayTransport, make_sip_params
+    from test_service_unusable import _Transport
+
+    saved = bp.JUDGE, speculate.ENABLED
+    speculate.ENABLED = False
+    try:
+        for judge in (True, False):
+            bp.JUDGE = judge
+            wire = _Wire()
+            try:
+                session = build_agent_session(
+                    SipGatewayTransport(wire.connection, make_sip_params()))
+                assert isinstance(session.ledger._output.previous, BargeInPauser)
+                assert session.stt.transcription_progress is judge, (
+                    judge, session.stt.transcription_progress)
+            finally:
+                wire.connection.close()
+                wire.gw_sock.close()
+        bp.JUDGE = True
+        talk = build_agent_session(_Transport())      # no pauser, so no judge
+        assert not talk.stt.transcription_progress, "nothing asks: not asked"
+    finally:
+        bp.JUDGE, speculate.ENABLED = saved
     assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 

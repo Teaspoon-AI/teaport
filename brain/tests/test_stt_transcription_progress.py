@@ -158,9 +158,9 @@ async def test_the_streaming_backend_is_not_asked():
 
 
 async def test_with_the_speculation_off_or_on_its_window_nothing_is_asked():
-    """transcription_progress unset (the speculative reply off, or set to the window):
-    the handshake is the one before the report existed, and an engine that offers it
-    is not taken up on it -- the strategy stays on the window."""
+    """transcription_progress unset (the speculative reply off or set to the window, and
+    no barge-in judge): the handshake is the one before the report existed, and an
+    engine that offers it is not taken up on it -- the strategy stays on the window."""
     s = Recorder(progress=False)
     await connected(s)
     assert s._websocket.sent[0] == {"type": "session.update", "model": s._model}

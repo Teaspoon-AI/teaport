@@ -280,11 +280,11 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           CALLS,           \* a call overtaken by its own cancel (see the header)
           POSTTOOL,        \* the answer to a tool's result, under the caller's speech (#17)
           JUDGE,           \* the barge-in judge's gate (#224, see the header)
-          REPORT           \* "asked": the session asks the engine for its transcription
-                           \* report wherever the pauser is built (audit A2, as shipped);
-                           \* "notAsked": only the speculative reply asked for it, so the
-                           \* default configuration's watch_heard declines and the pause
-                           \* resumes on its window (before A2)
+          REPORT           \* "asked": a session with the judge asks the engine for its
+                           \* transcription report (audit A2, as shipped); "notAsked":
+                           \* only the speculative reply asked for it, so a session with
+                           \* the judge and segment turn text declined the watch and the
+                           \* pause resumed on its window (before A2)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---

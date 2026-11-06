@@ -666,9 +666,9 @@ PREVIEW_AT_STOP = setting("TEAPORT_STT_PREVIEW_AT_STOP")
 #
 # Asked for only when the session will use it: build_agent_session sets
 # transcription_progress when the speculative reply is on and set to wait for the
-# report, and when the barge-in pauser is built (its heard-out watch, watch_heard), so
-# with neither the handshake is what it was. (The strategy's speculation frames then go
-# out with nothing to speculate: it ignores them without a speculator.)
+# report, and when the barge-in judge is on (the pauser's heard-out watch, watch_heard),
+# so with neither the handshake is what it was. (The strategy's speculation frames then
+# go out with nothing to speculate: it ignores them without a speculator.)
 _REPORT_MARGIN_MS = setting("TEAPORT_STT_TRANSCRIBED_MARGIN_MS")
 
 # The barge-in pauser's watch (watch_heard, barge_pause.py HEARD OUT): how far past the
@@ -3522,7 +3522,8 @@ class TeaportSTTService(WebsocketSTTService):
                 # report's position here: decoded_through_ms is no bound once words are
                 # held until complete, and every word of the speech that ends before
                 # end_through_ms is in hand. Asked for by the slices, so pushed on only
-                # where the stop strategy asked for the report too.
+                # where the session asked for the report too (the speculation, the
+                # judge's heard-out wait).
                 ms = msg.get("end_through_ms")
                 decoded = msg.get("decoded_through_ms")
                 if isinstance(decoded, (int, float)):
