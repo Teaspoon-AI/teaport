@@ -958,7 +958,7 @@ def test_zero_width_characters_count_by_mass():
 
 
 def test_joiners_are_spelling_not_zero_width():
-    """ZWJ/ZWNJ stay out of tts_text's _ZERO_WIDTH (review of #70). That one table drives
+    """ZWJ/ZWNJ stay out of tts_text's ZERO_WIDTH (review of #70). That one table drives
     the fold, the guard's cut and the raw capture, so adding them would erase the joiners
     from Hindi and emoji text, and cut a long healthy reply as a collapse."""
     assert JOINED.count(ZWJ) + JOINED.count(ZWNJ) >= 40, "the fixture must pass the bar"

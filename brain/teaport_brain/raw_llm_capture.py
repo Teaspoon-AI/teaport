@@ -50,7 +50,7 @@ from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
     SENTENCE_SPLIT,
-    _ZERO_WIDTH,
+    ZERO_WIDTH,
     is_sentence_repeat,
 )
 
@@ -82,7 +82,7 @@ ENABLED = setting("TEAPORT_RAW_LLM_CAPTURE")
 # is two ellipses with nothing visible between them. Built from tts_text's table, so a
 # code point added to the fold is matched here too.
 _MIN_ZERO_WIDTH_RUN = 3
-_ZW = _ZERO_WIDTH.pattern
+_ZW = ZERO_WIDTH.pattern
 _DEGENERATE = re.compile(
     r"\.{%d,}|\u2026(?:\s|%s)*\u2026|\*\*|%s(?:\s*%s){%d,}"
     % (MIN_DOT_RUN, _ZW, _ZW, _ZW, _MIN_ZERO_WIDTH_RUN - 1))

@@ -47,7 +47,7 @@ _NOBREAK_SPACES = re.compile("[\u00a0\u202f]")
 # ZWJ/ZWNJ (U+200D/U+200C) are left out on purpose: they are spelling, not contamination
 # (Devanagari conjuncts, emoji sequences), and test_joiners_are_spelling_not_zero_width
 # fails if they are added.
-_ZERO_WIDTH = re.compile("[\u200b\u2060\ufeff]")
+ZERO_WIDTH = re.compile("[\u200b\u2060\ufeff]")
 _MD_BOLD = re.compile(r"\*{2,}")
 
 # A run of three or more dots. Shared with llm_text_guard and raw_llm_capture, which
@@ -122,7 +122,7 @@ def fold_unspeakable(text: str) -> str:
     This bit whenever a reply contained an apostrophe, so it arrived with the switch to a
     model that writes typographically."""
     text = _NOBREAK_SPACES.sub(" ", text)     # no-break spaces -> space
-    text = _ZERO_WIDTH.sub("", text)          # zero-width chars -> removed
+    text = ZERO_WIDTH.sub("", text)          # zero-width chars -> removed
     text = text.replace("\u2011", "-")        # non-breaking hyphen -> hyphen
     text = text.replace("\u2019", "'")        # curly apostrophe -> straight
     text = _MD_BOLD.sub("", text)             # markdown bold -> removed

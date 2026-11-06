@@ -118,7 +118,7 @@ from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
-    _ZERO_WIDTH,
+    ZERO_WIDTH,
     fold_unspeakable,
     is_sentence_repeat,
 )
@@ -298,7 +298,7 @@ _TRIP_COMBINED = 6
 # 40 sits above any punctuation a healthy spoken reply carries (the pinned FOLDED_NOT_CUT
 # cases peak at 16) and below the ~50 characters within which every live capture collapses.
 #
-# ZERO-WIDTH characters (tts_text's _ZERO_WIDTH: U+200B, U+2060, U+FEFF) add to that mass
+# ZERO-WIDTH characters (tts_text's ZERO_WIDTH: U+200B, U+2060, U+FEFF) add to that mass
 # one for one (#70). Live 2026-09-26, a Hamlet recitation streamed ~20 healthy tokens and
 # then 895 U+200B deltas and nothing else until the End. The fold erases them, none is a
 # dot or an ellipsis, and the counter saw nothing, so the prefix played and the reply
@@ -367,7 +367,7 @@ class DegeneracyCounter:
         self.ellipses += n
         self.punct_chars += n
         # By mass, from tts_text's table, so a code point added to the fold counts here too.
-        z = len(_ZERO_WIDTH.findall(text))
+        z = len(ZERO_WIDTH.findall(text))
         self.zero_width += z
         self.punct_chars += z
 
