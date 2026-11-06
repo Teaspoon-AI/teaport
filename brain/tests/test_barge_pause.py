@@ -1143,7 +1143,10 @@ async def test_words_being_judged_re_arm_the_no_words_limit():
             await p.on_onset(False)
             await asyncio.sleep(0.4)
         assert p._noisy, "two word-less pauses"
-        p.hold_resume(True)                               # the judge, on words
+        p.hold_resume(True, who="the turn's final")       # the STT's hold: no words said
+        p.hold_resume(False, who="the turn's final")
+        assert p._noisy, "the STT's own hold is no word said"
+        p.hold_resume(True, words=True)                   # the judge, on words
         p.hold_resume(False)
         assert not p._noisy and not p._noword_at
         await p.on_onset(True)
@@ -1152,6 +1155,111 @@ async def test_words_being_judged_re_arm_the_no_words_limit():
     finally:
         await task.cancel()
         await run
+
+
+async def _ringing(max_secs=3.0):
+    out, p, task, run = await _pauser_rig(max_secs=max_secs)
+    await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+    await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.05)
+    return out, p, task, run
+
+
+async def test_the_live_ringtone_shape_pauses_twice_then_not():
+    # Review (2a, probe 1): rings of 0.6 s -- no blips -- each heard out by the STT with
+    # no words in it, a second or so apart: two pauses, and the rest are skipped.
+    out, p, task, run = await _ringing()
+    p.watch_heard = _Watch()
+    try:
+        for _ in range(5):
+            await p.on_onset(True)
+            await asyncio.sleep(0.6)
+            await p.on_onset(False)
+            await asyncio.sleep(0.05)
+            if p._watch is not None:
+                await p.on_speech_heard(p._watch)
+            await asyncio.sleep(0.3)
+        assert p.pauses == 2 and p.skipped_noisy == 3, (p.pauses, p.skipped_noisy)
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_a_sound_that_outlasts_the_cap_counts():
+    # Review (2a, probe 3): a ring that keeps the onset on past the cap, nothing holding
+    # the pause: the cap's end counts as a word-less one too.
+    out, p, task, run = await _ringing(max_secs=0.4)
+    try:
+        for _ in range(4):
+            await p.on_onset(True)
+            await asyncio.sleep(0.6)                       # past the cap
+            await p.on_onset(False)
+            await asyncio.sleep(0.05)
+        assert p._noisy and p.pauses == 2, (p.pauses, p._noisy)
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_the_limit_lifts_once_there_is_no_sound_to_skip():
+    from teaport_brain import barge_pause as bp
+    window, bp._NOWORD_WINDOW_S = bp._NOWORD_WINDOW_S, 0.6
+    out, p, task, run = await _ringing()
+    try:
+        p._resume_secs = 0.1
+        for _ in range(2):
+            await p.on_onset(True)
+            await asyncio.sleep(0.05)
+            await p.on_onset(False)
+            await asyncio.sleep(0.25)
+        assert p._noisy
+        await p.on_onset(True)                             # still ringing: skipped,
+        await asyncio.sleep(0.05)                          # and the limit holds on
+        await p.on_onset(False)
+        assert not p.paused and p.skipped_noisy == 1
+        await asyncio.sleep(0.7)                           # the window, nothing to skip
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert p.paused, "the ringing stopped: the caller's speech pauses again"
+    finally:
+        bp._NOWORD_WINDOW_S = window
+        await task.cancel()
+        await run
+
+
+async def test_words_reported_between_pauses_do_not_mark_the_next_one():
+    # Review (2a, probe 4): a final in flight as the pause resumed: the next pause is its
+    # own, and a word-less one counts.
+    out, p, task, run = await _ringing()
+    try:
+        p._resume_secs = 0.1
+        await p.on_final_without_turn(words=True)          # not paused: a late final
+        await p.on_onset(True)
+        await asyncio.sleep(0.3)
+        await p.on_onset(False)
+        await asyncio.sleep(RESUME_S + 0.2)
+        assert len(p._noword_at) == 1, p._noword_at
+    finally:
+        await task.cancel()
+        await run
+
+
+def test_words_over_the_playing_reply_tell_the_pauser():
+    # Review (2a, 2): once the limit holds, nothing pauses, so words come over a reply
+    # that is playing; a final there that starts no turn still says the line has speech.
+    async def run():
+        told = []
+        s = PauseAwareMinWordsStrategy(min_words=2)
+
+        async def final_without_turn(words=False):
+            told.append(words)
+
+        s._on_final_without_turn = final_without_turn
+        await s.process_frame(BotStartedSpeakingFrame())
+        await s.process_frame(TranscriptionFrame("Yeah.", "u", "t"))
+        return told
+
+    assert asyncio.run(run()) == [True]
 
 
 async def test_the_no_words_limit_ends_with_the_reply():
@@ -1186,8 +1294,9 @@ async def test_the_no_words_limit_ends_with_the_reply():
 
 async def test_what_counts_against_the_no_words_limit():
     # Any pause that resumes with no words in it counts (a ringtone, a cough that lasts);
-    # a backchannel's words do not, and start the count over; a pause the cap ended does
-    # not count; nor one longer ago than the window.
+    # a backchannel's words do not, and start the count over; a pause the cap ended while
+    # the STT held it (words being decided) does not count; nor one longer ago than the
+    # window.
     from teaport_brain import barge_pause as bp
     out, p, task, run = await _pauser_rig(max_secs=0.3)
     window, bp._NOWORD_WINDOW_S = bp._NOWORD_WINDOW_S, 1.5
@@ -1211,7 +1320,10 @@ async def test_what_counts_against_the_no_words_limit():
         await p.on_final_without_turn(words=True)
         await asyncio.sleep(0.25)
         assert len(p._noword_at) == 0, "words start the count over"
-        await sound(secs=0.4)                             # held to the cap: not counted
+        p.hold_resume(True, who="the turn's final")       # the STT holds it to the cap
+        await sound(secs=0.4)
+        p.hold_resume(False, who="the turn's final")
+        await asyncio.sleep(0.2)
         assert len(p._noword_at) == 0, p._noword_at
         await sound()                                     # 1
         await asyncio.sleep(1.6)                          # out of the window

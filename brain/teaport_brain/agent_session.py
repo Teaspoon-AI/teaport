@@ -1258,7 +1258,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                                          heard, said)
 
         barge_judge = barge_pause.BargeInJudgeGate(
-            start_strategy, _judge_barge, hold_resume=barge_pauser.hold_resume)
+            start_strategy, _judge_barge,
+            hold_resume=lambda on: barge_pauser.hold_resume(on, words=True))
         barge_judge.taken_words = taken_words
         logger.info("barge-in judge ON (TEAPORT_BARGE_JUDGE): words over a paused reply "
                     "are judged before they interrupt it")
