@@ -1310,6 +1310,7 @@ STT connect. Time is not: every bounded wait is a step that may happen.
 | `sa_overlap_refused` | before the SIP claim fix, with the overlap `SipCall.tla` found | `NoEngineRefusal` ✗ |
 | `sa_overlap_redecide` | an arbiter-side alternative, not taken: decide again after the end | all ✓ |
 | `sa_roomWakes` | witness | `NoSilentLiveEnd` ✗ (accepted) |
+| `sa_roomAwake` | the room awake and never flipping (`MODE = "awake"`, no wake race): the user says yes and the hold fails | all ✓ (before the HOLD_FAILED fix, `NoSilentLiveEnd` ✗) |
 
 "All": `SttOnlyHolder` (only the holder's STT is connected), `OneConversation` (never two
 sessions live and not on hold), `NoEngineRefusal` (no session the arbiter let in is
@@ -1361,7 +1362,17 @@ case that can no longer arise would be a second guard on one contract.
 or a Talk session (TAKEN) by a decision taken while it was asleep; `_end_for` closes a
 room silently for both whatever `asleep()` says by then, so a room that wakes in between
 — one event-loop tick, decide to the ending task's first step — is cut off without a
-word instead of being asked.
+word instead of being asked. That is the only silent end left of an awake room.
+
+The other one was a failed hold (2026-11-05): an awake room is asked (PROMPT), the user
+says yes, and `AgentSession.hold` raises or runs past `HOLD_WAIT_SECS`. `_acquire` ended it
+as CALL_IN, which `_end_for` closes a room for without a word, and the held conversation
+was lost with no "where were we?" later. `sa_roomAwake` (`MODE = "awake"`: the room never
+flips, so the wake race cannot happen) found it in 12 states: `Ask(yes)`, `HoldFail`,
+`HoldDone(CALL_IN)`, `EndCall`. The end is now `HOLD_FAILED`: silent only for an asleep
+room, and an awake room or a Talk session is told, by the call line, unless the hold's
+own "back in a moment" already played (`AgentSession.hold_line_said`: no second
+goodbye). The model abstracts the telling as "not silent", so `sa_roomAwake` holds.
 
 ### Known limits of this model
 
@@ -1371,7 +1382,7 @@ word instead of being asked.
   `HOLD_WAIT_SECS` (muted, the gate held, possibly the STT let go); `_acquire` then ends
   the conversation — but if the call's acquire was cancelled meanwhile (the caller hung
   up), nothing does, and the conversation stays the holder, muted. Not modelled;
-  `session_arbiter.py:410-416` / `agent_session.py:772-786`.
+  `session_arbiter.py:413-419` / `AgentSession.hold` (`agent_session.py:589`).
 - Engine refusals are immediate: `stt.py`'s retry budget (`SttSlot.tla`) is what the
   SETTLE sleeps lean on, and is not modelled here.
 - END_WAIT_SECS' timeout (a holder that never lets go) is not a step: past it the arbiter

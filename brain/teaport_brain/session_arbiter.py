@@ -76,6 +76,7 @@ REPLACED = "replaced"  # the same client opened a new session
 REAPED = "reaped"      # its client was already gone (socket closed, or silent)
 TAKEN = "taken"        # a sleeping room gave way to a Talk session
 CALL_IN = "call"       # a phone call needs the engine
+HOLD_FAILED = "holdfailed"  # a conversation that said yes to a call could not be put on hold
 REFUSED = "refused"    # decide()'s answer when the newcomer does not get it
 PROMPT = "prompt"      # decide()'s answer when the holder is to be asked (a call comes in)
 
@@ -96,7 +97,7 @@ class Claim:
     """One session's ask for the slot, and its hold on it once granted.
 
     `end(why)` is how the arbiter ends this session when another takes the slot (why is
-    REPLACED, REAPED, TAKEN or CALL_IN): the front-end says what it has to say, closes
+    REPLACED, REAPED, TAKEN, CALL_IN or HOLD_FAILED): the front-end says what it has to say, closes
     its client with a code that says why, and cancels its pipeline; the arbiter then
     waits for release(). `asleep()` says whether it is a sleeping room right now, and
     `gone()` whether its client has already left (closed, or silent for STALE_SECS).
@@ -318,9 +319,11 @@ class SessionArbiter:
             if take:
                 logger.info(f"session arbiter: {holder.label} goes on hold for {new.label}")
                 if not await self._hold(holder, new):
-                    # It would not let go: ended, as a call ends a conversation that
-                    # cannot be asked (its end says why, or it is already gone).
-                    await self._end(holder, CALL_IN)
+                    # It would not let go: ended. Its end says why unless it already
+                    # did: HOLD_FAILED, not CALL_IN, because an awake room was asked and
+                    # said yes (CALL_IN closes a room without a word), and it may have
+                    # said "back in a moment" already (AgentSession.hold's line).
+                    await self._end(holder, HOLD_FAILED)
             if new.released.is_set():
                 # The call ended while it was being made way for: the conversation held
                 # for it is back (or is coming back), and the call never holds anything.
