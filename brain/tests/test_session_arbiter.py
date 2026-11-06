@@ -1106,6 +1106,19 @@ async def test_an_asleep_room_whose_hold_fails_closes_silently():
     assert not [f for f in session.task.queued if isinstance(f, TTSSpeakFrame)]
 
 
+async def test_a_failing_call_line_still_closes_and_cancels_the_session():
+    _fresh()
+    ws = _WS({})
+    session = _session(ws)
+
+    async def broken(*a, **k):
+        raise RuntimeError("pipeline gone")
+    session.say_last_line = broken
+    await gs._end_for(ws, session, arb.HOLD_FAILED, room=True, asleep=False)
+    assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
+    assert session.task.cancelled
+
+
 async def test_hold_says_it_played_its_line_only_once_it_has():
     ws = _WS({})
     session = _session(ws)
