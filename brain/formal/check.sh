@@ -5,8 +5,10 @@
 #
 # --full adds the rows too large for the default run: today six SttCommit rows (the
 # carry, the missed stop, the repaired final and the reset in their full environments) whose state
-# spaces are tens of millions, and SttSlice's three-word rows and its peek with frozen
-# bounds (formal/README.md).
+# spaces are tens of millions, and SttSlice's three-word rows, its peek with frozen
+# bounds, and its peek at the owed-peek row's bounds (formal/README.md). The default run
+# does not guard every shipped fix: the peek's owed flag (_Peek.owed) is guarded only by
+# SttSlice's two --full peek rows.
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
 # manual gate, to run before merging any change to SttCommit.tla or SttSlice.tla or to the
 # paths they model (stt.py's commits, the hold, the backstop, the carry; the slicing).
@@ -162,20 +164,22 @@ run() {  # run <module> <config> <expectation>
   fi
 }
 
-echo "Followup.tla — retiring a one-shot order at its read (ClientNotes' reaction; the consult follow-up's until #203)"
+echo "Followup.tla — retiring a one-shot order at the first text of the completion that read it (ClientNotes' reaction; the consult follow-up's until #203)"
 run Followup.tla fu_asWritten_loss    "(expected: FAILS NoSilentLoss)"
 run Followup.tla fu_asWritten_repeat  "(expected: FAILS NoRepeatRecital)"
 run Followup.tla fu_gateOnOwn_repeat  "(expected: FAILS NoRepeatRecital)"
-run Followup.tla fu_retireOnRead      "(expected: holds)"
+run Followup.tla fu_retireOnRead      "(expected: holds — AS SHIPPED: retired at the first text; an unanswered order goes only by expiry or a newer order)"
+run Followup.tla fu_retireOnStart_loss "(expected: FAILS NoSilentLoss — a mutant of the retirement point: retired at the response start frame, before the request carries it)"
+run Followup.tla fu_speechWindow_loss  "(expected: FAILS NoSilentLoss — a mutant of the window: posted while only nobody speaks; the shipped trigger fires on any completion's first text, so an older completion's text spends the newer order)"
 echo
 echo "Followup.tla — PR #13: releasing the LLM latch on a tool call (LATCH)"
 run Followup.tla fu_clearedOnToolCall_existing "(expected: holds — blind)"
-run Followup.tla fu_held_interject             "(expected: holds)"
-run Followup.tla fu_clearedOnToolCall_interject "(expected: FAILS NoInterjectMidTurn)"
-run Followup.tla fu_held_deadair               "(expected: FAILS NoDeadAirDuringTool)"
-run Followup.tla fu_clearedOnToolCall_deadair  "(expected: holds)"
-run Followup.tla fu_turnAware_interject        "(expected: holds)"
-run Followup.tla fu_turnAware_deadair          "(expected: holds)"
+run Followup.tla fu_held_interject             "(expected: FAILS NoInterjectMidTurn — the commit-claim race every design before #203 had: an order posted behind a turn committed but not started)"
+run Followup.tla fu_clearedOnToolCall_interject "(expected: FAILS NoInterjectMidTurn — that race, and PR #13's own: an order posted between a bare tool call and its answering completion)"
+run Followup.tla fu_held_deadair               "(expected: FAILS NoDeadAirDuringTool — historical: the narrator skips its line while a call is out since #230)"
+run Followup.tla fu_clearedOnToolCall_deadair  "(expected: holds — historical, as above)"
+run Followup.tla fu_turnAware_interject        "(expected: holds — a turn committed but not started shuts the window too (TurnCommitMark))"
+run Followup.tla fu_turnAware_deadair          "(expected: holds — historical, as above)"
 run Followup.tla fu_turnAware_all              "(expected: holds)"
 echo
 echo "Owed.tla — owed until heard (#203): the record, the note rendered per request, closed on evidence"
@@ -210,7 +214,7 @@ run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other prope
 run Owed.tla ow_judgeWrong        "(expected: FAILS ClosedOnEvidence — the cut judge answers HEARD when the rest held part of the answer (the residual, 1/145 measured): the record closes unheard)"
 run Owed.tla ow_prefixLexical     "(expected: FAILS ClosedOnEvidence — a cut decided by the lexical rule on the heard prefix (a8fa2ba): two content words of each item close it before its facts are out)"
 run Owed.tla ow_judgeOwes         "(expected: FAILS NoRunAfterHeard — OWES, the residual: the judge answers OWED (or not in time) though all was heard (14/96 measured, at the trailing edge); the record stays owed and the lull re-offers it)"
-run Owed.tla ow_judgeOwes_rest    "(expected: holds — OWES: every property but the re-offer's repeat of what was heard)"
+run Owed.tla ow_judgeOwes_rest    "(expected: holds — OWES: every property, RetellOnce included, but NoRunAfterHeard (the re-offer's repeat of what was heard) and NoStaleNote (the note says unheard meanwhile; 10 steps))"
 run Owed.tla ow_gist_lexical      "(expected: FAILS RetellOnce — CLOSE lexical with LEXMISS, as shipped in #204: a one-fact answer told in the caller's words reads as not covering, and every noted turn re-tells it (2026-10-23 14:06))"
 run Owed.tla ow_gist_noBackstop   "(expected: FAILS RetellOnce — the gist judge with no backstop: a judge that answers OWED on full tellings (PTOWES) re-tells a heard answer on every turn)"
 run Owed.tla ow_gist_oneReply     "(expected: FAILS RetellOnce — the judges read the one reply, not what was heard of the record: a re-telling cut before its facts is OWED though the telling before it was heard)"
@@ -297,7 +301,9 @@ run UserTurn.tla ut_judge_noReask_nomissedbargein     "(expected: FAILS NoMissed
 run UserTurn.tla ut_judge_quietWindow_nounjudged     "(expected: FAILS NoUnjudgedWords — the pause resumes on its quiet window before the engine returns the caller's word, which then cuts the playing reply unjudged, #275)"
 run UserTurn.tla ut_judge_shipped_reach               "(expected: FAILS NoJudging — witness: words held for a verdict are reachable as shipped)"
 run UserTurn.tla ut_judge_shipped_all                 "(expected: holds — the barge-in judge's gate as shipped, on the shipped pause, with every property)"
-run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers and the heard-out bound as they are, the pause cap left out: everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_judge_pauseCap_resumeover         "(expected: FAILS NoResumeOverWords — the pause cap: it resumes the reply whatever holds it and the gate lets the held words on, the ACCEPTED RESIDUAL (the code's alternative, _past_pause, is on feat/judge-single-words))"
+run UserTurn.tla ut_judge_pauseCap_rest               "(expected: holds — the pause cap in: every other property ut_judge_shipped_timed checks)"
 echo
 echo "UserTurn.tla — the cut and the commit (FENCE, CutReplyFence) and the refused finalize's second commit (EARLY_FINAL)"
 run UserTurn.tla ut_fence_none_nocutaftercommit       "(expected: FAILS NoCutAfterCommit — before 2026-10-13: the late-start barge-in's commit overtakes its cut)"
@@ -330,6 +336,7 @@ run UserTurn.tla ut_post_gate_timed_rest                    "(expected: holds �
 run UserTurn.tla ut_post_asWritten_noskippedanswer          "(expected: FAILS NoSkippedAnswer — pipecat's skip for an open turn whose commit already ran: a result nothing answers (#196, not #17's fix))"
 run UserTurn.tla ut_shipped_all                      "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
 run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_shipped_judge_all                 "(expected: holds — ut_shipped_all with the barge-in judge: the gate on the shipped commit machinery, NoResumeOverWords and NoUnjudgedWords too)"
 run UserTurn.tla ut_talk_pause_reach                  "(expected: FAILS NoPauseInTailBand — witness: with TEAPORT_BARGE_PAUSE_TALK or _ROOM, Talk or the room pauses too, without the reply hold)"
 run UserTurn.tla ut_talk_judge_reach                  "(expected: FAILS NoJudging — witness: words held for a verdict are reachable on Talk with the pause on)"
 run UserTurn.tla ut_talk_shipped_all                  "(expected: holds — Talk or the room with TEAPORT_BARGE_PAUSE_TALK or _ROOM: the pause, no reply hold; every property but the two only the hold gives)"
@@ -337,7 +344,7 @@ run UserTurn.tla ut_talk_judge_all                    "(expected: holds — the 
 run UserTurn.tla ut_talk_shipped_nostalereply         "(expected: FAILS NoStaleReply — Talk has no reply hold (TEAPORT_REPLY_HOLD_TALK off): the reply plays over the resumed user, with the pause on as without)"
 run UserTurn.tla ut_talk_shipped_nosplitturn          "(expected: FAILS NoSplitTurn — the same: nothing drops the unplayed reply, so the continuation is a second message)"
 echo
-echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
+echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85; the voice clock since #255)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
 run PlayoutClock.tla pc_release_all        "(expected: holds — every pts moved by the first held audio's wait)"
@@ -394,6 +401,7 @@ run SttCommit.tla sc_final_stop_marked   "(expected: FAILS NoStaleTurnEnd — BE
 run SttCommit.tla sc_final_stop_stranded "(expected: FAILS NoStrandedTurn — BEFORE RECEIPTS: a stop's close lands before the strategy counts the stop, and the debt is never paid)"
 run SttCommit.tla sc_final_receipts      "(expected: holds — AS SHIPPED: receipts for closes that come early, no stamp on an unasked final)"
 run SttCommit.tla sc_final_receipts_backstop "(expected: holds — as shipped: the same, with the backstop's half in place of the engine's cut)"
+run SttCommit.tla sc_final_receipts_lost "(expected: holds — as shipped: the same, with a verdict lost in place of the engine's cut: the hold's expiry answers the stop)"
 run SttCommit.tla sc_final_stop_residual "(expected: holds — as shipped, on an engine before teagram-engine#36: every stale end is a mispairing)"
 run SttCommit.tla sc_reset_owed          "(expected: FAILS NoStrandedTurn — BEFORE 2026-10-15: a lost engine session takes a stop's close, and the strategy still owes it)"
 run SttCommit.tla sc_reset_pays          "(expected: holds — AS SHIPPED: the reset is the close of every stop the STT had seen)"
@@ -431,12 +439,16 @@ run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the pe
 run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
 run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleDeliver — a later preview's words the turn before still expects, asked again)"
 run SttSlice.tla ss_noOrder         "(expected: FAILS NoDoubleDeliver — a turn after one that put nothing with words on goes on at its preview: its words delivered twice, out of order)"
-run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed)"
+run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed; the shipped design at these bounds is --full's ss_peekOwed_shipped)"
+run SttSlice.tla ss_heard           "(expected: holds — AS SHIPPED, the heard-out watch (#275): answered once both bounds are the margin past the voice end, no word of the speech comes after)"
+run SttSlice.tla ss_heard_reach     "(expected: FAILS HeardAllSent — witness: the watch is answered with the caller's later words still to come)"
+run SttSlice.tla ss_heard_endOnly   "(expected: FAILS NoWordAfterHeard — the end bound alone, as before 3a46b6c (its smaller margin not shown): a word the voice end falls inside comes after the answer)"
 if [ "$FULL" = 1 ]; then
   limit=$FULL_ROW_TIMEOUT
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
+  run SttSlice.tla ss_peekOwed_shipped "(expected: holds — the peek as shipped at ss_noPeekOwed's bounds: the owed flag keeps the adopted peek waiting, ~31M states)"
   limit=$ROW_TIMEOUT
 fi
 echo
@@ -487,7 +499,7 @@ run Ledger.tla   ledger_fillerSet    "(expected: FAILS FillerCtxRemembered)"
 run Ledger.tla   ledger_once         "(expected: FAILS ChartedAtMostOnce — new)"
 run Ledger.tla   ledger_wrongText    "(expected: FAILS ChartedTextMatchesContext)"
 echo
-echo "Ledger.tla — windowHead: the first fix (3a51294), itself superseded by LedgerPlayout.tla"
+echo "Ledger.tla — windowHead: the first fix (3a51294 on PR #13's branch, squash-merged as f23503b), itself superseded by LedgerPlayout.tla"
 run Ledger.tla   ledgerfix_phantom   "(expected: holds)"
 run Ledger.tla   ledgerfix_ownStart  "(expected: holds)"
 run Ledger.tla   ledgerfix_unheard   "(expected: holds)"
