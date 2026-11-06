@@ -294,7 +294,8 @@ async def test_on_in_and_through_after_their_object_end_a_phrase_whole():
     """Review of #329 (second family): "on" and "in" were dangling after anything but a
     few verbs, so everyday phrases got the plain lines."""
     for whole in ("turning the lights on", "putting the kettle on", "logging you in",
-                  "letting you in", "checking you in", "following through"):
+                  "letting you in", "checking you in", "following through",
+                  "seeing what's going on", "checking what's going on"):
         assert _ack(whole) == f"Sure — {whole}.", (whole, _ack(whole))
     for short in ("checking on", "working on", "catching up on", "checking what's on",
                   "looking up flights in", "reading through"):

@@ -640,7 +640,7 @@ _DANGLING = frozenset(
     .split())
 _UP_TAKES_AN_OBJECT = frozenset(
     "looking pulling picking digging bringing calling ringing".split())
-_WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging".split())
+_WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging going".split())
 # "on" wants its object after the verb itself ("checking on", "working on"), after
 # another particle ("catching up on") or a "what's" ("checking what's on"); after the
 # verb's own object it is whole ("turning the lights on", "putting the kettle on").
