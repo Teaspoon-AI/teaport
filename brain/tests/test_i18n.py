@@ -275,7 +275,7 @@ SAYS = {  # what a speaker of each language says for each meaning (from the tran
     "ja": {"start": "Wi-Fiを設定して", "yes": "はい、お願いします", "no": "いいえ、やめておきます",
            "cancel": "設定を中止して", "repeat": "もう一回言って", "settings": "設定を開いて", "sleep": "もう寝ていいよ"},
     "ko": {"start": "와이파이 설정해 줘", "yes": "네 해 주세요", "no": "아니요 됐어요",
-           "cancel": "취소해 주세요", "repeat": "다시 말해 줘", "settings": "설정 열어 줘", "sleep": "이제 자"},
+           "cancel": "취소해 주세요", "repeat": "다시 말해 줘", "settings": "설정 열어 줘", "sleep": "자러 가"},
 }
 
 
@@ -474,8 +474,8 @@ def test_the_settings_pattern_hears_requests_not_talk(lang):
 SLEEP = {
     "es": (["vete a dormir", "Vale, vete a dormir ya.", "¿Puedes irte a dormir?", "vuelve a dormir, gracias", "duérmete", "Ya puedes ir a dormir.", "no, vete a dormir"],
           ["¿Cómo te mando a dormir?", "me voy a dormir", "voy a dormir", "vete a dormir y luego llama a mamá", "no quiero ir a dormir"]),
-    "pt_BR": (["vai dormir", "Pode ir dormir.", "Não, vai dormir.", "volta a dormir, valeu", "você pode voltar a dormir?"],
-             ["como faço você dormir?", "eu vou dormir", "vou dormir agora", "vai dormir na casa da vó?"]),
+    "pt_BR": (["vai dormir", "Pode ir dormir.", "Não, vai dormir.", "Não. Vai dormir.", "Não, pode ir dormir.", "volta a dormir, valeu", "você pode voltar a dormir?"],
+             ["como faço você dormir?", "eu vou dormir", "vou dormir agora", "vai dormir na casa da vó?", "não vai dormir", "não vá dormir", "não pode ir dormir"]),
     "fr": (["va dormir", "D’accord, va dormir.", "Tu peux aller dormir ?", "Non, retourne dormir.", "Rendors-toi, merci", "Vous pouvez vous mettre en veille ?", "mets-toi en veille"],
           ["Comment je te fais aller dormir ?", "je vais dormir", "va dormir chez ta sœur", "je n’arrive pas à dormir"]),
     "it": (["vai a dormire", "Va bene, vai a dormire.", "Puoi tornare a dormire?", "No, torna a dormire, grazie", "ora puoi andare a dormire"],
@@ -486,16 +486,16 @@ SLEEP = {
           ["Hoe laat ga je slapen?", "Ik ga slapen", "ga slapen bij oma", "Wanneer ga je slapen?"]),
     "ru": (["Иди спать", "Ладно, иди спать.", "Ну всё, иди спать", "Можешь идти спать?", "Нет, засыпай.", "Спи, спасибо", "Перейди в спящий режим"],
           ["Как отправить тебя спать?", "Я иду спать", "Иди спать к бабушке", "Ты спишь?"]),
-    "ar": (["نم", "حسنًا، نم الآن", "اذهب إلى النوم", "هل يمكنك أن تنام؟", "لا، عد إلى النوم", "ممكن تروح تنام؟"],
-          ["كيف أجعلك تنام؟", "سأذهب إلى النوم", "أريد أن أنام", "هل تنام؟"]),
+    "ar": (["نم", "حسنًا، نم الآن", "اذهب إلى النوم", "هل يمكنك أن تنام؟", "لا، عد إلى النوم", "ممكن تروح تنام؟", "لا، اذهب إلى النوم", "لا. نم", "لا، يمكنك أن تنام", "روح نام", "عد إلى النوم"],
+          ["كيف أجعلك تنام؟", "سأذهب إلى النوم", "أريد أن أنام", "هل تنام؟", "لا تذهب إلى النوم", "لا تنام", "لا يمكنك أن تنام", "لا نم"]),
     "hi": (["सो जाओ", "ठीक है, सो जाओ", "अब सो जाओ", "क्या आप सो सकते हैं?", "नहीं, वापस सो जाओ, धन्यवाद", "सोने जाओ"],
           ["मैं सोने जा रहा हूँ", "तुम्हें कैसे सुलाऊँ?", "वह सो जाता है", "सो जाओ और फिर मम्मी को फ़ोन करो"]),
     "zh": (["去睡觉吧", "好的，你可以去睡觉了", "回去睡觉", "不，去睡吧", "晚安，去睡觉吧，谢谢", "进入睡眠模式"],
           ["我要去睡觉了", "怎么让你去睡觉？", "你去睡觉吗？", "你睡觉吗？"]),
     "ja": (["寝て", "もう寝ていいよ", "寝てください", "スリープしてもらえますか？", "おやすみ、寝てね", "スリープに戻って"],
           ["どうやって寝かせるの？", "寝てる？", "寝ていい？", "もう寝ます"]),
-    "ko": (["자", "이제 자", "자러 가", "자러 가 줄래요?", "아니, 다시 자", "잘 자, 이제 자요", "절전 모드로 들어가"],
-          ["어떻게 재워?", "나 잘게", "자?", "자고 있어?"]),
+    "ko": (["자러 가", "이제 자러 가", "자러 가 줄래요?", "아니, 가서 자", "잘 자, 이제 자도 돼", "주무세요", "절전 모드로 들어가"],
+          ["어떻게 재워?", "나 잘게", "자?", "자고 있어?", "자.", "자"]),
 }
 
 
