@@ -43,7 +43,11 @@
 #   * nothing owed: no consult running, no answer owed (owed.py), no tool call out, not
 #     on hold for a phone call -- the room does not sleep on an answer still coming (nor
 #     does the bridge's keep-alive, on a consult running) or one not heard yet (the
-#     owner's decision, 2026-11-05);
+#     owner's decision, 2026-11-05). Except where all that is owed is failures (a
+#     consult that ended in an error: record.failure) and the caller's own turn signed
+#     off -- the sleep phrase, or a turn that is only a goodbye ("Okay, good night.",
+#     signed_off): a failure is nothing to wait for, and they asked to go. It stays owed
+#     for the next wake (the room's sleep keeps the records, wake_gate.py);
 #   * nothing since: the caller's next turn open or committed, or a completion under
 #     way, means the conversation went on;
 #   * the caller not talking. A turn starts only on their words (barge_pause's min
@@ -66,14 +70,32 @@
 # bridge with wake words). A phone call has no sleep to go back to, and hanging one up
 # is not this (#299).
 #
+# THE SLEEP PHRASE. Both of the above need the model: to call the tool, or to say the
+# goodbye the backstop hears. A model that cannot answer (no key, an account out of
+# credit, a provider down) left the room awake on "go to sleep" until the keep-alive,
+# answering each with the error line. So "go to sleep" itself is a fixed phrase, as
+# "open my settings" is (settings_access.py): heard by the session's PhraseVoice ahead
+# of the model, in English and the voice's language (each catalog's "sleep" pattern,
+# wifi_voice.request_heard: a request on its own -- "okay, go to sleep", "you can go
+# back to sleep now", "can you go to sleep?" -- never a question about it or a sentence
+# that mentions it). SleepPhrase says one short line (SLEEP_TEXT), waits for it to play
+# out, and sends the room to sleep the backstop's way: end_conversation on the bridge,
+# "said": true. No model is asked, so it works with none, and it wins over anything
+# owed -- the caller asked -- which stays owed for the next wake. Not if the caller cut
+# the line or went on talking before it ended: that is the conversation going on. Where
+# the backstop is: rooms with wake words, end_conversation on (agent_session.py).
+#
+import asyncio
 import collections
 import re
 import unicodedata
 
 from loguru import logger
 
+from teaport_brain import i18n, wifi_voice
 from teaport_brain.conversation_log import quoted
 from teaport_brain.heard_context import msg_text
+from teaport_brain.i18n import N_
 from teaport_brain.owed import COMMIT, POST, is_caller_message
 from teaport_brain.tools import call_client_tool
 
@@ -260,6 +282,15 @@ def asks(said: str) -> bool:
     return bool(_ASKS.search(said))
 
 
+def signed_off(said: str, t: i18n.T) -> bool:
+    """Did the caller's own turn (`said`, their words as committed) ask the box to go:
+    the sleep phrase (SleepPhrase), or a turn that is only a goodbye or a going-to-sleep
+    line ("Okay, good night.", "Bye!" -- not "Good night?", a question)? English, and
+    the phrase in t's language too."""
+    return (wifi_voice.request_heard("sleep", said or "", t)
+            or goodbye_kind(said) is not None)
+
+
 def english(code) -> bool:
     """Does a session whose voice speaks `code` (engine_tts's espeak code: "en-us",
     "en-gb", "fr-fr", ...) speak English?"""
@@ -384,7 +415,11 @@ class GoodbyeSleep:
         if reply.calls:
             return "it called a tool, whose answer is still to come"
         gate = self._gate
-        if gate.consults_running or self._owed.owed():
+        if gate.consults_running:
+            return "an answer is still owed"
+        owed = self._owed.owed()
+        if owed and not (all(r.failure for r in owed)
+                         and signed_off(said, i18n.for_espeak(self._lang_fn()))):
             return "an answer is still owed"
         if gate.calls_out:
             return "a tool call is out"
@@ -393,3 +428,58 @@ class GoodbyeSleep:
         if gate.caller_request_pending or gate.turn_in_flight:
             return "the conversation went on"
         return None
+
+
+# ------------------------------------------------------------------ the sleep phrase
+
+# What the room says to "go to sleep" before it sleeps (SleepPhrase): plain, and the same
+# in every language.
+SLEEP_TEXT = N_("Okay, going to sleep.")
+
+
+class SleepPhrase:
+    """ "go to sleep" (the module note, THE SLEEP PHRASE), heard by the session's
+    PhraseVoice (wifi_voice.py) while nothing else holds the caller's words. The room's
+    only: agent_session builds it where the backstop is.
+
+    `sent`: the room was sent to sleep (once per session); `decisions`, newest last: what
+    became of each phrase heard -- SENT, or why not (the tests read it)."""
+
+    def __init__(self):
+        self.sent = False
+        self._going: asyncio.Task | None = None   # the line said, the sleep to send
+        self.decisions: collections.deque = collections.deque(maxlen=8)
+
+    async def heard(self, voice, text: str) -> bool:
+        asked = wifi_voice.request_heard("sleep", text, voice.t)
+        if self.sent:
+            return asked                           # asked again: it is on its way
+        going = self._going is not None and not self._going.done()
+        if not asked:
+            if going:
+                # Words of theirs before the line ended: the conversation went on.
+                self._going.cancel()
+                self.decisions.append("the caller went on")
+                logger.info("SLEEP: the caller went on before the room slept -- it stays "
+                            "awake")
+            return False
+        if going:
+            return True                            # asked again while the line plays
+        logger.info(f"SLEEP: {quoted(text)} -- the room goes back to sleep, no model asked")
+        starts = voice.bot_starts
+        await voice.say(voice.t._(SLEEP_TEXT))
+        self._going = voice._spawn(self._sleep(voice, starts))
+        return True
+
+    async def _sleep(self, voice, starts: int) -> None:
+        """Once the line has played out, end_conversation on the bridge with "said": true
+        (the goodbye has played: the bridge sleeps once its speaker is quiet,
+        local_audio.Restart) -- not if the caller cut it."""
+        if not await voice.heard_out(starts):
+            self.decisions.append("the caller cut the line")
+            logger.info("SLEEP: the caller cut the line -- the room stays awake")
+            return
+        self.sent = True
+        self.decisions.append(SENT)
+        logger.info(f"SLEEP: the line played out -- sending the room back to sleep ({TOOL})")
+        await call_client_tool(voice, TOOL, {}, extra={"said": True})

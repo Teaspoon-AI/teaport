@@ -546,6 +546,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:eh|em+|ehm|este|mm+|teaport|oye|ok|okay|vale|bueno|entonces|y|por favor|porfa)\\W+){0,3}(?:(?:me |nos )?(?:puedes|podrías|podrias|puede|podría|podria|podés)(?: (?:me|nos))? )?(?:[aá]br(?:e|a|ir)(?:me|nos)?|mu[eé]str(?:a|e|ar)(?:me|nos)?|mostrar(?:me|nos)?|ens[eé][nñ](?:a|e|ar)(?:me|nos)?|ll[eé]v(?:a|e)(?:me|nos)|ve|vamos|ir|entra|entrar|pon(?:me)?)(?: (?:a|al|a la|en|en la))? (?:(?:mis|tus|sus|los|las|la|el|mi|tu|su) )?(?:(?:p[aá]gina|men[uú]|pantalla) (?:de )?(?:(?:mis|tus|los|la) )?)?(?:ajustes|configuraci[oó]n(?:es)?|preferencias)(?:[\\s,،]+(?:teaport|muchas gracias|gracias|por favor|porfa|ahora|ya|de teaport)\\b)*[\\s.,!?;:…]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:eh|em+|ehm|este|mm+|teaport|oye|ok|okay|vale|bueno|entonces|y|por favor|porfa|no|s[ií]|ya|buenas noches|gracias)\\W+){0,3}(?:(?:me |nos )?(?:puedes|podrías|podrias|puede|podría|podria|podés|ya puedes) )?(?:(?:v[eé]te|ve|vuelve|v[aá]yase|vaya|vuelva|irte|ir|volver) a dormir(?:te)?|du[eé]rmete|a dormir)(?:[\\s,،]+(?:teaport|muchas gracias|gracias|por favor|porfa|ahora mismo|ahora|ya|otra vez)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "barra"
@@ -726,3 +730,7 @@ msgstr "Lo siento, ahora mismo no puedo responder: la cuenta que uso para mis re
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Perdona, perdí el hilo. ¿Puedes repetirlo?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Vale, me voy a dormir."

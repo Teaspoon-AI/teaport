@@ -554,6 +554,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti)\\W+){0,3}(?:(?:mi |ci )?(?:puoi|potresti|può|potrebbe)(?: (?:mi|ci))? )?(?:apri(?:re|rmi|mi)?|apra|mostra(?:re|rmi|mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?:[\\s,،]+(?:teaport|grazie mille|per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)*[\\s.,!?;:…]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti|no|s[iì]|va bene|buonanotte|grazie)\\W+){0,3}(?:(?:puoi|potresti|può|potrebbe|ora puoi) )?(?:(?:vai|vada|andare|torna|torni|tornare|ritorna|ritornare) a dormire|mettiti a dormire)(?:[\\s,،]+(?:teaport|grazie mille|per favore|per piacere|grazie|adesso|ora|subito|pure)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "barra"
@@ -734,3 +738,7 @@ msgstr "Scusa, in questo momento non posso rispondere: l’account che uso per l
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Scusa, ho perso il filo. Puoi ripetere?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Va bene, vado a dormire."

@@ -655,6 +655,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:네|너의|니|당신의|내|제|나의|teaport의?|티포트의?)\\s*)?(?:설정|세팅)\\s*(?:페이지|화면|창|메뉴)?\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:열어|보여|띄워)\\s*(?:줘요|줘|줄래요|줄래|주세요|주실래요|줄\\s*수\\s*있(?:어요|어|나요|을까요|니)|봐요|봐)?\\s*(?:[,\\s]*(?:제발|감사합니다|고마워(?:요)?))?[\\s.!,…?？]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|아니|아니야|응|네|그래|고마워|잘\\s*자|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:이제|다시|빨리)\\s*)*(?:(?:자러|잠자러)\\s*가(?:요|세요|\\s*줘(?:요)?|\\s*줄래(?:요)?\\s*[?？]?)?|가서\\s*자(?:요)?|자도\\s*(?:돼|되)(?:요)?|주무세요|잠들어(?:요)?|(?:절전|슬립|대기)\\s*모드로\\s*(?:들어가|가|전환해)(?:요|세요|\\s*줘(?:요)?|\\s*줄래(?:요)?\\s*[?？]?)?)\\s*(?:[,\\s]*(?:제발|감사합니다|고마워(?:요)?|부탁해(?:요)?))?[\\s.!,…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "슬래시"
@@ -835,3 +839,7 @@ msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 �
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "죄송해요, 하던 생각을 놓쳤어요. 다시 한번 말씀해 주시겠어요?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "알겠어요. 이제 잘게요."

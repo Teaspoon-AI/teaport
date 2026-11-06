@@ -554,6 +554,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:э+|эм+|мм+|teaport|типорт|ну|так|окей|ок|слушай|пожалуйста|а|и)\\W+){0,3}(?:(?:(?:ты\\s+)?можешь|(?:вы\\s+)?можете|(?:(?:ты|вы)\\s+)?(?:не\\s+)?(?:мог|могла|могли)\\s+бы(?:\\s+(?:ты|вы))?)(?:\\s+(?:мне|нам|пожалуйста))*\\s+)?(?:(?:открой(?:те)?|покажи(?:те)?|зайди(?:те)?|перейди(?:те)?|открыть|показать)(?:\\s+(?:мне|нам|пожалуйста|в|на|ка))*\\s+(?:(?:мои|свои|твои|ваши)\\s+настройки|настройки|(?:(?:мою|свою|твою|вашу)\\s+)?страницу\\s+настроек)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас)\\b)*[\\s.,!?;:…]*$|(?:(?:мои|свои|твои)\\s+)?настройки\\s+(?:пожалуйста\\s+)?(?:открой(?:те)?|покажи(?:те)?)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:э+|эм+|мм+|teaport|типорт|ну|так|окей|ок|ладно|хорошо|слушай|пожалуйста|а|и|нет|да|всё|все|спокойной ночи|спасибо)\\W+){0,3}(?:(?:(?:ты\\s+)?можешь|(?:вы\\s+)?можете|(?:(?:ты|вы)\\s+)?(?:не\\s+)?(?:мог|могла|могли)\\s+бы(?:\\s+(?:ты|вы))?)(?:\\s+(?:пожалуйста|уже))*\\s+)?(?:(?:иди(?:те)?|идти|пойди(?:те)?|пойти|ложись|ложитесь|лечь)(?:\\s+(?:уже|обратно|снова))?\\s+спать|засыпай(?:те)?|усни(?:те)?|засни(?:те)?|уснуть|заснуть|спи(?:те)?|(?:переходи(?:те)?|перейди(?:те)?|перейти)\\s+в\\s+спящий\\s+режим)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас|уже|давай)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "слэш"
@@ -734,3 +738,7 @@ msgstr "Извините, я сейчас не могу ответить: акк
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Извините, я потерял мысль. Можете повторить?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Хорошо, засыпаю."

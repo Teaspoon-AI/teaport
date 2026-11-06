@@ -546,6 +546,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:अं|उम+|उह|हम्म|अम्म|teaport|टीपोर्ट|ज़रा|ज़रा|जरा|प्लीज़?|प्लीज़|please|अरे|अच्छा|तो|ok|ओके|क्या)[\\s,.!।]+){0,3}(?:(?:आप|तुम)\\s+)?(?:(?:(?:मेरी|मेरे|अपनी|अपने|तुम्हारी|तुम्हारे|आपकी|आपके|(?:teaport|टीपोर्ट)\\s?(?:की|के))\\s+)?(?:(?:(?:से|सै)टिंग(?:्स|्ज़|्ज़|्ज|स)?|\\bsettings?\\b)(?:\\s?(?:का|वाला)?\\s?(?:पेज़?|पेज़|page))?\\s?(?:को\\s)?(?:(?:खोल|दिखा)\\s?सक(?:ते|ती)\\s?(?:हो|हैं)|खोल(?:ो|िए|िये|ें|\\s?दो|\\s?दीजिए|\\s?दीजिये|\\s?दें|\\s?दे)|दिखा(?:ओ|इए|इये|एं|एँ|\\s?दो|\\s?दीजिए|\\s?दें)|पर\\s?ले\\s?चलो|\\bkholo|\\bkhol\\s?do|\\bkholiye|\\bdikhao|\\bdikha\\s?do|\\bopen\\s?karo)(?![\\u0900-\\u097F])(?:[\\s,،]+(?:teaport|धन्यवाद|थैंक्स|शुक्रिया|thanks|ना|प्लीज़?|प्लीज़|please|अभी|ज़रा|ज़रा|जरा|जल्दी|na|plz)(?![\\u0900-\\u097F\\w]))*[\\s.,!?।|;:…]*$)|(?:खोलो|खोलिए|खोल\\s?दो|दिखाओ|दिखाइए)\\s+(?:(?:मेरी|मेरे|अपनी|अपने|तुम्हारी|तुम्हारे|आपकी|आपके|(?:teaport|टीपोर्ट)\\s?(?:की|के))\\s+)?(?:से|सै)टिंग(?:्स|्ज़|्ज़|्ज|स)?(?![\\u0900-\\u097F])(?:[\\s,]+(?:धन्यवाद|थैंक्स|शुक्रिया|thanks|ना|प्लीज़?|प्लीज़|please|अभी|ज़रा|जरा|जल्दी|na|plz)(?![\\u0900-\\u097F\\w]))*[\\s.,!?।|;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:अं|उम+|उह|हम्म|अम्म|teaport|टीपोर्ट|ज़रा|जरा|प्लीज़?|please|अरे|अच्छा|तो|ok|ओके|ठीक है|नहीं|हाँ|हां|चलो|बस|क्या|शुभ रात्रि|गुड नाइट)[\\s,.!।]+){0,3}(?:(?:आप|तुम)\\s+)?(?:(?:अब|वापस|फिर\\s+से)\\s+)*(?:सो\\s?(?:जाओ|जाइए|जाइये|जाएं|जाएँ|जा|सकते\\s?(?:हो|हैं)|सकती\\s?(?:हो|हैं))|सोने\\s+(?:जाओ|जाइए|जाइये|चले\\s+जाओ)|\\bso\\s+jao|\\bso\\s+jaiye)(?![ऀ-ॿ])(?:[\\s,،]+(?:teaport|धन्यवाद|थैंक्स|शुक्रिया|thanks|ना|प्लीज़?|please|अभी|अब|जल्दी|na|plz)(?![ऀ-ॿ\\w]))*[\\s.,!?।|;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "स्लैश"
@@ -831,3 +835,7 @@ msgstr "माफ़ कीजिए, मैं अभी जवाब नही
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "माफ़ कीजिए, मेरा ध्यान भटक गया। क्या आप वह फिर से कह सकते हैं?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "ठीक है, सोने का समय हो गया।"

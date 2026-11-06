@@ -546,6 +546,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|もらえません|くれます|くれません|ほしい|欲しい)?\\s*(?:ね|よ|か)?\\s*(?:[、,\\s]*(?:お願い(?:します)?|ありがとう(?:ございます)?|どうも(?:ありがとう)?))?[\\s。.!！、,…?？]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|いいえ|はい|うん|ありがとう|おやすみ(?:なさい)?|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:もう|そろそろ)\\s*)?(?:寝て|ねて|眠って|ねむって|スリープして|スリープに(?:入|はい|戻|もど)って|休んで|やすんで)\\s*(?:(?:もらえ(?:る|ます|ません)|くれ(?:る|ます|ません))\\s*か?[\\s。.!！、,…?？]*$|(?:(?:ください|下さい|ちょうだい|くれ|いいよ|いいです(?:よ)?|もいいよ|もいいです(?:よ)?|ね|よ)\\s*)?(?:[、,\\s]*(?:お願い(?:します)?|ありがとう(?:ございます)?))?[\\s。.!！、,…]*$)"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "スラッシュ"
@@ -831,3 +835,7 @@ msgstr "すみません、今はお答えできません。回答に使ってい
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "すみません、話の流れを見失いました。もう一度言っていただけますか？"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "わかりました。スリープします。"

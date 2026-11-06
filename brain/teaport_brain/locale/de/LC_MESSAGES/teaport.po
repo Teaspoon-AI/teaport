@@ -546,6 +546,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so)\\W+){0,3}(?:(?:(?:kannst|könntest)\\s+du|(?:können|könnten)\\s+sie)(?:\\s+(?:mir|uns|bitte|mal|doch|kurz))*\\s+)?(?:(?:öffne|öffnet|oeffne|offne|zeig|zeige|zeigt|ruf|rufe|geh|gehe)(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich|zu|in))*\\s+(?:(?:die|deine|meine|ihre|der|den|teaports?)\\s+)?einstellung(?:en|sseite)(?:\\s+(?:auf|an))?(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt|mal|seite)\\b)*[\\s.,!?;:…]*$|mach(?:e|t)?(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich))*\\s+(?:(?:die|deine|meine|ihre|teaports?)\\s+)?einstellung(?:en|sseite)\\s+auf(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt|mal)\\b)*[\\s.,!?;:…]*$|(?:bitte\\s+)?(?:(?:die|deine|meine|ihre)\\s+)?einstellung(?:en|sseite)\\s+(?:bitte\\s+)?(?:öffnen|oeffnen|offnen|aufmachen|zeigen|anzeigen|aufrufen)(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so|nein|ja|gute nacht|danke)\\W+){0,3}(?:(?:(?:kannst|könntest)\\s+du|(?:können|könnten)\\s+sie|du\\s+kannst|sie\\s+können)(?:\\s+(?:jetzt|bitte|mal|doch|ruhig|wieder))*\\s+)?(?:(?:geh(?:e)?|gehen\\s+sie)(?:\\s+(?:jetzt|bitte|mal|doch|ruhig|wieder))*\\s+schlafen|(?:(?:jetzt|bitte|mal|doch|ruhig|wieder)\\s+)*schlafen\\s+gehen|schlaf(?:e)?(?:\\s+(?:jetzt|wieder))*\\s+ein)(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke schön|dankeschön|danke|bitte|jetzt|gleich)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "Schrägstrich"
@@ -726,3 +730,7 @@ msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für m
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Tut mir leid, da habe ich den Faden verloren. Kannst du das noch einmal sagen?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Okay, ich gehe schlafen."

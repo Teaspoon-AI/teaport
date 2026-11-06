@@ -546,6 +546,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:eh|ehm|uh|uhm|hm+|teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou)\\W+){0,3}(?:(?:(?:kun|kan|zou|wil)\\s+je|(?:kunt|zou|wilt)\\s+u)(?:\\s+(?:me|mij|even|eens|alsjeblieft|graag|nu))*\\s+)?(?:(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)*[\\s.,!?;:…]*$|laat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)*[\\s.,!?;:…]*$|(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:eh|ehm|uh|uhm|hm+|teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou|nee|ja|welterusten|bedankt)\\W+){0,3}(?:(?:(?:kun|kan|zou|wil)\\s+je|(?:kunt|zou|wilt)\\s+u|je\\s+(?:kunt|mag)|u\\s+(?:kunt|mag))(?:\\s+(?:nu|even|maar|weer|alsjeblieft))*\\s+)?(?:(?:ga|gaat\\s+u|gaan)(?:\\s+(?:nu|maar|weer|even|terug))*\\s+slapen|(?:(?:nu|maar|weer)\\s+)*slapen\\s+gaan)(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alstublieft|graag|nu)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "schuine streep"
@@ -726,3 +730,7 @@ msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorde
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Sorry, ik ben de draad kwijt. Kun je dat nog een keer zeggen?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Oké, ik ga slapen."
