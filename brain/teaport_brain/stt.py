@@ -2024,8 +2024,11 @@ class TeaportSTTService(WebsocketSTTService):
                 peek.tally = missed
             else:
                 noted = self._note_segment(missed)
-                if commit is not None and commit.turn is not None:
-                    commit.turn.noted = noted
+                owner = commit.turn if commit is not None else None
+                if owner is None and peek is not None:
+                    owner = peek.turn      # adopted before its preview landed
+                if owner is not None:
+                    owner.noted = noted
         self._seg_bytes = 0
         self._seg_interims = 0
 
