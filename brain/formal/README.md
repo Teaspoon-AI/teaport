@@ -3547,11 +3547,15 @@ the design and the wire:
 | `stop` | `unmarked` | shipped until 2026-10-15, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
 | `stop` | `marked` | shipped until 2026-10-15, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
 | `receipts` | `unmarked` | as shipped since 2026-10-15, on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
-| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
+| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`, `_lost`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
 
 The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
 the VAD where pipecat runs it; the `receipts` rows are the repair, in the code since
-2026-10-15 (THE ORDER, What was changed).
+2026-10-15 (THE ORDER, What was changed). `sc_final_receipts_lost` (audit 2026-11-05,
+A5) is the default run's one final row with a verdict lost (`MaxLost = 1`, no engine
+close): the hold's expiry answers that stop, and with the expiry disabled in a scratch
+copy it fails `NoStrandedTurn` where the rows without a loss still hold. Every other
+default row that checks these two runs `MaxLost = 0`, `MaxMissed = 0` and `CARRY = FALSE`.
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -3671,7 +3675,7 @@ rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_bli
 two clock rows) run without it.
 
 **The default run and `--full`.** See THE ORDER's scale note below: since 2026-10-14
-`--full` holds the six rows too large for the default run, the carry's three among
+`--full` holds the six rows too large for the default run, the carry's four among
 them.
 
 ### THE ORDER (2026-10-14): where the VAD runs
@@ -3942,6 +3946,25 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   disarmed with the ceiling at that close, deliberately, and the stale-end monitor is not
   consulted at it either: what `TurnStop` leaves owed is what the owed-close rule then
   keeps the *next* turn from ending on.
+- **Slice mode's commit timing is in neither model** (audit 2026-11-05, A4). Every row
+  here is segment mode, and `SttSlice.tla` takes when a turn closes as given ("when is
+  SttCommit.tla's business"). With `TEAPORT_STT_TURN_TEXT=slice` a commit changes nothing
+  in the engine's stream, so the hold this model checks is not there: a complete
+  verdict commits at once, with no wait for the caller's pause (`_commit_at_pause`,
+  `stt.py:1648`); the turn's close adopts the stop's peek instead of committing again
+  (`_send_commit`, `:2095`); the strategy gets the turn's text at its preview, or, when
+  the turn is deferred (a preview cut short, none of the caller's words over the bot, an
+  earlier turn's words still owed), at its final or on the words in hand
+  (`_push_turn`, `:2285-2300`); and a disconnect closes a deferred turn on the
+  words in hand before the reset (`_disconnect_websocket`, `:2930`). So nothing checks
+  `NoStaleTurnEnd`, `NoStrandedTurn` or `NoSplitOnIncomplete` for a sliced session's
+  closes against the stop strategy's count and receipts; what each sliced turn holds is
+  `SttSlice.tla`'s, and what its final delivers `TurnText.tla`'s.
+- **The engine's buffer cut is not modelled** (A6). Its ~15 s buffer closes the
+  segment and sends no done at all (`stt.py`'s note on the commit a done answers, at
+  the done handler): the STT never learns of it. `EngineClose` is the endpointer's
+  close, which always answers with a done; a segment cut that way keeps only the
+  interims it streamed.
 - **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
   cut left its stamp for the next done to inherit); the turn it strands ends on the
   watchdog, and the receive task owns the reconnect.
@@ -3950,7 +3973,8 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   distinct states (4 min 4 s), `sc_voice` 4.3 million (2 min 32 s; the missed stop moved
   to `sc_voice_missed`), `sc_vadStop_sound` 3.7 million (1 min 31 s), `sc_voice_final`
   1.3 million (36 s), `sc_verdict_numbered` 1.1 million (37 s), the three `receipts`
-  final rows 260,000 to 480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every
+  final rows 260,000 to 480,000 each (under 20 s; `sc_final_receipts_lost`, added
+  2026-11-05, 37,146 in 12 s), `sc_carry_off` 260,000 (8 s); every
   row that falls finds its trace in 8 to 15 states, in a second or a few. `--full`:
   `sc_final_receipts_full` 26.6 million (15 min), `sc_voice_missed` 27.9 million
   (14 min), `sc_vadStop_sound_carry` 5.6 million (3 min 16 s), `sc_voice_carry` 5.7

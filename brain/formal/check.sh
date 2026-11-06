@@ -398,6 +398,7 @@ run SttCommit.tla sc_final_stop_marked   "(expected: FAILS NoStaleTurnEnd — BE
 run SttCommit.tla sc_final_stop_stranded "(expected: FAILS NoStrandedTurn — BEFORE RECEIPTS: a stop's close lands before the strategy counts the stop, and the debt is never paid)"
 run SttCommit.tla sc_final_receipts      "(expected: holds — AS SHIPPED: receipts for closes that come early, no stamp on an unasked final)"
 run SttCommit.tla sc_final_receipts_backstop "(expected: holds — as shipped: the same, with the backstop's half in place of the engine's cut)"
+run SttCommit.tla sc_final_receipts_lost "(expected: holds — as shipped: the same, with a verdict lost in place of the engine's cut: the hold's expiry answers the stop)"
 run SttCommit.tla sc_final_stop_residual "(expected: holds — as shipped, on an engine before teagram-engine#36: every stale end is a mispairing)"
 run SttCommit.tla sc_reset_owed          "(expected: FAILS NoStrandedTurn — BEFORE 2026-10-15: a lost engine session takes a stop's close, and the strategy still owes it)"
 run SttCommit.tla sc_reset_pays          "(expected: holds — AS SHIPPED: the reset is the close of every stop the STT had seen)"
