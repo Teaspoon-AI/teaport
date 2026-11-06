@@ -33,6 +33,9 @@
 import asyncio
 import json
 import os
+import re
+import shutil
+import subprocess
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -731,6 +734,147 @@ def test_wifi_section(monkeypatch=None):
         assert len(calls) == n
     finally:
         config_ui._wifi_nm, wifi_setup.STATUS_DIR, wifi_voice.available = old
+
+
+def _page_js(page: str, head: str) -> str:
+    """The block of config.html's script that starts with `head`: to the `};` that closes
+    it at the same indent, or the one line when `head` ends in `;`."""
+    tail = r")\n" if head.endswith(";") else r"\n.*?\n\1\};)\n"
+    m = re.search(r"\n( +)(" + re.escape(head) + tail, page, re.S)
+    assert m, f"config.html has no {head!r}"
+    return m.group(1) + m.group(2)
+
+
+def _page_submits(cases: list) -> dict:
+    """The config page's Connect, run under node: renderWifi's form.onsubmit with its own
+    switchWifi and api(), and stubs for the rest of the section (the picked network
+    "cafe", the password field, the message line, renderWifi, the confirm dialog,
+    location). Each case is [BASE, answer], the answer [status, status text, content
+    type, body text] or None for a fetch that rejects. {"got": [{out, pw, rendered, href}]
+    -- the message line, the password field, renderWifi's message, where the page went --
+    "sent": [{url, body, timeout}]}."""
+    node = shutil.which("node")
+    if not node:
+        raise appliance.Unavailable("node is not installed")
+    with open(os.path.join(config_ui.STATIC_DIR, "config.html"), encoding="utf-8") as f:
+        page = f.read()
+    script = (
+        "(async () => {\n"
+        "  let BASE = '', a = null, rendered = null;\n"
+        "  const token = 't0k3n', sent = [], got = [];\n"
+        "  const fetch = async (url, opts) => {\n"
+        "    sent.push({ url, body: JSON.parse(opts.body), timeout: opts.signal instanceof AbortSignal });\n"
+        "    if (!a) throw new TypeError('Failed to fetch');\n"
+        "    return new Response(a[3], { status: a[0], statusText: a[1], headers: a[2] ? { 'content-type': a[2] } : {} });\n"
+        "  };\n"
+        "  const form = {}, nets = {}, other = { value: '' }, pw = { value: '' }, out = { textContent: '' };\n"
+        "  const location = { href: '' };\n"
+        "  const $ = () => ({ value: 'cafe' });\n"
+        "  const confirmDialog = async () => true;\n"
+        "  const renderWifi = (msg) => { rendered = msg; };\n"
+        + _page_js(page, "const api = async (path, opts = {}) => {") + "\n"
+        + _page_js(page, "const SWITCH_TIMEOUT_MS = 300000;") + "\n"
+        + _page_js(page, "const switchWifi = async (ssid, password, hidden) => {") + "\n"
+        + _page_js(page, "form.onsubmit = async (e) => {") + "\n"
+        f"  for (const [base, answer] of {json.dumps(cases)}) {{\n"
+        "    BASE = base; a = answer; rendered = null; location.href = ''; pw.value = 'cafepass1'; out.textContent = '';\n"
+        "    await form.onsubmit({ preventDefault() {} });\n"
+        "    got.push({ out: out.textContent, pw: pw.value, rendered, href: location.href });\n"
+        "  }\n"
+        "  console.log(JSON.stringify({ got, sent }));\n"
+        "})();\n")
+    r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_the_page_shows_why_the_brain_did_not_switch():
+    """#271: a switch the brain refuses -- 409, the box is already in setup mode; 400, the
+    password's length -- shows the brain's reason (its `detail`) as it gave it, and keeps
+    the form as it was. "Lost the box" is only for a fetch with no answer, the box gone
+    mid-switch. The page's own Connect runs under node, against the brain's own answers."""
+    client, etc, home, calls = setup()
+    front = FastAPI()  # the same routes on the front door (gateway_server), for its 401
+    front.include_router(config_ui.router, prefix="/settings")
+    old = (config_ui._wifi_nm, config_ui._wifi_setup_busy)
+
+    def answer(r):
+        return [r.status_code, r.reason_phrase, r.headers.get("content-type"), r.text]
+
+    def connect(password="cafepass1", **kw):
+        return client.post("/api/wifi/connect", json={"ssid": "cafe", "password": password}, **kw)
+
+    cases = {}
+    try:
+        config_ui._wifi_nm = lambda: _WifiNM()
+        cases["joined"] = ["", answer(connect(headers=H))]
+        config_ui._wifi_nm = lambda: _WifiNM(join=(False, "the password did not work", "u-cafe"))
+        cases["undone"] = ["", answer(connect(headers=H))]
+        r = connect("short", headers=H)
+        assert r.status_code == 400 and r.json() == {"detail": "Wi-Fi passwords are 8 to 63 characters"}
+        cases["short"] = ["", answer(r)]
+
+        async def setup_busy():
+            return True
+        config_ui._wifi_setup_busy = setup_busy
+        # The reason is in `detail`, the field the page reads.
+        r = connect(headers=H)
+        assert r.status_code == 409 and r.json() == {"detail": config_ui._SETUP_BUSY}
+        assert r.headers["content-type"] == "application/json"
+        cases["busy"] = ["", answer(r)]
+        r = connect()
+        assert r.status_code == 401 and r.json() == {"detail": "bad or missing token"}
+        cases["no token"] = ["", answer(r)]
+        # The front door's Settings session runs out after an hour (SESSION_SECS).
+        r = TestClient(front).post("/settings/api/wifi/connect", json={"ssid": "cafe", "password": "cafepass1"})
+        assert r.status_code == 401 and r.json() == {"detail": "no Settings session"}
+        cases["session over"] = ["/settings", answer(r)]
+    finally:
+        config_ui._wifi_nm, config_ui._wifi_setup_busy = old
+    # What else can come back: Caddy's 502 with the brain down, over HTTP/2 (no status
+    # text, no body); SettingsGuard's plain-text 404; a reason that looks like markup; a
+    # 200 cut off before its body; and no answer at all.
+    cases["proxy"] = ["/settings", [502, "", None, ""]]
+    cases["guard"] = ["", [404, "Not Found", "text/plain; charset=utf-8", "Not Found"]]
+    cases["markup"] = ["", [409, "Conflict", "application/json", json.dumps({"detail": "<b>x</b> & y"})]]
+    cases["cut off"] = ["", [200, "OK", "application/json", ""]]
+    cases["gone"] = ["", None]
+    ran = _page_submits(list(cases.values()))
+    got = dict(zip(cases, ran["got"]))
+    # What the page sends, with its timeout (a hung request ends as "lost").
+    assert ran["sent"] == [{"url": base + "/api/wifi/connect", "timeout": True,
+                            "body": {"ssid": "cafe", "password": "cafepass1", "hidden": False}}
+                           for base, _ in cases.values()]
+
+    switching = "Switching to cafe… this can take up to a minute."
+
+    def refused(text, href=""):  # the form as it was: the password still in its field
+        return {"out": text, "pw": "cafepass1", "rendered": None, "href": href}
+
+    def tried(text):  # the section read again, the password field cleared
+        return {"out": switching, "pw": "", "rendered": text, "href": ""}
+
+    lost = refused("Lost the box while it switched networks. If it joined cafe, find it there "
+                   "(teaport.local); if not, it went back to its old network.")
+    assert got == {
+        "joined": tried("Connected to cafe."),
+        "undone": tried("Could not switch to cafe: the password did not work. "
+                        "The box went back to its previous network."),
+        "short": refused("Could not switch to cafe: Wi-Fi passwords are 8 to 63 characters."),
+        "busy": refused("Could not switch to cafe: this box is already in setup mode."),
+        "no token": refused("Could not switch to cafe: bad or missing token."),
+        # As load() does: to the code page.
+        "session over": refused("Could not switch to cafe: no Settings session.", href="/settings"),
+        "proxy": refused("Could not switch to cafe: the box answered 502."),
+        "guard": refused("Could not switch to cafe: the box answered 404 Not Found."),
+        # As text: the message line's textContent, markup and all.
+        "markup": refused("Could not switch to cafe: <b>x</b> & y."),
+        "cut off": lost,
+        "gone": lost,
+    }, got
+    # renderWifi's message goes in as text too: h() makes a text node of it.
+    with open(os.path.join(config_ui.STATIC_DIR, "config.html"), encoding="utf-8") as f:
+        assert "h('p', { class: 'wifi-msg', 'aria-live': 'polite' }, msg || '')" in f.read()
 
 
 def test_wifi_setup_busy_reads_the_unit_and_its_pending_start():
