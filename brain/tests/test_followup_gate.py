@@ -280,6 +280,17 @@ async def test_a_wait_for_an_interruption_ends_with_the_pipeline():
         assert await asyncio.wait_for(gate.interrupted_since(gate.interruptions), 1) is False
 
 
+async def test_a_wait_for_an_interruption_ends_at_cleanup_with_no_end_frame():
+    """The gate torn down with no End, Stop or Cancel seen (a pipeline cut off above it):
+    cleanup alone ends the wait, false at once, not at the cap (#347's review)."""
+    gate = _gate()
+    waiting = asyncio.ensure_future(gate.interrupted_since(gate.interruptions))
+    await asyncio.sleep(0)
+    await gate.cleanup()
+    assert await asyncio.wait_for(waiting, 1) is False
+    assert await asyncio.wait_for(gate.interrupted_since(gate.interruptions), 1) is False
+
+
 # --- the claim: one turn-free window, one waiter ---
 
 async def _two_waiters(gate, **kw):
