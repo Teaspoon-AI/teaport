@@ -1735,7 +1735,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). When the agent answers with only a goodbye and does not go to sleep, the conversation sleeps once that goodbye has played (English only)."
+help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). When the agent answers with only a goodbye and does not go to sleep, the conversation sleeps once that goodbye has played (English only). Saying \"go to sleep\" itself (\"okay, go to sleep\", \"you can go back to sleep\", in English or the voice's language) always works, even when the agent cannot answer: the device says a short line and sleeps. Off, none of this happens."
 
 [[settings]]
 name = "TEAPORT_TOOL_ANSWER_PHONE_CALL"
@@ -1953,10 +1953,10 @@ services = ["teaport-brain"]
 type = "float"
 unit = "s"
 min = 0
-default = 12
+default = 8
 read = "startup"
 tier = "tuning"
-help = "When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first (\"Someone's calling me — … Should I step away for a moment?\"). This is how long they have to answer, from the end of the question; the caller hears it ring meanwhile."
+help = "When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first (\"Someone's calling me — … Should I step away for a moment?\"). This is how long they have to answer, counted from the start of the question (the caller hears it ring meanwhile, and many carriers send an unanswered call to voicemail after 20–30 s), and never less than 3 s (or this, if shorter) after the question has been said. Someone still talking at the end gets up to 5 s more."
 
 [[settings]]
 name = "TEAPORT_CALL_PROMPT_DEFAULT"

@@ -22,6 +22,11 @@
 # answer to the call (consult_bridge, as the serializer routes it). The texts are
 # invented in the shape of the 2026-10-24 ones.
 #
+# The sleep phrase (goodbye.SleepPhrase): "go to sleep" said by the caller sends the room
+# to sleep itself, with no model asked -- on a fake voice, and in the room session from
+# its fixed phrases down, with no model at all and with one that only errors. And the
+# backstop sleeps on the caller's own sign-off when all that is owed is failures.
+#
 # Run: python test_goodbye.py   (or via the suite)
 #
 import asyncio
@@ -44,7 +49,9 @@ from types import SimpleNamespace as NS  # noqa: E402
 from openai.types.chat import ChatCompletionChunk  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStoppedSpeakingFrame,
+    OutputTransportMessageUrgentFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
     TTSTextFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -58,9 +65,12 @@ from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E40
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
-from teaport_brain import consult_bridge, goodbye, owed, tools  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+
+from teaport_brain import consult_bridge, goodbye, i18n, owed, tools, wifi_voice  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
 from teaport_brain.followup_gate import FollowupGate  # noqa: E402
+from teaport_brain.taken_turn import TakenTurnCloser  # noqa: E402
 from teaport_brain.goodbye import BYE, SENT, SLEEP, GoodbyeSleep, asks, goodbye_kind, is_goodbye  # noqa: E402
 from test_post_tool_under_speech import ScriptedStop, TalkTransport, _segments  # noqa: E402
 
@@ -224,8 +234,10 @@ class _Gate:
 
 
 class _Owed:
+    """owed.Owed's owed(): records with a `failure` (None: a real answer to tell)."""
+
     def __init__(self, records=()):
-        self.records = list(records)
+        self.records = [NS(failure=r if r in _FAILURES else None) for r in records]
 
     def owed(self):
         return list(self.records)
@@ -333,6 +345,9 @@ def test_what_keeps_the_room_awake():
         "it never played": dict(audio=False, heard=""),
         "a consult still running": dict(gate=_Gate(consults_running=1)),
         "an answer still owed": dict(book=_Owed(["the weather"])),
+        "a failure owed, the caller no sign-off": dict(
+            book=_Owed(["error"]), messages=_turn("You didn't go to sleep.")),
+        "an answer and a failure owed": dict(book=_Owed(["error", "the weather"])),
         "a tool call out": dict(gate=_Gate(calls_out=True)),
         "on hold for a phone call": dict(gate=_Gate(held=True)),
         "the caller's next turn": dict(gate=_Gate(caller_request_pending=True)),
@@ -351,6 +366,36 @@ def test_what_keeps_the_room_awake():
         sent, sleep = _sent(text, **kw)
         assert sent == [] and not sleep.sent, f"{why}: the room was sent to sleep"
         assert sleep.decisions and sleep.decisions[-1] != SENT, (why, sleep.decisions)
+
+
+_FAILURES = ("error", "timeout", "empty", "unknown")
+
+
+def test_only_failures_owed_and_the_caller_signed_off_sleeps():
+    """A consult that ended in an error is still owed, and the caller says "Okay, go to
+    sleep." / "Good night.": the failure is nothing to wait for, and they asked to go.
+    It stays owed for the next wake (the room's sleep keeps the records)."""
+    for caller in ("Okay, go to sleep.", "No, go to sleep.", "Okay, good night.", "Bye!",
+                   "Can you go to sleep?"):
+        sent, sleep = _sent("Goodbye.", messages=_turn(caller), book=_Owed(["error"]))
+        assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, sleep.decisions)
+        assert sent[0]["said"] is True
+    # Still running, or a real answer beside the failure: the room stays awake.
+    for kw in (dict(book=_Owed(["error"]), gate=_Gate(consults_running=1)),
+               dict(book=_Owed(["error", "the weather"]))):
+        sent, sleep = _sent("Goodbye.", messages=_turn("Okay, go to sleep."), **kw)
+        assert sent == [] and sleep.decisions[-1] == "an answer is still owed", kw
+
+
+def test_what_signs_off():
+    en = i18n.get("en")
+    for said in ("Okay, go to sleep.", "No, go to sleep.", "you can go back to sleep now",
+                 "Okay, good night.", "Good night!", "Bye.", "Thanks, good night."):
+        assert goodbye.signed_off(said, en), said
+    for said in ("You didn't go to sleep.", "What's the weather?", "Good night?",
+                 "How do I make you go to sleep?", "Thanks.", ""):
+        assert not goodbye.signed_off(said, en), said
+    assert goodbye.signed_off("Vete a dormir.", i18n.get("es"))   # the phrase, its language
 
 
 def test_a_goodbye_answering_a_question_is_no_leave_taking():
@@ -476,14 +521,18 @@ class _Stream:
 
 
 class Provider:
-    """The openai client's chat.completions: each reply is text, or ("call", name)."""
+    """The openai client's chat.completions: each reply is text, or ("call", name).
+    `fails`: every request raises it instead (a provider out of credit)."""
 
-    def __init__(self, replies):
+    def __init__(self, replies, fails=None):
         self.requests: list = []
         self.replies = list(replies)
+        self.fails = fails
 
     async def create(self, **params):
         self.requests.append(params)
+        if self.fails is not None:
+            raise self.fails
         reply = self.replies.pop(0) if self.replies else "Okay."
         if isinstance(reply, tuple):
             return _Stream([_chunk(tool=reply[1])])
@@ -496,7 +545,8 @@ class Rig:
     replies had stopped playing by then), and a client_tool call is answered at once, as
     the bridge answers it."""
 
-    def __init__(self, replies, front_end="room", features=("sleep",)):
+    def __init__(self, replies, front_end="room", features=("sleep",), top=LLMUserAggregator,
+                 fails=None):
         transport = TalkTransport()
         session = build_agent_session(transport, front_end=front_end,
                                       client_features=frozenset(features))
@@ -505,19 +555,23 @@ class Rig:
         self.owed.judge = self.owed.gist = self.owed.decline = None
         inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
         procs = inner.processors
-        first = next(i for i, p in enumerate(procs) if isinstance(p, LLMUserAggregator))
+        first = next(i for i, p in enumerate(procs) if isinstance(p, top))
         self.procs = [p for p in procs[first:] if not type(p).__name__.startswith("Pipeline")]
-        self.user = procs[first]
+        self.user = next(p for p in self.procs if isinstance(p, LLMUserAggregator))
         self.assistant = next(p for p in self.procs if isinstance(p, LLMAssistantAggregator))
         self.gate = next(p for p in self.procs if isinstance(p, FollowupGate))
         controller = self.user._user_turn_controller
         self.stop = ScriptedStop()
+        # The scripted verdict, after the closer of a turn a fixed phrase took.
+        closers = [s for s in controller._user_turn_strategies.stop
+                   if isinstance(s, TakenTurnCloser)]
         controller._user_turn_strategies = UserTurnStrategies(
-            start=controller._user_turn_strategies.start, stop=[self.stop])
+            start=controller._user_turn_strategies.start, stop=[*closers, self.stop])
         session.tts._synth_text = _segments
-        self.provider = Provider(replies)
-        session.llm._client = NS(chat=NS(completions=self.provider))
-        session.llm._warm_closed = True
+        self.provider = Provider(replies, fails)
+        if session.llm is not None:
+            session.llm._client = NS(chat=NS(completions=self.provider))
+            session.llm._warm_closed = True
         self.played: list = []
         self.bot_stops = 0
         self.sent: list = []
@@ -556,6 +610,12 @@ class Rig:
     async def __aexit__(self, *exc):
         await self.task.cancel()
         await self._run
+
+    async def final(self, text):
+        """A final transcript, as the STT pushes one: what a fixed phrase hears."""
+        f = TranscriptionFrame(text, "caller", "t")
+        f.finalized = True
+        await self.task.queue_frames([f])
 
     def calls(self):
         return [(m, stops, played) for m, stops, played in self.sent
@@ -722,6 +782,208 @@ async def test_a_talk_session_or_a_room_without_wake_words_has_no_backstop():
         assert rig.session.goodbye_sleep is None, (front_end, features)
         assert rig.session.ledger.on_reply_end == rig.owed.settle, (front_end, features)
     assert Rig(["Good night!"]).session.goodbye_sleep is not None
+
+
+# ------------------------------------------------------------------ the sleep phrase
+
+class _Voice(wifi_voice.PhraseVoice):
+    """The fixed phrases' processor without a pipeline: what it pushes is kept, and the
+    box's speech is the test's to start and stop."""
+
+    def __init__(self, lang="en-us"):
+        super().__init__(lang_fn=lambda: lang, phrases=[goodbye.SleepPhrase()])
+        self.pushed: list = []
+
+    @property
+    def sleep(self):
+        return self.phrases[0]
+
+    def said(self):
+        return [f.text for f in self.pushed if isinstance(f, TTSSpeakFrame)]
+
+    def sent(self):
+        return [f.message for f in self.pushed
+                if isinstance(f, OutputTransportMessageUrgentFrame)]
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        self.pushed.append(frame)
+        if isinstance(frame, OutputTransportMessageUrgentFrame):
+            consult_bridge.resolve(frame.message["call_id"], {"ok": True})
+
+    def _spawn(self, coro):
+        return asyncio.get_running_loop().create_task(coro)
+
+    async def speak(self, *, cut=False):
+        """The line plays: the box's speech starts, (is cut,) and ends."""
+        await asyncio.sleep(0.01)
+        self.bot_starts += 1
+        self._start_cuts = self.cuts
+        self._bot_speaking = True
+        if cut:
+            self.cuts += 1
+        await asyncio.sleep(0.1)
+        self._bot_speaking, self._quiet_since = False, self._clock()
+
+
+def test_the_phrase_says_its_line_and_sleeps_once_it_has_played():
+    async def run():
+        v = _Voice()
+        assert await v._heard("Okay, go to sleep.")
+        assert v.said() == [goodbye.SLEEP_TEXT] and v.sent() == [], "slept before the line"
+        await asyncio.sleep(0.05)
+        assert v.sent() == [], "slept before the line played"
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+        (m,) = v.sent()
+        assert m["type"] == "client_tool" and m["name"] == "end_conversation", m
+        assert m["args"] == {} and m["said"] is True, m
+        assert v.sleep.sent and list(v.sleep.decisions) == [SENT]
+        # Said again: taken, nothing more.
+        assert await v._heard("go to sleep") and len(v.sent()) == 1 and len(v.said()) == 1
+    asyncio.run(run())
+
+
+def test_the_phrase_in_the_voices_language():
+    async def run():
+        v = _Voice("es")
+        assert await v._heard("Vale, vete a dormir.")
+        assert v.said() == [i18n.get("es")._(goodbye.SLEEP_TEXT)]
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+    asyncio.run(run())
+
+
+def test_talk_about_sleep_is_not_the_phrase():
+    async def run():
+        v = _Voice()
+        for talk in ("How do I make you go to sleep?", "I need to go to sleep",
+                     "Don't go to sleep.", "Tell the kids to go to sleep.",
+                     "go to sleep and then remind me at seven"):
+            assert not await v._heard(talk), talk
+        assert v.said() == [] and v.sent() == []
+    asyncio.run(run())
+
+
+def test_the_caller_cutting_the_line_or_going_on_keeps_the_room_awake():
+    async def run():
+        v = _Voice()
+        assert await v._heard("go to sleep")
+        await v.speak(cut=True)
+        await until(lambda: v.sleep.decisions, timeout=2.0)
+        assert list(v.sleep.decisions) == ["the caller cut the line"] and v.sent() == []
+        assert not v.sleep.sent
+        # Words of theirs before the line ends: the conversation goes on (to the model).
+        v = _Voice()
+        assert await v._heard("go to sleep")
+        assert not await v._heard("oh wait, what's the weather tomorrow?")
+        await v.speak()
+        await asyncio.sleep(0.1)
+        assert list(v.sleep.decisions) == ["the caller went on"] and v.sent() == []
+        # And asked again after, it goes.
+        assert await v._heard("okay, go to sleep now")
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+        # An interruption before the line's speech started cut the reply the caller's
+        # words talked over, not the line: it sleeps.
+        v = _Voice()
+        assert await v._heard("go to sleep")
+        v.cuts += 1
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+    asyncio.run(run())
+
+
+def _without_a_model():
+    """The environment of a box with no model (test_no_model_session.py): no endpoint,
+    no key, a HOME with no key file. Returns what to put back."""
+    from tempdirs import tempdir
+    was = {k: os.environ.get(k) for k in ("LLM_BASE_URL", "LLM_API_KEY", "HOME")}
+    os.environ.pop("LLM_BASE_URL", None)
+    os.environ.pop("LLM_API_KEY", None)
+    os.environ["HOME"] = tempdir("teaport-goodbye-nomodel-")
+    return was
+
+
+def _put_back(was):
+    for k, v in was.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+async def _sleeps_on_the_phrase(rig, phrase="Okay, go to sleep."):
+    """The caller's phrase in the room session: the line plays out, then the bridge is
+    asked to sleep, "said": true -- and no model is asked anything."""
+    await rig.final(phrase)
+    await until(lambda: rig.calls())
+    (m, stops, played), = rig.calls()
+    assert m["name"] == "end_conversation" and m["said"] is True and m["args"] == {}, m
+    assert stops >= 1, "the call went out before the line had played"
+    assert wifi_voice._norm(" ".join(played)) == wifi_voice._norm(goodbye.SLEEP_TEXT), played
+    assert rig.provider.requests == [], "a model was asked"
+    assert rig.session.sleep_phrase.sent
+
+
+async def test_the_phrase_sleeps_a_room_with_no_model():
+    """No key, no endpoint: the session runs without an LLM, and "go to sleep" still
+    sends the room to sleep (it used to wait out the keep-alive)."""
+    was = _without_a_model()
+    try:
+        rig = Rig([], top=wifi_voice.PhraseVoice)
+    finally:
+        _put_back(was)
+    assert rig.session.llm is None and rig.session.sleep_phrase is not None
+    async with rig:
+        await _sleeps_on_the_phrase(rig)
+
+
+async def test_the_phrase_sleeps_a_room_whose_model_only_errors():
+    """A provider out of credit (every request fails): "No, go to sleep." is not a
+    request for a reply at all."""
+    async with Rig([], top=wifi_voice.PhraseVoice,
+                   fails=RuntimeError("402: insufficient credit")) as rig:
+        await _sleeps_on_the_phrase(rig, "No, go to sleep.")
+
+
+async def test_the_phrase_wins_over_an_owed_failure_which_stays_owed():
+    """A failed consult still owed: the phrase sleeps all the same, and the record is
+    still owed, for the next wake (the room's sleep saves it, wake_gate.py)."""
+    async with Rig([], top=wifi_voice.PhraseVoice) as rig:
+        rig.owed.restore([{"key": "call-1", "request": "book a table",
+                           "outcome": owed.failure_outcome("error", "402")[1],
+                           "failure": "error"}])
+        assert [r.failure for r in rig.owed.owed()] == ["error"]
+        await _sleeps_on_the_phrase(rig)
+        assert [r.key for r in rig.owed.owed()] == ["call-1"]
+        assert [d["key"] for d in rig.owed.snapshot()] == ["call-1"]
+
+
+async def test_the_backstop_sleeps_on_a_sign_off_with_only_a_failure_owed():
+    """The model says only a goodbye, and the one record owed is a failure: the caller
+    signed off, so the room sleeps."""
+    async with Rig(["Goodbye."]) as rig:
+        rig.owed.restore([{"key": "call-1", "request": "book a table",
+                           "outcome": owed.failure_outcome("error", "402")[1],
+                           "failure": "error"}])
+        await rig.say("Okay, good night.")
+        assert await decided(rig) == SENT
+        await until(lambda: rig.calls())
+        assert rig.calls()[0][0]["said"] is True
+
+
+async def test_no_sleep_phrase_off_the_room():
+    """Talk has no sleep, a phone call ends by hanging up, and a room without wake words
+    (no client:sleep) has none to go back to: the phrase is the room's alone."""
+    for front_end, features in (("talk", ("sleep",)), ("room", ()), ("sip", ())):
+        session = build_agent_session(TalkTransport(), front_end=front_end,
+                                      client_features=frozenset(features))
+        assert session.sleep_phrase is None, (front_end, features)
+        assert not any(isinstance(p, goodbye.SleepPhrase)
+                       for p in getattr(session.phrases, "phrases", ())), (front_end, features)
+    session = build_agent_session(TalkTransport(), front_end="room",
+                                  client_features=frozenset({"sleep"}))
+    assert session.sleep_phrase in session.phrases.phrases
 
 
 async def _first_request(rig, caller):

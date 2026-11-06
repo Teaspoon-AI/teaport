@@ -206,9 +206,13 @@ soon as the caller is connected. See [the settings reference](/reference/setting
 <!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1936-1946#a986d676; cli/teaport:1457-1459#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
-conversation's language: *"Someone's calling me — +1 346 234 8500. Should I
-step away for a moment?"* When the call carries no name or number, the agent
-asks *"Someone's calling me. Should I step away…"*.
+conversation's language: *"Someone's calling me — Ann Smith. Should I step away
+for a moment?"* The agent uses the caller's name when the call carries a real
+one. A placeholder such as "WIRELESS CALLER" does not count. Otherwise the agent
+says the last four digits of the number: *"Someone's calling me — a number
+ending in 8 5 0 0…"*. The device's screen shows the whole number. When the call
+carries no name or number, the agent asks *"Someone's calling me. Should I step
+away…"*.
 
 The question has three outcomes:
 
@@ -218,11 +222,15 @@ The question has three outcomes:
   resumes with *"Sorry about that — where were we?"*
 - **No**: the call is never answered. The caller hears it ring until they give
   up.
-- **No answer**: after `TEAPORT_CALL_PROMPT_SECS`, 12 seconds by default, the
-  call is taken by default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep
-  ringing.
+- **No answer**: `TEAPORT_CALL_PROMPT_SECS`, 8 seconds by default, after the
+  question starts, and at least 3 seconds after it ends, the call is taken by
+  default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep ringing. If someone
+  is still talking at that point, the agent waits up to 5 seconds more. The
+  caller hears it ring the whole time, and many carriers send an unanswered call
+  to voicemail after 20 to 30 seconds. With nobody answering, the call is
+  picked up about 12 to 14 seconds after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,602-616#f6a0b0f1; brain/teaport_brain/config_schema.toml:1949-1971#e70d77f4 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,594-643#d982d7ca; brain/teaport_brain/call_prompt.py:25-43,51-60#8329a441; brain/teaport_brain/config_schema.toml:1949-1971#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
@@ -268,7 +276,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1349-1351#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1354-1356#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the

@@ -352,6 +352,11 @@ msgstr "Désolé, un appel arrive et je dois le prendre. Nous pourrons reparler 
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Quelqu'un m'appelle — {caller}. Je m'absente un instant pour répondre ?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Quelqu'un m'appelle — un numéro qui se termine par {digits}. Je m'absente un instant pour répondre ?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Quelqu'un m'appelle. Je m'absente un instant pour répondre ?"
 
@@ -562,6 +567,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:euh|heu|hum|bah|teaport|ok|okay|d['’]accord|alors|bon|et|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp)\\W+){0,3}(?:(?:est-ce qu(?:e\\s+|['’]\\s*))?(?:tu peux|vous pouvez|peux[- ]tu|pouvez[- ]vous|pourrais[- ]tu|pourriez[- ]vous|tu pourrais|vous pourriez)(?: (?:me|nous))? )?(?:ouvr(?:e|ez|ir)|affich(?:e|ez|er)|montr(?:e|ez|er)|va|allez|aller|acc[eé]d(?:e|ez|er))(?:[- ](?:moi|nous))?(?: (?:aux|[àa]|dans|sur))? (?:(?:les|tes|vos|mes|ses|la|le|ta|votre|ma|sa|ton|mon) )?(?:(?:page|menu|[ée]cran) (?:des|de|du) (?:(?:mes|tes|vos|ses) )?)?(?:r[ée]glages|param[eèé]tres|configuration)(?:[\\s,،]+(?:teaport|merci beaucoup|merci|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant|de teaport)\\b)*[\\s.,!?;:…]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:euh|heu|hum|bah|teaport|ok|okay|d['’]accord|alors|bon|et|non|oui|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|bonne nuit|merci)\\W+){0,3}(?:(?:est-ce qu(?:e\\s+|['’]\\s*))?(?:tu peux|vous pouvez|peux[- ]tu|pouvez[- ]vous|pourrais[- ]tu|pourriez[- ]vous|tu pourrais|vous pourriez) )?(?:(?:va|allez|aller|retourne|retournez|retourner) dormir|(?:rendors|endors)[- ]toi|(?:rendormez|endormez)[- ]vous|(?:te |vous )?(?:rendormir|endormir)|(?:mets|mettez)[- ](?:toi|vous) en veille|(?:te |vous )?mettre en veille)(?:[\\s,،]+(?:teaport|merci beaucoup|merci|s['’ ]?il (?:te|vous) pla[iî]t|stp|svp|maintenant)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "slash"
@@ -746,3 +755,7 @@ msgstr "Désolé, je ne peux pas répondre pour le moment : le compte que j’ut
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Désolé, j'ai perdu le fil. Pouvez-vous répéter ?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "D'accord, je vais dormir."

@@ -347,6 +347,11 @@ msgstr "抱歉，有电话打进来，我得接一下。通话结束后我们再
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "有人给我打电话——{caller}。我先去接一下可以吗？"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "有人给我打电话——尾号{digits}。我先去接一下可以吗？"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "有人给我打电话。我先去接一下可以吗？"
 
@@ -557,6 +562,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:能不能|可不可以|能|可以)?\\s*(?:帮我|给我|我要|我想|我想要)?\\s*(?:打开|打開|开一下|显示|顯示|调出|进入|進入|看看|看一下|去)(?:一下)?\\s*(?:我的|你的|teaport\\s*的|的)?\\s*(?:设置|设定|設定|設置)(?:页面|页|界面)?\\s*(?:吧|一下|呗|啊|呀|嘛|吗|嗎|好吗|好嗎){0,2}(?:[，,\\s]*(?:谢谢|谢了|謝謝|多谢|多謝))?\\s*[\\s，,。.!！…?？]*$|^[\\s，,。.!！、]*(?:(?:teaport|好的?|呃|额|那个|嗯嗯|那|嗯|喂)[\\s，,。.!！、]*)?\\s*(?:请|麻烦你?|你)?\\s*(?:帮我)?把(?:我的|你的)?(?:设置|设定)(?:页面|页|界面)?打开(?:吧|一下|吗|嗎|好吗|好嗎){0,2}(?:[，,\\s]*(?:谢谢|谢了|謝謝|多谢|多謝))?\\s*[\\s，,。.!！…?？]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^[\\s，,。.!！、]*(?:(?:teaport|好的?|好了|呃|额|那个|嗯嗯|那|嗯|喂|不|行|晚安|谢谢)[\\s，,。.!！、]*){0,2}\\s*(?:请|麻烦你?|你)?\\s*(?:能不能|可不可以|能|可以)?\\s*(?:现在|快|该)?\\s*(?:去睡觉|去睡|回去睡觉|回去睡|继续睡|睡吧|进入睡眠模式|进入休眠模式|休眠吧)(?:吧|了|一下|啊|呀|嘛|好吗|好嗎){0,2}(?:[，,\\s]*(?:谢谢|谢了|謝謝|多谢|多謝))?\\s*[\\s，,。.!！…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "斜杠"
@@ -741,3 +750,7 @@ msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "抱歉，我刚才走神了。你能再说一遍吗？"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "好的，我去睡觉了。"
