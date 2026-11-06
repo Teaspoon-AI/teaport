@@ -234,7 +234,8 @@ _ASKS = re.compile(
 # Not a bare "to say": "I just wanted to say good night." is a sign-off.
 _ASKS_FOR_A_WORD = re.compile(
     r"\btranslat\w*|\bin english\b|\bword for\b|\bsynonym\w*|\bopposite of\b"
-    r"|\bmeaning of\b|\bway to say\b|\bspell\w*"
+    r"|\bmeaning of\b|\bway to say\b|\bspell\w*|\brepeat after me\b|\bname a word\b"
+    r"|\bwords? that means?\b|\b(?:does|do|did) \S+ mean\b"
     r"|\bhow (?:do|would|should|can|could) (?:you|i|we) say\b"
     r"|\bwhat (?:does|did|do) .{1,40}\bmean\b"
     r"|\b(?:is it|which is(?: right| correct)?|should i (?:say|write))\b[^.!?]*\bor\b", re.I)

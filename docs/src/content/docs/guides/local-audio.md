@@ -41,7 +41,7 @@ Matching is exact, on whole words: "teapot" does not wake a device listening for
 
 To send the bridge back to sleep when you are done, say "that's all", "goodnight", or "go to sleep"; the agent says a short goodbye and the microphone sleeps immediately. If the agent answers with only a goodbye but doesn't go back to sleep, the microphone sleeps after that goodbye has played, unless you have started talking again. This backup understands English replies only. Both work only while wake words are set.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1738#4ab9e105 -->
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1738#3e45d0e5 -->
 
 ## The ring during a phone call
 

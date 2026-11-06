@@ -169,7 +169,10 @@ def test_what_counts_as_the_caller_asking():
                  # a word asked for, in any form (review round 2)
                  "Translate adiós into English.", "Tell me the opposite of hello.",
                  "What's the word for adiós", "What does goodbye mean?",
-                 "How do you say good night in French?"):
+                 "How do you say good night in French?",
+                 # and without a question mark the STT may drop (second-family review)
+                 "Repeat after me: good night.", "Name a word that means goodbye.",
+                 "I need a word that means goodbye.", "Does adios mean goodbye"):
         assert asks(said), said
     # questions ABOUT goodbye words ask for a word (review round 3)
     for said, _ in ABOUT_GOODBYE_WORDS:
@@ -179,7 +182,7 @@ def test_what_counts_as_the_caller_asking():
     for said, _ in ASKED_TO_GO:
         assert not asks(said), said
     for said in ("Okay, good night?", "Good night?", "Bye?",
-                 "I just wanted to say good night."):
+                 "I just wanted to say good night.", "I mean, good night."):
         assert not asks(said), said
     for caller, _ in TURNS:                      # #221's four turns: none is a question
         assert not asks(caller), caller
