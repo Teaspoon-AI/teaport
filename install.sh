@@ -1429,9 +1429,7 @@ brain_swap() {
   # verifypw default), so on a box with a NOPASSWD rule beside a password one — the
   # appliance's own — it would prompt although the restart itself never would.
   # Needed with no unit to restart too: the operator tools flip with the link.
-  if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
-    sudo -v || die "sudo is needed to swap the brain's operator tools${1:+ and restart $*} — nothing was swapped"
-  fi
+  sudo_ready "swap the brain's operator tools${1:+ and restart $*}"
   brain_point_at "$target"
   log "brain venv: $BRAIN_LINK -> $target"
   if [ $# = 0 ]; then return 0; fi   # no brain unit to restart: the operator starts it
@@ -2356,13 +2354,32 @@ env_put_back() {
   ENV_ADDED=0
 }
 
-# engine_env_lines — the keys phase_services writes to engine.env, with the values it writes
-# them with, as ENGINE_ENV: what --only engine adds when engine.env lacks one. Copied rather
-# than shared, for now; keep in step with phase_services (test_install_engine_only.py
-# compares the two). KOKORO_RESERVE_FPT with an agent is 8 since #264.
+# engine_env_lines — the installer's engine.env keys and values, as ENGINE_ENV: what
+# phase_services writes on every run, and what --only engine adds when engine.env lacks one.
 ENGINE_ENV=()
 engine_env_lines() {
+  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
+  # default (50) OOMs an 8GB box — the installer must always set it.
+  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
+  # so reserving the voice-only amount alongside it is the direction that OOMs.
+  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
+  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
+  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
+  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
+  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
+  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
+  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
+  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
+  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
+  # sandbox is an agent too and gets 8 the same way.
   local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
+  # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
+  # rather than silently fall back to espeak-only prosody (see phase_engine).
+  # Engine 1.3 ignores it; from 1.5 it turns a degraded box into a loud restart
+  # loop that `teaport doctor` / journalctl names.
+  # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
+  # validated at (its batched decode is bit-identical to the unbatched one only there;
+  # at 240 it scored a point worse, and --reprime's measurements are all at 480).
   ENGINE_ENV=("KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192"
               "VOX_REQUIRE_DICT_G2P=1")
 }
@@ -2674,35 +2691,12 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
-  # default (50) OOMs an 8GB box — the installer must always set it.
-  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
-  # so reserving the voice-only amount alongside it is the direction that OOMs.
-  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
-  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
-  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
-  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
-  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
-  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
-  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
-  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
-  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
-  # sandbox is an agent too and gets 8 the same way.
-  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
 
-  # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
-  # rather than silently fall back to espeak-only prosody (see phase_engine).
-  # Engine 1.3 ignores it; from 1.5 it turns a degraded box into a loud restart
-  # loop that `teaport doctor` / journalctl names.
-  # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
-  # validated at (its batched decode is bit-identical to the unbatched one only there;
-  # at 240 it scored a point worse, and --reprime's measurements are all at 480).
-  write_env "$ETC/engine.env" \
-    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192" \
-    "VOX_REQUIRE_DICT_G2P=1"
+  engine_env_lines
+  write_env "$ETC/engine.env" "${ENGINE_ENV[@]}"
   # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
   # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and takes
   # OpenClaw's voice context (identity and profile); voice-only it advertises the local

@@ -56,8 +56,12 @@ SETDEFAULT = r"""\benviron\.setdefault\(\s*(["']){name}\1"""
 # setting and {file} the store's file name; every pattern must match the file with its
 # COMMENTS dropped (and a shell file's continued lines joined).
 FORMS = {
-    ("shell", "writes env"):       # an argument of write_env "<dir>/<file>" (a ?seed too)
-        (r'^[ \t]*write_env[ \t]+"[^"\n]*/{file}"[^\n]*"\??(?:\$\{{\w+\}})?{name}=',),
+    ("shell", "writes env"):       # an argument of write_env "<dir>/<file>" (a ?seed too),
+        # or an entry of an array written whole after it: write_env "<dir>/<file>"
+        # "${ARR[@]}" (install.sh's ENGINE_ENV, which --only engine adds from as well)
+        (r'^[ \t]*write_env[ \t]+"[^"\n]*/{file}"[^\n]*"\??(?:\$\{{\w+\}})?{name}='
+         r'|^[ \t]*(\w+)=\([^)]*"\??(?:\$\{{\w+\}})?{name}=[^)]*\)(?:.*\n)*?'
+         r'[ \t]*write_env[ \t]+"[^"\n]*/{file}"[ \t]+"\$\{{\1\[@\]\}}"',),
     ("shell", "writes keyvalue"):  # a `name=` line of a here-document
         (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "keeps keyvalue"):   # read by confval/confvals, for the conf's key=value form
@@ -214,6 +218,11 @@ write_env "$ETC/engine.env" \\
   "ENGINE_DELAY=240" "${SEED}SEEDED=1"
 write_env "$ETC/brain.env" "?HF_HUB_OFFLINE=1"
 write_env "$ETC/engine.env" "HASH=a#b" "AFTER_HASH=${#x}"  # "TRAILING=1"
+LIST=("LISTED=$v"
+      "LISTED_TOO=2")
+write_env "$ETC/engine.env" "${LIST[@]}"
+OTHER=("UNWRITTEN=1")
+write_env "$ETC/engine.env" "${LIST[@]}"
 """,
     "cli/teaport": """#!/usr/bin/env bash
 fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
@@ -278,6 +287,9 @@ def source_self_test() -> list[str]:
             (True, "SEEDED", sh, "engine_env"),                  # a ${..._SEED} prefix
             (True, "HF_HUB_OFFLINE", sh, "brain_env"),           # a ?seed
             (True, "AFTER_HASH", sh, "engine_env"),              # `#` inside a word
+            (True, "LISTED", sh, "engine_env"),                  # an array written whole
+            (True, "LISTED_TOO", sh, "engine_env"),              # on its next line
+            (False, "UNWRITTEN", sh, "engine_env"),              # an array never written
             (True, "KOKORO_RESERVE_FPT", cli, "engine_env"),
             (True, "aec_tail_ms", cli, "sip_conf"),
             (True, "ENGINE_PORT", unit, "engine_env"),
