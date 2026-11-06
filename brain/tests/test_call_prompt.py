@@ -184,12 +184,12 @@ async def test_a_held_conversation_whose_client_leaves_is_forgotten():
     sa._fresh()
 
 
-async def test_a_conversation_the_hold_fails_for_is_ended_as_before():
+async def test_a_conversation_the_hold_fails_for_is_ended_as_hold_failed():
     sa._fresh()
     convo = await _holding(Convo(answer=True, hold_ok=False))
     call = _call_claim()
     assert await arb.ARBITER.acquire(call) is None
-    assert convo.events == [("ask", "+1 555 123 4567"), "hold", ("end", arb.CALL_IN)]
+    assert convo.events == [("ask", "+1 555 123 4567"), "hold", ("end", arb.HOLD_FAILED)]
     assert arb.ARBITER.holder is call and arb.ARBITER.held_claim is None
     sa._fresh()
 
