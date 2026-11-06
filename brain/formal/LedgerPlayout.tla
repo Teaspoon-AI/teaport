@@ -7,7 +7,7 @@
 (* windowHead) with their counterexamples. The environment here is that     *)
 (* module's -- the LLM stream, the TTS's sequential synthesis, the          *)
 (* transport's push-order playout, the user's barge-in -- with the facts    *)
-(* the design rests on spelled out (pipecat 1.8.1, engine_tts.py):         *)
+(* the design rests on spelled out (pipecat 1.12.0, engine_tts.py):         *)
 (*                                                                          *)
 (*   - A context opens (TTSStartedFrame) for ANY text with a non-blank      *)
 (*     character: tts_service._push_tts_frames creates the audio context    *)
@@ -62,7 +62,11 @@
 (* cut or complete. The ledger's playout layout (seconds, laid out from the *)
 (* window's start) is taken to be accurate: at a window close or a cut it   *)
 (* credits exactly the chunks the transport has played (PlayoutPause.tla   *)
-(* checks its arithmetic).                                                  *)
+(* part 1 checks its arithmetic). A playout pause (PlayoutPauseFrame)       *)
+(* credits the same way and may chart a turn whose audio has all played     *)
+(* (_pause -> _credit + _close_ready): a chart point this model does not    *)
+(* have, and a benign one -- it charts only what a window close would       *)
+(* (Known limits).                                                          *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -85,7 +89,7 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
                          \*   run_tts yielded (engine_tts.tts_process_generator, shipped);
                          \*   FALSE is pipecat's default: only if it yielded audio
           UnspeakableOpens, \* BOOLEAN: pipecat opens a context for an Unspeakable reply
-                         \*   (TRUE: 1.8.1 as it is); FALSE is the premise the model was
+                         \*   (TRUE: 1.12.0 as it is); FALSE is the premise the model was
                          \*   first written with -- no context at all
           SpeakCheck,    \* where the ledger applies the engine's has_speech:
                          \*   "chart" -- as shipped: every response with text is queued,
@@ -459,7 +463,7 @@ TtsAudio(c) ==
 \*
 \* Which of the two closes it once its End has reached the TTS: the End itself
 \* (on_turn_context_completed appends the stop frame and ends the context), but
-\* in pipecat 1.8.1 only if the LAST run_tts yielded audio
+\* in pipecat 1.12.0 only if the LAST run_tts yielded audio
 \* (tts_process_generator's flag) -- else nothing ends it but the stop-frame
 \* timeout, 15 s on, with the TTS's queue held behind it. MutedAtEnd: the
 \* replies whose last run_tts yields none.
