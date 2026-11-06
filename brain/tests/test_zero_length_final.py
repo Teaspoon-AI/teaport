@@ -13,8 +13,9 @@
 # commits recorded off the wire), the user aggregator with the brain's start and stop
 # strategies, keep_barge_in_reachable and CutReplyFence as agent_session wires them, the
 # corrector, the TranscriptLedger, UnspokenReplyTap, and -- for SIP -- the ReplyHoldGate
-# with its TurnMerge. The LLM is a stand-in that keeps its reply in flight until the test
-# lets it go, once the tail has been decided -- no race against a timer. The stock start
+# with its TurnMerge; where a test turns on what the TTS does with a reply, the real
+# EngineTTSService too. The LLM is a stand-in that keeps its reply in flight until the
+# test lets it go, once the tail has been decided -- no race against a timer. The stock start
 # strategy is run as well, as the control: that is today's shape, on each wiring
 # (Talk/room: the reply is cut at 0% and the context gets two user messages; SIP: the
 # gate drops the unplayed reply and merges, and the model is asked twice). If pipecat
@@ -22,7 +23,8 @@
 #
 # The rule is barge_pause.py's WORDS NOBODY SPOKE (PauseAwareMinWordsStrategy); the cases
 # that must NOT be taken as a tail -- a VAD start since, or an onset where the reply hold
-# is, the final of speech whose VAD stop the turn ended on, a stop word, the bot audible
+# is, the final of speech whose VAD stop the turn ended on, any stop word among the
+# words ("Okay, wait."), the bot audible
 # (from then on every word is counted as one over the bot), the reply ended unspoken or
 # overdue, no turn committed yet, a turn whose words were taken -- are pinned below on
 # the real controller; words only the onset test heard are a tail on Talk and the room,
@@ -48,6 +50,7 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
 )
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
+    DataFrame,
     BotStoppedSpeakingFrame,
     FunctionCallResultFrame,
     FunctionCallResultProperties,
@@ -80,14 +83,17 @@ from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from stt_harness import WireRecorder  # noqa: E402
+from test_tts_stop_frame import Probe, _fake_segments  # noqa: E402
 from turn_harness import running_controller  # noqa: E402
 
 from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from teaport_brain.barge_pause import (  # noqa: E402
+    REPLY_WAIT_S,
     PauseAwareMinWordsStrategy,
     UnspokenReplyTap,
 )
 from teaport_brain.echo_guard import EchoGuard  # noqa: E402
+from teaport_brain.engine_tts import EngineTTSService  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     NO_STOP,
     CutReplyFence,
@@ -102,7 +108,6 @@ from teaport_brain.heard_context import (  # noqa: E402
     append_to_last_turn,
 )
 from teaport_brain.reply_hold import ReplyHoldGate, TurnMerge  # noqa: E402
-from teaport_brain.settings import setting  # noqa: E402
 from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords, taken  # noqa: E402
 from teaport_brain.tools import no_inference  # noqa: E402
@@ -111,6 +116,9 @@ from teaport_brain.wake_gate import WakeGate  # noqa: E402
 
 QUESTION = "What's a good rule for watering a fiddle?"
 TAIL = "Fake."
+# A stop word among other words, said in the reply's wait with no speech heard for it:
+# 'Okay, wait.' [35.3-35.3] is one of #22's own zero-length lines.
+STOP_PHRASES = ("Okay, wait.", "No, wait.", "Wait, no.", "Okay, stop.")
 ANSWER = "Water it when the top inch of soil is dry."
 
 SR = 16000
@@ -142,15 +150,16 @@ class WiredSTT(TeaportSTTService):
 
 
 class InFlightLLM(FrameProcessor):
-    """Where the LLM and the TTS sit: records each context it is asked on and answers it
-    once `release` is set -- the reply in flight until then, as long as the test needs.
-    Each answer is the next of `answers` (ANSWER once they run out); one with words comes
-    with its audio, as below a TTS, and an empty one (an empty 200) with none. An
-    interruption that reaches it first cuts the reply before a word of it was spoken:
-    counted in `cuts`."""
+    """Where the LLM sits: records each context it is asked on and answers it once
+    `release` is set -- the reply in flight until then, as long as the test needs. Each
+    answer is the next of `answers` (ANSWER once they run out); an empty one is an empty
+    200. With `audio` it stands for the TTS as well: words come with their audio, as
+    below a TTS. An interruption that reaches it first cuts the reply before a word of
+    it was spoken: counted in `cuts`."""
 
-    def __init__(self):
+    def __init__(self, audio=True):
         super().__init__()
+        self.audio = audio
         self.contexts = []
         self.cuts = 0
         self.answered = 0
@@ -177,8 +186,9 @@ class InFlightLLM(FrameProcessor):
         await self.push_frame(LLMFullResponseStartFrame())
         if words:
             await self.push_frame(LLMTextFrame(words))
-            await self.push_frame(TTSAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=SR,
-                                                   num_channels=1))
+            if self.audio:
+                await self.push_frame(TTSAudioRawFrame(audio=b"\x00\x00" * 160,
+                                                       sample_rate=SR, num_channels=1))
         await self.push_frame(LLMFullResponseEndFrame())
         self.answered += 1
 
@@ -188,9 +198,10 @@ class Session:
     aggregator, minus the TTS and the audio I/O. `front_end`: "talk" (no reply hold),
     "room" (the same, with the room's wake gate and echo guard on the STT), or "sip"
     (the reply hold and its TurnMerge; the onset test's speech is speech heard).
-    `stock`: pipecat's MinWords start strategy, the control, in place of the brain's."""
+    `stock`: pipecat's MinWords start strategy, the control, in place of the brain's.
+    `tts`: the real EngineTTSService below the tap, as agent_session places it."""
 
-    def __init__(self, front_end: str, stock: bool):
+    def __init__(self, front_end: str, stock: bool, tts: bool = False):
         self.context = LLMContext([{"role": "system", "content": "sys"}])
         self.stt = WiredSTT()
         if front_end == "room":
@@ -229,8 +240,13 @@ class Session:
         if self.gate is not None:
             self.fence.unplayed_reply = lambda: self.gate.armed
         self.corrector = HeardContextCorrector(self.ledger, self.context, merge=self.merge)
-        self.llm = InFlightLLM()
+        self.llm = InFlightLLM(audio=not tts)
+        # Directly above the TTS, as agent_session places it.
         self.tap = None if stock else UnspokenReplyTap(self.start.reply_unspoken)
+        self.tts = None
+        if tts:
+            self.tts = EngineTTSService(voice="af_heart")
+            self.tts._synth_text = _fake_segments       # test_pipecat_premises._tts
         self.turns_started = 0
 
         @user.event_handler("on_user_turn_started")
@@ -244,7 +260,8 @@ class Session:
 
         self.task = PipelineTask(Pipeline([p for p in [
             self.stt, user, self.fence.head, SegmentDoneSink(), self.corrector,
-            self.llm, self.gate, self.tap, self.pair.assistant(), self.fence.tail,
+            self.llm, self.tap, self.tts, self.gate, self.pair.assistant(),
+            self.fence.tail,
         ] if p is not None]), observers=[self.ledger], cancel_on_idle_timeout=False)
 
     async def audio(self, secs):
@@ -299,10 +316,10 @@ class Session:
                                         "reason": "vad"})
 
 
-async def _the_call(front_end: str, stock: bool, *, onset=False) -> Session:
-    """The question, then the tail while its reply is in flight (after an onset, if
-    `onset`). The reply goes out once the tail is decided: joined to the turn, or a turn
-    that asked the model again."""
+async def _the_call(front_end: str, stock: bool, *, onset=False, text=TAIL) -> Session:
+    """The question, then the tail `text` while its reply is in flight (after an onset,
+    if `onset`). The reply goes out once the tail is decided: joined to the turn, or a
+    turn that asked the model again."""
     s = Session(front_end, stock)
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
     await asyncio.sleep(STARTUP_S)
@@ -311,7 +328,7 @@ async def _the_call(front_end: str, stock: bool, *, onset=False) -> Session:
         await s.question()
         if onset:
             await s.onset()
-        await s.tail()
+        await s.tail(text)
         assert await s.until(lambda: s.appended or len(s.llm.contexts) >= 2), (
             "the tail was neither joined to the turn nor asked on")
         s.llm.release.set()
@@ -417,11 +434,41 @@ async def test_words_only_the_onset_heard_still_start_a_turn_and_merge_on_sip():
                          ("assistant", ANSWER)], _roles(s)
 
 
+async def _a_stop_word_among_the_words_cuts_the_reply(front_end):
+    """Each of STOP_PHRASES in the reply's wait, as a zero-length line: on SIP with no
+    speech heard, on Talk and the room after an onset (no speech there). It starts the
+    turn and cuts the reply in flight, as on main -- merged into one message on SIP by
+    the reply hold, a message of its own elsewhere."""
+    for said in STOP_PHRASES:
+        s = await _the_call(front_end, stock=False, onset=front_end != "sip", text=said)
+        _the_tail_is_zero_length(s, said)
+        _cut_and_asked_again(s)
+        assert s.appended == [], (said, s.appended)
+        want = ([("user", f"{QUESTION} {said}")] if front_end == "sip"
+                else [("user", QUESTION), ("user", said)])
+        assert _roles(s) == [("system", "sys"), *want, ("assistant", ANSWER)], (
+            said, _roles(s))
+
+
+async def test_a_stop_word_among_the_words_cuts_the_reply_sip():
+    await _a_stop_word_among_the_words_cuts_the_reply("sip")
+
+
+async def test_a_stop_word_among_the_words_cuts_the_reply_talk():
+    await _a_stop_word_among_the_words_cuts_the_reply("talk")
+
+
+async def test_a_stop_word_among_the_words_cuts_the_reply_room():
+    await _a_stop_word_among_the_words_cuts_the_reply("room")
+
+
 async def test_after_a_reply_that_ended_unspoken_words_nobody_spoke_are_a_turn_talk():
     """The reply to the question ends with nothing said (an empty 200): there is no
     reply to keep, and words joined to the turn would never be answered. A later
-    'Hello?' the VAD missed is a turn of its own, and the model is asked on it."""
-    s = Session("talk", stock=False)
+    'Hello?' only the onset test heard is a turn of its own, and the model is asked on
+    it. Through the real TTS, which holds a text-less completion's End: the tap reads
+    it above the TTS, where it passes."""
+    s = Session("talk", stock=False, tts=True)
     s.llm.answers = ["", ANSWER]
     s.llm.release.set()
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
@@ -432,6 +479,7 @@ async def test_after_a_reply_that_ended_unspoken_words_nobody_spoke_are_a_turn_t
         assert await s.until(lambda: s.llm.answered == 1), "the empty answer never came"
         assert await s.until(lambda: not s.start._reply_due), (
             "the tap never told the strategy the reply ended unspoken")
+        await s.onset()
         await s.tail("Hello?")
         assert await s.until(lambda: s.llm.answered == 2), "'Hello?' was never answered"
     finally:
@@ -730,6 +778,34 @@ async def test_a_stop_word_in_the_wait_is_never_a_tail():
         assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
 
 
+async def test_a_stop_word_among_other_words_in_the_wait_is_never_a_tail():
+    """"Okay, wait.", "No, wait.", "Wait, no.", "Okay, stop." in the reply's wait: any
+    stop word keeps words from being a tail, not only an utterance made of them (that
+    rule is for cutting a playing reply). Main cut the reply on every one; so does the
+    bot audible. On SIP with no speech heard; on Talk and the room also after an onset,
+    which is no speech there. An interim that grows a stop word starts the turn."""
+    for said in STOP_PHRASES:
+        for onset_is_speech, onset in ((True, False), (False, False), (False, True)):
+            rig = Rig(onset_is_speech=onset_is_speech)
+            async with running_controller(rig.controller):
+                await rig.committed_turn()
+                if onset:
+                    await rig.onset()
+                await rig.feed(final(said, NO_STOP))
+                assert rig.starts() == 2 and rig.appended == [], (
+                    said, onset_is_speech, onset, rig.events, rig.appended)
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.onset()
+        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))   # a tail's, so far
+        assert rig.starts() == 1, rig.events
+        await rig.feed(InterimTranscriptionFrame("Okay wait", "u", "t"))
+        assert rig.starts() == 2, "the stop word's interim must start the turn"
+        await rig.feed(final("Okay, wait.", NO_STOP))
+        assert rig.appended == [], rig.appended
+
+
 async def test_once_the_reply_plays_a_word_with_no_speech_under_it_is_counted_as_ever():
     """The bot audible: the barge-in rules stand (two words, or a stop word); after the
     reply, one word is a turn. Nothing is a tail outside the reply's wait."""
@@ -821,14 +897,12 @@ async def test_the_wait_ends_when_the_reply_ends_unspoken():
         assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
 
 
-async def test_the_wait_ends_at_the_silent_turn_bound():
-    """A reply that never comes at all (an empty completion nobody told of, a consult
-    with nothing said): words with no speech under them are a tail inside
-    TEAPORT_SILENT_TURN_SECS of the commit, where the silent-turn watchdog calls the
-    reply missing, and a turn of their own after it -- not folded into a message
-    already answered."""
-    assert (PauseAwareMinWordsStrategy(min_words=2).reply_wait_secs
-            == setting("TEAPORT_SILENT_TURN_SECS"))
+async def test_the_wait_ends_ten_seconds_after_the_commit():
+    """A reply that never comes at all (a consult with nothing said, an end nothing
+    reported): words with no speech under them are a tail inside REPLY_WAIT_S of the
+    commit, and a turn of their own after it -- not folded into a message already
+    answered. Its own bound: the silent-turn watchdog's setting is a diagnostic."""
+    assert PauseAwareMinWordsStrategy(min_words=2).reply_wait_secs == REPLY_WAIT_S == 10.0
     rig = Rig()
     wait = rig.start.reply_wait_secs
     async with running_controller(rig.controller):
@@ -885,11 +959,12 @@ def _result(properties=None, result="ok"):
 async def test_the_tap_tells_of_a_reply_that_ends_with_nothing_to_play():
     assert await _tapped(LLMFullResponseStartFrame(), LLMFullResponseEndFrame()) == [
         "a response with nothing to say"]
-    spoken = await _tapped(
-        LLMFullResponseStartFrame(), LLMTextFrame(ANSWER),
-        TTSAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=SR, num_channels=1),
-        LLMFullResponseEndFrame())
+    spoken = await _tapped(LLMFullResponseStartFrame(), LLMTextFrame(ANSWER),
+                           LLMFullResponseEndFrame())
     assert spoken == [], spoken
+    # Text the TTS would not speak (tts_text.has_speech): nothing of it plays.
+    assert await _tapped(LLMFullResponseStartFrame(), LLMTextFrame("\u200b\u200b"),
+                         LLMFullResponseEndFrame()) == ["a response with nothing to say"]
     # A tool round: its result runs the model again, and that answer is the reply.
     tool = await _tapped(LLMFullResponseStartFrame(),
                          FunctionCallsStartedFrame(function_calls=[]),
@@ -903,6 +978,60 @@ async def test_the_tap_tells_of_a_reply_that_ends_with_nothing_to_play():
     assert await _tapped(_result(result=None)) == ["set_timer asked for no answer"]
     update = FunctionCallResultProperties(run_llm=False, is_final=False)
     assert await _tapped(_result(update)) == [], "an update: the call goes on"
+
+
+class _Mark(DataFrame):
+    """Queued behind the frames under test: once the probe below has it, everything
+    ahead of it has been handled above."""
+
+
+async def _through_the_tts(*frames):
+    """`frames` into the tap and the real EngineTTSService below it, as agent_session
+    places them: what the tap told, and what came out below the TTS."""
+    told, tts, probe = [], EngineTTSService(voice="af_heart"), Probe()
+    tts._synth_text = _fake_segments
+    task = PipelineTask(Pipeline([UnspokenReplyTap(told.append), tts, probe]),
+                        cancel_on_idle_timeout=False)
+    started = asyncio.Event()
+
+    @task.event_handler("on_pipeline_started")
+    async def _started(_task, _frame):
+        started.set()
+
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    try:
+        await asyncio.wait_for(started.wait(), WAIT_S)
+        await task.queue_frames([*frames, _Mark()])
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + WAIT_S
+        while (not any(isinstance(f, _Mark) for _, f in probe.seen)
+               and loop.time() < deadline):
+            await asyncio.sleep(0.01)
+        assert any(isinstance(f, _Mark) for _, f in probe.seen), "the mark never came"
+        await asyncio.sleep(0.3)        # a frame the TTS would pass has passed by now
+    finally:
+        await task.cancel()
+        await run
+    return told, [f for _, f in probe.seen]
+
+
+async def test_the_tap_reads_the_reply_above_the_real_tts():
+    """The TTS holds the End of a completion with no text (test_pipecat_premises:
+    check_a_text_less_completions_end_is_held_by_the_tts): below it, an empty answer
+    would end the wait never. Above it the End passes, and the tap tells of it."""
+    end = LLMFullResponseEndFrame()
+    told, below = await _through_the_tts(LLMFullResponseStartFrame(), end)
+    assert told == ["a response with nothing to say"], told
+    assert not any(f is end for f in below), (
+        "the TTS passed a text-less End: the tap could sit below it again")
+    told, below = await _through_the_tts(LLMFullResponseStartFrame(), LLMTextFrame(ANSWER),
+                                         LLMFullResponseEndFrame())
+    assert told == [], told
+    assert any(isinstance(f, TTSAudioRawFrame) for f in below), "the answer was not spoken"
+    told, _ = await _through_the_tts(
+        LLMFullResponseStartFrame(), FunctionCallsStartedFrame(function_calls=[]),
+        LLMFullResponseEndFrame(), _result(no_inference()))
+    assert told == ["set_timer asked for no answer"], told
 
 
 async def test_the_tail_is_appended_to_the_callers_own_message_in_place():

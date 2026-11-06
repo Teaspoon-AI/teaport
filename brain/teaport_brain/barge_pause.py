@@ -167,9 +167,11 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     SystemFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
@@ -189,6 +191,7 @@ from teaport_brain.endpointing import (
 )
 from teaport_brain.settings import setting
 from teaport_brain.taken_turn import is_taken
+from teaport_brain.tts_text import has_speech
 from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
@@ -225,10 +228,11 @@ MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
 STOP_WORDS = tuple(
     w.strip().lower() for w in setting("TEAPORT_STOP_WORDS").split(",")
     if w.strip())
-# The longest the reply's wait lasts after a commit (WORDS NOBODY SPOKE, THE WAIT): the
-# silent-turn watchdog's bound, past which that turn's reply is called missing
-# (turn_timing.py).
-REPLY_WAIT_S = setting("TEAPORT_SILENT_TURN_SECS")
+# The longest the reply's wait lasts after a commit (WORDS NOBODY SPOKE, THE WAIT). The
+# engine's own close and the backstops (stt.py: 1.5 s stranded, the slice final's 6 s)
+# bring a tail well inside it; under the silent-turn watchdog's default 12 s
+# (TEAPORT_SILENT_TURN_SECS, a diagnostic), which it does not read.
+REPLY_WAIT_S = 10.0
 
 # No pause when the reply is fully synthesized and at most this much of it is left.
 _NEAR_END_S = 0.5
@@ -653,14 +657,28 @@ def _tokens(text: str) -> list:
     return [fold_shh(w) for w in word_tokens(text)]
 
 
+def _stop_phrases(stop_words) -> list:
+    """The stop entries as word tuples, longest first ("hold on" before "hold")."""
+    return sorted({tuple(_tokens(e)) for e in stop_words if _tokens(e)}, key=len,
+                  reverse=True)
+
+
+def has_stop_word(text: str, stop_words=STOP_WORDS) -> bool:
+    """True when ANY word of `text` belongs to a stop entry ("Okay, wait.", "No, stop.",
+    "Hold on, what?") -- the test words in a reply's wait must pass to be a tail (WORDS
+    NOBODY SPOKE, A STOP WORD). Over a playing bot the test is is_stop_utterance's."""
+    toks = _tokens(text)
+    return any(tuple(toks[i:i + len(ph)]) == ph
+               for ph in _stop_phrases(stop_words) for i in range(len(toks)))
+
+
 def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
     """True when EVERY word of `text` belongs to a stop entry ("Stop.", "Wait, wait!",
     "Hold on.", "Shhh"), so "don't stop" or "stop by the shop" are not stops."""
     toks = _tokens(text)
     if not toks:
         return False
-    phrases = sorted({tuple(_tokens(e)) for e in stop_words if _tokens(e)}, key=len,
-                     reverse=True)
+    phrases = _stop_phrases(stop_words)
     i = 0
     while i < len(toks):
         for ph in phrases:
@@ -700,7 +718,7 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #     still to come (THE WAIT, below),
 #   * with no speech heard for it: no VAD start (nor, where the reply hold is, an onset:
 #     THE ONSET, below) whose words have not been closed yet, and
-#   * not made only of stop words (A STOP WORD, below).
+#   * with no stop word in it (A STOP WORD, below).
 #
 # "Closed": a close stamped with a VAD stop after that speech, carrying words -- the
 # final itself, or the wordless close of a stop whose words the engine's own close had
@@ -722,21 +740,28 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #     often come with no onset (#215: 3 of 13 at 8 kHz). It stays over once the bot
 #     stops again: the reply has played;
 #   * when a turn starts;
-#   * when the reply ends with nothing of it to play (UnspokenReplyTap, below the TTS:
-#     an empty answer, a tool round that asks for none). Nothing is in flight to cut,
-#     and words joined to the turn would go unanswered;
-#   * TEAPORT_SILENT_TURN_SECS after the commit, the bound past which the silent-turn
-#     watchdog calls the reply missing (turn_timing.py): a reply that never comes, and a
-#     consult with nothing said for that long -- else a caller the VAD missed, minutes
-#     on, would be folded into a message already answered. The engine's own close and
-#     the backstops (stt.py: 1.5 s stranded, the slice final's 6 s) bring a tail well
-#     inside its default 12 s.
+#   * when the reply ends with nothing of it to play (UnspokenReplyTap, directly above
+#     the TTS: an empty answer, one with no text the TTS would speak, a tool round that
+#     asks for none). Nothing is in flight to cut, and words joined to the turn would go
+#     unanswered;
+#   * REPLY_WAIT_S (10 s) after the commit: a reply that never comes, one that ends
+#     unspoken in a way the tap does not see (a synthesis that fails), and a consult
+#     with nothing said for that long -- else a caller the VAD missed, minutes on, would
+#     be folded into a message already answered. The engine's own close and the
+#     backstops (stt.py: 1.5 s stranded, the slice final's 6 s) bring a tail well
+#     inside it.
 #
-# A STOP WORD is never a tail: "Stop." said after the commit, before the bot is audible,
-# starts the turn and cuts the reply in flight, as TEAPORT_STOP_WORDS promise ("end a
-# reply on their own"; turn_text.py's trailing "stop"). It is the word likeliest to come
-# with no speech heard: #216 measured real ones at 8 kHz below the onset test's
-# threshold, so neither the VAD's start nor the onset fires on them.
+# A STOP WORD in it, anywhere, and words are never a tail: "Stop.", "Okay, wait.", "No,
+# wait.", "Wait, no." said after the commit, before the bot is audible, start the turn
+# and cut the reply in flight, as TEAPORT_STOP_WORDS promise ("end a reply on their
+# own"; turn_text.py's trailing "stop"), and as main cut all of them ('Okay, wait.'
+# [35.3-35.3] is one of #22's own zero-length lines). A stop word is the word likeliest
+# to come with no speech heard: #216 measured real ones at 8 kHz below the onset test's
+# threshold, so neither the VAD's start nor the onset fires on them. Any word, not every
+# word (has_stop_word, not is_stop_utterance): the all-words rule guards a playing reply
+# from being cut on "don't stop"; here the cost runs the other way -- words wrongly
+# kept from the turn are the caller's "wait" lost and the reply going ahead, tool calls
+# and all, where words wrongly not taken as a tail only start the turn main started.
 #
 # THE ONSET (onset_is_speech). Where the reply hold is (SIP; Talk only with
 # TEAPORT_REPLY_HOLD_TALK), speech the onset test heard and the VAD's start did not (a
@@ -750,11 +775,11 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #
 # So none of these is a tail: words after a VAD start (a real new utterance), or after
 # an onset where the reply hold is; the final of the speech whose VAD stop the turn's
-# re-applied finalize ended on (keep_barge_in_reachable); a stop word; words once the
-# wait is over; the session's first words. A tail left with nowhere to go (no
-# on_tail_words, or no message of the caller's to take it) is dropped. Each is logged at
-# info; in slice mode its final also goes on record (TakenWords, which only slice mode
-# keeps: the turn-text corrector reads it).
+# re-applied finalize ended on (keep_barge_in_reachable); words with a stop word in
+# them; words once the wait is over; the session's first words. A tail left with
+# nowhere to go (no on_tail_words, or no message of the caller's to take it) is
+# dropped. Each is logged at info; in slice mode its final also goes on record
+# (TakenWords, which only slice mode keeps: the turn-text corrector reads it).
 class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
     """The brain's barge-in rule, plus:
 
@@ -762,8 +787,9 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         starts the turn whatever its length (#216);
       * words nobody was heard saying, after a committed turn and before its reply
         plays, start no turn: they are that turn's (WORDS NOBODY SPOKE, above; a final's
-        words to on_tail_words) -- unless they are stop words. `onset_is_speech`: speech
-        the onset test alone heard counts as heard (where the reply hold is);
+        words to on_tail_words) -- unless a stop word is among them.
+        `onset_is_speech`: speech the onset test alone heard counts as heard (where the
+        reply hold is);
 
     and while playout is paused (PlayoutPauseFrame):
 
@@ -884,12 +910,12 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._reply_due, self._due_at = self._turn_words, time.monotonic()
 
     def _tail(self, frame) -> bool:
-        """WORDS NOBODY SPOKE: `frame`'s words are a tail. A stop word never is (A STOP
-        WORD), nor anything once the wait is over (THE WAIT), a segment begun in it
-        included: it is counted as ever."""
+        """WORDS NOBODY SPOKE: `frame`'s words are a tail. Words with a stop word among
+        them never are (A STOP WORD), nor anything once the wait is over (THE WAIT), a
+        segment begun in it included: they are counted as ever."""
         text = (frame.text or "").strip()
         if (not text or self._turn_open or self._heard_at is not None
-                or self.stops(text)):
+                or has_stop_word(text, self._stop_words)):
             return False
         if not self._waiting():
             self._tail_open = False
@@ -1010,39 +1036,43 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
 
 class UnspokenReplyTap(FrameProcessor):
     """Tells `on_unspoken` (PauseAwareMinWordsStrategy.reply_unspoken) when a reply ends
-    with nothing of it to play: a response that ended with no audio and called no tool
-    (an empty answer; the LLM's own End, re-pushed by the TTS behind its audio), or a
-    tool round whose final result asks for no answer (tools.no_inference). The reply's
-    wait is over then (WORDS NOBODY SPOKE, THE WAIT). The reply hold's own test for a
-    reply with nothing to check (ReplyHoldGate, disarmed), on every front end: place it
-    below the TTS and the gate, where a held reply is seen once it plays. A tap: every
-    frame goes on as it came."""
+    with nothing of it to play: a response that ended with no text the TTS would speak
+    (tts_text.has_speech, the TTS's own test) and called no tool -- an empty answer, a
+    mood tag alone -- or a tool round whose final result asks for no answer
+    (tools.no_inference). The reply's wait is over then (WORDS NOBODY SPOKE, THE WAIT);
+    the reply hold's own test for a reply with nothing to check (ReplyHoldGate,
+    disarmed). Place it DIRECTLY above the TTS, below everything that edits the reply's
+    text (MoodTag, LLMTextGuard): it reads the text the TTS is handed, and the End,
+    which nothing below the TTS ever sees for a completion with no text -- the TTS
+    holds it (test_pipecat_premises.py, the text-less completion's End). Direct mode:
+    no queue between the model's words and the TTS. A tap: every frame goes on as it
+    came."""
 
     def __init__(self, on_unspoken):
-        super().__init__()
+        super().__init__(enable_direct_mode=True)
         self._on_unspoken = on_unspoken
-        # Since the response began: audio went by; a tool call was made (its result
-        # runs the model again, and that answer is the reply).
-        self._audio = False
+        # Since the response began: text the TTS would speak went by; a tool call was
+        # made (its result runs the model again, and that answer is the reply).
+        self._said = False
         self._tool_call = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, InterruptionFrame):
-            self._audio = self._tool_call = False
+            self._said = self._tool_call = False
         elif direction == FrameDirection.DOWNSTREAM:
             if isinstance(frame, LLMFullResponseStartFrame):
-                self._audio = False
-            elif isinstance(frame, TTSAudioRawFrame):
-                self._audio = True
+                self._said = False
+            elif isinstance(frame, (LLMTextFrame, TTSSpeakFrame)):
+                self._said = self._said or has_speech(frame.text)
             elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallInProgressFrame)):
                 self._tool_call = True
             elif isinstance(frame, LLMFullResponseEndFrame):
                 if self._tool_call:
                     self._tool_call = False
-                elif not self._audio:
+                elif not self._said:
                     self._on_unspoken("a response with nothing to say")
-                self._audio = False
+                self._said = False
             elif isinstance(frame, FunctionCallResultFrame) and _asks_no_answer(frame):
                 self._on_unspoken(f"{frame.function_name} asked for no answer")
         await self.push_frame(frame, direction)

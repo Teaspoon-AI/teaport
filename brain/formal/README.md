@@ -3292,10 +3292,10 @@ none.
 
 As shipped, words that come in a committed turn's reply wait -- after a turn that
 committed words, before the bot is next audible, before that reply has ended with
-nothing to play, and within `TEAPORT_SILENT_TURN_SECS` of the commit -- with no turn
-open and no speech heard whose words have not been closed, start no turn and go into the
+nothing to play, and within 10 s of the commit (`REPLY_WAIT_S`) -- with no turn open
+and no speech heard whose words have not been closed, start no turn and go into the
 committed message in place (`barge_pause.py`, WORDS NOBODY SPOKE;
-`heard_context.append_to_last_turn`), unless they are made only of stop words. "Speech
+`heard_context.append_to_last_turn`), unless a stop word is among them. "Speech
 heard" is a VAD start, and where the reply hold is (SIP) the onset test too; on Talk and
 the room, words only the onset test heard are a tail as well. "Closed" is per VAD stop:
 a close stamped with a stop after the speech, carrying words (or a wordless close after a
@@ -3323,7 +3323,8 @@ or a stop word left unheard over the bot -- no monitor flags an `Interject` that
 no turn. A rule that swallowed a stop word in the wait, or a barge-in over the playing
 bot inside a tail's segment (the two the first review of #22's change found), would pass
 every row. A meaningful row also needs monitors of its own, each with a design that
-fails it: a stop word taken as a tail, the bot speaking or not; words of
+fails it: words with a stop word among them taken as a tail ("Okay, wait."), the bot
+speaking or not; words of
 `TEAPORT_INTERRUPT_MIN_WORDS` taken as a tail with `botSpeaking`, or after it in the
 same segment; and words taken as a tail once the last commit's `reply` is no longer
 pending. The ghost has to be threaded through every action, and this change was written
