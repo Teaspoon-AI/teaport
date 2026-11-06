@@ -99,7 +99,7 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:806-816#0ba66554 -->
+<!-- source: install.sh:809-819#0ba66554 -->
 
 **Fix**
 
@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2142#2ca3ef5a; install.sh:2557-2626#8db50552 -->
+<!-- source: install.sh:2145#2ca3ef5a; install.sh:2560-2629#8db50552 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +211,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2017-2030#c562c839 -->
+<!-- source: install.sh:2020-2033#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +242,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2036-2040#bf1269bd -->
+<!-- source: install.sh:2039-2043#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +273,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1868-1880#a65c0a82 -->
+<!-- source: install.sh:1871-1883#a65c0a82 -->
 
 **Fix**
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2557-2626#8db50552; install.sh:2429-2474#cd323bfa -->
+<!-- source: install.sh:2560-2629#8db50552; install.sh:2432-2477#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2646-2650#3c1e6011; install.sh:2721-2724#b1e28ef5 -->
+<!-- source: install.sh:2649-2653#3c1e6011; install.sh:2724-2727#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -418,7 +418,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:330#649012b4; install.sh:796-797#12d8444d -->
+<!-- source: install.sh:330#649012b4; install.sh:799-800#12d8444d -->
 
 **Fix**
 
@@ -516,7 +516,7 @@ miss the endpoint or the key.
 The installer offers `gpt-oss-120b` as the default value. That default is wrong
 for OpenRouter.
 
-<!-- source: install.sh:2119#2e67295a; install.sh:2132-2135#cefd034b -->
+<!-- source: install.sh:2122#2e67295a; install.sh:2135-2138#cefd034b -->
 
 ## teaport says it can't answer questions yet
 
@@ -591,7 +591,7 @@ failures usually pass.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2017-2030#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2020-2033#c562c839 -->
 
 **Fix**
 
