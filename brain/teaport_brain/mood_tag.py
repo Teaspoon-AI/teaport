@@ -30,7 +30,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.face_mood import LEAD_WORDS, lead_words
-from teaport_brain.llm_text_guard import RECOVERY_TEXT
+from teaport_brain.llm_text_guard import recovery_text
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
 
@@ -113,8 +113,10 @@ def parse_leading_tag(text: str, final: bool = False):
 
 
 class MoodTag(FrameProcessor):
-    def __init__(self):
+    def __init__(self, lang_fn=None):
         super().__init__()
+        # The session's voice language, for the recovery line (recovery_text).
+        self._lang_fn = lang_fn or (lambda: None)
         self._reset()
 
     def _reset(self):
@@ -208,5 +210,5 @@ class MoodTag(FrameProcessor):
             if self._bare:
                 self._bare = False
                 logger.warning("mood: a reply of only a tag; speaking the recovery line")
-                await self.push_frame(LLMTextFrame(text=RECOVERY_TEXT), direction)
+                await self.push_frame(LLMTextFrame(text=recovery_text(self._lang_fn())), direction)
         await self.push_frame(frame, direction)

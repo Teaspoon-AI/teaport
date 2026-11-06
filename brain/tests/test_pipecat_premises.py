@@ -1179,9 +1179,9 @@ async def check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_on
 
     Asserted AT that sighting, on the real TranscriptLedger built with the TTS (as
     agent_session builds it): the ledger's state right after it handles the End the TTS
-    processed. Read afterwards, it would prove nothing -- the interruption's later
-    sightings (at the TTS, below it) run _interrupt again and clear the stream and the
-    queue whatever the End did.
+    processed. Read afterwards, it would prove nothing -- the interruption's sighting at
+    the TTS runs _interrupt again (TranscriptLedger._interruption) and clears the stream
+    and the queue whatever the End did.
 
     If it goes: an End the TTS processed ahead of the ledger's interrupt would close the
     cut reply as a finished response and queue its partial text for the next context

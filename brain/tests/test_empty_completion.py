@@ -292,6 +292,45 @@ async def test_nothing_twice_speaks_the_recovery_line_once():
     assert _texts(frames) == [LINE], _texts(frames)
 
 
+async def test_the_recovery_line_is_in_the_sessions_language():
+    """A German room hears it in German, from the service and from the guard alike
+    (#15 review: an empty completion speaks it on ordinary turns, not only on the rare
+    collapse it was written for)."""
+    german = llm_text_guard.recovery_text("de").strip()
+    assert german != LINE and "Faden" in german, german
+    ctx = _context({"role": "user", "content": ASK})
+    provider = _Provider(EMPTY)
+    llm, _ = _llm(provider, ctx)
+    llm.lang_fn = lambda: "de"
+    frames = await _run([llm, LLMTextGuard(lang_fn=lambda: "de")], LLMContextFrame(context=ctx))
+    assert [t.strip() for t in _texts(frames)] == [german], _texts(frames)
+
+
+async def test_a_later_request_no_call_came_before_is_not_the_callers_round():
+    """The caller's round is spent by the request that answers it: a further request with
+    no dispatch before it (a cancelled consult's run_llm, a minute on) that comes back
+    empty is not the caller's turn, and gets no "could you say that again?" (#15 review)."""
+    async def handler(params):
+        await params.result_callback({"time": "noon"})
+
+    done = "Done, it is noon."
+    ctx = _context({"role": "user", "content": "What time is it?"})
+    provider = _Provider([_chunk(tool="get_current_time"), _chunk(finish="tool_calls")],
+                         [_chunk(done), _chunk(finish="stop")], EMPTY)
+    llm, _ = _llm(provider, ctx)
+    llm.register_function("get_current_time", handler)
+
+    async def later(sink):
+        ctx.add_message({"role": "assistant", "content": done})
+        n = sink.ends() + 1
+        await llm.queue_frame(LLMContextFrame(context=ctx), FrameDirection.UPSTREAM)
+        await _until(lambda: sink.ends() >= n, "the later request's End")
+
+    frames = await _run([llm], LLMContextFrame(context=ctx), _answer(llm, ctx), later)
+    assert len(provider.requests) == 3, len(provider.requests)
+    assert _texts(frames) == [done], _texts(frames)
+
+
 async def test_a_reply_of_only_punctuation_takes_the_same_path():
     """#16's "..." as the whole answer, and a whitespace-only one: the same check as a
     silent run's (has_speech), so the retry comes first, and the guard's End line never

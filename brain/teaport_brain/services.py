@@ -797,14 +797,19 @@ class BoundedOpenAILLMService(OpenAILLMService):
         if reply is None or reply.kind in owed_mod.RUNS:
             return False
         if reply.kind == owed_mod.POST:
-            return self._callers_round
+            callers, self._callers_round = self._callers_round, False
+            return callers
         messages = context.get_messages()
         return bool(messages) and owed_mod.is_caller_message(messages[-1])
 
     # Whether the answer to the tool round going on is still owed to the caller: set by
-    # each request that puts calls out (run_function_calls), read by the answers to them
-    # (_answers_caller).
+    # each request that puts calls out (run_function_calls), read -- and spent -- by the
+    # request that answers them (_answers_caller): a later request no dispatch came before
+    # (a cancelled consult's run_llm, a minute on) is no answer to the caller's round.
     _callers_round = False
+    # The session's voice language, for the recovery line (agent_session sets it;
+    # llm_text_guard.recovery_text).
+    lang_fn = None
 
     def _moved_on(self, context, tail) -> str | None:
         """Why the caller's turn this completion answers is no longer the one to answer,
@@ -882,10 +887,10 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # as the reply's text the way it pushes it: spoken, captioned and committed like
         # any reply. Its leading space stays when the attempts streamed anything (with the
         # guard off, "..." reaches history ahead of it); with nothing before it, it goes.
-        from teaport_brain.llm_text_guard import RECOVERY_TEXT
+        from teaport_brain.llm_text_guard import recovery_text
+        line = recovery_text(self.lang_fn() if self.lang_fn is not None else None)
         streamed = "".join(completion.raw).strip()
-        await self.push_frame(LLMTextFrame(
-            text=RECOVERY_TEXT if streamed else RECOVERY_TEXT.lstrip()))
+        await self.push_frame(LLMTextFrame(text=line if streamed else line.lstrip()))
 
     def _dealt_with(self, context, completion: _Completion, tail) -> bool:
         """The empty reply is not this method's to answer: it is a face, the caller moved
