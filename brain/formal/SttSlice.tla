@@ -94,8 +94,28 @@
 (*                           NoDoubleDeliver: that preview was taken while  *)
 (*                           the word was owed, and holds it).              *)
 (*                                                                          *)
+(* THE HEARD-OUT WATCH (HEARD; stt.py watch_heard, _heard_through,          *)
+(* _push_if_heard -- barge_pause.py HEARD OUT): the barge-in pauser, as     *)
+(* the line goes quiet over a paused reply, asks to be told once every word *)
+(* of the caller's speech is in hand (Watch, at the voice end x, which is   *)
+(* never past the audio sent). The STT answers once its bound is M past x   *)
+(* (_HEARD_MARGIN_MS = _VOUCH_MS: a word's stamps can trail the voice that  *)
+(* carried it) -- in a sliced session the lesser of its two bounds, as a    *)
+(* turn's final waits on both (HeardFire). NoWordAfterHeard: no word that   *)
+(* starts before x + M comes after the answer.                              *)
+(*                                                                          *)
+(* HEARD = "off"      -- no watch (every row but the ss_heard ones).        *)
+(*         "shipped"  -- through = the lesser of the end and start bounds.  *)
+(*         "endOnly"  -- through = the end bound alone, as before 3a46b6c's *)
+(*                       F1 (fails NoWordAfterHeard: a word that starts     *)
+(*                       before the point but ends at or past the end bound *)
+(*                       is still to come).                                 *)
+(* Segment mode's through is the report's decoded_through_ms, which this    *)
+(* model does not check: that no interim of the speech before it comes      *)
+(* later is an engine premise (formal/README.md).                           *)
+(*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
-(* MaxCommits, pos <= MaxPos, stops <= MaxStops.                            *)
+(* MaxCommits, pos <= MaxPos, stops <= MaxStops, one watch.                 *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -150,7 +170,16 @@ VARIABLES
 engine == <<S, E, pos, dec, emitted, bound, abound, answered>>
 brain == <<commits, turns, open, seen, speaking, stops, peekIdx, atStop, split,
            lateInterim>>
-vars == <<engine, chan, brain>>
+
+\* THE HEARD-OUT WATCH: its own constant and variables, apart from the slicing's.
+CONSTANT HEARD   \* "off" | "shipped" | "endOnly"
+VARIABLES
+    watchAt,     \* the pauser's watch out: the voice end it was placed at, or 0
+    heardAt,     \* the watch the STT answered (SpeechHeardFrame): its voice end, or 0
+    watched      \* the one watch of the run has been placed
+hvars == <<watchAt, heardAt, watched>>
+
+vars == <<engine, chan, brain, hvars>>
 
 Turn == [at: 0..MaxPos, words: SUBSET Words, previewed: BOOLEAN, asked: SUBSET Words,
          expect: SUBSET Words, final: BOOLEAN, fwords: SUBSET Words, timedOut: BOOLEAN,
@@ -175,6 +204,7 @@ TypeOK ==
     /\ open \subseteq Words /\ seen \in [e: 0..MaxPos, a: 0..MaxPos, d: 0..MaxPos]
     /\ speaking \in BOOLEAN /\ stops \in 0..MaxStops /\ peekIdx \in 0..MaxCommits
     /\ atStop \in 0..MaxCommits /\ split \in BOOLEAN /\ lateInterim \in BOOLEAN
+    /\ watchAt \in 0..MaxPos /\ heardAt \in 0..MaxPos /\ watched \in BOOLEAN
 
 Init ==
     /\ S \in Increasing /\ E \in Ends(S)
@@ -183,6 +213,7 @@ Init ==
     /\ seen = [e |-> 0, a |-> 0, d |-> 0]
     /\ speaking = FALSE /\ stops = 0 /\ peekIdx = 0 /\ atStop = 0 /\ split = FALSE
     /\ lateInterim = FALSE
+    /\ watchAt = 0 /\ heardAt = 0 /\ watched = FALSE
 
 (* ---------------------------------------------------------------- the engine *)
 
@@ -422,8 +453,32 @@ RecvProgress ==
     /\ UNCHANGED <<engine, commits, open, speaking, stops, peekIdx, atStop, split,
                    lateInterim>>
 
-Next == Feed \/ Decode \/ Emit \/ Report \/ Preview
-        \/ Speak \/ Stop \/ Close \/ RecvDelta \/ RecvPreview \/ RecvProgress
+(* --------------------------------------------------- the heard-out watch  *)
+
+\* watch_heard: the pauser's watch, at the voice end -- the audio sent so far, or less
+\* (placed when pos was there; one watch, as a watch replaces the one before). The STT
+\* answers it at once if the bound is past already (_push_if_heard).
+Watch ==
+    /\ HEARD /= "off" /\ ~watched /\ pos > 0
+    /\ watched' = TRUE /\ watchAt' = pos
+    /\ UNCHANGED <<heardAt, engine, chan, brain>>
+
+\* _heard_through: how far every word is in hand -- the lesser of the two bounds
+\* ("endOnly": the end bound alone).
+Through == IF HEARD = "endOnly" THEN seen.e ELSE Min(seen.e, seen.a)
+
+\* _push_if_heard, on a report (or the watch itself): SpeechHeardFrame once the bound is
+\* the margin past the watch. A step of its own, so it may also come after the deltas
+\* behind that report: the code's, at the report, is among the interleavings.
+HeardFire ==
+    /\ watchAt /= 0 /\ Through >= watchAt + M
+    /\ heardAt' = watchAt /\ watchAt' = 0
+    /\ UNCHANGED <<watched, engine, chan, brain>>
+
+Next == \/ /\ \/ Feed \/ Decode \/ Emit \/ Report \/ Preview
+              \/ Speak \/ Stop \/ Close \/ RecvDelta \/ RecvPreview \/ RecvProgress
+           /\ UNCHANGED hvars
+        \/ Watch \/ HeardFire
 
 Spec == Init /\ [][Next]_vars
 
@@ -492,5 +547,13 @@ NoTimedOut == \A k \in 1..Len(turns) : ~turns[k].timedOut
 \* ... a turn closed on a peek, and a peek the caller talked past.
 NoAdoptedPeek == \A k \in 1..Len(commits) : ~(commits[k].peek /\ commits[k].turn /= 0)
 NoDroppedPeek == \A k \in 1..Len(commits) : ~commits[k].dropped
+
+\* THE HEARD-OUT WATCH: once the STT has answered a watch at x, every word that starts
+\* before x + M (the caller's speech, its stamps up to the margin late) is in hand: no
+\* word of it lands after the pauser's resume and cuts the reply unjudged (#275).
+NoWordAfterHeard ==
+    heardAt /= 0 => \A i \in Words : S[i] < heardAt + M => i \in Rcvd
+\* Witness: the watch is answered with a word of the caller's still to come.
+HeardAllSent == heardAt /= 0 => emitted = NWords
 
 =============================================================================

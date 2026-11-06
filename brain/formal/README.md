@@ -895,10 +895,48 @@ pass the run's bound, which is not modelled.
   timeout (`ss_shipped_timeout`), a turn closed on a peek (`ss_peek_adopted`) and a peek
   the caller talked past (`ss_peek_dropped`).
 
+**The heard-out watch (`HEARD`, #275).** As the line goes quiet over a paused reply, the
+barge-in pauser asks the STT to say when every word of the caller's speech is in hand
+(`stt.watch_heard`, barge_pause.py HEARD OUT), and resumes no sooner. The STT answers
+(`SpeechHeardFrame`, `_push_if_heard`) once `_heard_through` is `_HEARD_MARGIN_MS` (the
+margin, one step) past the voice end: in a sliced session the lesser of
+`end_through_ms` and `audio_through_ms`, as a turn's final waits on both. `Watch` places
+the watch at the audio sent so far (a voice end placed earlier is the same watch placed
+when the audio was there), `HeardFire` answers it, and `NoWordAfterHeard` says no word
+that starts before the voice end plus the margin -- the speech's words, their stamps up
+to the margin late, the margin's own reason -- comes after the answer. `UserTurn.tla`'s
+`HeardOut` assumes exactly that; this is where it is checked, for the sliced session.
+
+| HEARD | | `NoWordAfterHeard` |
+|---|---|---|
+| `off` | no watch: every other row here, at the state counts they had | — |
+| `shipped` | the lesser of the two bounds (`ss_heard`; witness `ss_heard_reach`) | ✓ |
+| `endOnly` | the end bound alone, as before 3a46b6c's F1 (`ss_heard_endOnly`) | ✗ |
+
+`endOnly`, 9 states: a word starts before the voice end and ends two steps later; the
+decoder reaches its end, the report puts `end_through_ms` there (no word that ends
+*below* it is still to come), the bound is the margin past the voice end, and the watch is
+answered with that word still in the engine. With the margin in the property a one-step
+word (`WLEN = 1`) that starts inside the margin fails it too; the row runs `WLEN = 2`,
+the cut inside a word. `ss_heard_reach` shows the shipped watch is answered with the
+caller's later words still to come (it does not wait for every word). The watch rows
+have no commits (`MaxCommits = 0`): a preview carries no word into what is in hand and a
+turn only moves words within it, so nothing the watch reads changes; with one commit and
+one stop (the bounds never frozen) the holds row was 2.3M states, against 272k.
+
+Not checked here: **segment mode's** watch. There `_heard_through` is the report's
+`decoded_through_ms`, and the premise that no interim of the speech before it comes
+after the report saying so is the engine's, not verified by any model (SttCommit.tla has
+no report). Nor which sessions answer at all: `watch_heard` declines (and the pauser
+resumes on its window) unless the session asked for the report or slices -- the default
+configuration asks for neither (audit 2026-11-05, A2).
+
 Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio to 4, a
 word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
 ~20 s; `ss_shipped_freeze` ~9.4M (the bounds frozen or moving, previews lossy), ~1-3 min; the
-witnesses and rejected rows under 1.2M each. `--full` adds three words: `ss_shipped_full`
+witnesses and rejected rows under 1.2M each (`ss_noPeekOwed` 3.3M before its trace,
+~2.5 min on two workers); `ss_heard` 272k (~15 s on two workers), its two FAILS rows
+under 25k. `--full` adds three words: `ss_shipped_full`
 ~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
 on five cores).
 
