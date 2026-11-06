@@ -641,6 +641,14 @@ _DANGLING = frozenset(
 _UP_TAKES_AN_OBJECT = frozenset(
     "looking pulling picking digging bringing calling ringing".split())
 _WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging".split())
+# "on" wants its object after the verb itself ("checking on", "working on"), after
+# another particle ("catching up on") or a "what's" ("checking what's on"); after the
+# verb's own object it is whole ("turning the lights on", "putting the kettle on").
+_ON_WANTS_MORE_AFTER = frozenset(
+    "what what's is it's that's was are up out back down over off".split())
+# "in" is whole after an object pronoun ("logging you in", "letting them in").
+_PRONOUN_OBJECTS = frozenset("you him her them me us it".split())
+_WHOLE_WITH_THROUGH = frozenset("following pulling getting going coming".split())
 _WHOLE_WITH_IN = frozenset(
     "logging checking signing plugging filling joining dropping breaking settling "
     "tuning".split())
@@ -652,6 +660,11 @@ _WHOLE_WITH_IN = frozenset(
 _LISTENER_AS_A_NAME = (
     "manual manuals guide guides id ids interface interfaces name names agreement "
     "agreements forum forums group groups base documentation docs experience list lists")
+# The machinery behind the line, which the listener never asked about: a phrase that
+# names the agent, OpenClaw or the model is written for the agent, as a tool's name is
+# ("running web_search", refused as not prose by its underscore).
+_ABOUT_THE_MACHINERY = re.compile(
+    r"\b(?:agents?|subagents?|openclaw|llm|gateway|relay|tool\s+calls?)\b", re.I)
 _ABOUT_THE_LISTENER = re.compile(
     r"\b(?:giving|showing|sending|telling|emailing|texting|messaging|asking)\s+the\s+"
     r"(?:user|caller)s?\b"
@@ -665,9 +678,12 @@ def _dangling(before: str, last: str) -> bool:
     if last == "up":
         return before in _UP_TAKES_AN_OBJECT
     if last == "on":
-        return before not in _WHOLE_WITH_ON
+        return ((before.endswith("ing") and before not in _WHOLE_WITH_ON)
+                or before in _ON_WANTS_MORE_AFTER)
     if last == "in":
-        return before not in _WHOLE_WITH_IN
+        return before not in _WHOLE_WITH_IN and before not in _PRONOUN_OBJECTS
+    if last == "through":
+        return before not in _WHOLE_WITH_THROUGH
     return last in _DANGLING
 
 
@@ -712,7 +728,7 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     words = text.split()
     if not words:
         return "", "none"
-    if "://" in text or any(c in text for c in "{}[]<>=`*#|\\"):
+    if "://" in text or any(c in text for c in "{}[]<>=`*#|\\_"):
         return "", "not prose"
     if len(words) > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS:
         return "", "too long"
@@ -724,7 +740,7 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     if len(words) >= 2 and _dangling(*(w.lower().strip(_STATUS_QUOTE_MARKS)
                                        for w in words[-2:])):
         return "", "ends mid-thought"
-    if _ABOUT_THE_LISTENER.search(text):
+    if _ABOUT_THE_LISTENER.search(text) or _ABOUT_THE_MACHINERY.search(text):
         return "", "not said to the listener"
     # The gerund opens a sentence's second half ("Sure — looking ..."): lowercased when
     # it is written as a word that opens one ("Looking"), not in capitals ("LOOKING").

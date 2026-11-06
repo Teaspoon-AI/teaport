@@ -276,6 +276,31 @@ async def test_the_listener_named_in_the_third_person_is_refused():
         assert _ack(listeners) == f"Sure — {listeners}.", listeners
 
 
+async def test_the_machinery_behind_the_line_is_refused():
+    """Review of #329 (second family): a tool's name and the agent behind the consult
+    reached the speaker ("Sure — running web_search for pastry shops.", "Sure — asking
+    the agent to summarize the news.")."""
+    for agents in ("asking the agent to summarize the news", "passing this to the desktop agent",
+                   "waiting on the agent", "handing it to OpenClaw", "checking with the LLM",
+                   "waiting on the gateway", "making a tool call"):
+        assert tools._status_phrase(agents, "en") == ("", "not said to the listener"), agents
+        assert _ack(agents) == "On it.", agents
+    for leaks in ("running web_search for pastry shops", "calling openclaw_agent_consult"):
+        assert tools._status_phrase(leaks, "en") == ("", "not prose"), leaks
+    assert _ack("checking the travel agent's hours")  == "On it."   # the cost: plain lines
+
+
+async def test_on_in_and_through_after_their_object_end_a_phrase_whole():
+    """Review of #329 (second family): "on" and "in" were dangling after anything but a
+    few verbs, so everyday phrases got the plain lines."""
+    for whole in ("turning the lights on", "putting the kettle on", "logging you in",
+                  "letting you in", "checking you in", "following through"):
+        assert _ack(whole) == f"Sure — {whole}.", (whole, _ack(whole))
+    for short in ("checking on", "working on", "catching up on", "checking what's on",
+                  "looking up flights in", "reading through"):
+        assert tools._status_phrase(short, "en") == ("", "ends mid-thought"), short
+
+
 async def test_names_ending_in_ing_are_no_gerund():
     for name in ("Wyoming weather this weekend", "Beijing time right now",
                  "Lansing weather tomorrow", "Redding weather", "Fleming book reviews",
