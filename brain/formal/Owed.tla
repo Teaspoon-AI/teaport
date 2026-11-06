@@ -147,7 +147,7 @@
 (*   out", "something went wrong") still is not: the residual. As           *)
 (*   failNotAbout shows, it keeps the record owed after it was heard, and   *)
 (*   later turns carrying the note may tell it again (RetellOnce falls      *)
-(*   too), until the record's run, its eviction or the session's end.       *)
+(*   too), until the record's run, its eviction or the conversation's end.  *)
 (*   "failNotAbout" (MUT) -- before C1: the record has no terms, and a      *)
 (*                  telling that names nothing of the request is about it  *)
 (*                  only when it is the record's own run (`mine`): such a  *)

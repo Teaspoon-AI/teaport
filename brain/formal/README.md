@@ -628,7 +628,8 @@ The model was written to lead the design, and it found these:
    timed out", "something went wrong") shares nothing with it. Such a telling that names
    nothing of the request is still this row's trace: the record stays owed after it was
    heard, and later turns carrying the note may tell it again (`RetellOnce` falls under
-   the mutation too), until the record's run, its eviction or the session's end. The
+   the mutation too), until the record's run, its eviction or the conversation's end (a
+   room's sleep keeps it, `wake_gate`). The
    other side of the four words: a reply on another subject that says one of them
    ("your credit card statement", "an error in that article") is about the record, and
    closes it played through, unjudged, or counts as a cut telling.
