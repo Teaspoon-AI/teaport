@@ -358,6 +358,11 @@ msgstr "عذرًا، هناك مكالمة واردة ويجب أن أرد عل�
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "هناك من يتصل بي — {caller}. هل أبتعد لحظة لأرد؟"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "هناك من يتصل بي — رقم ينتهي بـ {digits}. هل أبتعد لحظة لأرد؟"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "هناك من يتصل بي. هل أبتعد لحظة لأرد؟"
 

@@ -53,7 +53,7 @@ from tempdirs import short_tempdir  # noqa: E402
 QUESTION_WAV = os.path.join(BRAIN, "test", "question.wav")
 ANSWER_AFTER = 1.5
 CALLER = "+15551234567"
-CALLER_SAID = "+1 555 123 4567"   # sip_server.caller_id, as the question says it
+CALLER_SAID = "ending in 4 5 6 7"   # how the question says it: its last digits
 RELAY_RATE = 24000
 FRAME_BYTES = RELAY_RATE * 2 // 50  # 20 ms of PCM16 mono at 24 kHz
 
