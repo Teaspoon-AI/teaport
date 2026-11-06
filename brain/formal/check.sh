@@ -204,6 +204,7 @@ run Owed.tla ow_adoptDropsKeys     "(expected: FAILS NoRepeatRecital — the com
 run Owed.tla ow_failure           "(expected: holds — a failure record (one term-less item) under the design (about): every safety property)"
 run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolves under FairSpec)"
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
+run Owed.tla ow_failNotAbout      "(expected: FAILS NoStaleNote — a failure record with no terms (before the formal audit's C1): a telling in its own words, by any reply but its run, is not about it, never closes it, and the note says NOT heard)"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
 run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
 run Owed.tla ow_judgeWrong        "(expected: FAILS ClosedOnEvidence — the cut judge answers HEARD when the rest held part of the answer (the residual, 1/145 measured): the record closes unheard)"

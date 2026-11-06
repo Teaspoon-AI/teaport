@@ -3,7 +3,14 @@
 # OPT-IN: a live LLM, many calls. Skipped unless TEAPORT_EVAL_CUT_JUDGE is set and the
 # model's endpoint is reachable (appliance.py), so the suite reports it skipped.
 #
-#   TEAPORT_EVAL_CUT_JUDGE=1 [TEAPORT_EVAL_TRIALS=3] python test_cut_judge_eval.py
+#   TEAPORT_EVAL_CUT_JUDGE=1 [TEAPORT_EVAL_TRIALS=3] [TEAPORT_EVAL_CUT_SET=failures] \
+#       python test_cut_judge_eval.py
+#
+# TEAPORT_EVAL_CUT_SET=failures judges synthetic tellings of a consult's FAILURE instead
+# (owed.failure_outcome's kinds, the formal audit's C1, 2026-11-05): since a failure's
+# record has terms of its own, a cut caller reply in its own words reaches the judge
+# (owed.Owed._cut, no gist gate), and its prompt asks for a name, number, date... Labelled
+# "heard" once what happened has been said; an offer or a question after it is the rest.
 #
 # Every cut of 12 live tellings (the box journal, 2026-10-18/19), after every word, is
 # labelled "heard" once every fact that answers the question has been spoken, else
@@ -89,10 +96,35 @@ TELLINGS = [
      ["Tesla Roadster"]),
 ]
 
+# Synthetic tellings of each failure kind, in the model's own words (no request words
+# needed): what happened is the fact; the offer after it is not.
+FAILURES = [
+    ("billing", "Can you check my calendar for Friday afternoon?",
+     "I couldn't check that because of a billing problem with the AI service. Want me to "
+     "open your settings so you can fix it?",
+     ["billing problem"]),
+    ("credit", "Can you look up the weather for tomorrow?",
+     "Sorry, I can't do that right now. Your AI account is out of credit. Should I open your "
+     "settings?",
+     ["out of credit"]),
+    ("timeout", "What's the top story on Hacker News right now?",
+     "Sorry, that lookup ran out of time before it finished, so I don't have an answer. Want "
+     "me to try again?",
+     ["ran out of time"]),
+    ("error", "Find me a pizza place near the office.",
+     "That search hit an error and couldn't be done. Do you want me to try it again?",
+     ["hit an error"]),
+    ("unknown", "Did my message to Sam go out?",
+     "I'm not sure. It didn't report back, so it may or may not have been sent. Could you "
+     "check your messages to see?",
+     ["may or may not"]),
+]
+
 
 def cases():
     out = []
-    for name, question, text, facts in TELLINGS:
+    chosen = FAILURES if os.getenv("TEAPORT_EVAL_CUT_SET") == "failures" else TELLINGS
+    for name, question, text, facts in chosen:
         words = text.split()
         for n in range(1, len(words)):                     # every cut that leaves something
             heard = " ".join(words[:n])
