@@ -49,7 +49,7 @@ Say "repeat" to hear the network's name, the password, and the address read out.
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-12,87-94#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2726-2730#0fa4dad8 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-12,87-94#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2730-2734#0fa4dad8 -->
 
 ## Connect your AI account
 

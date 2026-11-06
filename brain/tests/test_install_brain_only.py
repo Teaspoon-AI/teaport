@@ -443,7 +443,7 @@ def test_the_arp_drop_in_leaves_a_non_jetson_alone_but_a_dry_run_shows_it():
 
 # --- the systemd units are root's and 0644, whatever the umask (#199) ------------------
 
-def _render(tmp, dry_run=False):
+def _render(tmp, dry_run=False, masked=""):
     """render_unit for two of the real templates, under umask 077, with the real write_root;
     sudo recorded. SUDO install writes under $T/root with the -m mode set (as install sets
     it), SUDO tee under $T/root as the umask leaves it."""
@@ -456,6 +456,7 @@ def _render(tmp, dry_run=False):
               '             cat > "$dest"; chmod "$mode" "$dest" ;;\n'
               '    tee) command tee "$dest" >/dev/null ;;\n'
               '  esac; }\n'
+              f'readlink() {{ [ "$1" = "/etc/systemd/system/{masked}" ] && echo /dev/null; }}\n'
               'render_unit teaport-brain.service.in teaport-brain.service\n'
               'render_unit teaport-engine.service.in teaport-engine.service\n')
     return _run(tmp, script, ["write_root", "render_unit"])
@@ -480,6 +481,16 @@ def test_a_unit_is_written_through_write_root_and_reads_back_as_anyone():
     unit.chmod(0o600)
     rc, out = _render(tmp)
     assert rc == 0 and oct(unit.stat().st_mode & 0o777) == "0o644", out
+
+
+def test_a_masked_unit_stays_masked():
+    # An operator's `systemctl mask` is a link to /dev/null; install -D would replace it
+    # with the unit. It is left as it is, said once, and the other unit is written.
+    tmp = tempdir("teaport-units-")
+    rc, out = _render(tmp, masked="teaport-engine.service")
+    assert rc == 0 and "teaport-engine.service is masked on this machine" in out, out
+    assert _sudo_calls(tmp) == ["install -D -m 0644 -o root -g root /dev/stdin "
+                                "/etc/systemd/system/teaport-brain.service"], _sudo_calls(tmp)
 
 
 def test_a_dry_run_names_each_unit_once_and_writes_none():

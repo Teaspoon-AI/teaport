@@ -1686,7 +1686,11 @@ render_unit() {  # render_unit <template.in> <dest-name>
   # Through write_root, so the unit is root's and 0644 whatever sudo's umask (#199). systemd
   # reads a 0600 unit as root all the same, but `systemctl cat` reads it as whoever runs it,
   # and that is how the CLI (installed) and --only brain tell an installed unit from none.
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
+  # A unit masked here (a link to /dev/null) stays masked: install would replace the link with
+  # the unit, where tee wrote through it into /dev/null and kept the operator's mask.
+  if [ "$(readlink "/etc/systemd/system/$out" 2>/dev/null)" = /dev/null ]; then
+    warn "$out is masked on this machine; left masked (systemctl unmask $out, then re-run, to install it)"
+  elif [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
   else write_root "/etc/systemd/system/$out" "$body"; fi
 }
 write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
