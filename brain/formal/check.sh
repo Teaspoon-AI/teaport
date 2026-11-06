@@ -337,7 +337,7 @@ run UserTurn.tla ut_talk_judge_all                    "(expected: holds — the 
 run UserTurn.tla ut_talk_shipped_nostalereply         "(expected: FAILS NoStaleReply — Talk has no reply hold (TEAPORT_REPLY_HOLD_TALK off): the reply plays over the resumed user, with the pause on as without)"
 run UserTurn.tla ut_talk_shipped_nosplitturn          "(expected: FAILS NoSplitTurn — the same: nothing drops the unplayed reply, so the continuation is a second message)"
 echo
-echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
+echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85; the voice clock since #255)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
 run PlayoutClock.tla pc_release_all        "(expected: holds — every pts moved by the first held audio's wait)"
@@ -486,7 +486,7 @@ run Ledger.tla   ledger_fillerSet    "(expected: FAILS FillerCtxRemembered)"
 run Ledger.tla   ledger_once         "(expected: FAILS ChartedAtMostOnce — new)"
 run Ledger.tla   ledger_wrongText    "(expected: FAILS ChartedTextMatchesContext)"
 echo
-echo "Ledger.tla — windowHead: the first fix (3a51294), itself superseded by LedgerPlayout.tla"
+echo "Ledger.tla — windowHead: the first fix (3a51294 on PR #13's branch, squash-merged as f23503b), itself superseded by LedgerPlayout.tla"
 run Ledger.tla   ledgerfix_phantom   "(expected: holds)"
 run Ledger.tla   ledgerfix_ownStart  "(expected: holds)"
 run Ledger.tla   ledgerfix_unheard   "(expected: holds)"

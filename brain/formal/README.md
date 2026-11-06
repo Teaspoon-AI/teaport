@@ -9,8 +9,10 @@ asyncio makes the mapping unusually clean. The atomic grain is not a judgment ca
 awaits becomes one TLA+ action, and there is a defensible correspondence between the
 spec and the Python.
 
-State spaces here are small (hundreds of states) and checks run in about a second, so
-these are cheap to keep in CI.
+State spaces run from a few hundred states to a few hundred thousand (the largest
+default rows, `vc_voice_nohold` at 600k and `lp_all` at 405k, take under a minute with
+two workers; `--full`'s rows are tens of millions). The default run — every `run` line
+in `check.sh` — takes about 20 minutes on CI's runner, so it is cheap to keep there.
 
 ## Running them
 
@@ -1672,7 +1674,7 @@ the rest on the real ledger.
 | `lp_phantom` | `NoPhantomFullHeard` — a reply charted complete had every chunk PLAYED. Strict: `Ledger.tla`'s allowed "queued at the transport", the residual noted under its limits | ✓ (3.5k states) |
 | `lp_unheard` | `NoUnheardWhenPlayed` — read live since the 2026-10-14 audit: a reply charted heard-nothing never plays, before the chart or after it | ✓ |
 | `lp_once` | `ChartedAtMostOnce` | ✓ |
-| `lp_wrongText` | `ChartedTextMatchesContext`, two replies | ✓ (300k states, ~20 s) |
+| `lp_wrongText` | `ChartedTextMatchesContext`, two replies | ✓ (405k states, ~40 s with two workers; 2026-11-05) |
 | `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
 | `lp_playedCharted` | `PlayedIsCharted` — audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` — two fillers, `MaxFillerCtxs = 1`, so the ring's eviction is reached (until the 2026-11-05 audit the row ran one filler against a bound of 8, and a ledger that cleared the ring held it too; this instance fails that mutant in 4 states) | ✓ (69k) |
@@ -2028,6 +2030,12 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   (`TTS_STOP_FRAME_TIMEOUT_S`); "lead" pacing keeps the context alive through its waits.
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut. The layout is taken to credit exactly what played.
+- **A playout pause is not a chart point here.** `_pause` (`transcript_ledger.py`, on
+  `PlayoutPauseFrame`) credits each open turn with what played up to the pause and
+  holds the layout there, then `_close_ready` charts any turn whose audio has all
+  played and whose synthesis is over — the same chart a window close makes, taken a
+  pause earlier. `_resume` re-anchors the layout. Benign (it charts only what the
+  close would), and so left out; `PlayoutPause.tla` part 1 has the layout's freeze.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
   own — synthesizable or not, as a response — completed by its stop frame alone: no End
   re-push) are not modelled — "Worth modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
@@ -2052,8 +2060,8 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   dropped (the tool-result insert path), would put the count off by one: the code then
   finds too few messages and leaves the cut alone, or lands one message off. None is
   known.
-- **Scale.** One reply and one filler is 3.5k states; two replies 300k, about 20 s with
-  two workers.
+- **Scale.** One reply and one filler is 3.5k states; two replies 405k, about 40 s with
+  two workers (2026-11-05).
 
 ## `UserTurn.tla` — whether the user can interrupt the bot at all
 
@@ -3128,7 +3136,10 @@ pause and the judging are reached without it. The room's own turn timing (`ROOM_
 `LedgerPlayout.tla` abstracts every number away — its limits say so: the layout's
 seconds, `heard_fraction`, the pts cut — and this question is nothing but numbers in an
 order: which frame the output transport's clock releases first. So it is a small module
-of its own rather than a constant on that one, whose state space is already 300k states.
+of its own rather than a constant on that one, whose two-reply rows are 405k states.
+Since #255 the clock the transport releases on is the voice clock (`VoiceClock.tla`),
+which stands still through a playout pause; the hold's shift, this module's question,
+is the same on either clock.
 
 The TTS stamps its frames with a playout time as it synthesizes them: each word, and
 also the response's `LLMFullResponseEndFrame`, re-pushed after the context's audio at
@@ -3256,7 +3267,7 @@ before the next clause is synthesized was then in the gap, and so in the clause'
 | `LATE = 2`, ledger `shipped` | | `HeardIsPlayed` |
 |---|---|---|
 | `pp_late_ahead_heard` | `TTSGAP = "ahead"`, before the fix | ✗ (9 states) |
-| `pp_late_moved_heard` | `TTSGAP = "moved"`, **as shipped** (2026-10-15): `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move | ✓ (20k states) |
+| `pp_late_moved_heard` | `TTSGAP = "moved"`, 2026-10-15 to #255: `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move. Since #255 the TTS stamps on the voice clock and freezes for no pause (`vc_voice`) | ✓ (20k states) |
 
 ```
 Tick Tick      the first clause's two units play out; nothing more is synthesized yet
@@ -3276,10 +3287,12 @@ test_a_pause_in_an_underrun_is_not_a_playout_gap` is the trace on the real TTS (
 #255 on the voice clock): before the fix, the next clause after a 0.3 s pause started
 0.3 s late.
 
-**Part 2, the TTS.** A reply hold and a playout pause each stop playout; the two can
-overlap. `engine_tts._freeze_playout` freezes the TTS's playout model through them and,
-when the last one ends, moves the anchor of a reply queued behind (`_prev_audio_end_ns`)
-by the time since the first began. The check is that arithmetic, against a ground-truth
+**Part 2, the TTS.** A reply hold and — before #255 — a playout pause each stop
+playout, and the two could overlap. `engine_tts._freeze_playout` freezes the TTS's
+playout model through them and, when the last one ends, moves the anchor of a reply
+queued behind (`_prev_audio_end_ns`) by the time since the first began. Since #255 the
+reply hold is the only freeze source (`_freezes` holds one), so the overlap the `SLOT`
+rows found is the record of the design before; the arithmetic is still the TTS's. The check is that arithmetic, against a ground-truth
 count of the ticks playout was stopped (round-2 review: the first version only checked
 "frozen while stopped", close to a tautology). Each part runs in its own rows (`PART`).
 
@@ -3352,7 +3365,12 @@ at that very tick. `ChartIsHeard`: at a cut, the words placed before the voice c
 now are exactly what the listener heard. `vc_wall_nopause` is the control: with nothing
 stopping the voice the two clocks are one, and the model of the stamps is right.
 
-What is not modelled: the caption lead, every pts early by one constant. The ledger takes
+What is not modelled: the other half of the ledger's cut. Its `heard_text` is the
+*longer* of the pts prefix checked here and an estimate from its layout's seconds (read
+on the pipeline clock, clamped at the pause: `_heard`, `_play_t`), so the estimate can
+over-report what the pts cut got right; `Owed.tla`'s `ow_ledgerMax` is that
+over-report's consequence, and `PlayoutPause.tla` part 1 checks the layout half on its
+own. Nor the caption lead, every pts early by one constant. The ledger takes
 it back in its cut; the transport holds a frame whose audio (pts plus the lead) is past a
 stop until the start (`VoiceClock.wait_until`); a word released before the pause began
 has its audio after it all the same, so the room's echo guard dates each word by when
