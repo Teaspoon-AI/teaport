@@ -545,6 +545,43 @@ async def test_a_peek_the_caller_talks_past_is_not_counted_by_the_empty_rate():
         logger.remove()
 
 
+async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate():
+    # #29 review: a preview that came back with nothing in hand is counted as the line
+    # calls it ("audio in, no words out"), but the turn's final can still bring every
+    # word. Then the caller was heard: the miss is taken back out of the window. Kept,
+    # four such turns warned "dropping speech" over a call that lost nothing.
+    from loguru import logger
+
+    lines = []
+    logger.remove()
+    logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+    try:
+        for peeks in (True, False):
+            lines.clear()
+            s = Service(peeks=peeks)
+            await created(s)
+            for word in ("yes", "yes", "yes", "yes", "sure"):
+                if peeks:
+                    await vad_start(s)
+                    await audio(s, 1000)
+                    await vad_stop(s)
+                    end = s._peek.at_ms
+                    await preview(s, end, "" if word == "yes" else " sure")
+                    await verdict(s)
+                else:
+                    await turn(s)
+                    end = s._sent_samples * 1000 // 16000
+                    await preview(s, end, "" if word == "yes" else " sure")
+                if word == "yes":
+                    await delta(s, " yes", end - 100)
+                await progress(s, end)
+            assert [t for t, _ in s.finals()] == ["yes"] * 4 + ["sure"], (peeks, s.finals())
+            assert list(s._seg_window) == [""] * 5, (peeks, list(s._seg_window))
+            assert not [m for m in lines if "caller was heard in" in m], (peeks, lines)
+    finally:
+        logger.remove()
+
+
 async def test_one_commit_in_flight_a_flapping_stop_waits_for_the_answer():
     s = Service(peeks=True)
     await created(s)
