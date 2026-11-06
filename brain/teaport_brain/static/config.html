@@ -551,7 +551,7 @@
         'If this browser reaches the box over Wi-Fi, it may lose the page while the box changes networks.',
         'If the new network does not work, the box goes back to the one it is on now.'], 'Switch');
       if (!sure) return;
-      out.textContent = 'Switching to ' + ssid + '… this can take up to a minute.';
+      out.textContent = 'Switching to ' + ssid + '… this can take a few minutes.';
       // As text, the brain's words included; a refusal keeps the form as it was, to fix.
       const r = await switchWifi(ssid, pw.value, !(picked && picked.value));
       if (r.reread) { pw.value = ''; renderWifi(r.text); } else out.textContent = r.text;
