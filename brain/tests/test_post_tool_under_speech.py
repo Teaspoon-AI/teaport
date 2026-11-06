@@ -28,6 +28,7 @@
 # Run: python test_post_tool_under_speech.py   (or via the suite)
 #
 import asyncio
+import inspect
 import json
 import os
 import sys
@@ -513,8 +514,12 @@ async def test_a_commit_made_while_the_caller_still_talks_does_not_take_their_re
 
 
 def main():
-    tests = [v for k, v in globals().items()
-             if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
+    # A copy of globals(), and inspect's check: on Python 3.14 asyncio.iscoroutinefunction
+    # is deprecated, and its warning writes __warningregistry__ into these globals, which
+    # broke iterating them live with "dictionary changed size during iteration" (#220).
+    # The list keeps the tests in the order they are defined.
+    tests = [v for k, v in list(globals().items())
+             if k.startswith("test_") and inspect.iscoroutinefunction(v)]
 
     async def run():
         for fn in tests:
