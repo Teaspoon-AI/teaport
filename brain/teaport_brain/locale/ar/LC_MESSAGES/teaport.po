@@ -180,9 +180,10 @@ msgstr "يجب أن تتكون كلمة مرور Wi-Fi من 8 إلى 63 حرفً
 # The box's screen in Wi-Fi setup (wifi_setup.py, #207): its titles, and the words beside
 # a network's name and the setup password. Shown only by a screen that draws every script
 # (the avatar says "unicode"); any other shows them in English. Each has a length budget
-# in columns of a 21-column line: a CJK character or Hangul syllable takes two, a vowel
-# sign, virama or accent none, anything else one (display.columns). tests/test_i18n.py
-# holds every translation to its budget.
+# in columns of a 21-column line: a CJK character, a Hangul syllable or an emoji takes
+# two; a mark drawn on or under its letter (an accent, a virama, a vowel sign above or
+# below) none; anything else one, a vowel sign beside its letter (ा ि ी ो) too
+# (display.columns). tests/test_i18n.py holds every translation to its budget.
 #. Translators: the title while setup mode is on; at most 18 columns.
 msgctxt "screen"
 msgid "Setup mode"

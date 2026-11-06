@@ -63,6 +63,7 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -105,8 +106,14 @@ CONNECTED_SCREEN_SECS = 10
 # The voice's language, handed to this unit by the brain as it starts it (hand_language,
 # from wifi_voice): the unit is started through config_apply, which passes nothing on. A
 # file in the run user's state directory, which the brain and this unit share (both run
-# as that user); none, or naming no catalog, and the screens start in English.
+# as that user). It is good for one start, the next within LANG_FRESH_SECS, and the unit
+# removes it as it reads it: a start nobody handed a language to (the config page, a
+# systemctl by hand, a voice start that never ran) does not inherit an old one, and its
+# screens begin in English, as does one whose file names no catalog.
 LANG_FILE = "wifi-setup-lang"
+# config_apply starts the unit two seconds after the brain asks; the voice gives up on a
+# unit that has not reported in a minute (wifi_voice.START_TIMEOUT_SECS).
+LANG_FRESH_SECS = 120.0
 # How long avahi-publish must stay up before its .local name is shown.
 PUBLISH_SETTLE_SECS = 0.2
 # The status reason when the page's server cannot start; English only (see _run).
@@ -131,21 +138,37 @@ def lang_path() -> str:
 
 def hand_language(lang: str, path: str | None = None) -> None:
     """The brain, about to start this unit: its screens begin in `lang` (a catalog's
-    name, i18n.T.lang: the voice's). Raises OSError when it cannot be written."""
+    name, i18n.T.lang: the voice's). Written whole or not at all (a temporary file of its
+    own, renamed into place); raises OSError when it cannot be."""
     path = path or lang_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w", encoding="utf-8") as f:
-        f.write(lang + "\n")
-    os.replace(path + ".tmp", path)
-
-
-def handed_language(path: str | None = None) -> i18n.T:
-    """The language the brain handed over (hand_language); English without one."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + ".")
     try:
-        with open(path or lang_path(), encoding="utf-8") as f:
-            lang = f.read(64).strip()
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(lang + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def handed_language(path: str | None = None, now=time.time) -> i18n.T:
+    """The language the brain handed over for this start (hand_language), taken: the file
+    goes as it is read. English without one, or with one older than LANG_FRESH_SECS."""
+    path = path or lang_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            age = now() - os.fstat(f.fileno()).st_mtime
+            lang = f.read(64).strip() if abs(age) <= LANG_FRESH_SECS else ""
     except (OSError, ValueError):
         lang = ""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
     return i18n.chosen(lang) or i18n.get(i18n.SOURCE_LANG)
 
 

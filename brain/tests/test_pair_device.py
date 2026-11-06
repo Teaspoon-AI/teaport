@@ -14,7 +14,7 @@ from pinned_pipecat import require_pinned  # noqa: E402
 
 require_pinned()
 
-from teaport_brain import agent_session, i18n, pairing, persona, tools  # noqa: E402
+from teaport_brain import agent_session, display, i18n, pairing, persona, tools  # noqa: E402
 from teaport_brain import pair_device as pd  # noqa: E402
 
 LINK = "https://box.example/p/abc123"
@@ -25,12 +25,13 @@ LINK = "https://box.example/p/abc123"
 class _Screen:
     """display.Screen's surface, recording what it was asked to do."""
 
-    def __init__(self, qr=True, max_bytes=53, takes=True):
-        self.qr, self.max_bytes, self.takes = qr, max_bytes, takes
+    def __init__(self, qr=True, max_bytes=53, takes=True, unicode=False):
+        self.qr, self.max_bytes, self.takes, self.unicode = qr, max_bytes, takes, unicode
         self.calls = []
 
     def draws(self, feature):
-        return feature == "screen" or (feature == "qr" and self.qr)
+        return (feature == "screen" or (feature == "qr" and self.qr)
+                or (feature == "unicode" and self.unicode))
 
     def fits_qr(self, text):
         return self.qr and len(text.encode()) <= self.max_bytes
@@ -290,6 +291,29 @@ def test_it_shows_the_code_and_returns_at_once(monkeypatch):
         assert result["ok"] and "camera" in result["note"]
         assert "Never read out" in result["note"]
     assert "at the box" in talk["note"] and "at the box" not in room["note"]
+
+
+@pytest.mark.parametrize("device, shown", [
+    # At most DEVICE_MAX_COLUMNS, cut between letters: never a conjunct's virama (क्ष),
+    # half a ZWJ emoji or half a flag left at the end (#207).
+    ("Priya ka tablet 2025: क्षेत्र", "Priya ka tablet 2025: क्षे"),   # [:24]: "...: क्"
+    ("प्रिया का फ़ोन — क्षेत्र संख्या दो", "प्रिया का फ़ोन — क्षेत्र संख्या"),
+    ("My Family iPad 2025 ab 👩\u200d👧", "My Family iPad 2025 ab"),        # [:24]: "... 👩"
+    ("Tablet in the hallway! 🇯🇵", "Tablet in the hallway!"),             # [:24]: half a flag
+    ("Kitchen", "Kitchen"),
+])
+def test_a_paired_devices_name_is_cut_between_letters(monkeypatch, device, shown):
+    async def run():
+        dp, fake, screen = _session(monkeypatch, screen=_Screen(unicode=True))
+        await _call(dp)
+        fake.end(fake.started[0], "paired", device)
+        await _turn()
+        return screen
+
+    screen = asyncio.run(run())
+    lines = screen.calls[-2][2]
+    assert lines == ["Paired", shown]
+    assert display.columns(lines[1]) <= pd.DEVICE_MAX_COLUMNS
 
 
 def test_paired_shows_it_for_a_while_and_asks_the_voice_to_say_it(monkeypatch):

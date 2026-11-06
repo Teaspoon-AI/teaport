@@ -50,7 +50,9 @@ from teaport_brain import display, pairing
 SCREEN_ID = "pair"
 SCREEN_TITLE = "Pair"
 PAIRED_SCREEN_SECS = 10.0
-DEVICE_MAX_CHARS = 24
+# The paired device's name on the screen: at most this many columns (display.cut, which
+# never leaves half a letter, conjunct or emoji at the end).
+DEVICE_MAX_COLUMNS = 24
 
 # What start() says.
 SHOWN, NO_SCREEN, UNAVAILABLE, STOPPED = "shown", "no_screen", "unavailable", "stopped"
@@ -270,8 +272,8 @@ class DevicePairing:
             # A screen taken down meanwhile (cancel() while the device was confirmed)
             # still says so.
             screen = screen or self._new_screen()
-            device = display.screen_text(result.device or "",
-                                         screen.draws("unicode"))[:DEVICE_MAX_CHARS]
+            device = display.cut(display.screen_text(result.device or "", screen.draws("unicode")),
+                                 DEVICE_MAX_COLUMNS)
             # Up for a while on its own: the held code goes with it, and close() below
             # has nothing held left to take down.
             screen.show(SCREEN_TITLE, ["Paired", device] if device else ["Paired"],

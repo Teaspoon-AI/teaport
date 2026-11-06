@@ -735,9 +735,11 @@ def test_the_screens_follow_the_voice_then_the_page_that_asked_for_the_join():
                        post=[{"ssid": "home", "password": "homepass1"}])
     assert rc == 0
     shown = _screens(sent)
-    assert shown[0][0] == RU.p("screen", "Setup mode")
-    assert shown[1] == (ja.p("screen", "Setup mode"), [ja.p("screen", "Joining"), "home"])
-    assert shown[2] == (ja.p("screen", "Wi-Fi"), [ja.p("screen", "Connected to"), "home"])
+    # The words themselves, not just what the catalogs say: a catalog gone missing (the
+    # English msgid back) fails here.
+    assert shown[0][0] == "Режим подключения"
+    assert shown[1] == ("セットアップモード", ["接続中", "home"])
+    assert shown[2] == (ja.p("screen", "Wi-Fi"), ["接続済み", "home"])
     # Nothing handed over: English, as before.
     screen, sent = _screen(unicode=True)
     _run_setup(FakeNM([]), minutes=0.01, screen=screen)
@@ -756,14 +758,31 @@ def test_the_password_line_fits_in_the_readers_words():
     assert ws.password_line("47190352", display.ScreenText(False, RU)) == "Password  47190352"
 
 
-def test_the_language_the_brain_hands_over():
+def test_the_language_the_brain_hands_over_is_for_one_start_only():
     path = os.path.join(tempdir(), "state", ws.LANG_FILE)
     assert ws.handed_language(path).lang == "en"                  # none: English
     ws.hand_language("pt_BR", path)
     assert ws.handed_language(path).lang == "pt_BR"
+    # Taken as it is read: the next start (the config page, a systemctl) has none.
+    assert not os.path.exists(path) and ws.handed_language(path).lang == "en"
     ws.hand_language("xx", path)
     assert ws.handed_language(path).lang == "en"                  # no such catalog
+    # A handover no start took in time (a start that failed) is not the next one's.
+    ws.hand_language("ja", path)
+    later = time.time() + ws.LANG_FRESH_SECS + 1
+    assert ws.handed_language(path, now=lambda: later).lang == "en"
+    assert os.listdir(os.path.dirname(path)) == []                # no temporary left either
     assert ws.lang_path().endswith(os.path.join(".local", "state", "teaport", ws.LANG_FILE))
+
+
+def test_a_name_with_a_newline_is_one_line_on_any_screen():
+    """A hidden network's name is typed on the page: a newline in it must not become a
+    second line drawn over the next, where every script is drawn either."""
+    screen, sent = _screen(unicode=True)
+    rc, _ = _run_setup(FakeNM([(True, "", "Evil\nLine")]), screen=screen,
+                       post=[{"ssid": "", "other": "Evil\nLine", "password": "homepass1"}])
+    assert rc == 0
+    assert _screens(sent)[-1] == ("Wi-Fi", ["Connected to", "Evil Line"])
 
 
 def test_the_voice_hands_its_language_over_before_it_starts_the_unit(monkeypatch):
