@@ -19,18 +19,42 @@ uv sync --locked --project brain --python 3.12   # brain/.venv from uv.lock — 
 uv run --project brain python -m pytest brain/tests/test_suite.py -q
 ```
 
-`--python 3.12` is not optional if you want "matches the appliance exactly" to be
-true. `requires-python = ">=3.12"` lets uv pick whatever it has, and on a newer
-interpreter the lock resolves marker-gated packages the appliance never installs
-(`audioop-lts` is gated `python_full_version >= '3.13'`) — so a closure claim
-validated on that venv is a claim about a set the appliance does not ship.
+3.12 is not optional if you want "matches the appliance exactly" to be true, and
+`brain/.python-version` says so for you: uv reads it for any command given
+`--project brain` or run inside `brain/`, so a venv uv builds there is 3.12 with or
+without the flag. `requires-python = ">=3.12"` alone lets uv pick whatever it has (a
+3.14, on the desktop where #220 was found), and on a newer interpreter the lock
+resolves marker-gated packages the appliance never installs (`audioop-lts` is gated
+`python_full_version >= '3.13'`) — so a closure claim validated on that venv is a
+claim about a set the appliance does not ship. CI (setup-python 3.12), `install.sh`
+and `packaging/build-deb.sh` each name the interpreter themselves (`--python` wins
+over the file), and all three name 3.12 too.
+
+**The suite checks the venv before it runs anything.** `conftest.py` compares the
+running venv with `uv.lock` (`locked_venv.py`: what `uv sync --locked` installs on
+this interpreter, dev group included, diffed by `teaport_brain.lockcheck`, the code
+behind `teaport doctor`'s drift check) and stops the run with one line:
+
+```
+ERROR: brain/.venv is out of sync with brain/uv.lock (-h2 4.4.1, -vadersentiment 3.3.2): run `uv sync --locked --project brain`
+```
+
+A package missing, at another version, recorded twice or not in the lock at all is
+drift, and the `uv sync` it names puts each one right (for a venv other than
+`brain/.venv`, the command starts `UV_PROJECT_ENVIRONMENT=<venv>`). Before the check,
+a venv that had lost two locked packages failed ten tests on `ModuleNotFoundError`
+with nothing pointing at the venv (#220). It costs a fraction of a second, covers any
+pytest run under `brain/tests` (a direct `pytest brain/tests/test_x.py` too), and
+passes on an editable install and on CI's `--no-editable` one alike. A copy of
+`tests/` away from the checkout has no lock beside it and is not checked.
 
 Expect **32 passed, 2 skipped** off-appliance. The two skips need hardware this box
 doesn't have; **anything failing is a real regression**, including on a laptop —
-with one exception: if pipecat doesn't match the pin, every test that imports
-`pinned_pipecat` fails immediately with a message telling you to reinstall. That's
-an environment problem, not a regression; rerun the `uv sync` step above and it goes
-away.
+with one exception: an environment problem, which says it is one. A venv that does not
+hold the lock's set stops the suite before it starts (above), and a script run on its
+own against the wrong pipecat refuses with a message telling you to reinstall
+(`pinned_pipecat`). Neither is a regression; rerun the `uv sync` step above and it
+goes away.
 
 That distinction is the point. Those two used to *fail* off-appliance, so this file
 called green pytest the merge gate while `pytest brain/tests/` could never be green —
