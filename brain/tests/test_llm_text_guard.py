@@ -534,13 +534,136 @@ async def test_a_leading_emoticon_is_kept_whole():
     before it, and a colon that opens no emoticon, still go."""
     for deltas, want in (([":)"], ":)"), ([";-) sure."], ";-) sure."), (["... :D"], ":D"),
                          ([": hello there."], "hello there."), (["!! Okay."], "Okay."),
-                         (["... it was the worst of times"], "it was the worst of times")):
+                         (["... it was the worst of times"], "it was the worst of times"),
+                         # A letter closer with a word behind it is that word's first
+                         # letter (#187 review): ":Peru" is not ":P" + "eru".
+                         ([":Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":Done."], "Done."), ([":D'accord."], "D'accord."),
+                         ([":(laughs) Sure."], "(laughs) Sure."), ([":[Sure.]"], "[Sure.]"),
+                         ([":D sure."], ":D sure."), ([":3"], ":3"), ([":(."], ":(."),
+                         # ...a LATIN word: CJK has no spaces, so a face against the next
+                         # word is ordinary there, and Cyrillic and Devanagari keep it too.
+                         ([":)好的，我来帮你。"], ":)好的，我来帮你。"),
+                         ([":Dはい、わかりました。"], ":Dはい、わかりました。"),
+                         ([";)Хорошо."], ";)Хорошо."), ([":)नमस्ते।"], ":)नमस्ते।"),
+                         ([":Désolé, pouvez-vous répéter ?"], "Désolé, pouvez-vous répéter ?"),
+                         ([":Perdón."], "Perdón."), ([":Pérou."], "Pérou.")):
         h = Guard()
         await h.feed(LLMFullResponseStartFrame())
         for d in deltas:
             await h.text(d)
         await h.feed(LLMFullResponseEndFrame())
         assert h.spoken() == want, (deltas, h.spoken())
+
+
+async def test_an_emoticon_split_across_deltas_is_kept_whole():
+    """#187: the strip judges one frame at a time, so ":" then ")" lost the colon all
+    the same -- the lone ":" had no closer in view, and history recorded ")". A leading
+    opener is held for the next delta, which keeps it whole or strips it as one delta
+    would: ": Hello" is still "Hello", and so is every split here.
+
+    The review's cases: a #15 retry inherits a held ":" from its first attempt, and its
+    answer does not open with a face (":" + "Peru's ...", ":" + "(laughs)"); a closer
+    can be a word's start split off (":", "P", "eru's"); `$` matched before a final
+    newline, so ":\\n" held the ":" and dropped the "\\n"; a "<" in the delta skipped
+    the hold."""
+    for deltas, want in (([":", ")"], ":)"), ([";", "-) sure."], ";-) sure."),
+                         ([":-", ")"], ":-)"), ([":", "-", ")"], ":-)"),
+                         ([":'", "("], ":'("), ([":", "D"], ":D"),
+                         (["... ", ":", "D"], ":D"), (["..", ".", ":", ")"], ":)"),
+                         (["=", ")"], "=)"), (["::", ")"], ":)"),
+                         ([":", " Hello"], "Hello"), ([":", " Hello."], "Hello."),
+                         ([";", " so, yes."], "so, yes."), ([":-", " no"], "- no"),
+                         ([":", "Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "Done."], "Done."), ([":", "D'accord."], "D'accord."),
+                         ([":", "P", "eru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "D", " sure."], ":D sure."), ([":D", "one."], "Done."),
+                         ([":", "(laughs) Sure."], "(laughs) Sure."), ([":(", "laughs)"], "(laughs)"),
+                         ([":)", " Sure."], ":) Sure."), ([":", ")好的。"], ":)好的。"),
+                         ([":)", "好的。"], ":)好的。"), ([":", "Désolé."], "Désolé."),
+                         ([":\n", "Okay"], "Okay"), ([":", "\n", "Okay."], "Okay."),
+                         (["=\n", "Hello."], "=\nHello."), (["<|end|>:", ")"], ":)")):
+        said = []
+        for split in (deltas, ["".join(deltas)]):
+            h = Guard()
+            await h.feed(LLMFullResponseStartFrame())
+            for d in split:
+                await h.text(d)
+            await h.feed(LLMFullResponseEndFrame())
+            forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+            ids = [f.id for f in forwarded]
+            assert len(ids) == len(set(ids)), (split, "a frame was pushed twice", h.spoken())
+            said.append(h.spoken())
+        assert said == [want, want], (deltas, "split, one delta:", said)
+
+
+async def test_a_face_held_to_the_end_rides_its_own_frame():
+    """Pass-through text keeps the frame it arrived on (see _emit), a held face too: the
+    punctuation before it is dropped as the strip would drop it, so the face's delta
+    carries nothing else and the End sends the face out on that frame, not a fresh one."""
+    for texts in ((":D",), ("... :)",), ("...", ":P")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        sent = [LLMTextFrame(text=t) for t in texts]
+        for frame in sent:
+            await h.feed(frame)
+        await h.feed(LLMFullResponseEndFrame())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert [f.id for f in forwarded] == [sent[-1].id], (texts, h.spoken())
+        assert h.spoken() == texts[-1].lstrip(". "), (texts, h.spoken())
+
+
+async def test_a_reply_of_a_lone_colon_ends_like_any_punctuation_reply():
+    """A held opener the End reaches is flushed through the strip like the fold's held
+    tail, so it is never forwarded: a lone ":" still counts as nothing forwarded, and
+    the turn ends as a "..." reply does (#16) -- the recovery line, once, latched."""
+    for reply in ([":"], [";"], ["...", ":"], [" ", ";"], [":", ":"]):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for delta in reply:
+            await h.text(delta)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == RECOVERY_TEXT.lstrip(), (reply, h.spoken())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert len(forwarded) == 1, (reply, h.spoken())
+        assert h.g._tripped, reply
+        assert h.kinds()[-1] == "LLMFullResponseEndFrame", h.kinds()
+
+
+async def test_a_held_opener_does_not_outlive_a_barge_in():
+    """A barge-in makes everything unspoken stale, a held opener included: the End of
+    the cancelled completion pushes nothing ("=" and "-" are not strip punctuation, so
+    either would be spoken if it survived), and the next reply starts clean."""
+    from pipecat.frames.frames import InterruptionFrame
+    for opener in (":", "=", ";-"):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        await h.text(opener)
+        await h.feed(InterruptionFrame())
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == "", (opener, h.spoken())
+        await h.feed(LLMFullResponseStartFrame())
+        await h.text(")")
+        await h.text(" Fine.")
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == ") Fine.", (opener, h.spoken())
+
+
+async def test_only_a_leading_opener_is_held():
+    """Text the strip no longer reaches is never delayed: a colon after a word -- even
+    one still held for its sentence, with nothing forwarded yet -- rides its own frame,
+    as does one after a forwarded sentence."""
+    for texts in (("Note", ":", " it is done."), ("Sure.", " :", ")"), ("Hi", " ;", "-)")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        sent = [LLMTextFrame(text=t) for t in texts]
+        for frame in sent:
+            await h.feed(frame)
+            assert h.g._pending == "", (texts, frame.text, h.g._pending)
+        await h.feed(LLMFullResponseEndFrame())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert [f.id for f in forwarded] == [f.id for f in sent], (texts, h.spoken())
+        assert [f.text for f in forwarded] == list(texts), (texts, h.spoken())
 
 
 async def test_the_recovery_line_is_allowed_a_new_frame():
