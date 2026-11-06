@@ -283,10 +283,12 @@ def unglue_sentences(text: str, before: str = "") -> str:
     return "".join(out)
 
 
-# Spoken when the guard trips. Overridable because the pipeline serves Japanese,
-# Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
-# The leading space is deliberate: this is appended to whatever healthy prefix was
-# already forwarded, and reads as its own sentence either way.
+# Spoken when the guard trips (and for a caller's turn that came back empty, #15), in the
+# session's voice language: the catalogs carry it, since an English apology is wrong in a
+# Japanese, Mandarin or Hindi room. TEAPORT_LLM_GUARD_RECOVERY replaces it with one fixed
+# string, spoken as written in every language (recovery_text). The leading space is
+# deliberate: this is appended to whatever healthy prefix was already forwarded, and
+# reads as its own sentence either way.
 # `or`, not a schema default: TEAPORT_LLM_GUARD_RECOVERY= (key present, value empty) is a
 # plausible hand-edit for an operator who wants the guard quiet, and it used to push an
 # EMPTY LLMTextFrame — which both restored the total silence this line exists to prevent

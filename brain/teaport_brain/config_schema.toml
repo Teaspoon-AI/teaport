@@ -325,7 +325,7 @@ type = "string"
 default = ""
 read = "session"
 tier = "tuning"
-help = "The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call): after one quick retry, or straight away when there is no time to retry. Empty = the built-in English line; override it for a non-English deployment."
+help = "The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call): after one quick retry, or straight away when there is no time to retry. Empty = the line in the session's voice language; an override is spoken as written, in every language and after every voice switch."
 
 [[settings]]
 name = "TEAPORT_LLM_ERROR_SPEECH"
