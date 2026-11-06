@@ -713,14 +713,16 @@ def test_a_rename_that_fails_mid_swap_puts_the_kept_engine_back():
     assert rc != 0 and "could not move bin/g2p/kokoro_g2p.v2.dict into place" in out and "SWAPPED" not in out, out
     assert "back as it was before this run" in out and set(_live(tmp).values()) == {"old"}, (_live(tmp), out)
     assert not pathlib.Path(tmp, "opt/engine.swapping").exists() and _copies(tmp) == [], _copies(tmp)
-    # Failing for good: the putting back fails too, says so, and leaves the marker for the next run.
+    # Failing for good: the dict was never replaced, so its kept copy is the live file
+    # itself (a hard link) and stays where it is; the binary goes back (review: GNU mv
+    # refuses a file onto itself, which wedged the put-back and every run after it).
     tmp = tempdir("teaport-eng-mid-")
     _engine(tmp, "old", release="1.5")
     for rel in ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict"):
         _write(pathlib.Path(tmp, "opt/engine.staged", rel), f"new {rel.rsplit('/', 1)[-1]}\n")
     rc, out = _run(tmp, script, ENGINE_FNS)
-    assert rc != 0 and "DIE could not move bin/g2p/kokoro_g2p.v2.dict back from" in out, out
-    assert pathlib.Path(tmp, "opt/engine.swapping").exists(), out
+    assert rc != 0 and "back as it was before this run" in out, out
+    assert set(_live(tmp).values()) == {"old"} and not pathlib.Path(tmp, "opt/engine.swapping").exists(), out
 
 
 def test_a_swap_a_power_cut_stopped_is_put_right_by_the_next_run():
@@ -734,6 +736,18 @@ def test_a_swap_a_power_cut_stopped_is_put_right_by_the_next_run():
     rc, out = _run(tmp, 'engine_swap_recover; echo RECOVERED', ENGINE_FNS)
     assert rc == 0 and "stopped half way" in out and set(_live(tmp).values()) == {"old"}, (_live(tmp), out)
     assert not mark.exists() and _copies(tmp) == [], out
+    # A power cut before any rename: the kept copy is hard links of the live files (as
+    # engine_keep_live makes it). The next run puts nothing over itself and goes on.
+    tmp2 = tempdir("teaport-eng-mid-")
+    _engine(tmp2, "old", release="1.5")
+    kept2 = pathlib.Path(tmp2, "opt/engine.rollback/000001-20261101T000000Z-1.5")
+    for rel in ENGINE_REL:
+        (kept2 / rel).parent.mkdir(parents=True, exist_ok=True)
+        (kept2 / rel).hardlink_to(pathlib.Path(tmp2, "opt", rel))
+    mark2 = _write(pathlib.Path(tmp2, "opt/engine.swapping"), f"{kept2}\n")
+    rc, out = _run(tmp2, 'engine_swap_recover; echo RECOVERED', ENGINE_FNS)
+    assert rc == 0 and "RECOVERED" in out and set(_live(tmp2).values()) == {"old"}, (_live(tmp2), out)
+    assert not mark2.exists(), out
     # A marker that names something not ours is not followed.
     _write(pathlib.Path(tmp, "elsewhere/bin/voxtral"), "evil voxtral\n")
     _write(mark, f"{tmp}/elsewhere\n")

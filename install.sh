@@ -696,6 +696,9 @@ engine_restore() {
   [ -f "$snap/bin/voxtral" ] || die "cannot put the engine in $snap back: it is gone or has no bin/voxtral — the live engine files were left as they are"
   for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
     [ -f "$snap/$rel" ] || continue
+    # The copy keeps a file as a hard link (engine_keep_live): one a stopped swap never
+    # replaced is still the live file, and GNU mv refuses to move a file onto itself.
+    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then rm -f "$snap/$rel"; continue; fi
     { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$snap/$rel" "$PREFIX/$rel"; } \
       || die "could not move $rel back from $snap — the engine files may be a mix of two releases (what is left to move back is in $snap)"
     if contains " $rel " " ${ENGINE_MODELS[*]} "; then models="$models ${rel##*/}"; fi
@@ -3575,6 +3578,10 @@ main_engine_only() {
   else
     engine_libs_check " — --only engine installs no system packages; run install.sh without --only, which does"
   fi
+  # A changed model stages beside the live one (Voxtral is ~4.4GB) and a kept copy can
+  # hold the old one: warned before anything is fetched, as the full run warns at 15GB.
+  local freegb; freegb="$(df -Pk "$PREFIX" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
+  [ -n "$freegb" ] && [ "$freegb" -lt 10 ] && warn "only ${freegb}GB free at $PREFIX (a new model stages beside the live one, ~4.4GB for Voxtral; an old copy in $ENGINE_ROLLBACKS can go to make room)"
   phase_engine
   # engine.env before the swap: a key added now changes nothing for the engine that is
   # running (it read its environment when it started), and a file that cannot be read stops
