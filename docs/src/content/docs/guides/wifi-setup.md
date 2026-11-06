@@ -33,7 +33,7 @@ you plug in a network cable, it leaves setup mode by itself.
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1774-1781#389fa64a; brain/teaport_brain/wifi_voice.py:873-877#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1774-1781#389fa64a; brain/teaport_brain/wifi_voice.py:883-887#e2d218b7 -->
 
 ## Join the setup network
 
@@ -49,7 +49,7 @@ Say "repeat" to hear the network's name, the password, and the address read out.
 
 If you start setup by voice, the screen shows its words in the language that the device speaks; if you start it another way, in English. After you pick your network on the setup page, the screens that follow are in the page's language. Network names appear as they are written. This depends on fonts for other scripts on the device: a device without them shows the words in English and drops the characters outside ASCII from a network's name, for example "Cafe" for "Café". If that changes the setup network's name and a QR code is on the screen, the screen shows "(scan the code)" in place of the name.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:509-513#ccf7af71; brain/teaport_brain/wifi_setup.py:599#3f47f741; brain/teaport_brain/wifi_setup.py:704-708#14cffbaa; brain/teaport_brain/wifi_setup.py:794-803#87626463; brain/teaport_brain/display.py:115-125,144-145#358c6ac2; brain/teaport_brain/wifi_setup.py:106-113#f5be084a; brain/teaport_brain/wifi_voice.py:604-609#cebe7db2 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:509-513#ccf7af71; brain/teaport_brain/wifi_setup.py:599#3f47f741; brain/teaport_brain/wifi_setup.py:704-708#14cffbaa; brain/teaport_brain/wifi_setup.py:794-803#87626463; brain/teaport_brain/display.py:115-128,147-148#f3e8f797; brain/teaport_brain/wifi_setup.py:106-113#f5be084a; brain/teaport_brain/wifi_voice.py:604-609#cebe7db2 -->
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
