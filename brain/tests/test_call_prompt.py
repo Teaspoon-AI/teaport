@@ -30,6 +30,7 @@ import test_session_arbiter as sa  # noqa: E402  — its env, stubs and pinned p
 import test_sip_call_lifecycle as lc  # noqa: E402
 
 from pipecat.frames.frames import (  # noqa: E402
+    InterruptionFrame,
     InterruptionWorkerFrame,
     OutputTransportMessageUrgentFrame,
     TTSSpeakFrame,
@@ -374,6 +375,37 @@ async def test_nobody_answering_takes_the_default():
             assert await asyncio.wait_for(prompt.ask("Bob"), 3) is want, default
             # A late "yes" or "no" changes nothing, and is told what became of it.
             assert prompt.answer(not want) == (cp.CLOSED_TAKEN if want else cp.CLOSED_RINGING)
+    finally:
+        cp.PROMPT_SECS, cp.PROMPT_DEFAULT = saved
+
+
+async def test_the_question_waits_for_its_own_cut_however_late_it_lands():
+    """#293: the interruption the question rings over with (own_line) gets through only
+    after the settle, as on a starved CPU. Queued ahead of it, the question was cut by its
+    own interruption before a word played, its watch settled as cut with it, and the
+    default took the call: the room was never asked."""
+    saved = cp.PROMPT_SECS, cp.PROMPT_DEFAULT
+    try:
+        cp.PROMPT_SECS, cp.PROMPT_DEFAULT = 0.1, "take"
+        session, prompt = _prompted()
+        session._OWN_LINE_SETTLE_S = 0.05
+        loop, queue, landed = asyncio.get_running_loop(), session.task.queue_frames, []
+
+        def land():
+            landed.append(True)
+            loop.create_task(sa._feed(session.followup_gate, InterruptionFrame()))
+
+        async def starved(frames):
+            if any(isinstance(f, InterruptionWorkerFrame) for f in frames):
+                session.task.queued += frames
+                loop.call_later(0.25, land)             # 0.2 s after the settle
+            elif landed:
+                await queue(frames)                     # plays
+            else:
+                session.task.queued += frames           # flushed by the cut behind it
+        session.task.queue_frames = starved
+        assert await asyncio.wait_for(prompt.ask("Bob"), 5) is True
+        assert session.task.played.is_set(), "the call was taken; the question never played"
     finally:
         cp.PROMPT_SECS, cp.PROMPT_DEFAULT = saved
 

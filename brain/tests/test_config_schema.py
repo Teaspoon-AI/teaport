@@ -383,6 +383,16 @@ def main() -> int:
                 problems.append(f"{n}: enum without values")
             elif "default" in r and str(r["default"]) not in vals:
                 problems.append(f"{n}: default {r['default']!r} not in values")
+            else:
+                problems += [f"{n}: default_by {d!r} not in values"
+                             for table in r.get("default_by", {}).values()
+                             for d in table.values() if str(d) not in vals]
+        # default_by keys on an enum setting and gives a default for each of its values.
+        for key, table in r.get("default_by", {}).items():
+            by = next((o for o in rows if o["name"] == key), None)
+            if by is None or by["type"] != "enum" or set(table) != set(by.get("values", ())):
+                problems.append(f"{n}: default_by names an enum setting and one default "
+                                f"for each of its values, not {key} {sorted(table)}")
         if why := empty_problem(r):
             problems.append(f"{n}: {why}")
         if r["type"] == "secret" and r["store"] != "sip_conf" and "file" not in r \
