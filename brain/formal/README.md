@@ -1018,8 +1018,11 @@ over. The aggregator adds words as a part and commits on its own task at any tim
 - **`BargePaused`** — a barge-in's words reach the judging holder while the reply's pause
   holds. The pause ends on its own once its window is out and no final is on its way; a
   barge-in turn that waits on its final holds it (`stt.barge_hold`), and `noHold`, where it
-  does not, delivers a lone "Stop." after the reply resumed -- to the unpaused two-word
-  guard (the re-review's S1). The window is assumed to outlast the preview.
+  does not, delivers its words after the reply resumed: decided over a playing reply, with
+  no judge to ask, and a one-word answer meets the unpaused two-word guard. The re-review's
+  S1 was a lone "Stop." lost that way; since #216 (`PauseAwareMinWordsStrategy._count`) a
+  stop utterance starts the turn paused or not, so that one no longer is. The window is
+  assumed to outlast the preview.
 
 Run: each row is a few thousand states, ~1 s.
 
