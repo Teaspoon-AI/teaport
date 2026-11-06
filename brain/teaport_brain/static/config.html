@@ -474,6 +474,34 @@
     dlg.showModal();
   });
 
+  // One switch, and what it came to in words: {text, reread}, reread when the box may be on
+  // another network now. Only a request with no answer is "lost": the fetch rejected, as it
+  // does when the box leaves the network this browser reaches it on. An answer is the
+  // box's, and a refusal -- a 409's "this box is already in setup mode", a 400's password
+  // length -- switched nothing: it is shown as the brain gave it, its `detail` (#271). A
+  // body with none (not JSON: Caddy's 502 while the brain restarts) names the status.
+  const switchWifi = async (ssid, password, hidden) => {
+    const lost = { text: 'Lost the box while it switched networks. If it joined ' + ssid + ', find it there (teaport.local); if not, it went back to its old network.' };
+    let status, body, why = '';
+    try {
+      ({ status, body } = await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password, hidden }) }));
+    } catch (err) {
+      if (!err.status) return lost;
+      // api()'s message is the detail when there is one, else the status text (none over
+      // HTTP/2, the front door's) or "unauthorized".
+      ({ status, body } = err);
+      if (!body || body.detail === undefined) why = err.message || '';
+    }
+    body = body || {};
+    if (status < 300) {
+      // A 200 whose body did not arrive is a box lost before it could say how it went.
+      if (typeof body.ok !== 'boolean') return lost;
+      return { reread: true, text: body.ok ? 'Connected to ' + ssid + '.' : 'Could not switch to ' + ssid + ': ' + body.error + '. The box went back to its previous network.' };
+    }
+    const detail = typeof body.detail === 'string' && body.detail.trim();
+    return { text: 'Could not switch to ' + ssid + ': ' + (detail || ('the box answered ' + status + (why ? ' ' + why : ''))) + '.' };
+  };
+
   const renderWifi = async (msg) => {
     const sec = $('#g-wifi');
     let w;
@@ -515,13 +543,9 @@
         'If the new network does not work, the box goes back to the one it is on now.'], 'Switch');
       if (!sure) return;
       out.textContent = 'Switching to ' + ssid + '… this can take up to a minute.';
-      try {
-        const r = (await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password: pw.value, hidden: !(picked && picked.value) }) })).body;
-        pw.value = '';
-        renderWifi(r.ok ? 'Connected to ' + ssid + '.' : 'Could not switch to ' + ssid + ': ' + r.error + '. The box went back to its previous network.');
-      } catch (err) {
-        out.textContent = 'Lost the box while it switched networks. If it joined ' + ssid + ', find it there (teaport.local); if not, it went back to its old network.';
-      }
+      // As text, the brain's words included; a refusal keeps the form as it was, to fix.
+      const r = await switchWifi(ssid, pw.value, !(picked && picked.value));
+      if (r.reread) { pw.value = ''; renderWifi(r.text); } else out.textContent = r.text;
     };
     setupBtn.onclick = async () => {
       const sure = await confirmDialog('Put this box in setup mode?', [
