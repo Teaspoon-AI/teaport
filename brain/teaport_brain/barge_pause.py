@@ -114,6 +114,9 @@
 #     the word guard) re-arms it -- with a word guard over one word, so can the bot's own
 #     echo transcribed as one word the echo guard let through; a pause the cap ended
 #     while the judge or the STT held it does not count.
+#   * The box's own urgent line: the incoming-call question (call_prompt.py), said
+#     unpausable (AgentSession.own_line, hold_off) -- the ringtone it is about must not
+#     stop it. The user is still heard, and words over it still barge in.
 #
 # The echo guard is the onset test itself: 128 ms of Silero confidence >= 0.6, which
 # typically fires within ~100-250 ms of the onset of real speech -- well ahead of the
@@ -407,6 +410,8 @@ class BargeInPauser(FrameProcessor):
         self._noisy_at = 0.0
         # The cap is ending a pause someone held (the judge, the STT): no word-less end.
         self._cap_held = False
+        # Held off (hold_off): the box's own urgent line plays -- nothing pauses it.
+        self._held_off = 0
         # Tallies, for the log and the tests.
         self.pauses = 0
         self.resumes = 0
@@ -548,8 +553,17 @@ class BargeInPauser(FrameProcessor):
                         f"{_NOWORD_WINDOW_S:.0f}s -- not pausing again until words come or "
                         "the reply ends (sound that is not speech: a ringtone, music, echo)")
 
+    def hold_off(self, on: bool):
+        """The box's own urgent line is being said (AgentSession.own_line, unpausable:
+        the incoming-call question) -- nothing pauses it, whatever is heard over it (a
+        ringtone read as speech paused it over and over, 2026-11-06). Counted, so lines
+        that overlap each lift only their own."""
+        self._held_off = max(0, self._held_off + (1 if on else -1))
+
     def _may_pause(self, source: str) -> bool:
         if self._paused or not self._bot_speaking or not self._reply_audio:
+            return False
+        if self._held_off:
             return False
         if self._noisy:
             now = time.monotonic()

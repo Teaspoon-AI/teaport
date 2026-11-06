@@ -326,6 +326,9 @@ class AgentSession:
         # Asks this conversation whether to take a phone call (call_prompt.CallPrompt);
         # None where it cannot be asked (build_agent_session decides).
         self.call_prompt = None
+        # The barge-in pauser (barge_pause.BargeInPauser), where playout can pause: held
+        # off for a line said unpausable (own_line).
+        self.barge_pauser = None
 
     async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True,
                     prepared: str | None = None, notice: str | None = None):
@@ -531,16 +534,22 @@ class AgentSession:
     _OWN_LINE_SETTLE_MAX_S = 5.0
 
     @contextlib.asynccontextmanager
-    async def own_line(self, line: str, *, append_to_context: bool):
+    async def own_line(self, line: str, *, append_to_context: bool, unpausable: bool = False):
         """Stop whatever is being said and put `line` in its place, yielding the watch on
         its delivery (FollowupGate.watch_delivery): the session's last line
         (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
+        `unpausable`: the box's own urgent line -- no barge-in pause stops it for as long
+        as the block runs (BargeInPauser.hold_off); the user is still heard, and words
+        over it still barge in.
         The cut is the brain's, not the caller's: the owed book counts no cut telling and
         reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
         not a timer the ledger's charting of the cut could lose to."""
         owed = getattr(self.llm, "owed", None)
         if owed is not None:
             owed.own_cut = True
+        pauser = self.barge_pauser if unpausable else None
+        if pauser is not None:
+            pauser.hold_off(True)
         try:
             gate = self.followup_gate
             seen = gate.interruptions
@@ -572,6 +581,8 @@ class AgentSession:
         finally:
             if owed is not None:
                 owed.own_cut = False
+            if pauser is not None:
+                pauser.hold_off(False)
 
     async def say_last_line(self, line: str, max_secs: float, *,
                             append_to_context: bool = False) -> bool:
@@ -1606,6 +1617,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         client_notes=client_notes,
         input_mute=input_mute,
     )
+    session.barge_pauser = barge_pauser
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
     session.phrases = phrases  # the fixed phrases (Wi-Fi setup's, or the settings phrase's)

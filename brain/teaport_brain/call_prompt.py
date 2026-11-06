@@ -100,8 +100,11 @@ class CallPrompt:
         asked_at = loop.time()
         try:
             line = arb.prompt_line(caller, self._lang())
-            # A phone ringing stops the sentence it rings over: the brain's own cut.
-            async with session.own_line(line, append_to_context=True) as delivery:
+            # A phone ringing stops the sentence it rings over: the brain's own cut. And
+            # nothing pauses the question -- the ringtone itself read as speech paused it
+            # over and over (2026-11-06): the user answers over it or after it.
+            async with session.own_line(line, append_to_context=True,
+                                        unpausable=True) as delivery:
                 said = asyncio.ensure_future(delivery.done.wait())
                 try:
                     await asyncio.wait({fut, said}, timeout=QUESTION_MAX_SECS,

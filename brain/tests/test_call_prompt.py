@@ -379,6 +379,27 @@ async def test_the_phone_ringing_over_a_sentence_is_the_brains_own_cut():
     assert book.own_cut is False, "the user's answer is theirs again"
 
 
+async def test_nothing_pauses_the_question_while_it_is_asked():
+    """2026-11-06 on the box: a ringtone near it read as the user's speech, and the
+    barge-in pause stopped the question about that very call, over and over. The
+    question is said unpausable: the pauser is held off for as long as it is asked."""
+    session, prompt = _prompted()
+    seen = []
+    session.barge_pauser = SimpleNamespace(hold_off=lambda on: seen.append(("hold", on)))
+    queue = session.task.queue_frames
+
+    async def watched(frames):
+        seen.extend(type(f).__name__ for f in frames if isinstance(f, TTSSpeakFrame))
+        await queue(frames)
+    session.task.queue_frames = watched
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    await asyncio.sleep(0.4)
+    prompt.answer(False)
+    assert await asyncio.wait_for(asking, 1) is False
+    assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
+        "held off from before the question goes in until it has been said", seen)
+
+
 async def test_the_question_speaks_the_sessions_language_and_withholds_nothing_it_has_not():
     session, prompt = _prompted(lang_voice="ef_dora")
     asking = asyncio.ensure_future(prompt.ask(None))
