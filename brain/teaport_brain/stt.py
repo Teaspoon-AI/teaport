@@ -124,11 +124,17 @@ _EMPTY_FINAL_RUN = 5
 #              resumes on as routine; so a quiet call's single early empty never trips
 #              it, and nothing under 4 segments (3 misses and the words that judge
 #              them) is judged at all.
-#   warn 40%   3 misses within the last 7 segments, 5 of a full window. The 2026-09-10
-#              call opened EMPTY, words, EMPTY, words, EMPTY, words: 3 of 6 at its sixth
-#              segment. Its 29% overall is under the line: a loss spread evenly at that
-#              rate (4 of a dozen) never trips it, and a line low enough to (a third)
-#              would trip on 3 coughs in a call's first 9 segments.
+#   warn 40%   the rule is both: at least 3 misses AND at least 40% of the window,
+#              judged only on a segment with words. Early in a call, while the window
+#              holds 7 segments or fewer, the 3 misses bind; after that the share does
+#              -- 4 misses of 8 to 10, 5 of 11 or a full 12 -- so 3 misses after a dozen
+#              healthy segments (12 W, then EWEWEW) stay silent. The 2026-09-10 call
+#              opened EMPTY, words, EMPTY, words, EMPTY (as #29 quotes it) and trips at
+#              its next words: 3 of 6 if its sixth segment had words, 4 of 7 if it was
+#              a miss too (its misses came in ones and twos). Its 29% overall is under
+#              the line: a loss spread evenly at that rate (4 of a dozen) never trips
+#              it, and a line low enough to (a third) would trip on 3 coughs in a
+#              call's first 9 segments.
 #   clear 20%  half the warn line, so a share hovering at 40% is one episode and one
 #              recovery line, not a pair every few segments; 2 of a full window.
 _EMPTY_RATE_WINDOW = 12

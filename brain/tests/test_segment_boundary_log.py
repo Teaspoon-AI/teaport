@@ -200,6 +200,12 @@ async def test_the_intermittent_call_that_said_nothing_now_warns_once():
     assert [lvl for lvl, m in lines if RATE in m] == ["WARNING"]
     # The run it slipped past is still blind to it -- which is the point.
     assert not _lines(lines, RUN), lines
+    # Its sixth segment is not quoted: a miss there too, and it trips a segment later.
+    _, lines = await _drive("EWEWEEW")
+    assert ["4 of the last 7" in m for m in _lines(lines, RATE)] == [True], lines
+    # And 3 misses are enough only early: after a dozen healthy segments the share binds.
+    _, lines = await _drive("W" * 12 + "EWEWEW")
+    assert not _lines(lines, RATE), lines
 
 
 async def test_the_two_shapes_are_kept_apart():
