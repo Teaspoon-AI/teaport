@@ -187,6 +187,57 @@ async def test_a_phrase_that_does_not_fit_is_never_cut():
     assert _ack(at_cap + " today") == "On it."
 
 
+async def test_quotes_come_off_only_as_a_pair_around_the_whole_phrase():
+    """Review of #329: a closing quote was stripped with the stop, leaving its opening
+    one ('Sure — searching for "best tacos.'), which on Talk goes out as a caption."""
+    for written, said in (
+            ('Searching for "best tacos"', 'Sure — searching for "best tacos".'),
+            ('looking up the "Hamilton"', 'Sure — looking up the "Hamilton".'),
+            ('looking up "Hamilton" tickets.', 'Sure — looking up "Hamilton" tickets.'),
+            ("Searching for 'best tacos'", "Sure — searching for 'best tacos'."),
+            ('"looking up the weather."', "Sure — looking up the weather."),
+            ('"looking up the weather".', "Sure — looking up the weather."),
+            ("\u201clooking up the weather\u201d", "Sure — looking up the weather."),
+            ("'checking Joe's calendar'", "Sure — checking Joe's calendar.")):
+        assert _ack(written) == said, (written, _ack(written))
+    # Two quotations, not one pair around it all: nothing comes off, and a quote mark
+    # before the -ing word is no -ing word.
+    assert _ack('"looking up" the "Hamilton"') == "On it."
+
+
+async def test_only_a_word_written_to_open_a_sentence_is_lowercased():
+    """Review of #329: the first letter was lowercased whatever the word ("lOOKING"),
+    and a name that ends in -ing passed as a gerund ("Sure — wyoming weather ...")."""
+    assert _ack("Looking up NASA's launch") == "Sure — looking up NASA's launch."
+    assert _ack("LOOKING UP THE WEATHER") == "Sure — LOOKING UP THE WEATHER."
+    for name in ("Wyoming weather this weekend", "Beijing time right now"):
+        assert _ack(name) == "On it.", name
+
+
+async def test_a_two_word_fragment_gets_the_plain_lines():
+    """Review of #329: "Looking up…" became "Sure — looking up.", which sounds whole."""
+    for fragment in ("Looking up…", "looking up...", "looking into", "checking…",
+                     '"Looking up..."', "checking on"):
+        assert _ack(fragment) == "On it.", fragment
+        assert tools._status_phrase(fragment, "en") == ("", "a fragment"), fragment
+    assert _ack("checking") == "Sure — checking."
+    assert _ack("Looking it up…") == "Sure — looking it up."
+
+
+async def test_the_listener_is_refused_only_as_the_one_addressed():
+    """Review of #329: any mention of "the user" was refused ("the user manual") and
+    "for the users" passed. Refused: the listener named in the third person, as an
+    instruction to the agent names them."""
+    for agents in ("summarizing the latest news headlines for the user",
+                   "summarizing the news for the users", "sending the email to the user",
+                   "checking the user's calendar", "checking with the caller's bank",
+                   "reading the messages to the caller"):
+        assert tools._status_phrase(agents, "en") == ("", "not said to the listener"), agents
+    for listeners in ("checking the user manual for the router",
+                      "looking up the caller ID for that number"):
+        assert _ack(listeners) == f"Sure — {listeners}.", listeners
+
+
 async def test_the_second_line_claims_nothing():
     """It was "Almost there", said of consults nowhere near done: now the same honest
     line whatever the phrase."""

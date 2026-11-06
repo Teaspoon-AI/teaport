@@ -615,8 +615,42 @@ _STATUS_MAX_CHARS = 80
 # slip is one odd line, never a cut one.
 _NOT_GERUNDS = frozenset(
     "thing something anything nothing everything bring string spring sting swing cling "
-    "fling sling wring morning evening during ceiling".split())
-_STATUS_QUOTES = " \"'\u201c\u201d\u2018\u2019\u00ab\u00bb"
+    "fling sling wring morning evening during ceiling".split()
+    # Names that open a phrase as a gerund would ("Wyoming weather this weekend").
+    # Others can still pass, lowercased ("Sure — lansing weather."): the schema asks for
+    # a verb, and the slip is one odd line, as for "meeting".
+    + "wyoming beijing nanjing chongqing kunming peking boeing viking sterling stirling"
+    .split())
+# A quote is taken off only as a pair around the whole phrase: one closing a quotation
+# inside it stays ('searching for "best tacos"', which goes out as a caption on Talk).
+_STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
+                       "\u00ab": "\u00bb"}
+_STATUS_STOPS = " .!?…,;:—–-"
+# A two-word phrase ending on one of these is a verb with its object missing ("Looking
+# up…"): "Sure — looking up." sounds complete and says nothing.
+_DANGLING = frozenset(
+    "up into for at on over out through about after around down with to in off from of "
+    "by back".split())
+# The listener named in the third person, as an instruction to the agent names them
+# ("... for the user", "the caller's bank"), not any mention ("the user manual", "the
+# caller ID").
+_ABOUT_THE_LISTENER = re.compile(
+    r"\b(?:for|to|with|tell|tells|telling|ask|asking|remind|reminding|show|showing|let|"
+    r"letting|notify|notifying|give|giving|send|sending)\s+the\s+(?:user|caller)s?\b"
+    r"|\bthe\s+(?:user|caller)(?:['\u2019]s\b|s['\u2019])", re.I)
+
+
+def _unquoted(text: str) -> str:
+    """`text` without one pair of quotes around all of it, and without its closing stop."""
+    text = text.strip(_STATUS_STOPS)
+    if len(text) > 1 and _STATUS_QUOTE_PAIRS.get(text[0]) == text[-1]:
+        inner, opening, closing = text[1:-1], text[0], text[-1]
+        # Not a pair if either mark is inside again ('"x" and "y"'); an apostrophe
+        # between letters is no quote ("'checking Joe's calendar'").
+        marks = re.sub(r"(?<=[^\W\d_])['\u2019](?=[^\W\d_])", "", inner)
+        if opening not in marks and closing not in marks:
+            text = inner.strip(_STATUS_STOPS)
+    return text
 
 
 def _status_phrase(value, lang: str) -> tuple[str, str]:
@@ -625,7 +659,9 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     not a string, over the caps, not prose (a URL, JSON, markup), not starting with an
     -ing word, or naming the listener in the third person ("... for the user": written
     for the agent, the register #120 is about), it is "" and the plain lines are said.
-    Only the edges are tidied: spacing, wrapping quotes, the closing stop the frames add.
+    Only the edges are tidied: spacing, a pair of quotes around all of it, the closing
+    stop the frames add, and the first capital. A two-word fragment ("Looking up…") is
+    plain lines too.
 
     English only (#300). The -ing test is what tells a phrase that fits "Sure — ..." and
     "Still ..." from one that does not, and only in English is a test that cheap. In
@@ -641,8 +677,8 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
         return "", "not text"
     if lang != i18n.SOURCE_LANG:
         return "", f"a {lang} session"
-    text = " ".join(value.split()).lstrip(_STATUS_QUOTES)
-    text = text.rstrip(_STATUS_QUOTES + ".!?…,;:—–-")
+    spaced = " ".join(value.split())
+    text = _unquoted(spaced)
     words = text.split()
     if not words:
         return "", "none"
@@ -650,14 +686,20 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
         return "", "not prose"
     if len(words) > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS:
         return "", "too long"
-    first = words[0].lower().rstrip(",;:")
-    if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first) or len(first) < 5
-            or first in _NOT_GERUNDS):
+    first = words[0].rstrip(",;:")
+    if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first.lower()) or len(first) < 5
+            or first.lower() in _NOT_GERUNDS):
         return "", "no -ing word first"
-    if re.search(r"\bthe (?:user|caller)\b", text, re.I):
+    if len(words) <= 2 and (spaced.rstrip(" \"'\u201d\u2019\u00bb").endswith(("…", "..."))
+                            or words[-1].lower() in _DANGLING):
+        return "", "a fragment"
+    if _ABOUT_THE_LISTENER.search(text):
         return "", "not said to the listener"
-    # The gerund opens a sentence's second half ("Sure — looking ..."), never a name.
-    return text[0].lower() + text[1:], ""
+    # The gerund opens a sentence's second half ("Sure — looking ..."): lowercased when
+    # it is written as a word that opens one ("Looking"), not in capitals ("LOOKING").
+    if first[1:] == first[1:].lower():
+        text = text[0].lower() + text[1:]
+    return text, ""
 
 
 def _progress_line(status_phrase, n, t):

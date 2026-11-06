@@ -13,7 +13,7 @@
 # The brain follows that contract instead of composing its own: the session's system
 # prompt starts with the instructions as the host sent them (persona.build_system_prompt,
 # then the voice overlay), and the model's consult tool takes the host's schema
-# (tools.host_tool_schemas).
+# (tools.host_tool_schemas), plus the brain's own status phrase (tools.CONSULT_STATUS).
 #
 # Where it comes from, per front end:
 #   Talk   the plugin's session_config frame, the first frame on /talk when the URL
@@ -31,7 +31,7 @@
 # Either way the result goes to build_agent_session(host=...). None -- no gateway
 # (TEAPORT_AGENT=none), or one that cannot answer (restarting, a plugin before #230, an
 # OpenClaw before 2026.9.7) -- builds from the persona file (persona.load_persona) and the
-# brain's copy of the consult schema (tools.OPENCLAW_AGENT_CONSULT).
+# brain's copy of the consult schema (tools.OPENCLAW_AGENT_CONSULT), with the same field.
 #
 import asyncio
 import json
