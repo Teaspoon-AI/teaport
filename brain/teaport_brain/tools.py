@@ -35,7 +35,9 @@
 # client's {"type": "tool_result", "call_id", "result"} (the same message, and the same
 # consult_bridge registry, the plugin already answers consults with). Only a client
 # that announced the feature is ever asked; the local audio bridge
-# (local_audio.py) announces volume and restart.
+# (local_audio.py) announces volume and restart. The brain calls one itself in one place:
+# end_conversation, in a room whose model said its goodbye and did not call it
+# (goodbye.py, #221), with "said": true beside the args -- the goodbye has played.
 #
 # Host-run tools (HOST_RUN_TOOLS) are OpenClaw's own, by its name and schema, and run
 # by its side of a Talk session: openclaw_agent_consult (the relay runs it) and
@@ -84,7 +86,7 @@ from teaport_brain.settings import setting
 # Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
 # both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
 # alone, leaving the mode half-enabled — the strict router directive installed while this
-# module still spoke the "I'll work on that" ack the directive exists to suppress. It also
+# module still spoke the consult's acknowledgement the directive exists to suppress. It also
 # only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while
 # docs/src/content/docs/guides/configuration.md ("Change a setting in a configuration file")
 # promised otherwise; setting() reads it by the documented table.
@@ -177,7 +179,7 @@ REMEMBER = FunctionSchema(
 # OpenClaw's src/talk/agent-consult-tool.ts as 2026.9.7 has it (the appliance's version;
 # exported from openclaw/plugin-sdk/realtime-voice), copied exactly: name, description,
 # parameters, confirmationId included. Keep it that way; a wording of our own belongs in
-# the overlay, not here.
+# the overlay, not here, and a field of our own in CONSULT_STATUS below.
 OPENCLAW_AGENT_CONSULT = FunctionSchema(
     name="openclaw_agent_consult",
     description=(
@@ -206,6 +208,31 @@ OPENCLAW_AGENT_CONSULT = FunctionSchema(
     },
     required=["question"],
 )
+
+# The brain's own field on the consult (#120): a few words for the LISTENER on what is
+# being done, which the brain says while the consult runs: the acknowledgement when the
+# model called the tool without a word ("Sure — looking up pastry shops on Burnet
+# Road.", _fallback_line) and the first progress line ("Still looking up ...",
+# _progress_line). Those lines used to be cut from `question`, which the model writes
+# for the agent, not for the listener, and it showed (the box, 2026-10-09): "Still
+# working on that — Fetch the current top story headline from Hacker News.", "... —
+# Please summarize the latest news headlines for the user.", and a long one cut off
+# mid-thought. The model writes this in the same tool call: no extra inference.
+# Not OpenClaw's: build_tools_schema adds it to whichever consult schema is offered (the
+# host's, or the copy above, which stays exactly OpenClaw's), and _consult_args leaves it
+# out of the call the relay and the CLI lane are sent. Optional, and read defensively
+# (_status_phrase): missing or malformed, the plain lines are said.
+CONSULT_STATUS = "statusPhrase"
+_CONSULT_STATUS_PROPERTY = {
+    "type": "string",
+    "description": (
+        "A few words (ten at most) telling the listener what you are doing for them, "
+        "which they hear while the agent works: \"Sure — <this>.\", later \"Still "
+        "<this>.\". Say it to the listener, in the language you are speaking, never as "
+        "an instruction to the agent; in English start with an -ing word, e.g. \"looking "
+        "up pastry shops on Burnet Road\"."
+    ),
+}
 
 # OpenClaw's run control for a consult in flight (#230): status, cancel, steer or followup,
 # in any phrasing or language. It is REALTIME_VOICE_AGENT_CONTROL_TOOL from OpenClaw's
@@ -580,73 +607,184 @@ _PROGRESS_GAP_WAIT = 6.0
 # line skipped) still ends the narration on time rather than 2 x 6s late. Named so
 # tests can shorten it.
 _PROGRESS_SCHEDULE = (9.0, 22.0)
-# Caps on the topic echo: words, and characters (a request is often one long line).
-_PROGRESS_TOPIC_WORDS = 9
-_PROGRESS_TOPIC_CHARS = 60
-# A cut must not leave the echo hanging on a function word ("...pastry shop in.").
-_PROGRESS_TOPIC_TRAILING = frozenset(
-    "a an the in on at of to for with and or but by from near into onto about that this "
-    "these those my your our their its is are was were be if as than then".split())
+# The status phrase (CONSULT_STATUS) is said whole or not at all: the old echo of the
+# request, cut at nine words or sixty characters, still ended mid-thought ("...pastry
+# shops on Burnet Rd in"). Longer than this, the plain lines are said instead.
+_STATUS_MAX_WORDS = 12
+_STATUS_MAX_CHARS = 80
+# Words ending in -ing that do not open a verb phrase ("Sure — something about the
+# shop."). A noun such as "meeting" can still pass: the schema asks for a verb, and a
+# slip is one odd line, never a cut one.
+_NOT_GERUNDS = frozenset(
+    "thing something anything nothing everything bring string spring sting swing cling "
+    "fling sling wring morning evening during ceiling".split()
+    # Names that open a phrase as a gerund would ("Wyoming weather this weekend").
+    # Others can still pass, lowercased ("Sure — lansing weather."): the schema asks for
+    # a verb, and the slip is one odd line, as for "meeting".
+    + "wyoming beijing nanjing chongqing kunming peking boeing viking sterling stirling "
+      "lansing redding fleming ewing corning irving kipling darjeeling kettering woking "
+      "ealing epping".split())
+# A quote is taken off only as a pair around the whole phrase: one closing a quotation
+# inside it stays ('searching for "best tacos"', which goes out as a caption on Talk).
+_STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
+                       "\u00ab": "\u00bb"}
+_STATUS_STOPS = " .!?…,;:—–-"
+_STATUS_QUOTE_MARKS = "\"'()[]\u201c\u201d\u2018\u2019\u00ab\u00bb"
+# A phrase ending where a word should follow stops mid-thought: on a preposition or a
+# particle that needs an object ("Looking up…", "looking into", "looking up flights
+# to"), or on an article or a possessive ("looking up the…"). "Sure — looking up the."
+# sounds finished and is broken. Not the particles a whole phrasal verb ends on
+# ("logging in", "checking out", "calling back"), nor "up", "on" or "in" after a verb
+# they complete ("signing up", "holding on", "checking in"). Not "this", "that" or
+# "her" either: they end a phrase as pronouns ("looking into that", "calling her").
+_DANGLING = frozenset(
+    "into for at about through with to from of by a an the my your his their our its"
+    .split())
+_UP_TAKES_AN_OBJECT = frozenset(
+    "looking pulling picking digging bringing calling ringing".split())
+_WHOLE_WITH_ON = frozenset("logging holding moving carrying hanging going".split())
+# "on" wants its object after the verb itself ("checking on", "working on"), after
+# another particle ("catching up on") or a "what's" ("checking what's on"); after the
+# verb's own object it is whole ("turning the lights on", "putting the kettle on").
+_ON_WANTS_MORE_AFTER = frozenset(
+    "what what's is it's that's was are up out back down over off".split())
+# "in" is whole after an object pronoun ("logging you in", "letting them in").
+_PRONOUN_OBJECTS = frozenset("you him her them me us it".split())
+_WHOLE_WITH_THROUGH = frozenset("following pulling getting going coming".split())
+_WHOLE_WITH_IN = frozenset(
+    "logging checking signing plugging filling joining dropping breaking settling "
+    "tuning".split())
+# The listener named in the third person, as an instruction to the agent names them
+# ("informing the user", "near the caller", "the user's calendar"). Refused wherever it
+# stands, except before a word that makes "user" or "caller" part of a thing's name
+# ("the user manual", "the caller ID"), and that only where no verb aimed at the
+# listener comes first: "showing the user names of nearby cafes" is the listener.
+_LISTENER_AS_A_NAME = (
+    "manual manuals guide guides id ids interface interfaces name names agreement "
+    "agreements forum forums group groups base documentation docs experience list lists")
+# The machinery behind the line, which the listener never asked about: a phrase that
+# names the agent, OpenClaw or the model is written for the agent, as a tool's name is
+# ("running web_search", refused as not prose by its underscore).
+_ABOUT_THE_MACHINERY = re.compile(
+    r"\b(?:agents?|subagents?|openclaw|llm|gateway|relay|tool\s+calls?)\b", re.I)
+_ABOUT_THE_LISTENER = re.compile(
+    r"\b(?:giving|showing|sending|telling|emailing|texting|messaging|asking)\s+the\s+"
+    r"(?:user|caller)s?\b"
+    r"|\bthe\s+(?:user|caller)s?\b(?!\s+(?:" + "|".join(_LISTENER_AS_A_NAME.split())
+    + r")\b)", re.I)
 
 
-def _topic_phrase(request):
-    """A short echo of the request, for the progress line: its opening phrase, cut at
-    the first clause boundary or the caps, and never left hanging on a function word.
-
-    It is the MODEL's restatement of what the user asked -- openclaw_agent_consult's
-    `question` argument, which the tool schema asks for as "the concrete question or
-    task the user asked" -- not the user's transcript, so it can misname the topic the way
-    any paraphrase can.
-    But it is the same text the agent is answering, which is what a status line should
-    name. Anything that is not prose (a URL, JSON, code) yields "" and the generic
-    line is used instead: nine tokens of that read aloud is worse than "still working
-    on it"."""
-    text = " ".join((request or "").split())
-    if not text or "://" in text or any(c in text for c in "{}[]<>=`"):
-        return ""
-    words = []
-    for w in text.split():
-        words.append(w)
-        if len(" ".join(words)) > _PROGRESS_TOPIC_CHARS:
-            words.pop()
-            break
-        if w[-1] in ",;:.!?" and len(words) >= 3:  # a clause ended: the natural cut
-            break
-        if len(words) >= _PROGRESS_TOPIC_WORDS:
-            break
-    while words and words[-1].rstrip(".,:;!?").lower() in _PROGRESS_TOPIC_TRAILING:
-        words.pop()
-    phrase = " ".join(words).rstrip(" .,:;!?\u2014-")
-    return phrase if any(c.isalpha() for c in phrase) else ""
+def _dangling(before: str, last: str) -> bool:
+    """A phrase ending `before last` stops where a word should follow ("looking up",
+    "flights to", "up the")."""
+    if last == "up":
+        return before in _UP_TAKES_AN_OBJECT
+    if last == "on":
+        return ((before.endswith("ing") and before not in _WHOLE_WITH_ON)
+                or before in _ON_WANTS_MORE_AFTER)
+    if last == "in":
+        return before not in _WHOLE_WITH_IN and before not in _PRONOUN_OBJECTS
+    if last == "through":
+        return before not in _WHOLE_WITH_THROUGH
+    return last in _DANGLING
 
 
-def _progress_line(request, n, t):
-    """The nth (0-based) progress line, naming the topic when the request gives one.
-    'that <topic>' keeps it tied to the request, so a status update heard a minute
-    later still has a referent — the confusion was 'still working on it' landing
-    after unrelated turns with no 'it' in sight."""
-    # The echo is the model's restatement, usually in English, and its trimming rules
-    # (_PROGRESS_TOPIC_TRAILING, the prose test) are English: in another language it
-    # would be an English fragment in the middle of a translated sentence, so those
-    # sessions get the generic line.
-    topic = _topic_phrase(request) if t.lang == i18n.SOURCE_LANG else ""
-    # The topic rides as a dash appositive after a complete clause, never inside a
-    # grammatical slot: the request is often a verb phrase ("find good pastry shops"),
-    # and "almost there on the find good pastry shops" is broken where
-    # "almost there — find good pastry shops" reads fine spoken.
+def _unquoted(text: str) -> str:
+    """`text` without one pair of quotes around all of it, and without its closing stop."""
+    text = text.strip(_STATUS_STOPS)
+    if len(text) > 1 and _STATUS_QUOTE_PAIRS.get(text[0]) == text[-1]:
+        inner, opening, closing = text[1:-1], text[0], text[-1]
+        # Not a pair if either mark is inside again ('"x" and "y"'); an apostrophe
+        # between letters is no quote ("'checking Joe's calendar'").
+        marks = re.sub(r"(?<=[^\W\d_])['\u2019](?=[^\W\d_])", "", inner)
+        if opening not in marks and closing not in marks:
+            text = inner.strip(_STATUS_STOPS)
+    return text
+
+
+def _status_phrase(value, lang: str) -> tuple[str, str]:
+    """The consult's status phrase (CONSULT_STATUS) as the brain's lines say it, or ""
+    and why not (a word for the log), for a session speaking `lang`. Never cut: missing,
+    not a string, over the caps, not prose (a URL, JSON, markup), not starting with an
+    -ing word, or naming the listener in the third person ("... for the user": written
+    for the agent, the register #120 is about), it is "" and the plain lines are said.
+    Only the edges are tidied: spacing, a pair of quotes around all of it, the closing
+    stop the frames add, and the first capital. A phrase that stops where a word should
+    follow ("Looking up…", "looking up the…") is plain lines too.
+
+    English only (#300). The -ing test is what tells a phrase that fits "Sure — ..." and
+    "Still ..." from one that does not, and only in English is a test that cheap. In
+    another language the model's phrase has its own word order and verb form, and
+    nothing as cheap tells whether it is in the session's language at all: the consult's
+    `question` is usually English there (#300), and an English fragment inside a
+    translated sentence is what #290 took out of these lines. So another language gets
+    the plain lines, which its catalog translates, until a check for that language and
+    a native review of its frames exist (the frames are translated already)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return "", "none"
+    if not isinstance(value, str):
+        return "", "not text"
+    if lang != i18n.SOURCE_LANG:
+        return "", f"a {lang} session"
+    text = _unquoted(" ".join(value.split()))
+    words = text.split()
+    if not words:
+        return "", "none"
+    if "://" in text or any(c in text for c in "{}[]<>=`*#|\\_"):
+        return "", "not prose"
+    if len(words) > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS:
+        return "", "too long"
+    first = words[0].rstrip(",;:")
+    if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first.lower()) or len(first) < 5
+            or first.lower() in _NOT_GERUNDS):
+        return "", "no -ing word first"
+    # A one-word phrase is a gerund ("checking"), whole; anything longer may stop short.
+    if len(words) >= 2 and _dangling(*(w.lower().strip(_STATUS_QUOTE_MARKS)
+                                       for w in words[-2:])):
+        return "", "ends mid-thought"
+    if _ABOUT_THE_LISTENER.search(text) or _ABOUT_THE_MACHINERY.search(text):
+        return "", "not said to the listener"
+    # The gerund opens a sentence's second half ("Sure — looking ..."): lowercased when
+    # it is written as a word that opens one ("Looking"), not in capitals ("LOOKING").
+    if first[1:] == first[1:].lower():
+        text = text[0].lower() + text[1:]
+    return text, ""
+
+
+def _progress_line(status_phrase, n, t):
+    """The nth (0-based) progress line. The first names what is being done, in the
+    model's own words for the listener (_status_phrase), so a line heard a minute later,
+    after unrelated turns, still has a referent: "Still looking up pastry shops on
+    Burnet Road."; without a phrase that can be said, "Still on it." The second claims
+    nothing it does not know: it was "Almost there", a guess with nothing behind it,
+    said of consults that were nowhere near done (#120)."""
     if n == 0:
-        return t._("Still working on that — {topic}.").format(topic=topic) if topic \
-            else t._("Still working on it.")
-    return t._("Almost there — {topic}.").format(topic=topic) if topic \
-        else t._("Almost there — hang tight.")
+        phrase, _ = _status_phrase(status_phrase, t.lang)
+        return t._("Still {phrase}.").format(phrase=phrase) if phrase else t._("Still on it.")
+    return t._("This one's taking a bit longer.")
 
 
-async def _consult_progress(llm, request=None, gate=None, tts=None):
+def _log_status_phrase(value, tts) -> None:
+    """One line per consult on the model's status phrase: said, or why the plain lines
+    are said instead. What the box check counts (#120: does the model fill the field
+    with a phrase for the listener?). The phrase itself only with
+    TEAPORT_LOG_CONVERSATIONS on (quoted), like every other word of the conversation."""
+    lang = i18n.for_espeak(getattr(tts, "espeak_language", None)).lang
+    _, why = _status_phrase(value, lang)
+    if why == "none":
+        logger.info("openclaw_agent_consult: no status phrase: the plain lines")
+        return
+    shown = quoted(value) if isinstance(value, str) else f"of type {type(value).__name__}"
+    logger.info(f"openclaw_agent_consult: status phrase {shown} "
+                + (f"not said ({why}): the plain lines" if why else "said"))
+
+
+async def _consult_progress(llm, status_phrase=None, gate=None, tts=None):
     """'Still alive' narration for the silent background stretch. The ack ends within
     ~2s but the CLI consult takes 15-30s, and dead air reads as a hang.
 
     Two things make it read like a person rather than a countdown clock. It NAMES
-    what it's working on (the request's opening phrase — see _topic_phrase), so a
+    what it's working on (the model's status phrase: see _status_phrase), so a
     late line still has a referent. And when a `gate` is given it waits for a
     conversational gap before speaking, up to _PROGRESS_GAP_WAIT past the line's
     moment: if the user is mid-conversation it stays quiet and skips that line rather
@@ -688,7 +826,7 @@ async def _consult_progress(llm, request=None, gate=None, tts=None):
             # TranscriptLedger (stamped onto its TTSStartedFrame by tts_service).
             t = i18n.for_espeak(getattr(tts, "espeak_language", None))
             await llm.push_frame(TTSSpeakFrame(
-                _progress_line(request, n, t), append_to_context=False))
+                _progress_line(status_phrase, n, t), append_to_context=False))
     except asyncio.CancelledError:
         pass
     finally:
@@ -750,10 +888,11 @@ def _ran_on(run) -> None:
 
 
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
-                            message=None, tts=None):
+                            message=None, tts=None, status_phrase=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
     caller's question, `message` the whole call for the CLI lane (_consult_message; the
-    question when not given). The turn already ended, so
+    question when not given), `status_phrase` the model's CONSULT_STATUS, which the
+    progress lines say. The turn already ended, so
     there's no tight voice deadline: wait out the consult, then land its outcome in
     `owed` (the session's owed.Owed): the placeholder tool result is rewritten to it,
     and it is owed to the caller until they hear it. Runs as a session-lifecycle
@@ -764,7 +903,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     straight to the agent."""
     from teaport_brain import consult_bridge
 
-    progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate, tts=tts))
+    progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
+                                                      gate=gate, tts=tts))
                 if llm is not None else None)
 
     answered = False    # the outcome landed is an answer (not a timeout, error or nothing)
@@ -880,7 +1020,8 @@ def _consult_args(arguments) -> dict | None:
     src/talk/agent-consult-tool.ts, 2026.9.7): `question`, or the first of its aliases a
     model may write instead (prompt, query, task), trimmed; `context`, `responseStyle` and
     `confirmationId` when they are non-empty strings. None without a question. What the
-    relay is sent, so it reads the same call the brain does.
+    relay is sent, so it reads the same call the brain does. Not the brain's own
+    CONSULT_STATUS: it is for the listener, and the agent is not asked to read it.
 
     `confirmationId` is how a risky action goes through on Talk: the relay's consult
     answers one with "VOICE_CONFIRMATION_REQUIRED:<id> ... Ask the user for explicit
@@ -927,8 +1068,9 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         await params.result_callback({"error": "question required"})
         return
     # The question is what the caller asked, as the model put it: the key duplicate
-    # dispatches fold on, the topic the progress lines name and what owed.py anchors
-    # the outcome on. The CLI lane gets the whole call as one message.
+    # dispatches fold on and what owed.py anchors the outcome on. The CLI lane gets the
+    # whole call as one message. What the progress lines name is not the question,
+    # which is written for the agent, but the model's status phrase (CONSULT_STATUS).
     request = args["question"]
 
     # Fold duplicate dispatches BEFORE creating any consult machinery: gpt-oss
@@ -972,18 +1114,23 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
                     "agent directly, its answer to be dropped")
         _run_detached(oc.agent_consult(_consult_message(args), timeout=_ASYNC_CONSULT_TIMEOUT))
     elif owed is not None:
+        # The model's words for the listener (CONSULT_STATUS), said by the progress
+        # lines as they are due, in the session's language then (_progress_line).
+        status_phrase = (params.arguments.get(CONSULT_STATUS)
+                         if isinstance(params.arguments, dict) else None)
+        _log_status_phrase(status_phrase, tts)
         consult = params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
-            message=_consult_message(args), tts=tts))
+            message=_consult_message(args), tts=tts, status_phrase=status_phrase))
         # Cancelled when the session ends, not left running into its teardown (#122).
         end_with_session = getattr(params.llm, "end_with_session", None)
         if end_with_session is not None:
             end_with_session(consult)
     if owed is not None:
         # Run NO inference on this placeholder (no_inference()). There is nothing for
-        # the model to say: the user already heard the deterministic "I'll work on
-        # that" ack, and the real outcome lands later (owed.py), rewriting this tool
-        # result, and a run of ours tells it then. Asking the model to
+        # the model to say: the user already heard the acknowledgement (the model's
+        # own line, or _fallback_line's), and the real outcome lands later (owed.py),
+        # rewriting this tool result, and a run of ours tells it then. Asking the model to
         # respond here and discarding what it says is what produced fabricated
         # answers — prompt-level "don't claim it's done" failed three times live
         # (it announced "posted!" ~4s in), and a speech mute over the discarded
@@ -1118,12 +1265,14 @@ CLIENT_TOOL_TIMEOUT_S = 3.0
 CLIENT_CALL_PREFIX = "teaport-client-"
 
 
-async def _send_call(llm, kind: str, call_id: str, name: str, args: dict) -> None:
+async def _send_call(llm, kind: str, call_id: str, name: str, args: dict,
+                     extra: dict | None = None) -> None:
     """A call the client runs, as the message the plugin or the local bridge reads:
     {"type": "client_tool"} for a client tool, {"type": "tool_call"} for a host-run tool
-    (HOST_RUN_TOOLS), which the plugin hands to the relay's onToolCall."""
+    (HOST_RUN_TOOLS), which the plugin hands to the relay's onToolCall. `extra`: fields
+    of the brain's own beside the model's arguments (call_client_tool)."""
     await llm.push_frame(OutputTransportMessageUrgentFrame(message={
-        "type": kind, "call_id": call_id, "name": name, "args": args}))
+        **(extra or {}), "type": kind, "call_id": call_id, "name": name, "args": args}))
 
 
 async def _cancel_at_relay(llm, call_id: str) -> None:
@@ -1143,7 +1292,7 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
 
 
 async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
-                      timeout: float, *, after_cancel=None) -> tuple:
+                      timeout: float, *, after_cancel=None, extra: dict | None = None) -> tuple:
     """Send a call the client runs (_send_call) and wait for its tool_result:
     (result, None), or (None, "timeout") when none came in `timeout`, or (None,
     "unreachable") when the call could not be sent. A cancel of the call itself propagates
@@ -1159,7 +1308,7 @@ async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
     deadline = loop.time() + timeout
     sent = kept = False
     try:
-        await _send_call(llm, kind, call_id, name, args)
+        await _send_call(llm, kind, call_id, name, args, extra)
         sent = True
         # Shielded: a cancel of this wait leaves the future to the task below.
         return await asyncio.wait_for(asyncio.shield(fut), timeout), None
@@ -1197,20 +1346,30 @@ async def _outlive(name: str, call_id: str, fut, left: float, then) -> None:
         logger.warning(f"{name}: its late result was not passed on ({e!r})")
 
 
+async def call_client_tool(llm, name: str, args: dict, extra: dict | None = None) -> dict:
+    """Ask the client to perform `name` and return what it answers, as a dict: what a
+    client tool's handler hands the model (_client_tool), and what the brain gets when it
+    calls one itself, as the goodbye backstop calls end_conversation (goodbye.py, #221).
+    `extra`: fields of the brain's own in the message, beside the arguments (that one's
+    "said")."""
+    result, failure = await _ask_client(llm, "client_tool", CLIENT_CALL_PREFIX, name, args,
+                                        CLIENT_TOOL_TIMEOUT_S, extra=extra)
+    if failure == "timeout":
+        result = {"ok": False, "error": "the device did not respond"}
+    elif failure:
+        result = {"ok": False, "error": "the device could not be reached"}
+    if not isinstance(result, dict):
+        result = {"ok": True, "result": result}
+    logger.info(f"{name}: {quoted(str(result))}")
+    return result
+
+
 def _client_tool(name: str):
     """The handler for a tool the client performs: ask it, return what it answers.
     The model gets exactly one result for every call that is not itself cancelled."""
     async def handler(params: FunctionCallParams):
-        result, failure = await _ask_client(params.llm, "client_tool", CLIENT_CALL_PREFIX,
-                                            name, params.arguments or {}, CLIENT_TOOL_TIMEOUT_S)
-        if failure == "timeout":
-            result = {"ok": False, "error": "the device did not respond"}
-        elif failure:
-            result = {"ok": False, "error": "the device could not be reached"}
-        if not isinstance(result, dict):
-            result = {"ok": True, "result": result}
-        logger.info(f"{name}: {quoted(str(result))}")
-        await params.result_callback(result)
+        await params.result_callback(
+            await call_client_tool(params.llm, name, params.arguments or {}))
     return handler
 
 
@@ -1773,10 +1932,27 @@ def active_tools(ctx: ToolContext | None = None) -> list[Tool]:
 
 def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
     """The schema the model is offered: active_tools(ctx), each with the host's schema
-    for it where the host gave one (ctx.host_schemas)."""
+    for it where the host gave one (ctx.host_schemas), the consult's with the brain's
+    status phrase (_with_status_phrase)."""
     ctx = ctx or ToolContext()
     host = {s.name: s for s in ctx.host_schemas}
-    return ToolsSchema(standard_tools=[host.get(t.name, t.schema) for t in active_tools(ctx)])
+    return ToolsSchema(standard_tools=[_with_status_phrase(host.get(t.name, t.schema))
+                                       for t in active_tools(ctx)])
+
+
+def _with_status_phrase(schema: FunctionSchema) -> FunctionSchema:
+    """The consult's schema, the host's or the brain's copy of OpenClaw's, with the
+    brain's optional CONSULT_STATUS added (#120); any other schema as it is. Not in
+    agent-first, where nothing says it (no acknowledgement, no progress lines: the turn
+    waits for the consult) and every turn would spend words on it. Nor over a field of
+    the host's by that name: the host's schema is the contract its relay reads."""
+    if (schema.name != OPENCLAW_AGENT_CONSULT.name or AGENT_FIRST
+            or CONSULT_STATUS in schema.properties):
+        return schema
+    return FunctionSchema(name=schema.name, description=schema.description,
+                          properties={**schema.properties,
+                                      CONSULT_STATUS: _CONSULT_STATUS_PROPERTY},
+                          required=list(schema.required))
 
 
 def host_tool_schemas(host_tools) -> tuple:
@@ -1841,7 +2017,13 @@ def _fallback_line(name: str, args: dict, t) -> str | None:
         # tts_first_audio, which must mark the ANSWER in this mode.
         if AGENT_FIRST:
             return None
-        return t._("I'll work on that — give me a moment.")
+        # The model's own words for the listener when they can be said (CONSULT_STATUS,
+        # _status_phrase): the same phrase the first progress line repeats. Else a
+        # plain "On it.": it was "I'll work on that — give me a moment." for every
+        # consult alike (#120).
+        phrase, _ = _status_phrase(
+            args.get(CONSULT_STATUS) if isinstance(args, dict) else None, t.lang)
+        return t._("Sure — {phrase}.").format(phrase=phrase) if phrase else t._("On it.")
     if name == "pair_device":
         # The code takes a few seconds to come up (pairing reads the device list first),
         # and the model mostly calls this without a word, leaving the room in silence.

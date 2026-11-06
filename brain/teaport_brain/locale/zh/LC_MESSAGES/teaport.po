@@ -354,26 +354,30 @@ msgstr "抱歉，语音助手正在另一个会话中，请稍后再试。"
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "抱歉，我现在听不到你，语音识别不可用。请稍后再试。"
 
-msgid "Still working on that — {topic}."
-msgstr "还在处理这件事——{topic}。"
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "好的——{phrase}。"
 
-msgid "Still working on it."
+msgid "On it."
+msgstr "马上处理。"
+
+msgid "Still {phrase}."
+msgstr "还在处理——{phrase}。"
+
+msgid "Still on it."
 msgstr "还在处理。"
 
-msgid "Almost there — {topic}."
-msgstr "马上就好——{topic}。"
-
-msgid "Almost there — hang tight."
-msgstr "马上就好，请再等一下。"
+msgid "This one's taking a bit longer."
+msgstr "这个要多花点时间。"
 
 msgid "Looking up {q}."
 msgstr "我来查一下{q}。"
 
 msgid "Opening that page."
 msgstr "我打开那个页面。"
-
-msgid "I'll work on that — give me a moment."
-msgstr "我来处理，请稍等。"
 
 msgid "One moment, let me set that up."
 msgstr "稍等，我来准备一下。"

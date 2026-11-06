@@ -354,26 +354,30 @@ msgstr "Lo siento, el asistente de voz está ocupado con otra sesión ahora mism
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "Lo siento, ahora mismo no te oigo: el reconocimiento de voz no está disponible. Inténtalo de nuevo en un momento."
 
-msgid "Still working on that — {topic}."
-msgstr "Sigo trabajando en eso — {topic}."
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "Claro — {phrase}."
 
-msgid "Still working on it."
-msgstr "Sigo trabajando en ello."
+msgid "On it."
+msgstr "Me pongo con ello."
 
-msgid "Almost there — {topic}."
-msgstr "Ya casi está — {topic}."
+msgid "Still {phrase}."
+msgstr "Sigo en ello — {phrase}."
 
-msgid "Almost there — hang tight."
-msgstr "Ya casi está, espera un momento."
+msgid "Still on it."
+msgstr "Sigo en ello."
+
+msgid "This one's taking a bit longer."
+msgstr "Esto está tardando un poco más."
 
 msgid "Looking up {q}."
 msgstr "Buscando {q}."
 
 msgid "Opening that page."
 msgstr "Abriendo la página."
-
-msgid "I'll work on that — give me a moment."
-msgstr "Voy a trabajar en ello, un momento."
 
 msgid "One moment, let me set that up."
 msgstr "Un momento, déjame prepararlo."

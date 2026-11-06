@@ -54,12 +54,15 @@
 #           {"type":"run_control","id":...,"text":...}     (is this final OpenClaw's? sent
 #                                                           only to a plugin that announced
 #                                                           ?run_control=1; run_control.py)
-#           {"type":"client_tool","call_id":...,"name":...,"args":{...}}
+#           {"type":"client_tool","call_id":...,"name":...,"args":{...}[,"said":true]}
 #                                                         (a tool the client performs —
 #                                                           set_volume, restart_session —
 #                                                           sent only to a client that
 #                                                           announced it in ?features=;
-#                                                           answered with a tool_result)
+#                                                           answered with a tool_result.
+#                                                           "said": the brain's own
+#                                                           end_conversation, its goodbye
+#                                                           played: goodbye.py, #221)
 #           {"type":"tool_call","call_id":...,"name":...,"args":{...}}
 #                                                         (a tool call for the relay's
 #                                                           onToolCall: a host-run tool,

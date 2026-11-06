@@ -11,8 +11,8 @@
 # openclaw_agent_control call waits, whose result the Talk client holds while it plays
 # audio (_CONTROL); nor while the session is held for a phone call. A phone call's own
 # session types only with SIP_THINKING_SOUND on (off by default, #242) and no half-duplex
-# gate on the call, or in agent-first, where it is the only cover for the wait (no "I'll
-# work on that", no progress lines) and which keeps its typing whatever SIP_THINKING_SOUND
+# gate on the call, or in agent-first, where it is the only cover for the wait (no consult
+# acknowledgement, no progress lines) and which keeps its typing whatever SIP_THINKING_SOUND
 # says: enabled_for, which agent_session asks. Off by default because a call is where the
 # typing is least sure to help: it is rendered at 24 kHz for an 8 kHz line, it echoes
 # there like speech, and a background consult leaves the caller free to talk through the
