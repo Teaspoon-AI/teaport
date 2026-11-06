@@ -262,7 +262,8 @@ def _role(message) -> str:
 def _differences(old_text: str, new_text, old: list, new: list, moved=None) -> list:
     """What moved between what a speculation asked (`old_text` on `old`, the messages
     before the user message) and what is asked now, as [SPEC] miss fields (#119): the
-    lengths, the first index that differs, the role of the message there. The quoted
+    lengths, the first index that differs, the role of the message there now (of the
+    old one where the new list ends before it). The quoted
     text is cut at 40 characters (and is only its length without
     TEAPORT_LOG_CONVERSATIONS), which made a restart on the same words read as one on
     new ones; these fields carry no words, so they are the same with the switch on or
@@ -274,7 +275,8 @@ def _differences(old_text: str, new_text, old: list, new: list, moved=None) -> l
         fields.append(f"chars={len(old_text)}->{len(new_text)}")
         if new_text != old_text:
             fields.append(f"text-at={_first_difference(old_text, new_text)}")
-    if moved if moved is not None else new != old:
+    changed = moved if moved is not None else new != old
+    if changed:
         at = _first_difference(old, new)
         fields.append(f"msgs={len(old)}->{len(new)} "
                       f"msg-at={at}:{_role(new[at] if at < len(new) else old[at])}")
