@@ -355,6 +355,11 @@ msgstr "Scusa, sta arrivando una telefonata e devo rispondere. Possiamo riprende
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Qualcuno mi sta chiamando — {caller}. Rispondo un attimo?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Qualcuno mi sta chiamando — un numero che finisce con {digits}. Rispondo un attimo?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Qualcuno mi sta chiamando. Rispondo un attimo?"
 
