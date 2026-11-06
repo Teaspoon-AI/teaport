@@ -38,6 +38,9 @@
 (*                       decides again instead of overwriting. The SIP fix  *)
 (*                       removes the overlap, and REPLACED never ends a     *)
 (*                       call any other way                                 *)
+(*       "awake"      -- the room is awake and stays so (RoomFlip off), so  *)
+(*                       the wake race cannot happen; a failed hold is     *)
+(*                       then the only way left to end it (sa_roomAwake)   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -84,7 +87,7 @@ Init ==
     /\ st = [s \in Claims |-> "off"]
     /\ stt = [s \in Claims |-> FALSE]
     /\ heldF = [s \in Claims |-> FALSE]
-    /\ conn = {} /\ asleep = TRUE /\ ans = {}
+    /\ conn = {} /\ asleep = (MODE # "awake") /\ ans = {}
     /\ apc = [s \in Claims |-> "none"]
     /\ tgt = [s \in Claims |-> None]
     /\ lockOwner = None
@@ -96,7 +99,7 @@ Init ==
     /\ clobber = FALSE /\ engineRefused = FALSE /\ silentEnd = FALSE
 
 (***************************************************************************)
-(* decide() (session_arbiter.py:175). Claim.gone (REAPED) is left out: no  *)
+(* decide() (session_arbiter.py:176). Claim.gone (REAPED) is left out: no  *)
 (* client vanishes silently here (a session's end is its release).         *)
 (***************************************************************************)
 Why(h, n) ==
@@ -114,7 +117,7 @@ Why(h, n) ==
 Busy(h) == h # None /\ (epc[h] # "none" \/ hpc[h] # "none" \/ rpc[h] # "none")
 
 (***************************************************************************)
-(* release() (session_arbiter.py:477) and _resume_held (:456), as records  *)
+(* release() (session_arbiter.py:480) and _resume_held (:459), as records  *)
 (* of the arbiter's next values; `res` is the conversation whose resume    *)
 (* task starts (None: none).                                               *)
 (***************************************************************************)
@@ -221,13 +224,14 @@ Answered(c) ==
 \* The room wakes (a wake word; someone speaks; a new box going into setup mode by itself,
 \* first_boot.py) or falls asleep (keep-alive).
 RoomFlip ==
+    /\ MODE # "awake"
     /\ "room" \in Convs /\ st["room"] \in {"acq", "run"} /\ ~heldF["room"]
     /\ asleep' = ~asleep
     /\ UNCHANGED <<st, stt, heldF, conn, ans, apc, tgt, lockOwner, holder, held, heldFor,
                    rel, epc, ewhy, hpc, hfor, hres, rpc, clobber, engineRefused, silentEnd>>
 
 (***************************************************************************)
-(* acquire() (session_arbiter.py:283/298).                                 *)
+(* acquire() (session_arbiter.py:284/299).                                 *)
 (***************************************************************************)
 Unchanged_Sess == UNCHANGED <<stt, heldF, conn, asleep, ans>>
 
@@ -299,7 +303,7 @@ Decide(s) ==
                                 rpc, clobber, silentEnd>>
     /\ Unchanged_Sess /\ UNCHANGED engineRefused
 
-\* _ask (session_arbiter.py:358): the user's answer (or the prompt's default),
+\* _ask (session_arbiter.py:361): the user's answer (or the prompt's default),
 \* or the question withdrawn (the holder left, or the call got answered).
 Ask(s) ==
     /\ apc[s] = "ask"
@@ -322,13 +326,15 @@ Ask(s) ==
     /\ UNCHANGED <<tgt, holder, held, heldFor, rel, epc, ewhy, hres, rpc, clobber,
                    engineRefused, silentEnd>>
 
-\* The hold is over: put on hold, or (it would not let go) ended instead.
+\* The hold is over: put on hold, or (it would not let go) ended instead, as HOLD_FAILED
+\* (session_arbiter._acquire): an awake room is told then (gateway_server._end_for), by the
+\* hold's own line or the call line, never closed silently.
 HoldDone(s) ==
     /\ apc[s] = "holdw" /\ hpc[tgt[s]] = "none"
     /\ IF hres[tgt[s]]
        THEN /\ apc' = [apc EXCEPT ![s] = "post"]
             /\ UNCHANGED <<epc, ewhy>>
-       ELSE /\ SpawnEnd(tgt[s], "CALL_IN")
+       ELSE /\ SpawnEnd(tgt[s], "HOLD_FAILED")
             /\ apc' = [apc EXCEPT ![s] = "endw1"]
     /\ Unchanged_Sess
     /\ UNCHANGED <<st, tgt, lockOwner, holder, held, heldFor, rel, hpc, hfor, hres, rpc,
@@ -380,7 +386,8 @@ EndDone(s) ==
 \* _ending, first step: holder.end(why). A conversation is closed (its session
 \* stops on its own step: StopConv); a call's end is CallClaim._release, which
 \* releases it at once. A room is closed WITHOUT a word for CALL_IN and TAKEN
-\* (gateway_server._end_for), whatever asleep() says by now.
+\* (gateway_server._end_for), whatever asleep() says by now; for HOLD_FAILED only while
+\* asleep (an awake one is asked first, and told: not a silent end).
 EndCall(h) ==
     /\ epc[h] = "call"
     /\ epc' = [epc EXCEPT ![h] = "wait"]
