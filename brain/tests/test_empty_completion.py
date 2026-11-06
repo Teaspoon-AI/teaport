@@ -331,6 +331,37 @@ async def test_a_later_request_no_call_came_before_is_not_the_callers_round():
     assert _texts(frames) == [done], _texts(frames)
 
 
+async def test_a_round_whose_results_ask_no_answer_is_spent_with_them():
+    """A background consult's placeholder asks for no answer (tools.no_inference): no
+    request answers the round, so it is spent with its last result. Its timeout cancel,
+    a minute on, runs the model with no dispatch before it; empty, that is not the
+    caller's turn (#15 review)."""
+    from pipecat.services.llm_service import FunctionCallResultProperties
+
+    async def placeholder(params):
+        await params.result_callback({"status": "working in the background"},
+                                     properties=FunctionCallResultProperties(run_llm=False))
+
+    ctx = _context({"role": "user", "content": "What time is it?"})
+    provider = _Provider([_chunk(tool="get_current_time"), _chunk(finish="tool_calls")], EMPTY)
+    llm, _ = _llm(provider, ctx)
+    llm.register_function("get_current_time", placeholder)
+
+    async def later(sink):
+        ctx.add_message({"role": "tool", "tool_call_id": "call-t", "content": "{}"})
+        n = sink.ends() + 1
+        await llm.queue_frame(LLMContextFrame(context=ctx), FrameDirection.UPSTREAM)
+        await _until(lambda: sink.ends() >= n, "the later request's End")
+
+    async def settled(sink):
+        await _until(lambda: not llm._round_open, "the round's result")
+
+    frames = await _run([llm], LLMContextFrame(context=ctx), settled, later)
+    assert not llm._callers_round
+    assert len(provider.requests) == 2, len(provider.requests)
+    assert _texts(frames) == [], _texts(frames)
+
+
 async def test_a_reply_of_only_punctuation_takes_the_same_path():
     """#16's "..." as the whole answer, and a whitespace-only one: the same check as a
     silent run's (has_speech), so the retry comes first, and the guard's End line never

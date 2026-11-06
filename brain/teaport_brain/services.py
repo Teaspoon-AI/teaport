@@ -27,6 +27,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from pipecat.frames.frames import (
     FunctionCallFromLLM,
+    FunctionCallResultFrame,
     LLMContextFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -810,6 +811,28 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # The session's voice language, for the recovery line (agent_session sets it;
     # llm_text_guard.recovery_text).
     lang_fn = None
+    # The round's calls still to give a final result, and whether one of those given asks
+    # the model for an answer: a round whose results all ask for none (a background
+    # consult's placeholder, tools.no_inference) is answered by no request, so it is spent
+    # with its last result -- or the consult's timeout cancel (run_llm, a minute on) would
+    # read as the caller's round.
+    _round_open: set = set()
+    _round_asks = False
+
+    async def broadcast_frame(self, frame_cls, **kwargs):
+        if (frame_cls is FunctionCallResultFrame
+                and kwargs.get("tool_call_id") in self._round_open):
+            props = kwargs.get("properties")
+            if props is None or props.is_final:
+                self._round_open = self._round_open - {kwargs["tool_call_id"]}
+                run = props.run_llm if props is not None and props.run_llm is not None \
+                    else kwargs.get("run_llm")
+                # As the assistant aggregator reads a result: an empty one, or run_llm
+                # False, runs no inference.
+                self._round_asks |= bool(kwargs.get("result")) and run is not False
+                if not self._round_open and not self._round_asks:
+                    self._callers_round = False
+        await super().broadcast_frame(frame_cls, **kwargs)
 
     def _moved_on(self, context, tail) -> str | None:
         """Why the caller's turn this completion answers is no longer the one to answer,
@@ -968,6 +991,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
                              or any(c.function_name in answers for c in function_calls))
                         and not any(c.function_name in _NO_RECOVERY_AFTER
                                     for c in function_calls))
+                    self._round_open = {c.tool_call_id for c in function_calls}
+                    self._round_asks = False
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
