@@ -2898,6 +2898,17 @@ What is not modelled:
   in the code it is the pauser's (`BargeInPauser`, HEARD OUT), with the judge on or off,
   and only where the STT will answer (`stt.watch_heard`). Without a judge no property
   here reads `unheard`, so the over-approximation loses nothing a row checks.
+- The pause cap's duration (`TEAPORT_BARGE_PAUSE_MAX_S`, default 6 s, at most 7.75 s,
+  under the transport's 8 s write guard). The cap itself is `PauseCap`, below.
+- A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
+  finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
+  dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
+  pause stays until its own quiet window, verdict or cap ends it
+  (`test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end`), so the model's pause
+  ends are the code's. An underrun without a pause is not modelled either.
+- What the CONTINUE'd final does to the stop strategy's close count. It becomes the
+  `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
+  checks.
 
 **The pause cap (`JUDGE = "pauseCap"`): an accepted residual.** `BargeInPauser._cap` ends
 a pause `TEAPORT_BARGE_PAUSE_MAX_S` after its start whatever holds it: the judge's
@@ -2915,9 +2926,11 @@ PauseCap                     the cap: the reply resumes, the caller still talkin
 Interject                    their next words start the turn, over the resumed reply
 ```
 
-It is accepted: the cap is seconds after the pause's start and the judge's request
-times out at 1.2 s, so it takes a judge that never answers and a caller talking for the
-whole cap. The code's alternative, words released by the cap judged as over the paused
+It is accepted (audit 2026-11-05, B1): it needs a hold still waiting when the cap comes,
+seconds after the pause's start -- a caller talking over the paused reply for most of
+the cap, each request with its own 1.2 s wait (`_JUDGE_WAIT_S`) and asked again as their
+words grow -- and its cost is the reply playing on under them until those words start
+the turn. The code's alternative, words released by the cap judged as over the paused
 reply (`_past_pause`, added in 2c50b1b and taken out again in aa35e15), is on
 feat/judge-single-words. `ut_judge_pauseCap_rest` holds every other property
 `ut_judge_shipped_timed` checks with the cap in (187k states). `PauseCap` is enabled
@@ -2925,17 +2938,6 @@ only in this design: with it on in every timed row (a scratch run, 2026-11-05)
 `ut_pause_shipped_timed`, `ut_shipped_timed` and `ut_post_gate_timed_rest` still hold --
 without a judge the cap's resume is a resume, and nothing those rows check is lost by
 it.
-- The pause cap's duration (`TEAPORT_BARGE_PAUSE_MAX_S`, default 6 s, at most 7.75 s,
-  under the transport's 8 s write guard). The cap itself is `PauseCap`, below.
-- A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
-  finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
-  dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
-  pause stays until its own quiet window, verdict or cap ends it
-  (`test_a_bot_stopped_under_a_pause_leaves_it_to_its_own_end`), so the model's pause
-  ends are the code's. An underrun without a pause is not modelled either.
-- What the CONTINUE'd final does to the stop strategy's close count. It becomes the
-  `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
-  checks.
 
 ### The cut and the commit (`FENCE`, `CutReplyFence`)
 
