@@ -1,15 +1,19 @@
 #
 # locked_venv.py (#220): the set the suite's preflight expects is what `uv sync --locked`
 # installs on this interpreter, and a venv that differs from it gets one line naming
-# the venv, the difference, and the command that puts it right.
+# the venv, the difference, and what to do: a sync only into a venv of this project's,
+# kept --no-editable if it was; `teaport doctor` for an installed brain; `uv run` for
+# anyone else's venv. A `uv run --with` overlay is judged by the venv it extends, and a
+# package the lock does not have is reported without stopping the run (review round 1).
 #
-# The locks here are small hand-written ones in uv.lock's shape; the venv is a fake
-# site-packages of dist-info records, as in test_lockcheck.py.
+# The locks here are small hand-written ones in uv.lock's shape; the venvs are fake ones,
+# a pyvenv.cfg and a site-packages of dist-info records, as in test_lockcheck.py.
 #
 # Run: python test_locked_venv.py   (or via pytest test_suite.py)
 #
+import json
 import os
-import sys
+import shutil
 
 import locked_venv
 from tempdirs import tempdir
@@ -62,74 +66,190 @@ def test_a_package_locked_at_two_versions_takes_the_one_its_edge_names():
     assert locked_venv.locked(lock, PROJECT)["numpy"] == "1.26"
 
 
-def _site(*records):
-    d = tempdir("teaport-locked-")
+def _records(site, *records):
     for name, version in records:
-        info = os.path.join(d, f"{name}-{version}.dist-info")
+        info = os.path.join(site, f"{name}-{version}.dist-info")
         os.makedirs(info)
-        with open(info + "/METADATA", "w") as f:
+        with open(os.path.join(info, "METADATA"), "w") as f:
             f.write(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
-    return d
+    return site
 
 
-def _checkout(root, *packages):
+def _venv(*records, at=None, cfg="", build_record=False, editable=None):
+    """A venv: its pyvenv.cfg, <records> in its site-packages, and as asked, an install's
+    build record and teaport-brain's PEP 610 record."""
+    venv = at or tempdir("teaport-locked-venv-")
+    site = locked_venv.site_dirs(venv)[0]
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(venv, "pyvenv.cfg"), "w") as f:
+        f.write("include-system-site-packages = false\n" + cfg)
+    _records(site, *records)
+    if build_record:
+        with open(os.path.join(venv, "teaport-build.json"), "w") as f:
+            f.write("{}")
+    if editable is not None:
+        with open(os.path.join(site, "teaport_brain-0.0.0.dist-info", "direct_url.json"), "w") as f:
+            json.dump({"url": "file:///src/brain", "dir_info": {"editable": editable}}, f)
+    return venv
+
+
+LOCKED = (("h2", "4.4.1"), ("numpy", "2.1.0"), ("pytest", "9.1.1"), ("vadersentiment", "3.3.2"))
+WHOLE = (("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("numpy", "2.1.0"), ("pytest", "9.1.1"),
+         ("vaderSentiment", "3.3.2"))
+# #220's venv: two locked packages lost, and one at another version.
+STALE = (("teaport_brain", "0.0.0"), ("numpy", "1.26.4"), ("pytest", "9.1.1"))
+PROJECT_CFG = "prompt = teaport-brain\n"
+
+
+def _checkout():
     """A brain/ of its own: a uv.lock and pyproject.toml in the shape of the real ones."""
     brain = tempdir("teaport-locked-brain-")
     with open(os.path.join(brain, "pyproject.toml"), "w") as f:
         f.write('[project]\nname = "teaport-brain"\n')
     with open(os.path.join(brain, "uv.lock"), "w") as f:
-        f.write("version = 1\n")
-        for p in (root, *packages):
-            f.write(f'\n[[package]]\nname = "{p[0]}"\nversion = "{p[1]}"\n')
-            if p[2:]:
-                f.write("dependencies = [" + ", ".join(f'{{ name = "{d}" }}' for d in p[2]) + "]\n")
+        f.write('version = 1\n\n[[package]]\nname = "teaport-brain"\nversion = "0.0.0"\n')
+        f.write("dependencies = [" + ", ".join(f'{{ name = "{n}" }}' for n, _ in LOCKED) + "]\n")
+        for name, version in LOCKED:
+            f.write(f'\n[[package]]\nname = "{name}"\nversion = "{version}"\n')
     return brain
 
 
-def _problem(brain, site, prefix):
-    names = ("BRAIN", "LOCK", "PYPROJECT", "site_dirs")
-    saved = [getattr(locked_venv, n) for n in names] + [sys.prefix]
+def _check(brain, prefix, path=None):
+    """check() as the conftest runs it, against <brain>'s lock, in the venv <prefix> on
+    <path> (default: the venv's own site-packages, as for a run without an overlay)."""
+    names = ("BRAIN", "LOCK", "PYPROJECT", "SUITE")
+    saved = [getattr(locked_venv, n) for n in names]
     locked_venv.BRAIN, locked_venv.LOCK = brain, os.path.join(brain, "uv.lock")
     locked_venv.PYPROJECT = os.path.join(brain, "pyproject.toml")
-    locked_venv.site_dirs = lambda: [site]
-    sys.prefix = prefix
+    locked_venv.SUITE = os.path.join(brain, "tests", "test_suite.py")
     try:
-        return locked_venv.problem()
+        return locked_venv.check(prefix, locked_venv.site_dirs(prefix) if path is None else path)
     finally:
         for n, v in zip(names, saved):
             setattr(locked_venv, n, v)
-        sys.prefix = saved[-1]
 
 
-def test_a_venv_off_the_lock_gets_one_line_naming_it_and_the_fix():
-    brain = _checkout(("teaport-brain", "0.0.0", ["h2", "numpy", "vadersentiment"]),
-                      ("h2", "4.4.1"), ("numpy", "2.1.0"), ("vadersentiment", "3.3.2"))
-    whole = _site(("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("numpy", "2.1.0"),
-                  ("vaderSentiment", "3.3.2"))
-    assert _problem(brain, whole, os.path.join(brain, ".venv")) is None
-    # Two locked packages lost (#220's venv), one at another version, one the lock has
-    # never heard of: all drift, and the project's own venv is fixed by a plain sync.
-    stale = _site(("teaport_brain", "0.0.0"), ("numpy", "1.26.4"), ("six", "1.17.0"))
-    line = _problem(brain, stale, os.path.join(brain, ".venv"))
-    assert "\n" not in line, line
-    assert line.endswith(f"is out of sync with {locked_venv._shown(os.path.join(brain, 'uv.lock'))} "
-                         f"(numpy 2.1.0 -> 1.26.4, +six 1.17.0, -h2 4.4.1, -vadersentiment 3.3.2): "
-                         f"run `uv sync --locked --project {locked_venv._shown(brain)}`"), line
-    # Any other venv has to be named to uv.
-    other = tempdir("teaport-locked-venv-")
-    line = _problem(brain, stale, other)
+def _line(brain, prefix, path=None):
+    c = _check(brain, prefix, path)
+    saved = locked_venv.BRAIN, locked_venv.LOCK, locked_venv.SUITE
+    locked_venv.BRAIN, locked_venv.LOCK = brain, os.path.join(brain, "uv.lock")
+    locked_venv.SUITE = os.path.join(brain, "tests", "test_suite.py")
+    try:
+        line = locked_venv.problem(c)
+    finally:
+        locked_venv.BRAIN, locked_venv.LOCK, locked_venv.SUITE = saved
+    assert line is None or "\n" not in line, line
+    return line
+
+
+def test_the_projects_own_venv_off_the_lock_is_told_to_sync():
+    brain = _checkout()
+    own = os.path.join(brain, ".venv")
+    _venv(*WHOLE, at=own, cfg=PROJECT_CFG)
+    assert _line(brain, own) is None
+    shutil.rmtree(own)
+    _venv(*STALE, at=own, cfg=PROJECT_CFG)
+    shown = locked_venv._shown
+    assert _line(brain, own) == (
+        f"{shown(own)} is out of sync with {shown(os.path.join(brain, 'uv.lock'))} "
+        f"(numpy 2.1.0 -> 1.26.4, -h2 4.4.1, -vadersentiment 3.3.2): "
+        f"run `uv sync --locked --project {shown(brain)}`")
+    # Another venv of this project's (UV_PROJECT_ENVIRONMENT) has to be named to uv.
+    other = _venv(*STALE, cfg=PROJECT_CFG)
+    line = _line(brain, other)
     assert line.startswith(f"{other} is out of sync"), line
-    assert f"run `UV_PROJECT_ENVIRONMENT={other} uv sync --locked" in line, line
+    assert f"run `UV_PROJECT_ENVIRONMENT={other} uv sync --locked --project" in line, line
+
+
+def test_a_no_editable_venv_is_synced_no_editable():
+    # CI's install, and install.sh's: a sync that dropped the flag would leave teaport-brain
+    # an editable .pth into this checkout.
+    brain = _checkout()
+    line = _line(brain, _venv(*STALE, cfg=PROJECT_CFG, editable=False))
+    assert "uv sync --locked --no-editable --project" in line, line
+    line = _line(brain, _venv(*STALE, cfg=PROJECT_CFG, editable=True))
+    assert "uv sync --locked --project" in line, line
+
+
+def test_an_installed_brain_is_pointed_at_teaport_doctor_not_synced():
+    # What an appliance venv looks like with pytest added by hand: --no-dev, --no-editable,
+    # a build record. A sync into it would make teaport-brain editable against this
+    # checkout and add the dev group.
+    brain = _checkout()
+    box = (("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("numpy", "2.1.0"), ("pytest", "8.0.0"),
+           ("vaderSentiment", "3.3.2"))
+    lines = [_line(brain, _venv(*box, cfg=PROJECT_CFG, build_record=True, editable=False))]
+    # The .deb's venv, /opt/teaport/brain, has no build record: under the install prefix.
+    prefix = tempdir("teaport-locked-opt-")
+    saved = os.environ.get("TEAPORT_PREFIX")
+    os.environ["TEAPORT_PREFIX"] = prefix
+    try:
+        lines.append(_line(brain, _venv(*box, at=os.path.join(prefix, "brain"), editable=False)))
+    finally:
+        if saved is None:
+            os.environ.pop("TEAPORT_PREFIX")
+        else:
+            os.environ["TEAPORT_PREFIX"] = saved
+    for line in lines:
+        assert "is an installed brain's venv" in line and "`teaport doctor`" in line, line
+        assert "uv sync" not in line and "uv run --locked --project" in line, line
+
+
+def test_someone_elses_venv_is_not_synced_into():
+    # pipx's pytest, or another project's venv: not this suite's to change.
+    brain = _checkout()
+    for cfg in ("", "prompt = some-other-project\n"):
+        line = _line(brain, _venv(("pytest", "9.1.1"), ("pluggy", "1.6.0"), cfg=cfg))
+        assert "is not this project's venv" in line and "uv sync" not in line, line
+        shown = locked_venv._shown(brain)
+        assert line.endswith(f"with `uv run --locked --project {shown} "
+                             f"python -m pytest {shown}/tests/test_suite.py`"), line
+
+
+def test_a_package_the_lock_lacks_is_reported_and_does_not_stop_the_run():
+    brain = _checkout()
+    c = _check(brain, _venv(*WHOLE, ("ipdb", "0.13.13"), cfg=PROJECT_CFG))
+    assert c.problems == [] and c.extras == ["+ipdb 0.13.13"], c
+    note = locked_venv.extras(c)
+    assert note.endswith("does not install: +ipdb 0.13.13 (allowed)"), note
+    assert locked_venv.header(c).endswith("(5 packages, 1 not in the lock)"), locked_venv.header(c)
+    # Two records of one package is damage, not an extra.
+    c = _check(brain, _venv(*WHOLE, ("numpy", "1.26.4"), cfg=PROJECT_CFG))
+    assert c.problems == ["numpy 2.1.0 -> 1.26.4 + 2.1.0"], c
+
+
+def test_an_overlay_is_judged_by_the_venv_it_extends():
+    # `uv run --with pytest-timeout`: a temporary venv whose pyvenv.cfg names the real one,
+    # and the --with packages in a cached env of their own, all on sys.path. It used to
+    # be read as a venv missing every locked package, with a sync into the overlay.
+    brain = _checkout()
+    base = _venv(*WHOLE, cfg=PROJECT_CFG)
+    for real in (base, _venv(*STALE, cfg=PROJECT_CFG)):
+        overlay = _venv(cfg=f"extends-environment = {real}\n")
+        added = _records(os.path.join(tempdir("teaport-locked-with-"), "site-packages"),
+                         ("pytest_timeout", "2.4.0"), ("pytest", "8.3.0"))
+        path = [locked_venv.site_dirs(overlay)[0], added, locked_venv.site_dirs(real)[0]]
+        c = _check(brain, overlay, path)
+        assert c.venv == real, c
+        if real == base:
+            # What the overlay adds, a pytest of its own choosing included, is its own.
+            assert c.problems == [] and c.extras == [] and c.overlay == 2, c
+            assert locked_venv.header(c).endswith("(5 packages, 2 more from a `uv run --with` overlay)")
+        else:
+            line = _line(brain, overlay, path)
+            assert f"run `UV_PROJECT_ENVIRONMENT={real} uv sync" in line and overlay not in line, line
 
 
 def test_a_tests_dir_away_from_its_checkout_is_not_checked():
     brain = tempdir("teaport-locked-detached-")
-    assert _problem(brain, _site(), brain) is None
+    assert _check(brain, _venv()) is None
+    assert locked_venv.header(None) == "brain venv: not checked (no uv.lock beside tests/)"
 
 
 def test_this_venv_holds_the_locks_set():
     # What the suite's conftest checks, here for a run of this script on its own.
-    assert locked_venv.problem() is None, locked_venv.problem()
+    c = locked_venv.check()
+    assert c.problems == [], locked_venv.problem(c)
 
 
 def main():

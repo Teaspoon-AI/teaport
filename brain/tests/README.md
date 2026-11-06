@@ -33,20 +33,35 @@ over the file), and all three name 3.12 too.
 **The suite checks the venv before it runs anything.** `conftest.py` compares the
 running venv with `uv.lock` (`locked_venv.py`: what `uv sync --locked` installs on
 this interpreter, dev group included, diffed by `teaport_brain.lockcheck`, the code
-behind `teaport doctor`'s drift check) and stops the run with one line:
+behind `teaport doctor`'s drift check). A package missing, at another version or
+recorded twice stops the run with one line:
 
 ```
 ERROR: brain/.venv is out of sync with brain/uv.lock (-h2 4.4.1, -vadersentiment 3.3.2): run `uv sync --locked --project brain`
 ```
 
-A package missing, at another version, recorded twice or not in the lock at all is
-drift, and the `uv sync` it names puts each one right (for a venv other than
-`brain/.venv`, the command starts `UV_PROJECT_ENVIRONMENT=<venv>`). Before the check,
-a venv that had lost two locked packages failed ten tests on `ModuleNotFoundError`
-with nothing pointing at the venv (#220). It costs a fraction of a second, covers any
-pytest run under `brain/tests` (a direct `pytest brain/tests/test_x.py` too), and
-passes on an editable install and on CI's `--no-editable` one alike. A copy of
-`tests/` away from the checkout has no lock beside it and is not checked.
+Before the check, a venv that had lost two locked packages failed ten tests on
+`ModuleNotFoundError` with nothing pointing at the venv (#220). What the line tells
+you to do depends on whose venv it is, because a sync into the wrong one does damage:
+
+- **brain/.venv, or another venv of this project's:** the `uv sync` that puts it
+  right, with `UV_PROJECT_ENVIRONMENT=<venv>` for the other, and `--no-editable` when
+  its teaport-brain was installed that way (CI's install, and install.sh's).
+- **An installed brain** (a `teaport-build.json` beside it, or under `/opt/teaport`):
+  `teaport doctor`, never a sync. One would make teaport-brain editable against your
+  checkout and add the dev group to the box's venv.
+- **Anyone else's** (pipx's pytest, another project's): run the suite in the
+  project's own, `uv run --locked --project brain python -m pytest brain/tests/test_suite.py`.
+
+A package the lock does not have (a debugger you added, say) does not stop the run.
+It is named on a `WARNING:` line, and `uv sync` would remove it. Under
+`uv run --with X`, the venv checked is the one the temporary overlay extends, and what
+the overlay adds is the run's own choice. A passing check is a line in pytest's
+header (`brain venv: brain/.venv matches brain/uv.lock (68 packages)`, shown unless
+`-q`), so a CI log shows it ran. It costs a fraction of a second, covers any pytest
+run under `brain/tests` (a direct `pytest brain/tests/test_x.py` too), and passes on
+an editable install and on CI's `--no-editable` one alike. A copy of `tests/` away
+from the checkout has no lock beside it and is not checked.
 
 Expect **32 passed, 2 skipped** off-appliance. The two skips need hardware this box
 doesn't have; **anything failing is a real regression**, including on a laptop —

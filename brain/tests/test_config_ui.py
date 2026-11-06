@@ -61,7 +61,8 @@ OPENAI_API_KEY=sk-hand-added-must-not-leak
 _REAL_WIFI_SETUP_BUSY = config_ui._wifi_setup_busy
 
 # What setup() changes outside this file (and OPENCLAW_GATEWAY_TOKEN, which
-# test_a_secret_is_written_as_the_brain_reads_it clears), saved before the first test and
+# test_a_secret_is_written_as_the_brain_reads_it clears, and the DISCORD_BOT_TOKEN row's
+# file, which a bridge test points into its temp HOME), saved before the first test and
 # put back after the last (#220). The suite runs this script in a process of its own, so
 # it never saw the leak. One pytest process running it beside other files did:
 # `pytest test_config_ui.py test_agent_key.py` handed the later tests a temp HOME, no
@@ -71,7 +72,7 @@ _ENV = ("HOME", "GATEWAY_TOKEN", "LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN")
 _ATTRS = ((config_ui, ("ETC_DIR", "SIP_CONF", "_privileged", "_unit_states", "_wifi_setup_busy",
                        "check_key")),
           (agent_key, ("SHARES",)))
-_FILES = ("LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN")
+_FILES = ("LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN", "DISCORD_BOT_TOKEN")
 _SAVED: dict = {}
 
 
