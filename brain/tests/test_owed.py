@@ -47,6 +47,7 @@ from teaport_brain.transcript_ledger import TranscriptLedger, _unheard  # noqa: 
 # ---- the #203 session (box .105, 2026-10-16 22:27; ctx-3263 in the design notes) ----
 HN_RAW = ("Top story right now (score 1,255 · 2,253 comments):\n\n- **Title:** Tesla "
           "Roadster\n- **URL:** \n\n(Posted by `shekhar101`.)")
+CAL_REQ = "Check the user's calendar for anything on Friday afternoon."
 HN_REQ = "Fetch the current top story from Hacker News and give its title and URL."
 # spec_round3.clean(): what every replay round handed the model as the result.
 HN_CLEAN = ("Top story right now (score 1,255 · 2,253 comments):\n\n- Title: Tesla "
@@ -228,13 +229,44 @@ def test_a_billing_failure_offers_settings_where_the_tool_is():
 
 
 def test_a_failure_is_about_what_it_was_asked_for():
-    """A failure has no terms (Owed.tla OUTCOME = "failure"): a reply about it shares the
-    request; an unrelated one nothing."""
+    """A failure's terms are its statement's own (Owed.tla OUTCOME = "failure"): a reply
+    about it shares the request or them; an unrelated one nothing. The hedge rides along
+    as an instruction and names nothing of what happened."""
     status, outcome = owed.failure_outcome("timeout")
     rec = Record.make("k", HN_REQ, outcome, failure=status)
-    assert rec.terms == frozenset()
+    assert not rec.terms & {"message", "poll", "visible", "failed"}, rec.terms
     assert rec.about("Sorry, that Hacker News lookup ran out of time before it finished.")
     assert not rec.about("It's eleven twenty-two at night.")
+    assert not rec.about("The upload failed.")
+    assert not rec.about("No, I could not find that.")
+
+
+BILLING_REPLY = "I couldn't do that because of a billing problem. Want me to open your settings?"
+
+
+def test_a_billing_failure_is_about_its_own_words():
+    """Formal audit C1 (11-05): a reply telling a billing failure in its own words, with
+    none of the request's, is about it and a telling of it; the settings hint and the
+    hedge are not its terms."""
+    status, outcome = owed.failure_outcome("error", "HTTP 402", settings=True)
+    rec = Record.make("k", CAL_REQ, outcome, failure=status)
+    assert rec.terms == {"billing", "credit"}, rec.terms
+    assert rec.about(BILLING_REPLY) and rec.tells(BILLING_REPLY)
+    assert rec.about("Your AI account is out of credit.")
+    for other in ("Want me to open your settings?", "It's eleven twenty-two at night.",
+                  "The upload failed.", "No, I could not find that.",
+                  "As an AI, I don't have feelings, but thanks for asking!",
+                  "Customer service is open until five."):
+        assert not rec.about(other), other
+    # The other kinds: what names them, and the words any reply says do not.
+    for kind, named, other in (("error", "That hit an error, sorry.", "That song was a hit."),
+                               ("empty", "It came back empty.", "Sure, I can do that."),
+                               ("timeout", None, "I ran the numbers: about forty dollars."),
+                               ("unknown", None, "Sure, I can do that.")):
+        status, outcome = owed.failure_outcome(kind)
+        rec = Record.make("k", CAL_REQ, outcome, failure=status)
+        assert not rec.about(other), (kind, other)
+        assert named is None or rec.about(named), (kind, named)
 
 
 # =============================================================== the note
@@ -451,6 +483,37 @@ async def test_a_failure_the_callers_turn_told_is_not_reoffered():
     gate.quiet = 1.0
     await asyncio.sleep(0.3)
     assert gate.asked == [], gate.asked
+
+
+async def test_a_billing_failure_the_callers_turn_told_is_closed():
+    """Formal audit C1: a 402 lands (settings offered) while the caller is mid-turn; their
+    turn tells it in billing words that name nothing of the request. Closed, and the lull
+    has nothing to say."""
+    b, _, gate = book(pending=True, reoffer_quiet_s=0.05, settings=True)
+    b.land(CAL_REQ, None, "call-cal", failure="error", detail="HTTP 402 Payment Required")
+    assert "open_settings" in b.record("call-cal").outcome
+    b.settle(noted_reply(b, "caller", ("call-cal",)), BILLING_REPLY, cut=False, audio=True)
+    assert b.record("call-cal").state == CLOSED
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [], gate.asked
+
+
+async def test_a_cut_billing_telling_counts_and_reads_a_dismissal():
+    """Formal audit C1: the same telling cut, then a dismissal committed: the cut counts,
+    the decline check is due, and the dismissal ends the record."""
+    decline = FakeDecline(True)
+    b, ctx, _ = book(pending=True, settings=True, judge=FakeJudge(False),
+                     gist=FakeGist(True), decline=decline)
+    b.land(CAL_REQ, None, "call-cal", failure="error", detail="HTTP 402 Payment Required")
+    heard = "I couldn't do that because of a billing"
+    cut(b, noted_reply(b, "caller", ("call-cal",)), heard, BILLING_REPLY)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.cuts == 1 and b.decline_due(), (rec.state, rec.cuts)
+    says(ctx, "Never mind, I'll sort it out later.")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ()
+    assert rec.state == owed.DECLINED
 
 
 async def test_a_run_that_ends_without_closing_arms_the_reoffer():
