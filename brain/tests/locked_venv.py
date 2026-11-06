@@ -268,9 +268,13 @@ def problem(c: Check) -> str | None:
             and os.path.realpath(c.source) != os.path.realpath(BRAIN)):
         # Another checkout's venv (a worktree borrowing the main one's): a sync from here
         # would re-point its editable install at this checkout, which may be gone later.
+        # One that is not that checkout's own .venv (a UV_PROJECT_ENVIRONMENT one) is named
+        # to uv, or the sync would fill <source>/.venv and leave this one as it was (round 3).
+        own = os.path.realpath(c.venv) == os.path.realpath(os.path.join(c.source, ".venv"))
+        env = "" if own else f"UV_PROJECT_ENVIRONMENT={os.path.abspath(c.venv)} "
         return (f"{venv} is the venv of the checkout at {_shown(c.source)} and does not hold "
                 f"what {lock} installs ({what}): run this checkout's suite with {run}, or "
-                f"sync that one in its own checkout, `uv sync --locked{flag} --project "
+                f"sync that one in its own checkout, `{env}uv sync --locked{flag} --project "
                 f"{_shown(c.source)}`")
     env = "" if _own(c.venv) else f"UV_PROJECT_ENVIRONMENT={os.path.abspath(c.venv)} "
     return (f"{venv} is out of sync with {lock} ({what}): "

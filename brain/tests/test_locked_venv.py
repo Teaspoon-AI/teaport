@@ -17,6 +17,7 @@ import shutil
 
 import sys
 
+import appliance
 import locked_venv
 from tempdirs import tempdir
 
@@ -182,13 +183,20 @@ def test_another_checkouts_venv_is_not_re_pointed_here():
     # that venv's editable teaport-brain this worktree's, which may be removed later
     # (#220 review). The line names the venv's own checkout instead.
     brain, theirs = _checkout(), _checkout()
-    other = _venv(*STALE, cfg=PROJECT_CFG,
-                  record=json.dumps({"url": "file://" + theirs, "dir_info": {"editable": True}}))
-    line = _line(brain, other)
+    record = json.dumps({"url": "file://" + theirs, "dir_info": {"editable": True}})
     shown = locked_venv._shown
+    # That checkout's own .venv: its plain sync is the fix.
+    own = _venv(*STALE, at=os.path.join(theirs, ".venv"), cfg=PROJECT_CFG, record=record)
+    line = _line(brain, own)
+    assert line.startswith(f"{shown(own)} is the venv of the checkout at {shown(theirs)}"), line
+    assert line.endswith(f"`uv sync --locked --project {shown(theirs)}`"), line
+    # One it synced through UV_PROJECT_ENVIRONMENT: a plain sync there would fill
+    # <theirs>/.venv and leave this one as it was, so the venv is named (round 3).
+    other = _venv(*STALE, cfg=PROJECT_CFG, record=record)
+    line = _line(brain, other)
     assert line.startswith(f"{other} is the venv of the checkout at {shown(theirs)}"), line
-    assert f"`uv sync --locked --project {shown(theirs)}`" in line, line
-    assert "UV_PROJECT_ENVIRONMENT" not in line, line
+    assert line.endswith(f"`UV_PROJECT_ENVIRONMENT={other} uv sync --locked --project "
+                         f"{shown(theirs)}`"), line
 
 
 def test_a_no_editable_venv_is_synced_no_editable():
@@ -377,8 +385,8 @@ def test_this_venv_holds_the_locks_set():
 
 def main():
     if AWAY:
-        print("  skipped: tests/ away from its checkout")
-        return
+        # A skip the suite reports as one (SKIP_EXIT), not a pass having run nothing.
+        appliance.skip("tests/ away from its checkout: no uv.lock to check the venv against")
     fns = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()
