@@ -1087,7 +1087,11 @@ def _systemd_time(t):
 
 
 def _write_conf(conf, text, mtime):
+    # The conf, with <mtime> as the time it claims; its ctime is now, the kernel's. Returns
+    # when it changed as the CLI reads it (sip_conf_changed_at): the later of the two.
     conf.write_text(text); os.chmod(conf, 0o600); os.utime(conf, (mtime, mtime))
+    st = conf.stat()
+    return max(int(st.st_mtime), int(st.st_ctime))
 
 
 def test_status_shows_the_source_filter_the_gateway_runs():
@@ -1100,9 +1104,16 @@ def test_status_shows_the_source_filter_the_gateway_runs():
     old = d / "old-gw"; old.write_text("#!/bin/sh\nexit 0\n"); os.chmod(old, 0o755)
     stubs = STATUS_STUBS
     enforce1 = ENFORCE1
-    # The conf as written an hour ago; the gateway (by default) started ten minutes later.
+    # Each conf claims to be an hour old (mtime t0) and is written now (its ctime, ch). By
+    # default the gateway started a second after that write; the cases' @AFTER@, @BEFORE@
+    # (ten minutes before the write), @SAME@ (in its second) and @COPIED@ (ten minutes
+    # after the hour-old edit, before the write) are filled in once ch is known.
     t0 = int(time.time()) - 3600
-    after, before, same = _systemd_time(t0 + 600), _systemd_time(t0 - 600), _systemd_time(t0)
+
+    def at(env, ch):
+        for k, t in (("@AFTER@", ch + 1), ("@BEFORE@", ch - 600), ("@SAME@", ch), ("@COPIED@", t0 + 600)):
+            env = env.replace(k, _systemd_time(t))
+        return env
     changed = ("the conf says enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry; "
                "conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply")
     cases = [  # (conf text, env, said, rc)
@@ -1127,11 +1138,14 @@ def test_status_shows_the_source_filter_the_gateway_runs():
          "gateway not confirmed (no [acl] line found for this run (rotated out of the journal? teaport sip restart))", 2),
         # The mode matches, but the conf was written after the gateway started: the gateway
         # runs the allowlist it read then, whatever the conf lists now (#166).
-        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{before}'", changed, 2),
-        ("", f"SIP_GATEWAY={gw} ACL='[acl] source filter LOG, NOT ENFORCED: x' STARTED='{before}'",
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@BEFORE@'", changed, 2),
+        ("", f"SIP_GATEWAY={gw} ACL='[acl] source filter LOG, NOT ENFORCED: x' STARTED='@BEFORE@'",
          "the conf says log (the default): requests from elsewhere are logged ([acl] lines), not dropped; conf changed since the gateway started", 2),
+        # Copied in (rsync -a, cp -p, a mv of a file made earlier) with the mtime of an edit
+        # from before the gateway's start: the copy's ctime is after it (#166 review).
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@COPIED@'", changed, 2),
         # Written and started within one second (a configure's install, then its start).
-        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{same}'", "1 sip_source_allow entry (the running gateway confirms it)", 0),
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@SAME@'", "1 sip_source_allow entry (the running gateway confirms it)", 0),
         # No start time to compare with, or none it can read: no ✓.
         (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED=''",
          "gateway not confirmed (cannot tell when the gateway started, so not whether it runs the conf as it is now)", 2),
@@ -1143,17 +1157,29 @@ def test_status_shows_the_source_filter_the_gateway_runs():
         ("sip_source_filter = enforcing\n", f"SIP_GATEWAY={old} ACL=''", "is not enforce, log or off", 1),
     ]
     for text, env, said, rc_want in cases:
-        _write_conf(conf, CONF + text, t0)
-        rc, out = _run(d, f"STARTED='{after}'; {env}; sip_status", stubs)
+        env = at(f"STARTED='@AFTER@'; {env}", _write_conf(conf, CONF + text, t0))
+        rc, out = _run(d, f"{env}; sip_status", stubs)
         assert rc == 0 and re.search(r"(?m)^  source filter +.*" + re.escape(said), out), (text, env, out)
         assert (rc_want == 0) == ("confirms it" in out), (text, env, out)
-        rc, out = _run(d, f'STARTED=\'{after}\'; {env}; sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+        rc, out = _run(d, f'{env}; sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
         assert out.endswith(f" rc={rc_want}\n") and said in out, (text, env, out)
+    # A conf time past the clock (the clock set back, or a copy that kept a time from a
+    # host ahead): no ✓ whenever the gateway started, and no "restart to apply", which a
+    # restart would never clear (#166 review).
+    for started in (int(time.time()), int(time.time()) + 7200):
+        _write_conf(conf, CONF + enforce1, int(time.time()) + 3600)
+        rc, out = _run(d, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{_systemd_time(started)}'; "
+                          f'sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+        assert out.endswith(" rc=2\n") and "restart to apply" not in out, (started, out)
+        assert ("gateway not confirmed (cannot tell whether it runs the conf as it is now: the conf's time is later "
+                "than this box's clock (set back, or a copy that kept a time from a host ahead?) — touch the conf, "
+                "then teaport sip restart)") in out, (started, out)
     # Doctor's line: ✓ / ✗ / ! by the same answer.
-    for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{after}'", "✓"),
-                      (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{before}'", "!"),
+    for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@AFTER@'", "✓"),
+                      (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@BEFORE@'", "!"),
+                      (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@COPIED@'", "!"),
                       (f"SIP_GATEWAY={old} ACL=''", "!")):
-        _write_conf(conf, CONF + enforce1, t0)
+        env = at(env, _write_conf(conf, CONF + enforce1, t0))
         rc, out = _run(d, f"{env}; cmd_doctor || true", DOCTOR_STUBS)
         assert re.search(rf"{mark}\x1b\[0m SIP source filter: ", out), (env, out)
     if os.geteuid() != 0:

@@ -733,16 +733,29 @@ sip_started_at() {
   t="$(date -u -d "$t" +%s 2>/dev/null || true)"
   if [[ $t =~ ^[0-9]+$ ]]; then printf '%s' "$t"; fi
 }
+# sip_conf_changed_at <conf> — when <conf> last changed, in seconds since the epoch: the
+# later of its mtime and ctime; nothing when stat cannot say. The mtime alone is the
+# file's own claim, which rsync -a, scp -p, cp -p, tar x and touch -r carry over from
+# where it was edited, so a conf edited an hour ago and copied in after the gateway's
+# start would still date from before it (#166 review). The ctime is the kernel's, set on
+# every write, rename, chmod and chown and never set back but by the clock; a chmod with
+# no restart since then reads as a change, which fails safe.
+sip_conf_changed_at() {
+  local t; t="$(stat -L -c '%Y %Z' -- "$1" 2>/dev/null || true)"
+  [[ $t =~ ^([0-9]+)\ ([0-9]+)$ ]] || return 0
+  printf '%s' "$(( BASH_REMATCH[1] > BASH_REMATCH[2] ? BASH_REMATCH[1] : BASH_REMATCH[2] ))"
+}
 # sip_filter_state <conf> — the source filter for `sip status` and doctor: what the
 # gateway runs, not only what the conf says. 0 when the running gateway confirms the
-# conf's mode (its [acl] line), the conf is no newer than the gateway's start, and it
-# passes its --check-config; 1 when the gateway refuses the conf (or the mode is no mode
-# at all); 2 when the conf's mode is not confirmed — the gateway runs another or the conf
-# changed since it started, it has logged none (not running, older than v0.6.6, which
-# ignores the key, journal unreadable or rotated), its --check-config gave no verdict —
-# or the conf cannot be read.
+# conf's mode (its [acl] line), the conf is no newer than the gateway's start
+# (sip_conf_changed_at), and it passes its --check-config; 1 when the gateway refuses
+# the conf (or the mode is no mode at all); 2 when the conf's mode is not confirmed —
+# the gateway runs another or the conf changed since it started (or dates from past the
+# clock), it has logged none (not running, older than v0.6.6, which ignores the key,
+# journal unreadable or rotated), its --check-config gave no verdict — or the conf
+# cannot be read.
 sip_filter_state() {
-  local f="$1" mode n desc run chk=0 why started changed
+  local f="$1" mode n desc run chk=0 why started changed now
   [ -r "$f" ] || { printf 'unknown (%s cannot read %s)' "$(id -un)" "$f"; return 2; }
   mode="$(confval "$f" sip_source_filter)"; mode="${mode,,}"; n="$(sip_allow_count "$f")"
   # Set but empty is no mode: the gateway refuses `sip_source_filter =`, it is not log.
@@ -766,12 +779,15 @@ sip_filter_state() {
     # are dropped while the mode still matches. So the ✓ is for a conf no newer than the
     # run, to the second: a configure's install and start within one second keep it (so
     # would an edit in the second after a start, which no hand edit is quick enough for).
-    started="$(sip_started_at)"; changed="$(stat -L -c %Y -- "$f" 2>/dev/null || true)"
-    if [ -n "$started" ] && [[ $changed =~ ^[0-9]+$ ]]; then
-      if [ "$changed" -le "$started" ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0; fi
-      printf 'the conf says %s; conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply' "$desc"; return 2
+    # A conf time past the clock is no answer: a restart would not get past it.
+    started="$(sip_started_at)"; changed="$(sip_conf_changed_at "$f")"; printf -v now '%(%s)T' -1
+    if [ -z "$started" ]; then why="cannot tell when the gateway started, so not whether it runs the conf as it is now"
+    elif [ -z "$changed" ]; then why="cannot tell when the conf last changed, so not whether the gateway runs it as it is now"
+    elif [ "$changed" -gt "$now" ]; then
+      why="cannot tell whether it runs the conf as it is now: the conf's time is later than this box's clock (set back, or a copy that kept a time from a host ahead?) — touch the conf, then teaport sip restart"
+    elif [ "$changed" -le "$started" ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0
+    else printf 'the conf says %s; conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply' "$desc"; return 2
     fi
-    why="cannot tell when the gateway started, so not whether it runs the conf as it is now"
   elif [ "$chk" = 3 ]; then why="the gateway could not check the conf: $SIP_WHY"
   elif [ -n "$run" ]; then why="$SIP_WHY"
   elif [ -x "$SIP_GATEWAY" ] && ! sip_gateway_knows sip_source_filter; then why="$SIP_GATEWAY does not know sip_source_filter (older than v0.6.6), so there is no filter at all"
