@@ -58,6 +58,7 @@ from teaport_brain.tts_text import fold_unspeakable, split_clauses_ramp  # noqa:
 # would pass while asserting nothing.
 NBSP, NNBSP, ZWSP, WJ, BOM, NBHY, ELL = (
     "\u00a0", "\u202f", "\u200b", "\u2060", "\ufeff", "\u2011", "\u2026")
+ZWJ, ZWNJ = "\u200d", "\u200c"
 
 DOWN = FrameDirection.DOWNSTREAM
 
@@ -102,6 +103,8 @@ DEGENERATE = [
     "I can help... ... ... ... ...",
     f"{ELL}{NBSP}{NBSP}\n\n{ELL}{NBSP}{ELL}{NBSP}{ELL}{NBSP}{ELL}",
     "Let me check that.... hmm.... well.... so.... anyway....",
+    # #70, 2026-09-26: a healthy prefix, then 895 U+200B and nothing else.
+    "To be, or not to be: that is the question" + ZWSP * 895,
 ]
 
 # Below the cut threshold ON PURPOSE. A mild run is not a collapse: the fold still
@@ -116,12 +119,24 @@ FOLDED_NOT_CUT = [
     "The log said Encoder... Decoder... Marlin... and then it stopped.",
 ]
 
+# Joiners are spelling, not contamination: U+200D/U+200C choose a conjunct's form in
+# Devanagari (half-form vs explicit virama) and hold an emoji ZWJ sequence together as
+# one glyph. Synthetic text, but the joiners sit where the script puts them, and there
+# are more than the cut's 40 of them (review of #70).
+JOINED = (f"क्{ZWJ}ष और क्{ZWNJ}ष, र्{ZWJ}य " * 10
+          + f"\U0001F468{ZWJ}\U0001F469{ZWJ}\U0001F467{ZWJ}\U0001F466 " * 4)
+
 HEALTHY = [
     "Well... okay then.",
     "I waited... and waited... then left.",     # two dramatic pauses
     f"Hmm{ELL} interesting{ELL} let me check.",  # two ellipses in ordinary prose
     "Sure, the forecast is 18 degrees and clear.",
     "The file is at /tmp/a...b if you want it.",
+    # Zero-width contamination as healthy replies carry it (#70): 1-4 per reply,
+    # scattered inside echoed words, never in a run.
+    f"The voice{ZWSP}id is af{ZWSP}_heart.",
+    f"Sure{BOM}, it is 18{NNBSP}degrees and{ZWSP} clear{WJ}, with rain{ZWSP} later.",
+    JOINED,
 ]
 
 
@@ -519,13 +534,136 @@ async def test_a_leading_emoticon_is_kept_whole():
     before it, and a colon that opens no emoticon, still go."""
     for deltas, want in (([":)"], ":)"), ([";-) sure."], ";-) sure."), (["... :D"], ":D"),
                          ([": hello there."], "hello there."), (["!! Okay."], "Okay."),
-                         (["... it was the worst of times"], "it was the worst of times")):
+                         (["... it was the worst of times"], "it was the worst of times"),
+                         # A letter closer with a word behind it is that word's first
+                         # letter (#187 review): ":Peru" is not ":P" + "eru".
+                         ([":Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":Done."], "Done."), ([":D'accord."], "D'accord."),
+                         ([":(laughs) Sure."], "(laughs) Sure."), ([":[Sure.]"], "[Sure.]"),
+                         ([":D sure."], ":D sure."), ([":3"], ":3"), ([":(."], ":(."),
+                         # ...a LATIN word: CJK has no spaces, so a face against the next
+                         # word is ordinary there, and Cyrillic and Devanagari keep it too.
+                         ([":)好的，我来帮你。"], ":)好的，我来帮你。"),
+                         ([":Dはい、わかりました。"], ":Dはい、わかりました。"),
+                         ([";)Хорошо."], ";)Хорошо."), ([":)नमस्ते।"], ":)नमस्ते।"),
+                         ([":Désolé, pouvez-vous répéter ?"], "Désolé, pouvez-vous répéter ?"),
+                         ([":Perdón."], "Perdón."), ([":Pérou."], "Pérou.")):
         h = Guard()
         await h.feed(LLMFullResponseStartFrame())
         for d in deltas:
             await h.text(d)
         await h.feed(LLMFullResponseEndFrame())
         assert h.spoken() == want, (deltas, h.spoken())
+
+
+async def test_an_emoticon_split_across_deltas_is_kept_whole():
+    """#187: the strip judges one frame at a time, so ":" then ")" lost the colon all
+    the same -- the lone ":" had no closer in view, and history recorded ")". A leading
+    opener is held for the next delta, which keeps it whole or strips it as one delta
+    would: ": Hello" is still "Hello", and so is every split here.
+
+    The review's cases: a #15 retry inherits a held ":" from its first attempt, and its
+    answer does not open with a face (":" + "Peru's ...", ":" + "(laughs)"); a closer
+    can be a word's start split off (":", "P", "eru's"); `$` matched before a final
+    newline, so ":\\n" held the ":" and dropped the "\\n"; a "<" in the delta skipped
+    the hold."""
+    for deltas, want in (([":", ")"], ":)"), ([";", "-) sure."], ";-) sure."),
+                         ([":-", ")"], ":-)"), ([":", "-", ")"], ":-)"),
+                         ([":'", "("], ":'("), ([":", "D"], ":D"),
+                         (["... ", ":", "D"], ":D"), (["..", ".", ":", ")"], ":)"),
+                         (["=", ")"], "=)"), (["::", ")"], ":)"),
+                         ([":", " Hello"], "Hello"), ([":", " Hello."], "Hello."),
+                         ([";", " so, yes."], "so, yes."), ([":-", " no"], "- no"),
+                         ([":", "Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "Done."], "Done."), ([":", "D'accord."], "D'accord."),
+                         ([":", "P", "eru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "D", " sure."], ":D sure."), ([":D", "one."], "Done."),
+                         ([":", "(laughs) Sure."], "(laughs) Sure."), ([":(", "laughs)"], "(laughs)"),
+                         ([":)", " Sure."], ":) Sure."), ([":", ")好的。"], ":)好的。"),
+                         ([":)", "好的。"], ":)好的。"), ([":", "Désolé."], "Désolé."),
+                         ([":\n", "Okay"], "Okay"), ([":", "\n", "Okay."], "Okay."),
+                         (["=\n", "Hello."], "=\nHello."), (["<|end|>:", ")"], ":)")):
+        said = []
+        for split in (deltas, ["".join(deltas)]):
+            h = Guard()
+            await h.feed(LLMFullResponseStartFrame())
+            for d in split:
+                await h.text(d)
+            await h.feed(LLMFullResponseEndFrame())
+            forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+            ids = [f.id for f in forwarded]
+            assert len(ids) == len(set(ids)), (split, "a frame was pushed twice", h.spoken())
+            said.append(h.spoken())
+        assert said == [want, want], (deltas, "split, one delta:", said)
+
+
+async def test_a_face_held_to_the_end_rides_its_own_frame():
+    """Pass-through text keeps the frame it arrived on (see _emit), a held face too: the
+    punctuation before it is dropped as the strip would drop it, so the face's delta
+    carries nothing else and the End sends the face out on that frame, not a fresh one."""
+    for texts in ((":D",), ("... :)",), ("...", ":P")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        sent = [LLMTextFrame(text=t) for t in texts]
+        for frame in sent:
+            await h.feed(frame)
+        await h.feed(LLMFullResponseEndFrame())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert [f.id for f in forwarded] == [sent[-1].id], (texts, h.spoken())
+        assert h.spoken() == texts[-1].lstrip(". "), (texts, h.spoken())
+
+
+async def test_a_reply_of_a_lone_colon_ends_like_any_punctuation_reply():
+    """A held opener the End reaches is flushed through the strip like the fold's held
+    tail, so it is never forwarded: a lone ":" still counts as nothing forwarded, and
+    the turn ends as a "..." reply does (#16) -- the recovery line, once, latched."""
+    for reply in ([":"], [";"], ["...", ":"], [" ", ";"], [":", ":"]):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for delta in reply:
+            await h.text(delta)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == RECOVERY_TEXT.lstrip(), (reply, h.spoken())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert len(forwarded) == 1, (reply, h.spoken())
+        assert h.g._tripped, reply
+        assert h.kinds()[-1] == "LLMFullResponseEndFrame", h.kinds()
+
+
+async def test_a_held_opener_does_not_outlive_a_barge_in():
+    """A barge-in makes everything unspoken stale, a held opener included: the End of
+    the cancelled completion pushes nothing ("=" and "-" are not strip punctuation, so
+    either would be spoken if it survived), and the next reply starts clean."""
+    from pipecat.frames.frames import InterruptionFrame
+    for opener in (":", "=", ";-"):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        await h.text(opener)
+        await h.feed(InterruptionFrame())
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == "", (opener, h.spoken())
+        await h.feed(LLMFullResponseStartFrame())
+        await h.text(")")
+        await h.text(" Fine.")
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == ") Fine.", (opener, h.spoken())
+
+
+async def test_only_a_leading_opener_is_held():
+    """Text the strip no longer reaches is never delayed: a colon after a word -- even
+    one still held for its sentence, with nothing forwarded yet -- rides its own frame,
+    as does one after a forwarded sentence."""
+    for texts in (("Note", ":", " it is done."), ("Sure.", " :", ")"), ("Hi", " ;", "-)")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        sent = [LLMTextFrame(text=t) for t in texts]
+        for frame in sent:
+            await h.feed(frame)
+            assert h.g._pending == "", (texts, frame.text, h.g._pending)
+        await h.feed(LLMFullResponseEndFrame())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert [f.id for f in forwarded] == [f.id for f in sent], (texts, h.spoken())
+        assert [f.text for f in forwarded] == list(texts), (texts, h.spoken())
 
 
 async def test_the_recovery_line_is_allowed_a_new_frame():
@@ -907,6 +1045,156 @@ def test_unglued_text_is_what_the_tts_can_split():
                       ("Use ASP.NET Core", len("Use ASP."))):
         assert unglue_sentences(text) == text
         assert match_endofsentence(text) == cut, (text, match_endofsentence(text))
+
+
+# ------------------------------------------------- a zero-width collapse (#70)
+
+# The 2026-09-26 shape: gpt-oss streamed ~20 healthy tokens of a Hamlet recitation, a
+# few U+202F/U+200B around "'tis — the", then 895 U+200B deltas and nothing else until
+# the End. The fold erases zero-width characters, none of them is a dot or an ellipsis,
+# and the counter used to see nothing: the prefix played and the reply stopped mid-line
+# in silence, with no recovery line (the End rule is for a reply that forwarded nothing).
+# Where the prefix's stray characters sit is illustrative; the run is as recorded.
+HAMLET_PREFIX = ["To", " be", ",", " or", " not", " to", " be", ":", " that", " is",
+                 " the", " question", "—", " Whether", f"{NNBSP}'", "tis",
+                 f"{NNBSP}—", f"{ZWSP} the"]
+HAMLET_SPOKEN = "To be, or not to be: that is the question— Whether 'tis — the"
+HAMLET_COLLAPSE = [ZWSP] * 895
+
+
+def test_zero_width_characters_count_by_mass():
+    # Every code point of tts_text's zero-width table counts, one for one, against the
+    # same bar the dot and ellipsis mass uses; a handful never reaches it.
+    for ch in (ZWSP, WJ, BOM):
+        assert is_degenerate(ch * 40), repr(ch)
+        assert not is_degenerate(ch * 4), repr(ch)
+    assert is_degenerate((ZWSP + WJ + BOM) * 14)
+    c = DegeneracyCounter()
+    c.feed(f"voice{ZWSP}id{WJ}")
+    c.feed(BOM)
+    assert (c.zero_width, c.punct_chars) == (3, 3)
+    # No-break spaces deliberately do NOT count (see _TRIP_PUNCT_CHARS): they fold to a
+    # plain space, and they are the commonest contamination in HEALTHY replies. A
+    # captured bare no-break collapse would be the reason to revisit this, as a run.
+    for ch in (NBSP, NNBSP, NBHY):
+        assert not is_degenerate(f"word{ch}" * 60), repr(ch)
+
+
+def test_joiners_are_spelling_not_zero_width():
+    """ZWJ/ZWNJ stay out of tts_text's ZERO_WIDTH (review of #70). That one table drives
+    the fold, the guard's cut and the raw capture, so adding them would erase the joiners
+    from Hindi and emoji text, and cut a long healthy reply as a collapse."""
+    assert JOINED.count(ZWJ) + JOINED.count(ZWNJ) >= 40, "the fixture must pass the bar"
+    assert fold_unspeakable(JOINED) == JOINED
+    assert fold_degenerate_chars(JOINED) == JOINED
+    assert not is_degenerate(JOINED)
+
+
+def test_scattered_zero_width_on_the_worst_healthy_punctuation_does_not_cut():
+    # The FOLDED_NOT_CUT cases peak at 16 punctuation chars; the most zero-width
+    # characters a healthy reply has carried is 4. Both at once stay under the bar.
+    for text in FOLDED_NOT_CUT:
+        contaminated = text.replace(" ", f" {ZWSP}", 4)
+        assert contaminated.count(ZWSP) == 4, contaminated
+        assert not is_degenerate(contaminated), repr(contaminated)
+
+
+async def test_a_zero_width_collapse_cuts_and_speaks_the_recovery_line():
+    """#70: a healthy prefix and then 895 U+200B. The counter is fed the RAW delta, so
+    it sees the zero-width characters the fold is about to erase; it trips within the
+    first 40 of them, swallows the rest, and the turn ends on a sentence the user can
+    answer instead of mid-line in silence."""
+    for prefix, want in ((HAMLET_PREFIX, HAMLET_SPOKEN + RECOVERY_TEXT),
+                         ([], RECOVERY_TEXT.lstrip())):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in prefix:
+            await h.text(d)
+        assert not h.g._tripped, "the healthy prefix must not trip"
+        trip_at = None
+        for i, d in enumerate(HAMLET_COLLAPSE):
+            await h.text(d)
+            if trip_at is None and h.g._tripped:
+                trip_at = i
+        assert trip_at is not None and trip_at < 40, trip_at
+        # The delta that crossed the bar and every one after it: swallowed.
+        assert h.g._swallowed == len(HAMLET_COLLAPSE) - trip_at, h.g._swallowed
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == want, (prefix[:1], h.spoken())
+        assert h.spoken().count(RECOVERY_TEXT.strip()) == 1, h.spoken()
+        assert ZWSP not in h.spoken()
+        assert h.kinds()[0] == "LLMFullResponseStartFrame"
+        assert h.kinds()[-1] == "LLMFullResponseEndFrame"
+
+
+async def test_scattered_zero_width_in_a_reply_folds_without_a_cut():
+    # 1-4 scattered per reply is the healthy population (7 days of journal, #70).
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for d in ("The voice", f"{ZWSP} id is", f" af{ZWSP}_heart", f"{NNBSP}and{BOM} the",
+              f" language is{WJ} English."):
+        await h.text(d)
+    await h.feed(LLMFullResponseEndFrame())
+    assert not h.g._tripped
+    assert h.spoken() == "The voice id is af_heart and the language is English.", h.spoken()
+
+
+async def test_a_prepared_greeting_is_judged_before_the_fold():
+    """agent_session.prepare_greeting asks for the phone greeting outside the pipeline,
+    so the streaming guard never sees it, and it called is_degenerate on the FOLDED text.
+    The fold erases zero-width characters and collapses a dot run to "...", so #70's
+    collapse passed as its truncated prefix and the caller was greeted mid-sentence
+    (review of #70). A degenerate greeting is refused: None, and greet() asks again
+    through the pipeline, where the guard is. A healthy one with stray contamination
+    still comes back folded."""
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from teaport_brain.agent_session import AgentSession
+
+    class LLM:
+        def __init__(self, text):
+            self.text = text
+
+        async def run_inference(self, context):
+            return self.text
+
+    stt = type("STT", (), {"stt_available": True, "slot_busy": False})()
+
+    async def prepared(text):
+        s = AgentSession(task=None, context=LLMContext([]), stt=stt, tts=None,
+                         llm=LLM(text), ledger=None, followup_gate=None)
+        return await s.prepare_greeting()
+
+    for degenerate in ("Hello, thanks for calling, how can" + ZWSP * 895,
+                       "Hi there" + "." * 2340, f"Hello{ELL * 6}"):
+        assert await prepared(degenerate) is None, repr(degenerate[:40])
+    assert (await prepared(f"Hello{NNBSP}there, thanks{ZWSP} for calling. How can I help?")
+            == "Hello there, thanks for calling. How can I help?")
+    assert await prepared(f"{ZWSP}{ZWSP}") is None   # nothing left after the fold
+
+
+async def test_raw_capture_logs_the_zero_width_collapse():
+    """The same completion the guard cuts must reach the raw capture's log, with its
+    after_tool flag: _DEGENERATE matched dots, ellipses and "**" only, so the one
+    zero-width collapse on record left no raw bytes behind (#70)."""
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        h = Capture()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in HAMLET_PREFIX + HAMLET_COLLAPSE:
+            await h.feed(LLMTextFrame(text=d))
+        await h.feed(LLMFullResponseEndFrame())
+        # ...and a healthy reply with scattered ones stays out of the log.
+        await h.feed(LLMFullResponseStartFrame())
+        await h.feed(LLMTextFrame(text=f"The voice{ZWSP}id is af{ZWSP}_heart{ZWSP}."))
+        await h.feed(LLMFullResponseEndFrame())
+    finally:
+        logger.remove(sink)
+    captured = [ln for ln in lines if "RawLLMCapture: DEGENERATE" in ln]
+    assert len(captured) == 1, lines
+    assert "after_tool=False" in captured[0], captured[0]
+    assert "zwsp=896" in captured[0], captured[0]   # 895 + the prefix's one
 
 
 def main():

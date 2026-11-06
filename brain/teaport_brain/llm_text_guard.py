@@ -118,6 +118,7 @@ from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
+    ZERO_WIDTH,
     fold_unspeakable,
     is_sentence_repeat,
 )
@@ -185,8 +186,30 @@ _MAX_HOLDBACK = 4
 # Not into an emoticon: a reply of ":)" lost its colon and went out as ")" -- to the
 # speaker (nothing) and to history, which then held a stray bracket where the model had
 # smiled (probe 2026-10-14). An emoticon is kept whole, as an emoji is: the TTS has
-# nothing to say for either, and history keeps what the model wrote.
-_LEADING_PUNCT = re.compile(r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*])[\s.,;:!?\u2026])+")
+# nothing to say for either, and history keeps what the model wrote. A closer counts only
+# when no word goes on right behind it: ":D" and ":(" are faces, ":Done." and ":(laughs)"
+# a colon before "Done." and "(laughs)" (":D'accord" one before "D'accord"). Without
+# that, ":Peru's capital is Lima." kept its colon -- the text a #15 retry streams when
+# its first attempt was a lone ":", still held below (#187 review). The price: a face
+# glued to the next word (":)Sure") loses its colon, as every face did before #178.
+# A LATIN word, not `\w`, which matches every script's letters: CJK has no spaces, so a
+# face against the next word is ordinary in the ja and zh rooms (":)\u597d\u7684"), and `\w` took
+# its colon there, and in Cyrillic and Devanagari too (#187 review round 2).
+_LEADING_PUNCT = re.compile(
+    r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*](?![0-9A-Za-z_'\u00c0-\u024f]))"
+    r"[\s.,;:!?\u2026])+")
+# ...nor into one split across deltas (#187): the strip judges one frame at a time, so
+# ":" then ")" lost the colon all the same, the lone ":" having no closer in view. While
+# the strip is still stripping, a delta that ends in an opener, or in an opener and a
+# closer the next delta can still turn into a word (":P" + "eru"), holds that back, as
+# _HOLDBACK holds a trailing "..": the next delta keeps the face or strips it, as one
+# delta would. The punctuation before it goes now, as the strip would take it anyway:
+# the hold never outgrows the face, and a face the End reaches rides its own frame. A
+# lone ":" the End reaches flushes through the strip with the fold's tail, so it is
+# still "nothing forwarded" (#16); a barge-in drops it with the rest of _pending. Only
+# text the strip is about to reach is held, so a reply that has begun is never delayed.
+# `\Z`, not `$`, which also matches before a final "\n" (":\n" lost its newline).
+_EMOTICON_OPEN = re.compile(r"[:;=]['-]?[()\[\]DPpOo3/\\|*]?\Z")
 
 # Where the repeat cut closes a sentence in the folded stream. A run of terminators
 # is one boundary; no following whitespace is required, because the live 08:32
@@ -296,6 +319,27 @@ _TRIP_COMBINED = 6
 # log. Counting the characters that belong to a collapse marker catches it by mass instead.
 # 40 sits above any punctuation a healthy spoken reply carries (the pinned FOLDED_NOT_CUT
 # cases peak at 16) and below the ~50 characters within which every live capture collapses.
+#
+# ZERO-WIDTH characters (tts_text's ZERO_WIDTH: U+200B, U+2060, U+FEFF) add to that mass
+# one for one (#70). Live 2026-09-26, a Hamlet recitation streamed ~20 healthy tokens and
+# then 895 U+200B deltas and nothing else until the End. The fold erases them, none is a
+# dot or an ellipsis, and the counter saw nothing, so the prefix played and the reply
+# stopped mid-line ("Whether 'tis -- the"). No recovery line came either: the End rule is
+# for a reply that forwarded nothing, and this one had forwarded its prefix. It was the
+# 2340-dot dead air above again, in an invisible character. They are counted from the
+# RAW delta (process_frame feeds the counter before _fold_streaming): once folded there
+# is nothing left to count. Healthy replies carry 1-4 of them, scattered inside echoed
+# words (7 days of journal, #70), so a reply with the worst pinned punctuation (16) and
+# the most zero-width characters seen in a healthy reply (4) sits at 20 of the 40. The
+# collapse trips within its first 40.
+#
+# NO-BREAK characters (U+00A0/U+202F spaces, the U+2011 hyphen) do NOT count, on purpose.
+# They are the contamination healthy replies carry most (the header: between the word
+# parts of the tool-result strings the model echoes), and they fold to a plain space or
+# hyphen, so nothing of the reply is lost. The captures that carried them already trip
+# on their ellipses and dots without them. Counting them would push the HEALTHY
+# population toward the bar, to catch a shape no capture has shown. If a bare no-break
+# collapse is ever captured, count it as a run, the way dots are, not per character.
 _TRIP_PUNCT_CHARS = 40
 
 
@@ -313,16 +357,19 @@ class DegeneracyCounter:
     into ".." + "." still counts as one marker and not zero.
 
     `punct_chars` is the same evidence measured by mass rather than by occurrence, so a
-    single unbroken run — which is one marker however long — still registers. See
-    _TRIP_PUNCT_CHARS.
+    single unbroken run — which is one marker however long — still registers. Zero-width
+    characters add to it too, and `zero_width` counts them on their own so the trip line
+    can say which character it was. Feed it the RAW delta, since the fold erases them.
+    See _TRIP_PUNCT_CHARS.
     """
 
-    __slots__ = ("dot_runs", "ellipses", "punct_chars", "_run")
+    __slots__ = ("dot_runs", "ellipses", "punct_chars", "zero_width", "_run")
 
     def __init__(self):
         self.dot_runs = 0
         self.ellipses = 0
         self.punct_chars = 0
+        self.zero_width = 0
         self._run = 0
 
     def feed(self, text: str) -> None:
@@ -341,6 +388,10 @@ class DegeneracyCounter:
         n = text.count("\u2026")
         self.ellipses += n
         self.punct_chars += n
+        # By mass, from tts_text's table, so a code point added to the fold counts here too.
+        z = len(ZERO_WIDTH.findall(text))
+        self.zero_width += z
+        self.punct_chars += z
 
     @property
     def tripped(self) -> bool:
@@ -365,11 +416,14 @@ def fold_degenerate_chars(text: str) -> str:
 def is_degenerate(cumulative: str) -> bool:
     """Has this completion collapsed into the ellipsis/whitespace attractor?
 
-    One-shot form of DegeneracyCounter. There is no "batch path" in the pipeline — the
-    guard only ever feeds deltas — so this exists for the tests, which use it as the
-    whole-string oracle that the incremental counter is checked against
-    (test_incremental_matches_oneshot). Kept in the module, not the test file, so the
-    oracle and the implementation cannot drift apart."""
+    One-shot form of DegeneracyCounter, for a completion that arrives whole instead of
+    streamed: agent_session.prepare_greeting judges the phone greeting, which it asks for
+    outside the pipeline, with it. Give it the RAW text, as the guard's counter gets its
+    deltas: the fold erases zero-width characters and collapses dot runs, so folded text
+    hides the collapse (#70). The tests also use it as the whole-string oracle that the
+    incremental counter is checked against (test_incremental_matches_oneshot). Kept in
+    the module, not the test file, so the oracle and the implementation cannot drift
+    apart."""
     counter = DegeneracyCounter()
     counter.feed(cumulative)
     return counter.tripped
@@ -439,7 +493,8 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
 
     def _fold_streaming(self, text: str) -> str:
-        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK."""
+        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK and
+        _EMOTICON_OPEN."""
         text = self._pending + text
         self._pending = ""
         # Before the holdback split: a held-back ".." rejoined here is the closer the
@@ -455,6 +510,15 @@ class LLMTextGuard(FrameProcessor):
             if m:
                 self._pending = m.group(0)
                 text = text[:m.start()]
+        if not self._pending and not self._forwarded:
+            # A leading emoticon's opener: held only if the strip would still reach it --
+            # every held frame, and this delta up to the opener, strips to nothing. Not
+            # in the elif chain, so a delta with a "<" in it ("<|end|>:") still reaches it.
+            m = _EMOTICON_OPEN.search(text)
+            if m and not any(_LEADING_PUNCT.sub("", t) for t in
+                             [t for _, t in self._held]
+                             + [fold_degenerate_chars(text[:m.start()])]):
+                self._pending, text = m.group(0), ""
         folded = fold_degenerate_chars(text) if text else ""
         if folded:
             self._tail = (self._tail + folded)[-8:]
@@ -569,6 +633,9 @@ class LLMTextGuard(FrameProcessor):
             # strip(): a completion whose only content is a newline before its tool
             # call did not answer in words, and must not be apologised for.
             self._received += len(frame.text.strip())
+            # The RAW delta, before _fold_streaming below: the fold erases zero-width
+            # characters, and a counter fed the folded text never saw the 895-U+200B
+            # collapse of #70.
             self._counter.feed(frame.text)
             if self._counter.tripped:
                 self._tripped = True
@@ -578,6 +645,7 @@ class LLMTextGuard(FrameProcessor):
                     f"{self._forwarded} forwarded chars "
                     f"(dot_runs={self._counter.dot_runs} "
                     f"ellipses={self._counter.ellipses} "
+                    f"zero_width={self._counter.zero_width} "
                     f"punct_chars={self._counter.punct_chars}); "
                     f"swallowing the rest and speaking the recovery line"
                 )
