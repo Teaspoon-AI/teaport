@@ -10,7 +10,11 @@
 (* layout's seconds, heard_fraction, the pts cut), and this question is     *)
 (* nothing but numbers in an order: which frame the transport's clock       *)
 (* releases first. So it is its own small module rather than a constant on  *)
-(* that one, whose state space is already 258k states.                      *)
+(* that one, whose two-reply rows are 405k states (lp_wrongText, measured   *)
+(* 2026-11-05). Since #255 the clock the transport releases on is the       *)
+(* VOICE clock (VoiceClock.tla: it stands still through a playout pause);   *)
+(* `now` here is that clock, and the hold's shift is the same question on   *)
+(* either.                                                                  *)
 (*                                                                          *)
 (* The mechanism. The TTS stamps its frames with a playout time (pts) as it *)
 (* synthesizes them: word i at i (a unit per word), and the response's End, *)
@@ -68,7 +72,7 @@ ASSUME SECOND \in BOOLEAN /\ DESIGN2 \in {"asWritten", "realClock", "shipped"}
 Bound == LAT + N + MaxHold + 1      \* the clock never needs to run past this
 
 VARIABLES
-    now,         \* the transport's clock
+    now,         \* the transport's clock (the voice clock since #255)
     phase,       \* "held" (in the gate's queue) | "queued" (on the clock queue) | "done"
     hold,        \* the release time (the context opened at 0): fixed at the release
     wordShift,   \* how far the release moved the words' pts
