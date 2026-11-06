@@ -393,8 +393,14 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   cut of it cancels the call.
 - **The session's end** (`Owed.close_session`, from the gate's cleanup and the room's
   sleep): a consult still running has its placeholder rewritten to its failure record,
-  owed, with no run. **Room sleep and wake** save and restore the owed records with the
-  conversation (`wake_gate`).
+  owed, with no run. The consult itself was cancelled just before, where the session's
+  end reached the LLM (`BoundedOpenAILLMService.end_with_session`, #122), so nothing lands
+  after it: `Land`'s `~ended` holds in the code. The agent's run it started still finishes
+  (an action asked for is done) and its answer is dropped (`tools._run_to_its_end`); a
+  consult called as the session ends starts its run and no waiter at all. Until
+  #122 the consult ran on into the teardown and its outcome landed in the closed book.
+  **Room sleep and wake** save and restore the owed records with the conversation
+  (`wake_gate`).
 - **A run that says nothing** (`SILENT`, `stay`): the model ends its turn there. The
   code tells the gate (`RunSilentFrame`) when the run's completion gave the TTS nothing it
   would speak -- counted with the TTS's own test (`tts_text.has_speech`), so a reply of
@@ -3626,7 +3632,16 @@ it back in its cut; the transport holds a frame whose audio (pts plus the lead) 
 stop until the start (`VoiceClock.wait_until`); a word released before the pause began
 has its audio after it all the same, so the room's echo guard dates each word by when
 its audio played, less the lead (`VoiceClock.when`; `test_echo_guard.py::
-test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard`). Nor the lag's
+test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard`). Nor the
+ledger's guard against a schedule anchored before its reply's audio could play
+(`TranscriptLedger._pts_rebase`, #19: pipecat anchors Q at R's last word, and
+`engine_tts` moves it to R's audio end): it reads the words from where the layout says
+the reply started, on the voice clock, only when the first word is further ahead of
+it than a right schedule can be (`_ANCHOR_LATENCY_SECS`). The model's TTS places Q after
+what it emitted before, as `engine_tts` does, so the guard moves nothing here and no row
+depends on it; `test_ledger_playout.py`'s `test_j_` cases check it, with a pause ahead
+of Q and one between Q's layout and its playout (`_resume` re-lays out a turn that had
+not started). Nor the lag's
 measurement (`_heard_until`, tested); the frame of lead a resumed write
 keeps; a unit is one word and one tick. The premises — that MediaSender releases exactly
 the frames `playout_pause._UNTIMED` leaves out through the transport's own `push_frame`,
