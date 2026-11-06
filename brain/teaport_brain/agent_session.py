@@ -523,8 +523,11 @@ class AgentSession:
         text = strip_urls_for_speech(llm_text_guard.fold_degenerate_chars(text)).strip()
         return text or None
 
-    # How long own_line lets the interruption clear the way before the line goes in.
+    # How long own_line lets the interruption clear the way before the line goes in; and
+    # how much longer, at most, it waits for the interruption to reach the FollowupGate
+    # (a pipeline that never passes it on) before the line goes in all the same.
     _OWN_LINE_SETTLE_S = 0.2
+    _OWN_LINE_SETTLE_MAX_S = 5.0
 
     @contextlib.asynccontextmanager
     async def own_line(self, line: str, *, append_to_context: bool):
@@ -538,11 +541,29 @@ class AgentSession:
         if owed is not None:
             owed.own_cut = True
         try:
+            gate = self.followup_gate
+            seen = gate.interruptions
             await self.task.queue_frames([InterruptionWorkerFrame()])
             await asyncio.sleep(self._OWN_LINE_SETTLE_S)
             # Armed after the interruption has gone through (it settles every watched
-            # reply as cut) and before the line is queued.
-            delivery = self.followup_gate.watch_delivery()
+            # reply as cut) and before the line is queued. Waited for, not assumed of the
+            # settle: on a starved CPU it can take longer, and the line queued ahead of it
+            # was cut by it, its watch settled as cut with it -- the call prompt's answer
+            # time ran out on a question nobody heard, and the call was taken (#293).
+            # The count can't tell this interruption from another's: one that reaches the
+            # gate inside the settle (the room's user starting a turn as the phone rings)
+            # lets the line go ahead of a late own one, as on main. Two coincidences, and
+            # waiting on the line's own interruption needs the task's flush probe, a
+            # change to every own line (#340).
+            if gate.interruptions == seen:
+                try:
+                    await asyncio.wait_for(gate.interrupted_since(seen),
+                                           self._OWN_LINE_SETTLE_MAX_S)
+                except asyncio.TimeoutError:
+                    logger.warning("own line: the interruption did not reach the follow-up "
+                                   f"gate within {self._OWN_LINE_SETTLE_MAX_S:g} s more — "
+                                   "the line goes in anyway")
+            delivery = gate.watch_delivery()
             await self.task.queue_frames([TTSSpeakFrame(line,
                                                         append_to_context=append_to_context)])
             yield delivery
