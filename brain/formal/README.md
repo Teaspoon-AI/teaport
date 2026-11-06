@@ -770,6 +770,14 @@ ends.
   the record stays owed and is re-offered once (#313).
 - **Room sleep and wake** persistence (`wake_gate.py`) and the session end's rewrite of
   a running consult's placeholder are not modelled (`test_owed.py` covers both).
+- **The room's goodbye backstop** (`goodbye.py`, #221: a goodbye the model said
+  without `end_conversation` sends the room to sleep) is not modelled. It changes no
+  record and sends no request: it reads the book (nothing owed) and the gate, once, at
+  a reply's settle. Its one hazard is this model's `NoRunUnderSpeech`: sleeping under
+  the caller's words, as a turn-level guard alone does (`ow_turnLevel`). So it holds
+  at the VAD level, as `RunGo` does, with `Cap`'s bound (`FollowupGate.speech_over`:
+  `_speech_clear`, `TEAPORT_REPLY_HOLD_MAX_S`), and stands down at the cap rather than
+  sleep under speech. `test_goodbye.py` covers it.
 - **Durations.** The settle wait's bound (`SETTLE_WAIT_S`), the debounce before a run
   goes, the lull's length: timing the model leaves out ("What the code adds").
 - **pipecat premises**, checked in `test_pipecat_premises.py`: the LLM answers an
