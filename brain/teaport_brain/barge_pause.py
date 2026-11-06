@@ -160,7 +160,6 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
-    FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
@@ -1046,10 +1045,20 @@ class UnspokenReplyTap(FrameProcessor):
     which nothing below the TTS ever sees for a completion with no text -- the TTS
     holds it (test_pipecat_premises.py, the text-less completion's End). Direct mode:
     no queue between the model's words and the TTS. A tap: every frame goes on as it
-    came."""
+    came.
+
+    A tool call is read from the frames the LLM service broadcasts BEFORE the response's
+    End: services.FunctionCallsDispatchedFrame (every call, the silent cancel_<tool>
+    included) and pipecat's FunctionCallsStartedFrame. Never from
+    FunctionCallInProgressFrame, which each call's own task broadcasts and which can
+    trail the End (services.py): read there, the flag outlived its response, and the
+    answer after the tool -- empty, say -- went unreported."""
 
     def __init__(self, on_unspoken):
         super().__init__(enable_direct_mode=True)
+        # Here, not at the top: services imports this module.
+        from teaport_brain.services import FunctionCallsDispatchedFrame
+        self._called = (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)
         self._on_unspoken = on_unspoken
         # Since the response began: text the TTS would speak went by; a tool call was
         # made (its result runs the model again, and that answer is the reply).
@@ -1065,7 +1074,7 @@ class UnspokenReplyTap(FrameProcessor):
                 self._said = False
             elif isinstance(frame, (LLMTextFrame, TTSSpeakFrame)):
                 self._said = self._said or has_speech(frame.text)
-            elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallInProgressFrame)):
+            elif isinstance(frame, self._called):
                 self._tool_call = True
             elif isinstance(frame, LLMFullResponseEndFrame):
                 if self._tool_call:

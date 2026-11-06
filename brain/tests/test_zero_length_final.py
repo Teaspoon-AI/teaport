@@ -51,6 +51,8 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     DataFrame,
+    FunctionCallFromLLM,
+    FunctionCallInProgressFrame,
     BotStoppedSpeakingFrame,
     FunctionCallResultFrame,
     FunctionCallResultProperties,
@@ -109,6 +111,7 @@ from teaport_brain.heard_context import (  # noqa: E402
 )
 from teaport_brain.reply_hold import ReplyHoldGate, TurnMerge  # noqa: E402
 from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
+from teaport_brain.services import FunctionCallsDispatchedFrame  # noqa: E402
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords, taken  # noqa: E402
 from teaport_brain.tools import no_inference  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
@@ -1032,6 +1035,66 @@ async def test_the_tap_reads_the_reply_above_the_real_tts():
         LLMFullResponseStartFrame(), FunctionCallsStartedFrame(function_calls=[]),
         LLMFullResponseEndFrame(), _result(no_inference()))
     assert told == ["set_timer asked for no answer"], told
+
+
+async def _tapped_in_order(*frames):
+    """`frames` through the tap one at a time, each sent once the last has come out
+    below it: in the order the LLM service pushes them, which a SystemFrame (a
+    dispatch, an in-progress frame) could otherwise overtake. What the tap told."""
+    told, probe = [], Probe()
+    task = PipelineTask(Pipeline([UnspokenReplyTap(told.append), probe]),
+                        cancel_on_idle_timeout=False)
+    started = asyncio.Event()
+
+    @task.event_handler("on_pipeline_started")
+    async def _started(_task, _frame):
+        started.set()
+
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    loop = asyncio.get_running_loop()
+    try:
+        await asyncio.wait_for(started.wait(), WAIT_S)
+        for frame in frames:
+            await task.queue_frame(frame)
+            deadline = loop.time() + WAIT_S
+            while not any(f is frame for _, f in probe.seen) and loop.time() < deadline:
+                await asyncio.sleep(0.005)
+            assert any(f is frame for _, f in probe.seen), f"{frame} never came out"
+    finally:
+        await task.cancel()
+        await run
+    return told
+
+
+def _call(name):
+    return FunctionCallFromLLM(function_name=name, tool_call_id="c1", arguments={},
+                               context=None)
+
+
+async def test_the_tap_reads_a_tool_call_from_its_dispatch_not_its_in_progress_frame():
+    """The LLM service broadcasts FunctionCallsDispatchedFrame (and pipecat's
+    FunctionCallsStartedFrame) before the response's End; FunctionCallInProgressFrame
+    comes from the call's own task and can trail the End (services.py). Read from that,
+    the tool flag outlived its response: the empty answer after the tool's result went
+    unreported, and the wait ran its full bound. And a completion whose only call is a
+    silent cancel_<tool> is in pipecat's Started frame not at all, only in the dispatch:
+    it is a tool round, not an answer that said nothing, and its follow-up may still
+    play."""
+    told = await _tapped_in_order(
+        LLMFullResponseStartFrame(),
+        FunctionCallsDispatchedFrame(function_calls=[_call("set_timer")]),
+        FunctionCallsStartedFrame(function_calls=[_call("set_timer")]),
+        LLMFullResponseEndFrame(),
+        FunctionCallInProgressFrame(function_name="set_timer", tool_call_id="c1",
+                                    arguments={}),
+        _result(),
+        LLMFullResponseStartFrame(), LLMFullResponseEndFrame())     # the answer: empty
+    assert told == ["a response with nothing to say"], told
+    told = await _tapped_in_order(
+        LLMFullResponseStartFrame(),
+        FunctionCallsDispatchedFrame(function_calls=[_call("cancel_set_timer")]),
+        LLMFullResponseEndFrame())
+    assert told == [], "a cancel-only completion told as an answer that said nothing"
 
 
 async def test_the_tail_is_appended_to_the_callers_own_message_in_place():
