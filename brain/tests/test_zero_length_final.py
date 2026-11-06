@@ -12,18 +12,22 @@
 # Driven here through the REAL pieces: TeaportSTTService (its engine messages fed in, its
 # commits recorded off the wire), the user aggregator with the brain's start and stop
 # strategies, keep_barge_in_reachable and CutReplyFence as agent_session wires them, the
-# corrector, the TranscriptLedger, and -- for SIP -- the ReplyHoldGate with its TurnMerge.
-# The LLM is a stand-in that keeps its reply in flight long enough for the tail to land.
-# The stock start strategy is run as well, as the control: that is today's shape, on each
-# wiring (Talk/room: the reply is cut at 0% and the context gets two user messages; SIP:
-# the gate drops the unplayed reply and merges, and the model is asked twice). If pipecat
+# corrector, the TranscriptLedger, UnspokenReplyTap, and -- for SIP -- the ReplyHoldGate
+# with its TurnMerge. The LLM is a stand-in that keeps its reply in flight until the test
+# lets it go, once the tail has been decided -- no race against a timer. The stock start
+# strategy is run as well, as the control: that is today's shape, on each wiring
+# (Talk/room: the reply is cut at 0% and the context gets two user messages; SIP: the
+# gate drops the unplayed reply and merges, and the model is asked twice). If pipecat
 # ever stops starting a turn on such words, the control goes red and the rule can go.
 #
 # The rule is barge_pause.py's WORDS NOBODY SPOKE (PauseAwareMinWordsStrategy); the cases
-# that must NOT be taken as a tail -- a VAD start or an onset since, the final of speech
-# whose VAD stop the turn ended on, the bot audible (a stop word cuts it), the reply
-# played, no turn committed yet, a turn whose words were taken -- are pinned below on the
-# real controller.
+# that must NOT be taken as a tail -- a VAD start since, or an onset where the reply hold
+# is, the final of speech whose VAD stop the turn ended on, a stop word, the bot audible
+# (from then on every word is counted as one over the bot), the reply ended unspoken or
+# overdue, no turn committed yet, a turn whose words were taken -- are pinned below on
+# the real controller; words only the onset test heard are a tail on Talk and the room,
+# which have no reply hold (the owner's call, 2026-11-06), on the controller and through
+# the pipeline.
 #
 # All utterances are synthetic.
 #
@@ -45,6 +49,9 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    FunctionCallResultFrame,
+    FunctionCallResultProperties,
+    FunctionCallsStartedFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
@@ -52,6 +59,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    TTSAudioRawFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -63,6 +71,7 @@ from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E40
     LLMContextAggregatorPair,
 )
 from pipecat.processors.frame_processor import FrameProcessor  # noqa: E402
+from pipecat.tests.utils import run_test  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_stop.base_user_turn_stop_strategy import (  # noqa: E402
     BaseUserTurnStopStrategy,
@@ -74,7 +83,10 @@ from stt_harness import WireRecorder  # noqa: E402
 from turn_harness import running_controller  # noqa: E402
 
 from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
-from teaport_brain.barge_pause import PauseAwareMinWordsStrategy  # noqa: E402
+from teaport_brain.barge_pause import (  # noqa: E402
+    PauseAwareMinWordsStrategy,
+    UnspokenReplyTap,
+)
 from teaport_brain.echo_guard import EchoGuard  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     NO_STOP,
@@ -90,8 +102,10 @@ from teaport_brain.heard_context import (  # noqa: E402
     append_to_last_turn,
 )
 from teaport_brain.reply_hold import ReplyHoldGate, TurnMerge  # noqa: E402
+from teaport_brain.settings import setting  # noqa: E402
 from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
 from teaport_brain.taken_turn import TakenTurnCloser, TakenWords, taken  # noqa: E402
+from teaport_brain.tools import no_inference  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 from teaport_brain.wake_gate import WakeGate  # noqa: E402
 
@@ -102,9 +116,9 @@ ANSWER = "Water it when the top inch of soil is dry."
 SR = 16000
 CHUNK = b"\x00\x02" * int(SR * 0.02)       # 20 ms of caller audio
 STARTUP_S = 0.7
-# How long the stand-in LLM keeps its reply in flight: the tail lands inside it, as it
-# did live (the reply was cut before a word of it played).
-REPLY_S = 0.8
+# The longest a pipeline test waits for what it waits on: a bound on a stuck pipeline,
+# not a window anything has to land in.
+WAIT_S = 5.0
 
 
 class Complete(BaseSmartTurn):
@@ -128,14 +142,20 @@ class WiredSTT(TeaportSTTService):
 
 
 class InFlightLLM(FrameProcessor):
-    """Where the LLM sits: records each context it is asked on and answers it REPLY_S
-    later -- the reply in flight. An interruption that reaches it first cuts that reply
-    before a word of it was spoken: counted in `cuts`."""
+    """Where the LLM and the TTS sit: records each context it is asked on and answers it
+    once `release` is set -- the reply in flight until then, as long as the test needs.
+    Each answer is the next of `answers` (ANSWER once they run out); one with words comes
+    with its audio, as below a TTS, and an empty one (an empty 200) with none. An
+    interruption that reaches it first cuts the reply before a word of it was spoken:
+    counted in `cuts`."""
 
     def __init__(self):
         super().__init__()
         self.contexts = []
         self.cuts = 0
+        self.answered = 0
+        self.answers = []
+        self.release = asyncio.Event()
         self._task = None
 
     async def process_frame(self, frame, direction):
@@ -151,19 +171,24 @@ class InFlightLLM(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _answer(self):
-        await asyncio.sleep(REPLY_S)
+        await self.release.wait()
         self._task = None
+        words = self.answers.pop(0) if self.answers else ANSWER
         await self.push_frame(LLMFullResponseStartFrame())
-        await self.push_frame(LLMTextFrame(ANSWER))
+        if words:
+            await self.push_frame(LLMTextFrame(words))
+            await self.push_frame(TTSAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=SR,
+                                                   num_channels=1))
         await self.push_frame(LLMFullResponseEndFrame())
+        self.answered += 1
 
 
 class Session:
     """One session's turn path as agent_session builds it, from the STT to the assistant
     aggregator, minus the TTS and the audio I/O. `front_end`: "talk" (no reply hold),
     "room" (the same, with the room's wake gate and echo guard on the STT), or "sip"
-    (the reply hold and its TurnMerge). `stock`: pipecat's MinWords start strategy, the
-    control, in place of the brain's."""
+    (the reply hold and its TurnMerge; the onset test's speech is speech heard).
+    `stock`: pipecat's MinWords start strategy, the control, in place of the brain's."""
 
     def __init__(self, front_end: str, stock: bool):
         self.context = LLMContext([{"role": "system", "content": "sys"}])
@@ -171,14 +196,19 @@ class Session:
         if front_end == "room":
             self.stt.wake_gate = WakeGate(["hey teaport"], asleep=False)
             self.stt.echo_guard = EchoGuard()
+        hold = front_end == "sip"
         self.taken = TakenWords()
+        self.appended = []
         if stock:
             self.start = MinWordsUserTurnStartStrategy(min_words=2)
         else:
+            def _tail_words(words):
+                self.appended.append(words)
+                return append_to_last_turn(self.context, words)
+
+            # As agent_session wires it: the onset is speech only where the hold is.
             self.start = PauseAwareMinWordsStrategy(
-                min_words=2,
-                # As agent_session wires it.
-                on_tail_words=lambda words: append_to_last_turn(self.context, words))
+                min_words=2, on_tail_words=_tail_words, onset_is_speech=hold)
             self.start.taken_words = self.taken
         self.stop = LateStartTurnStopStrategy(
             turn_analyzer=Complete(sample_rate=SR, params=SmartTurnParams(stop_secs=1.0)))
@@ -194,12 +224,13 @@ class Session:
         self.fence.hold_commits(user)
         self.fence.close_owed = self.stop.close_owed
         self.ledger = TranscriptLedger()
-        self.merge = TurnMerge() if front_end == "sip" else None
-        self.gate = ReplyHoldGate(merge=self.merge) if front_end == "sip" else None
+        self.merge = TurnMerge() if hold else None
+        self.gate = ReplyHoldGate(merge=self.merge) if hold else None
         if self.gate is not None:
             self.fence.unplayed_reply = lambda: self.gate.armed
         self.corrector = HeardContextCorrector(self.ledger, self.context, merge=self.merge)
         self.llm = InFlightLLM()
+        self.tap = None if stock else UnspokenReplyTap(self.start.reply_unspoken)
         self.turns_started = 0
 
         @user.event_handler("on_user_turn_started")
@@ -213,7 +244,7 @@ class Session:
 
         self.task = PipelineTask(Pipeline([p for p in [
             self.stt, user, self.fence.head, SegmentDoneSink(), self.corrector,
-            self.llm, self.gate, self.pair.assistant(), self.fence.tail,
+            self.llm, self.gate, self.tap, self.pair.assistant(), self.fence.tail,
         ] if p is not None]), observers=[self.ledger], cancel_on_idle_timeout=False)
 
     async def audio(self, secs):
@@ -222,7 +253,7 @@ class Session:
                                                           num_channels=1))
             await asyncio.sleep(0.02)
 
-    async def until(self, pred, secs=3.0):
+    async def until(self, pred, secs=WAIT_S):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + secs
         while loop.time() < deadline and not pred():
@@ -244,28 +275,48 @@ class Session:
                                         "reason": "commit"})
         assert await self.until(lambda: self.llm.contexts), "the question was never asked"
 
-    async def tail(self):
+    async def onset(self):
+        """Speech the onset test heard and the VAD's start did not: told to the onset
+        listeners agent_session registers (the start strategy, and the reply hold's gate
+        where there is one), as the VAD analyzer tells them."""
+        for started in (True, False):
+            await self.start_onset(started)
+            if self.gate is not None:
+                await self.gate.on_onset(started)
+
+    async def start_onset(self, started):
+        if hasattr(self.start, "on_onset"):
+            await self.start.on_onset(started)
+
+    async def tail(self, text=TAIL):
         """The engine's trailing words: no VAD start, no VAD stop -- an interim, then the
         engine closing the segment on its own ("reason": "vad"), so the final answers no
         stop of ours (NO_STOP)."""
         await self.audio(0.1)
-        await self.stt._handle_message({"type": "transcription.delta", "delta": TAIL})
+        await self.stt._handle_message({"type": "transcription.delta", "delta": text})
         await self.audio(0.1)
-        await self.stt._handle_message({"type": "transcription.done", "text": TAIL,
+        await self.stt._handle_message({"type": "transcription.done", "text": text,
                                         "reason": "vad"})
 
 
-async def _the_call(front_end: str, stock: bool) -> Session:
+async def _the_call(front_end: str, stock: bool, *, onset=False) -> Session:
+    """The question, then the tail while its reply is in flight (after an onset, if
+    `onset`). The reply goes out once the tail is decided: joined to the turn, or a turn
+    that asked the model again."""
     s = Session(front_end, stock)
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
     await asyncio.sleep(STARTUP_S)
     s.stt._websocket = WireRecorder()
     try:
         await s.question()
+        if onset:
+            await s.onset()
         await s.tail()
-        # The reply's REPLY_S, the stop strategy's no-VAD fallback (~0.3 s) and a second
-        # request's own REPLY_S, with room to spare.
-        await s.until(lambda: False, secs=2 * REPLY_S + 1.0)
+        assert await s.until(lambda: s.appended or len(s.llm.contexts) >= 2), (
+            "the tail was neither joined to the turn nor asked on")
+        s.llm.release.set()
+        assert await s.until(lambda: ("assistant", ANSWER) in _roles(s)), _roles(s)
+        await s.audio(0.3)          # nothing else is on its way
     finally:
         s.stt._websocket = None
         await s.task.cancel()
@@ -277,10 +328,10 @@ def _roles(s):
     return [(m["role"], m.get("content")) for m in s.context.get_messages()]
 
 
-def _the_tail_is_zero_length(s):
+def _the_tail_is_zero_length(s, text=TAIL):
     """The ledger charts the tail as the issue's logs did: a line with no span."""
     lines = [u for u in s.ledger.events if u.speaker == "user"]
-    assert [u.text for u in lines] == [QUESTION, TAIL], lines
+    assert [u.text for u in lines] == [QUESTION, text], lines
     assert lines[1].t_start == lines[1].t_end, (
         f"the tail must be a zero-length line, as live: {lines[1]!r}")
 
@@ -312,8 +363,8 @@ async def test_the_stock_strategy_cuts_the_reply_on_a_final_nobody_spoke_sip():
                          ("assistant", ANSWER)], _roles(s)
 
 
-async def _the_tail_joins_the_turn(front_end):
-    s = await _the_call(front_end, stock=False)
+async def _the_tail_joins_the_turn(front_end, *, onset=False):
+    s = await _the_call(front_end, stock=False, onset=onset)
     _the_tail_is_zero_length(s)
     assert s.llm.cuts == 0, "the tail cut the reply in flight"
     assert len(s.llm.contexts) == 1, (
@@ -322,6 +373,7 @@ async def _the_tail_joins_the_turn(front_end):
     # The reply asked on the question plays, and the record holds what the caller said.
     assert _roles(s) == [("system", "sys"), ("user", f"{QUESTION} {TAIL}"),
                          ("assistant", ANSWER)], _roles(s)
+    assert s.appended == [TAIL], s.appended
     assert s.taken.why(TAIL) is not None, "the tail's words are not on record"
     if s.merge is not None:
         assert not s.merge.pending, "no reply was dropped: nothing to merge"
@@ -340,19 +392,72 @@ async def test_a_final_nobody_spoke_joins_the_committed_turn_sip():
     await _the_tail_joins_the_turn("sip")
 
 
+async def test_words_only_the_onset_heard_join_the_committed_turn_talk():
+    """The owner's call (2026-11-06): with no reply hold to hold and merge for them,
+    words the onset test alone heard are a tail too -- not a turn that cuts the reply
+    at 0% and leaves a second user message."""
+    await _the_tail_joins_the_turn("talk", onset=True)
+
+
+async def test_words_only_the_onset_heard_join_the_committed_turn_room():
+    await _the_tail_joins_the_turn("room", onset=True)
+
+
+async def test_words_only_the_onset_heard_still_start_a_turn_and_merge_on_sip():
+    """SIP keeps its shape: the hold holds the reply for the onset, and the words start
+    a turn whose interruption drops it unplayed and merges them into the question --
+    one message, the model asked once more on the whole."""
+    s = await _the_call("sip", stock=False, onset=True)
+    _the_tail_is_zero_length(s)
+    assert s.gate.holds == 1, "the onset must hold the reply, as the hold always has"
+    assert s.turns_started == 2 and len(s.llm.contexts) == 2, (s.turns_started,
+                                                               len(s.llm.contexts))
+    assert s.appended == [], s.appended
+    assert _roles(s) == [("system", "sys"), ("user", f"{QUESTION} {TAIL}"),
+                         ("assistant", ANSWER)], _roles(s)
+
+
+async def test_after_a_reply_that_ended_unspoken_words_nobody_spoke_are_a_turn_talk():
+    """The reply to the question ends with nothing said (an empty 200): there is no
+    reply to keep, and words joined to the turn would never be answered. A later
+    'Hello?' the VAD missed is a turn of its own, and the model is asked on it."""
+    s = Session("talk", stock=False)
+    s.llm.answers = ["", ANSWER]
+    s.llm.release.set()
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
+    await asyncio.sleep(STARTUP_S)
+    s.stt._websocket = WireRecorder()
+    try:
+        await s.question()
+        assert await s.until(lambda: s.llm.answered == 1), "the empty answer never came"
+        assert await s.until(lambda: not s.start._reply_due), (
+            "the tap never told the strategy the reply ended unspoken")
+        await s.tail("Hello?")
+        assert await s.until(lambda: s.llm.answered == 2), "'Hello?' was never answered"
+    finally:
+        s.stt._websocket = None
+        await s.task.cancel()
+        await run
+    assert s.appended == [] and s.turns_started == 2, (s.appended, s.turns_started)
+    asked = [m.get("content") for m in s.llm.contexts[1] if m["role"] == "user"]
+    assert asked == [QUESTION, "Hello?"], asked
+
+
 # ---- the rule's edges, on the real controller -----------------------------------------
 
 class Rig:
     """The real UserTurnController with the brain's start strategy and the brain's stop
-    strategy (Smart Turn: COMPLETE), fed frames as the aggregator would."""
+    strategy (Smart Turn: COMPLETE), fed frames as the aggregator would.
+    `onset_is_speech`: as on SIP (the default) or, False, on Talk and the room."""
 
-    def __init__(self, *, wired=True, stop=None):
+    def __init__(self, *, wired=True, stop=None, onset_is_speech=True):
         self.appended = []
         self.taken = TakenWords()
         self.start = PauseAwareMinWordsStrategy(
             min_words=2,
             on_tail_words=(lambda words: self.appended.append(words) or True)
-            if wired else None)
+            if wired else None,
+            onset_is_speech=onset_is_speech)
         self.start.taken_words = self.taken
         self.stop = stop or LateStartTurnStopStrategy(
             turn_analyzer=Complete(sample_rate=SR, params=SmartTurnParams(stop_secs=1.0)))
@@ -387,6 +492,10 @@ class Rig:
     async def audio(self, secs):
         for _ in range(round(secs / 0.02)):
             await self.feed(InputAudioRawFrame(audio=CHUNK, sample_rate=SR, num_channels=1))
+
+    async def onset(self):
+        await self.start.on_onset(True)
+        await self.start.on_onset(False)
 
     async def committed_turn(self, stop_n=1, text=QUESTION):
         """VAD start, speech, an interim (the turn opens), VAD stop (COMPLETE), and the
@@ -429,31 +538,32 @@ async def test_without_a_place_for_them_the_tail_words_are_dropped_not_a_turn():
 
 
 async def test_words_after_a_vad_start_are_a_turn():
-    """A real new utterance: its VAD start arrived. It interrupts as it always did."""
+    """A real new utterance: its VAD start arrived. It interrupts as it always did --
+    with the reply hold or without it."""
+    for onset_is_speech in (True, False):
+        rig = Rig(onset_is_speech=onset_is_speech)
+        async with running_controller(rig.controller):
+            await rig.committed_turn()
+            await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))
+            assert rig.starts() == 2, rig.events
+            assert rig.appended == []
+
+
+async def test_words_after_an_onset_are_a_turn_where_the_reply_hold_is():
+    """SIP: the onset test heard speech the VAD's start did not (a short word after a
+    pause). The reply hold holds the reply for it and merges the turn its words start."""
     rig = Rig()
     async with running_controller(rig.controller):
         await rig.committed_turn()
-        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
-        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))
-        assert rig.starts() == 2, rig.events
-        assert rig.appended == []
-
-
-async def test_words_after_an_onset_are_a_turn():
-    """The onset test heard speech the VAD's start did not (a short word after a
-    pause): the caller spoke after the commit, and the reply hold treats it so."""
-    rig = Rig()
-    async with running_controller(rig.controller):
-        await rig.committed_turn()
-        await rig.start.on_onset(True)
-        await rig.start.on_onset(False)
+        await rig.onset()
         await rig.feed(final("Fig.", NO_STOP))
         assert rig.starts() == 2, rig.events
         assert rig.appended == []
 
 
 async def test_an_onset_between_the_stop_and_its_final_still_counts():
-    """The short word's onset can come after the committed utterance's VAD stop but
+    """SIP: the short word's onset can come after the committed utterance's VAD stop but
     before that utterance's final lands: it is still speech the final did not carry."""
     rig = Rig()
     async with running_controller(rig.controller):
@@ -461,12 +571,62 @@ async def test_an_onset_between_the_stop_and_its_final_still_counts():
         await rig.audio(0.4)
         await rig.feed(InterimTranscriptionFrame(QUESTION, "u", "t"))
         await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
-        await rig.start.on_onset(True)
-        await rig.start.on_onset(False)
+        await rig.onset()
         await rig.feed(final(QUESTION, 1))
         assert rig.events == ["start", "stop"], rig.events
         await rig.feed(InterimTranscriptionFrame("Fig", "u", "t"))
         assert rig.starts() == 2, rig.events
+
+
+async def test_without_the_reply_hold_words_only_the_onset_heard_are_a_tail():
+    """Talk and the room (the owner's call, 2026-11-06): nothing holds or merges for an
+    onset there, so its words are the committed turn's -- after the commit, or with the
+    onset between the turn's VAD stop and its final."""
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.onset()
+        await rig.feed(InterimTranscriptionFrame("Fig", "u", "t"))
+        await rig.feed(final("Fig.", NO_STOP))
+        assert rig.starts() == 1 and rig.appended == ["Fig."], (rig.events, rig.appended)
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(0.4)
+        await rig.feed(InterimTranscriptionFrame(QUESTION, "u", "t"))
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        await rig.onset()
+        await rig.feed(final(QUESTION, 1))
+        await rig.feed(final("Fig.", NO_STOP))
+        assert rig.starts() == 1 and rig.appended == ["Fig."], (rig.events, rig.appended)
+
+
+async def test_without_the_reply_hold_onset_only_words_keep_every_exception():
+    """The same exceptions as everywhere: a stop word is a turn; once the bot is audible
+    the barge-in count applies; once the reply ended unspoken, one word is a turn."""
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.onset()
+        await rig.feed(final("Stop.", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(BotStartedSpeakingFrame())
+        await rig.onset()
+        await rig.feed(final("Right.", NO_STOP))
+        assert rig.starts() == 1 and rig.appended == [], "one word over the bot: guarded"
+        await rig.onset()
+        await rig.feed(final("No, the other one.", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], "a barge-in over the bot"
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        rig.start.reply_unspoken("a response with nothing to say")
+        await rig.onset()
+        await rig.feed(final("Hello?", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
 
 
 async def test_a_final_answering_a_vad_stop_after_the_commit_is_a_turn():
@@ -543,6 +703,33 @@ async def test_the_committed_turns_own_engine_close_clears_its_speech():
         assert rig.starts() == 1 and rig.appended == [TAIL], (rig.events, rig.appended)
 
 
+async def test_a_stop_word_in_the_wait_is_never_a_tail():
+    """A SIP caller's "Stop." after the commit, before the bot is audible -- often with
+    no VAD start and no onset (#216: real ones at 0.39/0.48 against the onset's 0.6).
+    TEAPORT_STOP_WORDS end a reply on their own: it starts the turn, cutting the reply
+    in flight, and nothing is joined to the question. An interim counts too."""
+    for said in ("Stop.", "Hold on.", "Wait, wait!"):
+        rig = Rig()
+        async with running_controller(rig.controller):
+            await rig.committed_turn()
+            await rig.feed(final(said, NO_STOP))
+            assert rig.starts() == 2 and rig.appended == [], (said, rig.events,
+                                                              rig.appended)
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
+        assert rig.starts() == 2, "the stop word's interim must start the turn"
+        await rig.feed(final("Wait.", NO_STOP))
+        assert rig.appended == [], rig.appended
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))   # a tail's segment
+        await rig.feed(final("Stop.", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+
+
 async def test_once_the_reply_plays_a_word_with_no_speech_under_it_is_counted_as_ever():
     """The bot audible: the barge-in rules stand (two words, or a stop word); after the
     reply, one word is a turn. Nothing is a tail outside the reply's wait."""
@@ -565,39 +752,91 @@ async def test_once_the_reply_plays_a_word_with_no_speech_under_it_is_counted_as
         assert rig.appended == []
 
 
-async def test_a_tail_segment_begun_in_the_wait_stays_a_tail_once_the_reply_plays():
-    """The tail's interim lands in the wait, its final (the backstop's, 1.5 s later)
-    after the reply started: still the committed turn's words, not a barge-in -- unless
-    it is a stop word, which over the bot always cuts."""
+async def test_a_tail_segment_ends_once_the_bot_is_audible():
+    """A segment whose interim came in the wait, its final after the reply started: the
+    words are counted as any over the bot -- a barge-in of two words or more (#215:
+    words over the bot often fire no onset), one word under the guard -- and after the
+    bot stops, one word is a turn. Nothing of it is joined to the turn."""
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))
+        assert rig.starts() == 1, "in the wait the interim is a tail's"
+        await rig.feed(BotStartedSpeakingFrame())
+        await rig.feed(InterimTranscriptionFrame("Okay no that is not what I asked",
+                                                 "u", "t"))
+        assert rig.starts() == 2, "a barge-in over the playing bot was swallowed"
+        await rig.feed(final("Okay, no, that is not what I asked.", NO_STOP))
+        assert rig.appended == [], rig.appended
     rig = Rig()
     async with running_controller(rig.controller):
         await rig.committed_turn()
         await rig.feed(InterimTranscriptionFrame("Okay wait", "u", "t"))
         await rig.feed(BotStartedSpeakingFrame())
         await rig.feed(final("Okay, wait.", 1))
-        assert rig.starts() == 1 and rig.appended == ["Okay, wait."], (rig.events,
-                                                                       rig.appended)
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))
+        await rig.feed(BotStartedSpeakingFrame())
+        await rig.feed(final("Okay.", NO_STOP))
+        assert rig.starts() == 1 and rig.appended == [], (rig.events, rig.appended)
+        assert rig.taken.why("Okay.") == "dropped by the barge-in guard", (
+            rig.taken.why("Okay."))
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Okay", "u", "t"))
+        await rig.feed(BotStartedSpeakingFrame())
+        await rig.feed(BotStoppedSpeakingFrame())
+        await rig.feed(final("Okay.", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
     rig = Rig()
     async with running_controller(rig.controller):
         await rig.committed_turn()
         await rig.feed(InterimTranscriptionFrame("Stop", "u", "t"))
         await rig.feed(BotStartedSpeakingFrame())
         await rig.feed(final("Stop.", 1))
-        assert rig.starts() == 2, "a stop word over the bot must cut it (#216)"
+        assert rig.starts() == 2, "a stop word must cut the bot (#216)"
 
 
-async def test_a_reply_that_never_plays_holds_the_wait_only_so_long():
-    """A turn whose reply never became audible (an empty completion, tool calls only):
-    words with no speech under them are a tail inside _TAIL_WAIT_S of the commit, and a
-    turn of their own after it -- not folded into a message already answered."""
-    from teaport_brain.barge_pause import _TAIL_WAIT_S
+async def test_the_wait_ends_when_the_reply_ends_unspoken():
+    """An empty answer, or a tool round that asks for none (UnspokenReplyTap): nothing
+    is in flight to cut, and words joined to the turn would go unanswered. A word after
+    it is a turn, a segment begun in the wait included."""
     rig = Rig()
     async with running_controller(rig.controller):
         await rig.committed_turn()
-        rig.start._due_at -= _TAIL_WAIT_S - 1          # the reply due 9 s ago
+        rig.start.reply_unspoken("a response with nothing to say")
+        await rig.feed(final("Hello?", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+    rig = Rig()
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(InterimTranscriptionFrame("Hello", "u", "t"))
+        assert rig.starts() == 1, rig.events
+        rig.start.reply_unspoken("set_timer asked for no answer")
+        await rig.feed(final("Hello?", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+
+
+async def test_the_wait_ends_at_the_silent_turn_bound():
+    """A reply that never comes at all (an empty completion nobody told of, a consult
+    with nothing said): words with no speech under them are a tail inside
+    TEAPORT_SILENT_TURN_SECS of the commit, where the silent-turn watchdog calls the
+    reply missing, and a turn of their own after it -- not folded into a message
+    already answered."""
+    assert (PauseAwareMinWordsStrategy(min_words=2).reply_wait_secs
+            == setting("TEAPORT_SILENT_TURN_SECS"))
+    rig = Rig()
+    wait = rig.start.reply_wait_secs
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        rig.start._due_at -= wait - 1                  # the reply due a second short
         await rig.feed(final(TAIL, NO_STOP))
         assert rig.starts() == 1 and rig.appended == [TAIL], (rig.events, rig.appended)
-        rig.start._due_at -= 2                         # and now 11 s ago
+        rig.start._due_at -= 2                         # and now a second past
         await rig.feed(final("Hello?", NO_STOP))
         assert rig.starts() == 2 and rig.appended == [TAIL], (rig.events, rig.appended)
 
@@ -630,24 +869,71 @@ async def test_a_turn_whose_words_were_taken_leaves_nothing_in_flight():
         assert rig.appended == []
 
 
+# ---- the tap that ends the wait --------------------------------------------------------
+
+async def _tapped(*frames):
+    told = []
+    await run_test(UnspokenReplyTap(told.append), frames_to_send=list(frames))
+    return told
+
+
+def _result(properties=None, result="ok"):
+    return FunctionCallResultFrame(function_name="set_timer", tool_call_id="c1",
+                                   arguments={}, result=result, properties=properties)
+
+
+async def test_the_tap_tells_of_a_reply_that_ends_with_nothing_to_play():
+    assert await _tapped(LLMFullResponseStartFrame(), LLMFullResponseEndFrame()) == [
+        "a response with nothing to say"]
+    spoken = await _tapped(
+        LLMFullResponseStartFrame(), LLMTextFrame(ANSWER),
+        TTSAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=SR, num_channels=1),
+        LLMFullResponseEndFrame())
+    assert spoken == [], spoken
+    # A tool round: its result runs the model again, and that answer is the reply.
+    tool = await _tapped(LLMFullResponseStartFrame(),
+                         FunctionCallsStartedFrame(function_calls=[]),
+                         LLMFullResponseEndFrame(), _result())
+    assert tool == [], tool
+    # Unless the result asks for no answer (tools.no_inference), or has none to give.
+    told = await _tapped(LLMFullResponseStartFrame(),
+                         FunctionCallsStartedFrame(function_calls=[]),
+                         LLMFullResponseEndFrame(), _result(no_inference()))
+    assert told == ["set_timer asked for no answer"], told
+    assert await _tapped(_result(result=None)) == ["set_timer asked for no answer"]
+    update = FunctionCallResultProperties(run_llm=False, is_final=False)
+    assert await _tapped(_result(update)) == [], "an update: the call goes on"
+
+
 async def test_the_tail_is_appended_to_the_callers_own_message_in_place():
-    """Into the caller's newest message, past an injected order (a user-role message
-    that is not theirs) and a tool round; nothing added, removed or moved."""
+    """Into the caller's newest message, past messages that are not theirs (an injected
+    order, a Talk client's app event, a connect cue) and a tool round; nothing added,
+    removed or moved."""
     order = f"{SYSTEM_NOTICE_TAG} tell the user the consult is back"
+    note = '[app event, not spoken by the user] "Timer set for 10 minutes"'
+    cue = "(The call/session just connected. Greet me warmly in one short sentence.)"
     ctx = LLMContext([{"role": "system", "content": "sys"},
                       {"role": "user", "content": QUESTION},
                       {"role": "assistant", "content": "", "tool_calls": [
                           {"id": "c1", "type": "function",
                            "function": {"name": "f", "arguments": "{}"}}]},
                       {"role": "tool", "tool_call_id": "c1", "content": "ok"},
-                      {"role": "user", "content": order}])
+                      {"role": "user", "content": order},
+                      {"role": "user", "content": note},
+                      {"role": "user", "content": cue}])
     before = [id(m) for m in ctx.get_messages()]
     assert append_to_last_turn(ctx, TAIL)
     assert [id(m) for m in ctx.get_messages()] == before
-    assert ctx.get_messages()[1]["content"] == f"{QUESTION} {TAIL}"
-    assert ctx.get_messages()[4]["content"] == order
+    msgs = ctx.get_messages()
+    assert msgs[1]["content"] == f"{QUESTION} {TAIL}"
+    assert [m["content"] for m in msgs[4:]] == [order, note, cue], msgs[4:]
     assert not append_to_last_turn(ctx, "  ")
     assert not append_to_last_turn(LLMContext([{"role": "system", "content": "s"}]), TAIL)
+    # Only messages that are not the caller's: nothing to join, and nothing changed.
+    only_cue = LLMContext([{"role": "system", "content": "s"},
+                           {"role": "user", "content": cue}])
+    assert not append_to_last_turn(only_cue, TAIL)
+    assert only_cue.get_messages()[1]["content"] == cue
 
 
 def main():

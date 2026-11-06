@@ -3264,29 +3264,45 @@ until #22. What the model cannot say is which of those words nobody spoke:
 nothing records whether the words that follow belong to it, to speech before it, or to
 none.
 
-As shipped, words that come after a turn that committed words, before its reply plays,
-with no turn open and no speech heard whose words have not been closed, start no turn
-and go into the committed message in place (`barge_pause.py`, WORDS NOBODY SPOKE;
-`heard_context.append_to_last_turn`). "Closed" is per VAD stop: a close stamped with a
-stop after the speech, carrying words (or a wordless close after a NO_STOP final of
-those words). That keeps a turn for the final of speech whose VAD stop the re-applied
-finalize ended the turn on (`Resume`, then `VadStop`'s retry): its start came before
-that end, so a rule keyed on "no VAD start since the turn ended" would have swallowed
-it, where on SIP its turn start is what drops the unplayed reply and merges.
+As shipped, words that come in a committed turn's reply wait -- after a turn that
+committed words, before the bot is next audible, before that reply has ended with
+nothing to play, and within `TEAPORT_SILENT_TURN_SECS` of the commit -- with no turn
+open and no speech heard whose words have not been closed, start no turn and go into the
+committed message in place (`barge_pause.py`, WORDS NOBODY SPOKE;
+`heard_context.append_to_last_turn`), unless they are made only of stop words. "Speech
+heard" is a VAD start, and where the reply hold is (SIP) the onset test too; on Talk and
+the room, words only the onset test heard are a tail as well. "Closed" is per VAD stop:
+a close stamped with a stop after the speech, carrying words (or a wordless close after a
+NO_STOP final of those words). That keeps a turn for the final of speech whose VAD stop
+the re-applied finalize ended the turn on (`Resume`, then `VadStop`'s retry): its start
+came before that end, so a rule keyed on "no VAD start since the turn ended" would have
+swallowed it, where on SIP its turn start is what drops the unplayed reply and merges.
 `test_zero_length_final.py` pins the rule and those edges on the real controller, and
 the shape itself through the real STT, aggregator, fence and gate on each wiring.
 
 A row needs: a ghost for speech heard whose words have not closed (set by `VadStart`,
 cleared by a commit or close carrying its words -- which `EARLY_FINAL`'s words and the
 re-applied stop make a per-stop fact, not a flag), an environment action for words with
-no such speech, a monitor for a `StartTurn` on them while the last commit's `reply` is
-pending and the bot is silent (the 0 % cut), and a constant for the two designs: one
-row failing it as written, one holding it as shipped beside every property
-`ut_shipped_all` and `ut_talk_shipped_all` check (`NoMissedBargeIn` above all: the rule
-stands down while the bot is audible, except in a tail's own segment, where a stop
-word still cuts). The ghost has to be threaded through every action, and this change was
-written where TLC could not be run (no Java runtime), so the row is left for the next
-change to `UserTurn.tla` rather than added unchecked.
+no such speech (stop words among them, in the reply's wait and over the bot), an action
+for a reply that ends with nothing played (`reply` cleared with no `BotStart`, which the
+model does not have either), a monitor for a `StartTurn` on such words while the last
+commit's `reply` is pending and the bot is silent (the 0 % cut), and a constant for the
+two designs: one row failing that monitor as written, one holding it as shipped beside
+every property `ut_shipped_all` and `ut_talk_shipped_all` check.
+
+Those properties alone would not check the rule's exceptions. `NoMissedBargeIn` holds
+vacuously for it: `StopWord` requires `botSpeaking`, so a stop word in the reply's wait
+is only an `Interject`, and `missedBargeIn` is set only by a start an open turn refuses
+or a stop word left unheard over the bot -- no monitor flags an `Interject` that starts
+no turn. A rule that swallowed a stop word in the wait, or a barge-in over the playing
+bot inside a tail's segment (the two the first review of #22's change found), would pass
+every row. A meaningful row also needs monitors of its own, each with a design that
+fails it: a stop word taken as a tail, the bot speaking or not; words of
+`TEAPORT_INTERRUPT_MIN_WORDS` taken as a tail with `botSpeaking`, or after it in the
+same segment; and words taken as a tail once the last commit's `reply` is no longer
+pending. The ghost has to be threaded through every action, and this change was written
+where TLC could not be run (no Java runtime), so the row is left for the next change to
+`UserTurn.tla` rather than added unchecked.
 
 ### Known limits of this model
 

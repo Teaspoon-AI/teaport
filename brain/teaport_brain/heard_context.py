@@ -109,22 +109,20 @@ def append_to_last_turn(context, words: str) -> bool:
     (barge_pause.py, WORDS NOBODY SPOKE, #22). In place, as the turn-text corrector
     rewrites a committed turn (turn_text.py): no message is added, removed or moved, so
     the positional windows here, the reply hold's merge and owed.py's see the context
-    they would have; the reply asked on the turn is kept. An injected order
-    (SYSTEM_NOTICE_TAG, a user-role message that is not the caller's) is passed over.
-    False, and nothing changed, when there is no such message or `words` is empty."""
+    they would have; the reply asked on the turn is kept. A user-role message that is
+    not the caller's (owed.is_caller_message: an injected order or notice, a Talk
+    client's app event, a connect or wake cue) is passed over. False, and nothing
+    changed, when there is no message of the caller's or `words` is empty."""
+    # Here, not at the top: owed imports this module.
+    from teaport_brain.owed import is_caller_message
+
     words = (words or "").strip()
     if not words:
         return False
     for m in reversed(context.get_messages()):
-        if not isinstance(m, dict) or m.get("role") != "user":
-            continue
-        text = msg_text(m).strip()
-        if text.startswith(SYSTEM_NOTICE_TAG):
-            continue
-        if not text:
-            return False
-        _set_msg_text(m, f"{text} {words}")
-        return True
+        if is_caller_message(m):
+            _set_msg_text(m, f"{msg_text(m).strip()} {words}")
+            return True
     return False
 
 

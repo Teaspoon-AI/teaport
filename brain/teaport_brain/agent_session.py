@@ -1066,12 +1066,15 @@ def build_agent_session(transport, *, voice: str | None = None,
 
     # Words nobody was heard saying, after a committed turn and before its reply plays,
     # are that turn's: into its message, not a turn that cuts the reply at 0% (#22,
-    # barge_pause.py WORDS NOBODY SPOKE). Whether anyone was heard is the VAD's start or
-    # its onset test, the same two the reply hold listens to.
+    # barge_pause.py WORDS NOBODY SPOKE). Whether anyone was heard is the VAD's start,
+    # and where the reply hold is, its onset test too: the hold holds the reply for
+    # onset-only words and merges the turn they start (THE ONSET). Without it (Talk and
+    # the room as shipped) such words are a tail as well -- the owner's call, 2026-11-06.
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
         min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn,
         on_speech_heard=_speech_heard,
-        on_tail_words=lambda words: append_to_last_turn(context, words))
+        on_tail_words=lambda words: append_to_last_turn(context, words),
+        onset_is_speech=reply_hold_enabled)
     start_strategy.taken_words = taken_words
     vad_analyzer.onset_listeners.append(start_strategy.on_onset)
 
@@ -1405,6 +1408,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # plays. Everything below it (the taps, the bed, the transport) sees the reply
         # only once it is going to the caller.
         reply_gate,
+        # Below the TTS and the gate: a reply that ends with nothing to play ends the
+        # wait in which words nobody spoke join its turn (barge_pause.py, THE WAIT).
+        barge_pause.UnspokenReplyTap(start_strategy.reply_unspoken),
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
         bed,  # the thinking sound's typing (above), pushed as plain audio to the transport
