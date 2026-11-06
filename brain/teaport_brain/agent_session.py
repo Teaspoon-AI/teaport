@@ -1073,10 +1073,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # and when the STT has heard that speech out (barge_pause.py HEARD OUT).
     pause_link: dict = {}
 
-    async def _final_without_turn():
+    async def _final_without_turn(words=False):
         pauser = pause_link.get("pauser")
         if pauser is not None:
-            await pauser.on_final_without_turn()
+            await pauser.on_final_without_turn(words)
 
     async def _speech_heard(watch):
         pauser = pause_link.get("pauser")

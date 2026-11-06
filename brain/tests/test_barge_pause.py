@@ -722,7 +722,7 @@ def test_a_one_word_answer_after_the_reply_would_have_ended_is_a_turn():
         async def on_started(_s, *a, **k):
             started.append(True)
 
-        async def final_without_turn():
+        async def final_without_turn(words=False):
             finals.append(True)
 
         s._on_final_without_turn = final_without_turn
@@ -897,7 +897,10 @@ async def test_the_thinking_bed_is_not_paused():
         assert not rig.pauser.paused, "pausing the bed only delays the answer behind it"
 
 
-async def test_after_two_no_words_pauses_only_the_vad_pauses():
+async def test_after_two_no_words_pauses_nothing_pauses_until_words_come():
+    # 2026-11-06, the box: a ringtone near it read as speech, over and over, and the
+    # box's own "Someone's calling me..." was paused each time. Two pauses with no words
+    # in them, and nothing pauses -- the onset test nor the VAD -- until words come.
     from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
     async with Rig() as rig:
         rig.pauser._resume_secs = 0.15
@@ -909,10 +912,16 @@ async def test_after_two_no_words_pauses_only_the_vad_pauses():
             await rig.pauser.on_onset(False)
         await asyncio.sleep(0.4)
         assert rig.pauser.pauses == 2 and rig.pauser.resumes == 2
-        assert rig.pauser.skipped_onset == 1, "the third onset-only pause must be skipped"
+        assert rig.pauser.skipped_noisy == 1, "the third word-less pause must be skipped"
         await rig.task.queue_frame(VADUserStartedSpeakingFrame())
         await asyncio.sleep(0.05)
-        assert rig.pauser.paused, "the VAD's start (volume-gated) still pauses"
+        assert not rig.pauser.paused, "the VAD's start no more than the onset test"
+        await rig.task.queue_frame(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.pauser.on_final_without_turn(words=True)   # "yeah": words came
+        await rig.pauser.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert rig.pauser.paused, "words re-arm it"
         await rig.task.queue_frame(VADUserStoppedSpeakingFrame())
 
 
@@ -1119,7 +1128,33 @@ async def test_reply_audio_with_no_bot_speaking_does_not_pause():
         await run
 
 
-async def test_the_echo_like_budget_is_per_bot_speaking_window():
+async def test_words_being_judged_re_arm_the_no_words_limit():
+    # A backchannel over the pause goes to the judge (BargeInJudgeGate holds the resume):
+    # words came, and the line is not only noise.
+    out, p, task, run = await _pauser_rig()
+    try:
+        p._resume_secs = 0.1
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        for _ in range(2):
+            await p.on_onset(True)
+            await asyncio.sleep(0.03)
+            await p.on_onset(False)
+            await asyncio.sleep(0.4)
+        assert p._noisy, "two word-less pauses"
+        p.hold_resume(True)                               # the judge, on words
+        p.hold_resume(False)
+        assert not p._noisy and not p._noword_at
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert p.paused
+    finally:
+        await task.cancel()
+        await run
+
+
+async def test_the_no_words_limit_ends_with_the_reply():
     out, p, task, run = await _pauser_rig()
     try:
         p._resume_secs = 0.1
@@ -1138,41 +1173,55 @@ async def test_the_echo_like_budget_is_per_bot_speaking_window():
         await window()
         for _ in range(3):
             await blip()
-        assert p.pauses == 2 and p.skipped_onset == 1
+        assert p.pauses == 2 and p.skipped_noisy == 1
         await task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
         await window()                                    # the next reply
         await blip()
-        assert p.pauses == 3, "the budget is per window: a new reply starts at zero"
+        assert p.pauses == 3, "the limit is the reply's: a new reply starts at zero"
     finally:
         await task.cancel()
         await run
 
 
-async def test_only_echo_like_pauses_count_against_the_budget():
-    # A cough that lasts, a backchannel whose final came back, a capped pause: none of
-    # them is echo, and none may disarm the onset test for the rest of the reply.
+async def test_what_counts_against_the_no_words_limit():
+    # Any pause that resumes with no words in it counts (a ringtone, a cough that lasts);
+    # a backchannel's words do not, and start the count over; a pause the cap ended does
+    # not count; nor one longer ago than the window.
+    from teaport_brain import barge_pause as bp
     out, p, task, run = await _pauser_rig(max_secs=0.3)
+    window, bp._NOWORD_WINDOW_S = bp._NOWORD_WINDOW_S, 1.5
     try:
         p._resume_secs = 0.1
         await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
         await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
-        for _ in range(2):                                # 0.35 s of speech, no words
+
+        async def sound(secs=0.15):
             await p.on_onset(True)
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(secs)
             await p.on_onset(False)
             await asyncio.sleep(0.25)
-        await p.on_onset(True)                            # "yeah": its final comes back
-        await asyncio.sleep(0.3)
+
+        await sound()                                     # no words: 1
+        assert len(p._noword_at) == 1
+        await p.on_onset(True)                            # "yeah": its final has words
+        await asyncio.sleep(0.15)
         await p.on_onset(False)
-        await p.on_final_without_turn()
+        await p.on_final_without_turn(words=True)
         await asyncio.sleep(0.25)
-        assert p.pauses == 3 and p.resumes == 3 and p._noword == 0
+        assert len(p._noword_at) == 0, "words start the count over"
+        await sound(secs=0.4)                             # held to the cap: not counted
+        assert len(p._noword_at) == 0, p._noword_at
+        await sound()                                     # 1
+        await asyncio.sleep(1.6)                          # out of the window
+        await sound()                                     # 1 again, not 2
+        assert len(p._noword_at) == 1 and not p._noisy
         await p.on_onset(True)
         await asyncio.sleep(0.05)
-        assert p.paused, "the onset test must still pause"
+        assert p.paused, "still pausing"
     finally:
+        bp._NOWORD_WINDOW_S = window
         await task.cancel()
         await run
 
@@ -1195,7 +1244,7 @@ def test_a_wordless_close_while_paused_tells_the_pauser():
     async def run():
         told = []
 
-        async def final_without_turn():
+        async def final_without_turn(words=False):
             told.append(True)
 
         s = PauseAwareMinWordsStrategy(min_words=2, on_final_without_turn=final_without_turn)
@@ -1435,7 +1484,7 @@ async def test_a_quiet_line_waits_past_the_window_for_the_stt_to_hear_it_out():
         assert p.paused, "resumed on the window with the speech not yet heard out"
         await p.on_speech_heard(p._watch)
         assert await _resumed_within(p, 0.25), "heard out, no turn: resume after the grace"
-        assert p.resumes == 1 and p._noword == 0, "a word-less pause is not echo-like"
+        assert p.resumes == 1 and len(p._noword_at) == 1, "a word-less pause counts"
     finally:
         await task.cancel()
         await run
@@ -1558,8 +1607,8 @@ async def test_a_blip_waits_for_the_stt_too_and_still_counts_as_echo_like():
         await asyncio.sleep(RESUME_S + 0.2)
         assert p.paused, "a blip resumed on its window over words still to come"
         await p.on_speech_heard(p._watch)
-        assert await _resumed_within(p, 0.25) and p._noword == 1, (
-            "heard out with no words, a blip's resume counts against the echo budget")
+        assert await _resumed_within(p, 0.25) and len(p._noword_at) == 1, (
+            "heard out with no words, a blip's resume counts against the no-words limit")
     finally:
         await task.cancel()
         await run
