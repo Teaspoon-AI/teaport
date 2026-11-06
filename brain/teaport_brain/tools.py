@@ -386,7 +386,7 @@ OPEN_SETTINGS = FunctionSchema(
     required=[],
 )
 
-_BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mid-flight
+_BG: set = set()  # background tasks (reindexes, _run_to_its_end) kept from GC mid-flight
 
 # Return a tool result WITHOUT triggering another inference pass. Pipecat runs the
 # LLM after every function-call result by default, which is right when the result
@@ -704,6 +704,31 @@ def _count_consult(gate, delta: int) -> None:
         gate.consults_running = max(0, getattr(gate, "consults_running", 0) + delta)
 
 
+async def _run_to_its_end(consult):
+    """Await the agent's run `consult` (oc.agent_consult), which goes on to its end even if
+    this wait is cancelled. The session's end cancels the consult waiting on it
+    (end_with_session, #122), but the owner's call is that an agent run, once started,
+    finishes: "text my wife I'm late" is sent though the caller hung up, as it was before.
+    Only its answer is dropped. Shielded, the cancel ends the wait and not the run: the
+    warm lane's request stays open (its client disconnecting would abort the run) and the
+    CLI's child is not stopped (_run_openclaw stops it on a cancel). _BG holds the run."""
+    run = asyncio.ensure_future(consult)
+    _BG.add(run)
+    run.add_done_callback(_BG.discard)
+    try:
+        return await asyncio.shield(run)
+    except asyncio.CancelledError:
+        run.add_done_callback(_ran_on)
+        raise
+
+
+def _ran_on(run) -> None:
+    """A run whose session ended first: its outcome, logged and dropped."""
+    if not run.cancelled() and run.exception() is None:
+        logger.info(f"openclaw_agent_consult(async): the agent's run ended after its session "
+                    f"did -- {_describe(run.result())}; dropped")
+
+
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
                             message=None, tts=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
@@ -714,8 +739,9 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     and it is owed to the caller until they hear it. Runs as a session-lifecycle
     task (params.llm.create_task) — a barge-in or the user moving on to another topic
     does NOT cancel the in-flight consult; the session's end does (#122, end_with_session
-    in services.py). `fut` is the relay's answer (consult_bridge),
-    None when the session has no relay: then the consult goes straight to the agent."""
+    in services.py), though not the agent's run (_run_to_its_end). `fut` is the relay's
+    answer (consult_bridge), None when the session has no relay: then the consult goes
+    straight to the agent."""
     from teaport_brain import consult_bridge
 
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate, tts=tts))
@@ -768,7 +794,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # 500'd and the consult burned its budget retrying -- took a dig through the
         # gateway journal to find. One line here would have pointed straight at it.
         logger.info(f"openclaw_agent_consult(async): {why}; asking the agent directly")
-        outcome = await oc.agent_consult(message or request, timeout=deadline - loop.time())
+        outcome = await _run_to_its_end(
+            oc.agent_consult(message or request, timeout=deadline - loop.time()))
         (logger.info if outcome.text else logger.warning)(
             f"openclaw_agent_consult(async): direct consult {_describe(outcome)}")
         await deliver(outcome)

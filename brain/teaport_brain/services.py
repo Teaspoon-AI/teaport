@@ -454,8 +454,8 @@ _CONNECT_SECS = 5.0
 _KEEPALIVE_SECS = 240.0
 
 # How long the session's end waits for each of its tasks to finish cancelling
-# (BoundedOpenAILLMService.end_with_session). A consult ends at once: its CLI child is
-# stopped in the background and its warm-lane connection is closed by a syscall.
+# (BoundedOpenAILLMService.end_with_session). A consult ends at once: it only stops
+# waiting, and the agent's run goes on without it (tools._run_to_its_end).
 _SESSION_TASK_END_S = 2.0
 
 
@@ -889,24 +889,34 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # own function-call tasks at its cleanup, but nothing cancelled a task a tool made with
     # create_task, so a consult running when the session ended (a restart, end_conversation,
     # the client leaving, a hang-up) ran on into the teardown: its narrator spoke into the
-    # cancelling pipeline, the agent turn ran to its end for an answer nobody would hear,
-    # and pipecat reported a dangling task (live 2026-10-10 03:59). So they end where the
-    # session's end reaches the LLM -- its CancelFrame (cancel) or its EndFrame (stop) --
-    # before anything below it is torn down, and before the owed book closes
-    # (FollowupGate.cleanup -> Owed.close_session), which finds the consult still running
-    # and settles it as it did when the consult ran on.
+    # cancelling pipeline and pipecat reported a dangling task (live 2026-10-10 03:59). So
+    # they end where the session's end reaches the LLM -- its CancelFrame (cancel) or its
+    # EndFrame (stop) -- before anything below it is torn down, and before the owed book
+    # closes (FollowupGate.cleanup -> Owed.close_session), which finds the consult still
+    # running and settles it as it did when the consult ran on. The agent's run the consult
+    # started is not one of them: it finishes, and only its answer is dropped
+    # (tools._run_to_its_end, the owner's call on #122).
     _session_tasks = None
+    # Set once the session's end has begun ending its tasks: one registered after that (a
+    # tool call still running as the session ended) is cancelled at once, not missed.
+    _session_over = False
 
     def end_with_session(self, task):
         """`task` (made with create_task) is cancelled when the session ends (above)."""
-        if task is not None:
-            if self._session_tasks is None:
-                self._session_tasks = set()
-            self._session_tasks.add(task)
-            task.add_done_callback(self._session_tasks.discard)
+        if task is None:
+            return task
+        if self._session_over:
+            task.cancel()
+            return task
+        if self._session_tasks is None:
+            self._session_tasks = set()
+        self._session_tasks.add(task)
+        task.add_done_callback(self._session_tasks.discard)
         return task
 
     async def _end_session_tasks(self):
+        # Before the first await: whatever registers from here on is cancelled as it does.
+        self._session_over = True
         # Bounded: a task that will not end must not hold up the session's teardown (it
         # is then reported as dangling, as before).
         for task in list(self._session_tasks or ()):

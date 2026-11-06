@@ -825,7 +825,8 @@ Commit ==
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
 \* the liveness property, never forced. A consult still running ends with it (#122,
-\* BoundedOpenAILLMService.end_with_session), which is what Land's ~ended is in the code.
+\* BoundedOpenAILLMService.end_with_session), which is what Land's ~ended is in the code;
+\* the agent's run it started finishes, and its answer is dropped.
 SessionEnd ==
     /\ ~ended
     /\ ended' = TRUE

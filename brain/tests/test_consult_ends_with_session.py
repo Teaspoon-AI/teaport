@@ -1,26 +1,29 @@
 #
-# #122: a consult still running when its session ends is ended with it.
+# #122: a consult still running when its session ends is ended with it -- the brain's part
+# of it. The agent's run it started finishes.
 #
 # Live 2026-10-10 03:59 (the room): a consult started at :58:55, restart_session asked at
 # :59:01. The client left at :06.946 and the pipeline began cancelling; at :07.293 the
 # consult's narrator pushed "Still working on that -- ..." into it, pipecat reported the
-# consult as a dangling task, and the agent's turn ran on to answer at :07.717 -- an
-# answer dropped at delivery, the session being gone.
+# consult as a dangling task, and the agent's turn answered at :07.717 -- an answer
+# dropped at delivery, the session being gone.
 #
 # Now the session's end, where it reaches the LLM (its CancelFrame, or the EndFrame of a
 # session that ends once drained), cancels the consult
 # (services.BoundedOpenAILLMService.end_with_session), and with it its narrator: nothing
 # of either is pushed after that, nothing is left dangling, and nothing lands once the
 # owed book has closed (Owed.close_session, which records the consult as it always did).
-# The warm lane's request, which runs in an executor thread, is hung up with it
-# (openclaw_client._Hangup): OpenClaw stops the agent's run when its HTTP client
-# disconnects.
+#
+# The agent's run is NOT stopped (the owner's call on #122): an action the caller asked
+# for -- "text my wife I'm late", then they hang up -- is done, as it was before, and only
+# its answer is dropped (tools._run_to_its_end). The warm lane's request stays open to its
+# end: OpenClaw aborts the run when its HTTP client disconnects.
 #
 # The session is the one build_agent_session makes for Talk, run from the user aggregator
-# down (test_owed_session.py's rig). Scripted: the agent (a turn that outlasts the
-# session), the narrator's schedule, the engine's synthesis. The warm lane's gateway is a
-# real socket on 127.0.0.1 that takes the request and never answers it. Every wait is on
-# a condition, bounded.
+# down (test_owed_session.py's rig). Scripted: the agent, the narrator's schedule, the
+# engine's synthesis. The warm lane's gateway is a real socket on 127.0.0.1 that holds the
+# request open until the test lets the agent's turn finish. Every wait is on a condition,
+# bounded.
 #
 # Run: python test_consult_ends_with_session.py   (or via the suite)
 #
@@ -32,7 +35,6 @@ import socket
 import sys
 import threading
 import time
-import urllib.error
 from types import SimpleNamespace as NS
 
 os.environ.setdefault("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime")
@@ -65,10 +67,6 @@ from test_post_tool_under_speech import TalkTransport, _segments  # noqa: E402
 
 STARTUP_TIMEOUT_S = 10.0
 STEP_TIMEOUT_S = 10.0
-# How long the gateway may take to see the hang-up. It is a syscall away; the bound is
-# for a loaded machine, and far short of the request's own 60 s budget, which is what the
-# gateway waited out before (the thread stayed blocked on the socket until then).
-HANGUP_S = 5.0
 CALL_ID = "call-news"
 REQ = "Summarize today's top news in Lyon"
 
@@ -76,18 +74,21 @@ REQ = "Summarize today's top news in Lyon"
 # ---------------------------------------------------------------- the session's end
 
 class _Agent:
-    """The agent's turn (oc.agent_consult): it outlasts the session unless cancelled."""
+    """The agent's run (oc.agent_consult): it answers once `release` is set."""
 
     def __init__(self):
         self.state = None
+        self.release = asyncio.Event()
 
     async def __call__(self, message, *, timeout=None, session_key=None):
         self.state = "running"
         try:
-            await asyncio.Event().wait()
+            await self.release.wait()
         except asyncio.CancelledError:
             self.state = "cancelled"
             raise
+        self.state = "answered"
+        return oc.ConsultOutcome("Two strikes and a festival.")
 
 
 class _Call:
@@ -249,12 +250,18 @@ async def _end_mid_consult(how: str):
             await rig.end(how)
         finally:
             await rig.close()
+        # The agent's run goes on past the session; once it answers, the answer is dropped.
+        assert agent.state == "running", (
+            f"the agent's run is {agent.state!r} after the session's end: an action the "
+            "caller asked for would not be done")
+        agent.release.set()
+        await until(lambda: any("ended after its session did" in line for line in lines))
     finally:
         oc.agent_consult, tools._PROGRESS_SCHEDULE = saved
         logger.remove(sink)
 
-    assert agent.state == "cancelled", (
-        f"the agent's turn is {agent.state!r}: it runs on for an answer nobody will hear")
+    assert agent.state == "answered", agent.state
+    assert any("answered (27 chars); dropped" in line for line in lines), "the drop unlogged"
     assert consult.cancelled(), consult
     assert ended_first == [True], (
         f"the consult was still running when the session's end reached the gate: {ended_first}")
@@ -266,7 +273,8 @@ async def _end_mid_consult(how: str):
     assert rig.gate.consults_running == 0, rig.gate.consults_running
     assert not getattr(rig.llm, "_teaport_progress_active", False)
     # The owed book closes it with the session as it did a consult that ran on: its
-    # placeholder says it did not report back. Nothing else lands, then or after.
+    # placeholder says it did not report back. Nothing else lands, then or after -- not
+    # the agent's answer, which came after the session's end.
     assert rig.lands == [(CALL_ID, None, "unknown", True)], rig.lands
     assert rig.placeholder()["status"] == "unknown", rig.placeholder()
     # The cancellation itself is no failure: nothing logs or tells one.
@@ -288,17 +296,20 @@ async def test_a_session_ended_once_drained_ends_its_consult_too():
 # ---------------------------------------------------------------- the warm lane's request
 
 class _Gateway:
-    """OpenClaw's /v1/chat/completions on a real socket on 127.0.0.1. It takes one
-    request and never answers it (an agent turn that outlasts the consult), or, given
-    `answer`, answers it. `closed` is set when the client hangs up."""
+    """OpenClaw's /v1/chat/completions on a real socket on 127.0.0.1. It takes one request
+    and holds it open -- the agent's turn running -- until `finish` is set, then answers
+    it. `result`: "answered" when the answer went out to a client still connected,
+    "aborted" when the client closed the connection first (which aborts OpenClaw's run)."""
 
-    def __init__(self, answer=None):
+    def __init__(self, answer: str):
         self.answer = answer
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
         self.request = b""
+        self.result = None
         self.requested = threading.Event()
-        self.closed = threading.Event()
+        self.finish = threading.Event()
+        self.done = threading.Event()
         threading.Thread(target=self._serve, daemon=True).start()
 
     @staticmethod
@@ -307,108 +318,101 @@ class _Gateway:
         length = re.search(rb"(?im)^content-length:\s*(\d+)", head)
         return bool(sep) and len(body) >= (int(length.group(1)) if length else 0)
 
+    @staticmethod
+    def _hung_up(conn) -> bool:
+        conn.setblocking(False)
+        try:
+            return conn.recv(1) == b""
+        except BlockingIOError:
+            return False
+        finally:
+            conn.settimeout(STEP_TIMEOUT_S)
+
     def _serve(self):
         conn, _ = self._listener.accept()
         self._listener.close()
-        with conn:
-            conn.settimeout(60)
-            try:
+        try:
+            with conn:
+                conn.settimeout(STEP_TIMEOUT_S)
                 while not self._whole(self.request):
                     data = conn.recv(65536)
                     if not data:
-                        break                   # closed before a request was sent
+                        self.result = "closed before the whole request"
+                        return
                     self.request += data
-                else:
-                    self.requested.set()
-                    if self.answer is not None:
-                        body = json.dumps(
-                            {"choices": [{"message": {"content": self.answer}}]}).encode()
-                        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                                     b"Content-Length: %d\r\n\r\n" % len(body) + body)
-                    while conn.recv(65536):
-                        pass                    # the request is held open until the close
-            except TimeoutError:
-                return                          # never closed: `closed` stays clear
-            except OSError:
-                pass                            # reset: a hang-up too
-            self.closed.set()
-
-
-class _WarmLane:
-    """The consult's gateway is `gateway`; `finished` is set when the request's thread
-    has returned from _completions_sync."""
-
-    def __init__(self, gateway):
-        self.gateway = gateway
-        self.finished = threading.Event()
-
-    def __enter__(self):
-        self._saved = oc.GATEWAY_URL, oc._token, oc._completions_sync
-        sync = oc._completions_sync
-
-        def completions(*args):
-            try:
-                return sync(*args)
-            finally:
-                self.finished.set()
-        oc.GATEWAY_URL, oc._token, oc._completions_sync = (
-            self.gateway.url, lambda: "tok", completions)
-        return self
-
-    def __exit__(self, *exc):
-        oc.GATEWAY_URL, oc._token, oc._completions_sync = self._saved
+                self.requested.set()
+                while not self.finish.wait(0.02):
+                    if self._hung_up(conn):
+                        self.result = "aborted"
+                        return
+                if self._hung_up(conn):
+                    self.result = "aborted"
+                    return
+                body = json.dumps({"choices": [{"message": {"content": self.answer}}]}).encode()
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                             b"Content-Length: %d\r\n\r\n" % len(body) + body)
+                self.result = "answered"
+        except OSError as e:
+            self.result = self.result or f"aborted ({e!r})"
+        finally:
+            self.done.set()
 
 
 async def _wait(event: threading.Event, timeout: float) -> bool:
     return await asyncio.get_running_loop().run_in_executor(None, event.wait, timeout)
 
 
-async def test_cancelling_a_warm_lane_consult_hangs_up_its_request():
-    """The consult is cancelled with its session while the gateway runs the agent's turn:
-    the gateway sees the connection close at once (which is what stops the run), and the
-    request's thread is not left blocked on it until the turn's budget runs out."""
-    gateway = _Gateway()
-    with _WarmLane(gateway) as lane:
-        consult = asyncio.ensure_future(oc.agent_consult(REQ, timeout=60))
-        assert await _wait(gateway.requested, STEP_TIMEOUT_S), "no request reached the gateway"
-        assert not gateway.closed.is_set()
-        consult.cancel()
+async def test_the_agents_request_runs_to_its_end_after_the_session():
+    """SIP: "text my wife I'm late", then the caller hangs up. The consult ends with the
+    session, but the warm lane's request to OpenClaw stays open until the agent's turn is
+    done -- its client disconnecting would abort the run, the text unsent -- and its
+    answer, once it comes, is dropped."""
+    gateway = _Gateway("Sent.")
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+    saved = oc.GATEWAY_URL, oc._token
+    oc.GATEWAY_URL, oc._token = gateway.url, (lambda: "tok")
+    try:
+        rig = Rig()
+        await rig.start()
         try:
-            await consult
-        except asyncio.CancelledError:
-            pass
+            rig.seed()
+            await tools._openclaw_agent_consult(_Call(rig.llm), owed=rig.owed, gate=rig.gate,
+                                                relay=False, tts=rig.session.tts)
+            assert await _wait(gateway.requested, STEP_TIMEOUT_S), "no request reached it"
+            consult = _task("_consult_and_land")
+            await rig.end("cancel")
+        finally:
+            await rig.close()
         assert consult.cancelled(), consult
-        assert await _wait(gateway.closed, HANGUP_S), (
-            "the gateway never saw the connection close: the agent's turn runs on")
-        assert await _wait(lane.finished, HANGUP_S), "the request's thread is still blocked"
+        assert not gateway.done.is_set(), f"the request ended with the session: {gateway.result}"
+        gateway.finish.set()
+        assert await _wait(gateway.done, STEP_TIMEOUT_S), "the gateway never finished"
+        assert gateway.result == "answered", f"the agent's run was {gateway.result}"
+        await until(lambda: any("ended after its session did" in line for line in lines))
+    finally:
+        oc.GATEWAY_URL, oc._token = saved
+        logger.remove(sink)
     assert b"POST /v1/chat/completions" in gateway.request, gateway.request[:80]
+    assert any("answered (5 chars); dropped" in line for line in lines)
+    assert rig.lands == [(CALL_ID, None, "unknown", True)], rig.lands
 
 
-def test_a_hang_up_before_the_connect_has_finished_sends_nothing():
-    """The cancel lands while the thread is still connecting: the request goes no further
-    (urllib closes the connection and raises), and the gateway reads no request."""
-    gateway = _Gateway()
-    hangup = oc._Hangup()
-    hangup.hang_up()
-    with _WarmLane(gateway):
-        try:
-            oc._completions_sync(REQ, "tok", 5.0, hangup)
-        except urllib.error.URLError as e:
-            assert isinstance(e.reason, ConnectionAbortedError), e
-        else:
-            raise AssertionError("the request went out after the hang-up")
-    assert gateway.closed.wait(HANGUP_S), "the connection was left open"
-    assert not gateway.requested.is_set() and not gateway.request, gateway.request
+# ---------------------------------------------------------------- the teardown's gap
 
-
-async def test_an_answered_warm_lane_consult_still_answers_and_lets_go_of_its_connection():
-    """The held connection changes nothing for a request that ends: the answer comes back,
-    and the connection closes (the duplicate the hang-up holds is released with it)."""
-    gateway = _Gateway(answer="Fog in the morning, sun by noon.")
-    with _WarmLane(gateway):
-        outcome = await oc.agent_consult(REQ, timeout=60)
-    assert outcome == oc.ConsultOutcome("Fog in the morning, sun by noon."), outcome
-    assert await _wait(gateway.closed, HANGUP_S), "the answered request's connection stays open"
+async def test_a_task_registered_after_the_session_ended_is_cancelled_at_once():
+    """A consult registered once the session's end has taken its list of tasks (a tool call
+    still running as the session ended) is cancelled there and then, not missed."""
+    rig = Rig()
+    await rig.start()
+    try:
+        await rig.end("cancel")
+    finally:
+        await rig.close()
+    late = asyncio.get_running_loop().create_task(asyncio.Event().wait())
+    assert rig.llm.end_with_session(late) is late
+    done, _ = await asyncio.wait({late}, timeout=STEP_TIMEOUT_S)
+    assert late in done and late.cancelled(), "registered after the end, it ran on"
 
 
 def main():
