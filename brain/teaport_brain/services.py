@@ -449,17 +449,32 @@ _RETRY_WITHIN_S = 2.0
 _NO_RECOVERY_AFTER = frozenset({"end_conversation", "restart_session", "answer_phone_call"})
 
 
-# An emoticon, as llm_text_guard's leading-punct strip keeps one whole (its _LEADING_PUNCT
-# lookahead; test_empty_completion checks the two agree).
-_EMOTICON = re.compile(r"[:;=]['-]?[()\[\]DPpOo3/\\|*]")
+# An emoticon, as llm_text_guard's leading-punct strip keeps one whole: its _LEADING_PUNCT
+# lookahead, closer and all (test_empty_completion runs inputs through both).
+_EMOTICON = re.compile(r"[:;=]['-]?[()\[\]DPpOo3/\\|*](?![0-9A-Za-z_'\u00c0-\u024f])")
+
+# The emoji outside the pictograph planes that show as emoji with no selector after them
+# (Unicode emoji-data, Emoji_Presentation=Yes, BMP): "✨", "✅", "❌", "⭐", "⚡", "☕".
+# "✓", "♪" and "°" are symbols, not among them.
+_BMP_EMOJI = re.compile(
+    "[\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653"
+    "\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea"
+    "\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e"
+    "\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55]")
 
 
 def _shows_a_face(text: str) -> bool:
-    """Is there a face in `text`: an emoticon (":)") or an emoji (a Unicode "other
-    symbol")? A reply that is only one has no speech (tts_text.has_speech), but it is not
-    nothing: the guard keeps it whole and history keeps what the model wrote (#15)."""
-    return (bool(_EMOTICON.search(text))
-            or any(unicodedata.category(ch) == "So" for ch in text))
+    """Is there a face in `text`: an emoticon (":)") or an emoji -- a pictograph
+    (U+1F000-U+1FAFF: the faces, hands, hearts and flags), a symbol given emoji
+    presentation (U+FE0F after it: "❤️"), or one of _BMP_EMOJI? A reply that is only one
+    has no speech (tts_text.has_speech), but it is not nothing: the guard keeps it whole
+    and history keeps what the model wrote (#15). Not any symbol: U+FFFD (a garbled
+    stream), "♪♪", "°" or "✓" alone says nothing, and is asked again."""
+    if _EMOTICON.search(text) or _BMP_EMOJI.search(text):
+        return True
+    return any(unicodedata.category(ch) == "So"
+               and ("\U0001F000" <= ch <= "\U0001FAFF" or text[i + 1:i + 2] == "\ufe0f")
+               for i, ch in enumerate(text))
 
 
 def _as_sent(context) -> LLMContext:
@@ -935,11 +950,17 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 if completion is not None:
                     # Whether the answer to these calls is owed to the caller (#15): when
                     # this request was (a commit of their words, or the answer to their
-                    # round), unless it spoke beside its calls ("Goodnight!" with
-                    # end_conversation, "Got it" with remember: an empty answer after it
-                    # is right), or one of them ends the session or settles a phone call.
+                    # round), unless it spoke beside calls that do something ("Goodnight!"
+                    # with end_conversation, "Got it" with remember: an empty answer after
+                    # it is right), or one of them ends the session or settles a phone
+                    # call. Beside a lookup (owed.answer_tools: web_search, a consult...)
+                    # its words are a preamble ("Let me look that up."), which the persona
+                    # asks for: the answer is still owed.
+                    answers = self.owed.answer_tools if self.owed is not None else ()
                     self._callers_round = (
-                        completion.callers and not reply.texts
+                        completion.callers
+                        and (not reply.texts
+                             or any(c.function_name in answers for c in function_calls))
                         and not any(c.function_name in _NO_RECOVERY_AFTER
                                     for c in function_calls))
             await self.broadcast_frame(

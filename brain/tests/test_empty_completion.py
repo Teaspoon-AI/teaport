@@ -133,13 +133,13 @@ class _Gate:
         return 0.0
 
 
-def _llm(provider, ctx):
+def _llm(provider, ctx, answer_tools=frozenset()):
     llm = BoundedOpenAILLMService(api_key="test", base_url="http://127.0.0.1:9/v1",
                                   settings=OpenAILLMService.Settings(model="m"))
     llm._client = SimpleNamespace(chat=SimpleNamespace(completions=provider))
     llm._warm_closed = True      # no connection to warm: there is no server
     gate = _Gate()
-    llm.owed = owed.Owed(ctx, gate=gate)
+    llm.owed = owed.Owed(ctx, gate=gate, answer_tools=answer_tools)
     return llm, gate
 
 
@@ -436,6 +436,27 @@ async def test_an_answer_after_the_model_spoke_beside_its_call_is_left_alone():
         assert _texts(frames) == [said], (tool, _texts(frames))
 
 
+async def test_a_lookups_preamble_does_not_excuse_its_empty_answer():
+    """Review round 2: the persona asks for a preamble before a slow lookup, so "Let me
+    look that up." with web_search, then an empty answer, is dead air after a promise --
+    retried, then recovered. Words beside a call that does something ("Got it." with
+    remember) are the answer, and an empty one after them is left alone. The session's
+    own answer tools (tools.ANSWER_TOOLS) tell the two apart."""
+    from teaport_brain import tools
+    for said, tool, asks, expect in (("Let me look that up.", "web_search", 3,
+                                      ["Let me look that up.", LINE]),
+                                     ("Got it.", "remember", 2, ["Got it."])):
+        ctx = _context({"role": "user", "content": "Is it going to rain in Austin?"})
+        provider = _Provider([_chunk(said), _chunk(tool=tool), _chunk(finish="tool_calls")],
+                             EMPTY)
+        llm, _ = _llm(provider, ctx, answer_tools=tools.ANSWER_TOOLS)
+        llm.register_function(tool, _result)
+        frames = await _run([llm, LLMTextGuard()], LLMContextFrame(context=ctx),
+                            _answer(llm, ctx, {"ok": True}))
+        assert len(provider.requests) == asks, (tool, len(provider.requests))
+        assert _texts(frames) == expect, (tool, _texts(frames))
+
+
 async def test_no_recovery_after_the_tools_that_end_the_session_or_settle_a_call():
     """end_conversation and restart_session are called with no line before them, and the
     session ends once their answer has played; answer_phone_call's results include ones
@@ -535,6 +556,8 @@ async def test_a_reply_that_is_only_a_face_is_not_retried():
     for name, procs, replies, asks, expect in (
             ("an emoticon", guard, (reply(":)"),), 1, ":)"),
             ("a thumbs-up", guard, (reply("\U0001F44D"),), 1, "\U0001F44D"),
+            ("a red heart", guard, (reply("\u2764\ufe0f"),), 1, "\u2764\ufe0f"),
+            ("sparkles", guard, (reply("\u2728"),), 1, "\u2728"),
             ("a mood emoji, moods off", guard, (reply("\U0001F622"),), 1, "\U0001F622"),
             ("an emoticon, moods on", moods, (reply(":)"),), 1, ":)"),
             ("a mood emoji, moods on", moods, (reply("\U0001F622"),), 1, LINE),
@@ -550,15 +573,38 @@ async def test_a_reply_that_is_only_a_face_is_not_retried():
 
 
 def test_a_face_here_is_a_face_the_guard_keeps_whole():
-    """The service's emoticon is the guard's (its leading-punct strip keeps one whole):
-    one that the guard kept but this did not count as a face would be retried and have
-    the line glued onto it again."""
-    assert services._EMOTICON.pattern in llm_text_guard._LEADING_PUNCT.pattern
-    for face in (":)", ";-)", ":(", ":/", ":*", "=)", "\U0001F44D", "\u2764\ufe0f"):
-        assert services._shows_a_face(face), face
-        assert llm_text_guard._LEADING_PUNCT.sub("", face) == face, face
-    for none in ("", "...", "\n", "\u200b", "?!"):
+    """The service's emoticon is the one the guard's leading-punct strip keeps whole:
+    wordless replies through both, each counted a face here exactly when the guard kept
+    its face. One the guard kept but this did not count would be retried and have the
+    line glued onto it; one counted here that the guard stripped would end in silence."""
+    for text in (":)", ";-)", ":(", ":/", ":*", "=)", "=]", "... :)", ", ;-)", ":)'",
+                 ":)_", ":", ":-", ")", "...", "?!", "", "\n"):
+        kept = llm_text_guard._LEADING_PUNCT.sub("", text)
+        assert bool(services._EMOTICON.search(text)) == (kept[:1] in (":", ";", "=")), (
+            repr(text), repr(kept))
+    for face in (":)", "\U0001F44D", "\U0001F622", "\u2764\ufe0f", "\u2714\ufe0f", "\u2728",
+                 "\u2b50", "\U0001F1FA\U0001F1F8"):
+        assert services._shows_a_face(face), repr(face)
+        assert llm_text_guard._LEADING_PUNCT.sub("", face) == face, repr(face)
+    for none in ("", "...", "\n", "\u200b", "?!", "\ufffd\ufffd", "\ufffc", "\u266a\u266a",
+                 "\u00b0", "\u2713", "\u2714"):
         assert not services._shows_a_face(none), repr(none)
+
+
+async def test_a_symbol_that_is_not_a_face_is_asked_again():
+    """Review round 2: not every symbol is a face. U+FFFD (a garbled stream), "♪♪", "°"
+    and "✓" alone say nothing and the TTS has nothing to speak: retried, then the line,
+    once, set apart by a space from what the guard forwarded before it."""
+    for junk in ("\ufffd\ufffd\ufffd", "\u266a\u266a", "\u00b0", "\u2713"):
+        ctx = _context({"role": "user", "content": ASK})
+        provider = _Provider([_chunk(junk), _chunk(finish="stop")])
+        llm, _ = _llm(provider, ctx)
+        frames = await _run([llm, LLMTextGuard()], LLMContextFrame(context=ctx))
+        assert len(provider.requests) == 2, (repr(junk), len(provider.requests))
+        joined = "".join(_texts(frames))
+        assert joined.count(LINE) == 1 and joined.endswith(LINE), (repr(junk), joined)
+        before = joined[:-len(LINE)]
+        assert not before or before.endswith(" "), (repr(junk), joined)
 
 
 async def test_with_the_guard_off_the_service_still_recovers():
