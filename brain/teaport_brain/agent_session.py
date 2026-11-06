@@ -86,7 +86,8 @@ from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.settings import setting
 from teaport_brain.followup_gate import FollowupGate, FollowupTrigger, TurnCommitMark
 from teaport_brain.owed import Owed, caller_asked
-from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
+from teaport_brain.heard_context import (HeardContextCorrector, append_to_last_turn,
+                                         drop_overtaken_tool_calls)
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
 from teaport_brain.mood_tag import MoodTag
@@ -554,7 +555,8 @@ class AgentSession:
             # gate inside the settle (the room's user starting a turn as the phone rings)
             # lets the line go ahead of a late own one, as on main. Two coincidences, and
             # waiting on the line's own interruption needs the task's flush probe, a
-            # change to every own line (#340).
+            # change to every own line (#340). A pipeline that has ended passes nothing
+            # on: the gate says so, and the line goes in at once, with no warning.
             if gate.interruptions == seen:
                 try:
                     await asyncio.wait_for(gate.interrupted_since(seen),
@@ -1067,10 +1069,19 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_speech_heard(watch)
 
+    # Words nobody was heard saying, after a committed turn and before its reply plays,
+    # are that turn's: into its message, not a turn that cuts the reply at 0% (#22,
+    # barge_pause.py WORDS NOBODY SPOKE). Whether anyone was heard is the VAD's start,
+    # and where the reply hold is, its onset test too: the hold holds the reply for
+    # onset-only words and merges the turn they start (THE ONSET). Without it (Talk and
+    # the room as shipped) such words are a tail as well -- the owner's call, 2026-11-06.
     start_strategy = barge_pause.PauseAwareMinWordsStrategy(
         min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn,
-        on_speech_heard=_speech_heard)
+        on_speech_heard=_speech_heard,
+        on_tail_words=lambda words: append_to_last_turn(context, words),
+        onset_is_speech=reply_hold_enabled)
     start_strategy.taken_words = taken_words
+    vad_analyzer.onset_listeners.append(start_strategy.on_onset)
 
     context_aggregator = LLMContextAggregatorPair(
         context,
@@ -1422,6 +1433,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # plays. Everything below it (the taps, the bed, the transport) sees the reply
         # only once it is going to the caller.
         reply_gate,
+        # Below the TTS and the gate: a reply that ends with nothing to play ends the
+        # wait in which words nobody spoke join its turn (barge_pause.py, THE WAIT).
+        barge_pause.UnspokenReplyTap(start_strategy.reply_unspoken),
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
         bed,  # the thinking sound's typing (above), pushed as plain audio to the transport

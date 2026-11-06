@@ -707,7 +707,7 @@ async def test_the_gates_speech_wait_ends_with_the_session():
     wait = asyncio.create_task(gate.speech_over())
     await asyncio.sleep(0.05)
     assert not wait.done()
-    gate._ended.set()                            # what End, Stop, Cancel and cleanup do
+    gate._end_interruption_waits()               # what End, Stop, Cancel and cleanup do
     assert await asyncio.wait_for(wait, 1.0) is False and gate.ended
     assert await gate.speech_over() is False     # and after it, at once
 

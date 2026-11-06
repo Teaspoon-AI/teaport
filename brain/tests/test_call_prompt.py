@@ -29,7 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_session_arbiter as sa  # noqa: E402  — its env, stubs and pinned pipecat
 import test_sip_call_lifecycle as lc  # noqa: E402
 
+from loguru import logger  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
+    CancelFrame,
     InterruptionFrame,
     InterruptionWorkerFrame,
     OutputTransportMessageUrgentFrame,
@@ -408,6 +410,60 @@ async def test_the_question_waits_for_its_own_cut_however_late_it_lands():
         assert session.task.played.is_set(), "the call was taken; the question never played"
     finally:
         cp.PROMPT_SECS, cp.PROMPT_DEFAULT = saved
+
+
+def _warnings():
+    """Collect loguru's warnings: (the list, its sink id)."""
+    got = []
+    return got, logger.add(lambda m: got.append(str(m)), level="WARNING")
+
+
+async def test_a_cut_that_never_comes_holds_the_line_back_only_to_the_cap_and_says_so():
+    """A pipeline that never passes the interruption on (wedged): the line waits no
+    longer than _OWN_LINE_SETTLE_MAX_S for it, the journal says so, and the line goes
+    in (#336's review, finding 3: no test held the cap or its warning)."""
+    session, _ = _prompted()
+    session._OWN_LINE_SETTLE_S, session._OWN_LINE_SETTLE_MAX_S = 0.0, 0.2
+    queue = session.task.queue_frames
+
+    async def wedged(frames):
+        if any(isinstance(f, InterruptionWorkerFrame) for f in frames):
+            session.task.queued += frames               # never reaches the gate
+        else:
+            await queue(frames)
+    session.task.queue_frames = wedged
+    warned, sink = _warnings()
+    try:
+        assert await asyncio.wait_for(session.say_last_line("Bye.", 2.0), 5) is True
+    finally:
+        logger.remove(sink)
+    assert any("did not reach the follow-up gate" in w for w in warned), warned
+    assert _spoken(session)[-1].text == "Bye."
+
+
+async def test_a_line_into_a_pipeline_that_ends_does_not_wait_out_the_cap():
+    """#336's review, finding 1: the user leaves inside the settle (their "yes, take it"
+    said, the app closed), the pipeline is cancelled, and no interruption comes. The line
+    waits only its own max_secs, as before #293, and the journal says nothing of a
+    faulty pipeline; nor for a pipeline over already."""
+    for over_already in (False, True):
+        session, _ = _prompted()
+        session._OWN_LINE_SETTLE_MAX_S = 30.0
+        gate, loop = session.followup_gate, asyncio.get_running_loop()
+
+        async def gone(frames):
+            session.task.queued += frames               # nothing passes any more
+        session.task.queue_frames = gone
+        if over_already:
+            await sa._feed(gate, CancelFrame())
+        else:
+            loop.call_later(0.1, lambda: loop.create_task(sa._feed(gate, CancelFrame())))
+        warned, sink = _warnings()
+        try:
+            assert await asyncio.wait_for(session.say_last_line("Bye.", 0.3), 5) is False
+        finally:
+            logger.remove(sink)
+        assert not any("did not reach" in w for w in warned), (over_already, warned)
 
 
 async def test_a_question_the_caller_hangs_up_on_is_withdrawn():

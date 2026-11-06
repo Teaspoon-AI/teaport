@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2776#24400c41 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2776#5ef0c649 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -148,7 +148,7 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `TEAPORT_STT_TURN_TEXT` | `segment` | What the words of a turn are. segment: each commit closes an engine segment, and the engine's final for it is the turn's text. slice: the engine keeps one continuous transcript that commits never change (its preview stream; an engine without it runs on segments as before); a turn is the words that end before its commit, answered at once on the words in hand plus the engine's preview of the rest, then checked against the transcript's own words a moment later (about 0.7 s on an Orin NX, up to 2 s on an Orin Nano), which correct the conversation's record where they differ. In slice mode the carry and the wait for the caller's pause are off; the silence hint stays. One of `segment`, `slice`. Prototype: needs a teaport-engine with the preview stream ("transcription.preview" in its capabilities; engine 1.7 or later). |
 | `TEAPORT_STT_PREVIEW_AT_STOP` | **on** | With TEAPORT_STT_TURN_TEXT=slice: ask the engine's preview of the turn at the end of the caller's speech, while the turn-end model is still deciding, instead of after it. The turn closes on that preview if the model calls the turn done, the speculative reply is asked on it as soon as it lands, and its final words come sooner; if the caller goes on talking, it is dropped and the next pause asks again. Off: the preview is asked when the turn closes. |
 | `HEARD_MODE` | `truncate` | How the context records a reply the caller only partly heard: truncate it to what was heard, or keep it whole with a note. One of `truncate`, `note`. |
-| `TEAPORT_SILENT_TURN_SECS` | **12** s (≥ 1) | How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. |
+| `TEAPORT_SILENT_TURN_SECS` | **12** s (≥ 1) | How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. It is also the longest that words no speech was detected for, heard after a turn and before its reply plays, are added to that turn rather than start a new one. |
 
 ## Agent consult and follow-ups
 
