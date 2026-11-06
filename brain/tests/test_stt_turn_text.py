@@ -556,9 +556,8 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
     logger.remove()
     logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
     try:
-        # The peek's preview before the verdict, the verdict before the preview (the
-        # turn is then the peek's, not its commit's), and no peek at all.
-        for peeks, verdict_first in ((True, False), (True, True), (False, False)):
+        # A peek's preview may land before its adoption (the verdict) or after it.
+        for peeks, adopted_first in ((True, False), (True, True), (False, False)):
             lines.clear()
             s = Service(peeks=peeks)
             await created(s)
@@ -568,10 +567,10 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
                     await audio(s, 1000)
                     await vad_stop(s)
                     end = s._peek.at_ms
-                    if verdict_first:
+                    if adopted_first:
                         await verdict(s)
                     await preview(s, end, "" if word == "yes" else " sure")
-                    if not verdict_first:
+                    if not adopted_first:
                         await verdict(s)
                 else:
                     await turn(s)
@@ -580,10 +579,9 @@ async def test_a_turn_whose_final_brings_its_words_is_no_miss_for_the_empty_rate
                 if word == "yes":
                     await delta(s, " yes", end - 100)
                 await progress(s, end)
-            mode = (peeks, verdict_first)
-            assert [t for t, _ in s.finals()] == ["yes"] * 4 + ["sure"], (mode, s.finals())
-            assert list(s._seg_window) == [""] * 5, (mode, list(s._seg_window))
-            assert not [m for m in lines if "caller was heard in" in m], (mode, lines)
+            assert [t for t, _ in s.finals()] == ["yes"] * 4 + ["sure"], (peeks, s.finals())
+            assert list(s._seg_window) == [""] * 5, (peeks, list(s._seg_window))
+            assert not [m for m in lines if "caller was heard in" in m], (peeks, lines)
     finally:
         logger.remove()
 

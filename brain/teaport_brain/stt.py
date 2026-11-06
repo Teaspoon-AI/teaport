@@ -2024,13 +2024,11 @@ class TeaportSTTService(WebsocketSTTService):
                 peek.tally = missed
             else:
                 noted = self._note_segment(missed)
-                # The turn it is, for its final to find (_unmiss): a slice's commit
-                # carries it; a peek adopted before its preview came holds it.
-                turn = commit.turn if commit is not None else None
-                if turn is None and peek is not None:
-                    turn = peek.turn
-                if turn is not None:
-                    turn.noted = noted
+                owner = commit.turn if commit is not None else None
+                if owner is None and peek is not None:
+                    owner = peek.turn      # adopted before its preview landed
+                if owner is not None:
+                    owner.noted = noted
         self._seg_bytes = 0
         self._seg_interims = 0
 

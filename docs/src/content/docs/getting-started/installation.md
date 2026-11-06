@@ -185,7 +185,7 @@ teaport has three optional components. The installer sets up none of them by def
 
    All three services show `active`, with the engine and brain ports and the memory use.
 
-   <!-- source: cli/teaport:5,206,1555#678e2a72 -->
+   <!-- source: cli/teaport:5,206,1632#678e2a72 -->
 
 2. Run the health check:
 
