@@ -2166,10 +2166,30 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   2026-10-15: it reaches the TTS ahead of the interruption, whose reset may flush it);
   every row's verdict is unchanged with it, and every holding row's state count too (a
   lost End and an ignored one leave the same state).
-- **One interruption sighting.** The ledger runs `_interrupt` at every processor's
-  sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
-  opens an anonymous turn on a closed context, which the next sighting ends; the model's
-  interruption is one step.
+- **One interruption, one step.** The model's `Interrupt` is one step; the pipeline's
+  is one frame sighted at every processor in turn, ~40 ms from the user aggregator to
+  the bottom (and its broadcast sibling up through the STT). Until #18 the ledger cut at
+  each sighting, so a response whose Start the TTS read after handling the interruption,
+  while the frame was still on its way through the processors below, was wiped by a
+  later sighting: its End found no stream, its context opened anonymous, and it played in
+  full, charted nowhere (`PlayedIsCharted`; live 2026-09-04, a deferred post-tool
+  completion, #17). Nothing in the model happens between two sightings, so it could not
+  reach that. The ledger now cuts at each sighting up to and including the TTS's own
+  (those down to the LLM's are what the cancel needs: `LlmCancelEnd`), and at none
+  after (`TranscriptLedger._interruption`). What the LLM sends after it reaches the TTS
+  after the TTS's cut, so for every response the LLM starts after the frame passes it,
+  that is the model's step. One residual is not, the same as before #18: a completion
+  whose Start is still between the LLM and the TTS as the frame passes the LLM, and
+  whose cancelled End then reaches the TTS ahead of the frame, can be read as a finished
+  reply -- when no sighting between the LLM and the TTS falls between the TTS's reads of
+  that Start and that End (the model's `LlmStart` waits for the cancel; this Start came
+  before it). What the
+  TTS pushed before its sighting and the processor below it reads after is dropped
+  until the frame's next sighting, and a pause the transport announces while the frame
+  travels is ended by its later sightings; the model's `Interrupt` flushes both in the
+  same step. The late cut is not kept as a
+  rejected design here (it would be a `PlayedIsCharted` row: `Interrupt`, `LlmStart`, a
+  second ledger cut); `test_ledger_playout.py`'s `test_o_` cases pin it on the real ledger.
 - **The corrector's messages are the charts' and the muted ones.** The model's context is
   the committed charts of the window, and the unspeakable replies charted nothing whose
   context ended (`Muted`), in the order their contexts opened; the code counts spoken
@@ -4189,7 +4209,7 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | An `LLMRunFrame` or `LLMMessagesAppendFrame(run_llm)` queued at the top is taken by the user aggregator (its context frame goes down, the run frame no further), so none reaches the assistant aggregator to be sent up past `FollowupGate`; frame ids increase in creation order | UserTurn (POSTTOOL: only a tool's answer comes up; `PendCommitted` by id) | `check_run_frames_stop_at_the_user_aggregator`; the brain's senders: `test_followup_gate.py::test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator` | 1.12 `llm_response_universal.py` (`LLMUserAggregator._handle_llm_run`, `_handle_llm_messages_append`); `utils/utils.py:23` (`obj_id`) | -- | ✓ |
 | A tool result is broadcast by the LLM and passes the TTS and the output transport to `FollowupGate` | Followup (`ToolEnd`, `turnAware`) | `check_a_tool_result_reaches_the_gate_below_the_transport` | `services/llm_service.py:1618-1630` (`result_callback`'s broadcast); `transports/base_output.py:896-923` (`_audio_task_handler` pushes it on) | ✓ | ✓ |
 | `FunctionCallsStartedFrame` is a SystemFrame the LLM broadcasts from inside `_process_context`, before the completion's End | UserTurn (`ToolCall`/`ToolDone` leave the gate `armed`; only `BotStart`/`CutLands` disarm) | `check_a_tool_calls_started_frame_is_a_system_frame_ahead_of_the_end` (the real `_process_context` on a scripted tool-call stream) | `services/llm_service.py:1456`; `services/openai/base_llm.py:560-600, 603-616` | ✓ | ✓ |
-| A cancelled completion's End (pushed from a `finally`) is sighted by the ledger after the interruption, or never: the ledger reads it where the TTS processes it, and it reaches the TTS ahead of the interruption, a queued frame the reset may flush. Either way the ledger has interrupted first and queues no partial text | Ledger, LedgerPlayout (`LlmCancelEnd`, `LlmCancelLost`) | `check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_one` (the real `TranscriptLedger` built with the TTS) | `services/openai/base_llm.py:603-616`; `processors/frame_processor.py:839-841`; the brain's reading point `transcript_ledger.py:318-327` | ✓ | ✓ |
+| A cancelled completion's End (pushed from a `finally`) is sighted by the ledger after the interruption, or never: the ledger reads it where the TTS processes it, and it reaches the TTS ahead of the interruption, a queued frame the reset may flush. Either way the ledger has interrupted first and queues no partial text | Ledger, LedgerPlayout (`LlmCancelEnd`, `LlmCancelLost`) | `check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_one` (the real `TranscriptLedger` built with the TTS) | `services/openai/base_llm.py:603-616`; `processors/frame_processor.py:839-841`; the brain's reading points: the stream at the TTS (`TranscriptLedger.on_process_frame`), the cuts at the interruption's sightings down to the LLM's, before its cancel (`_interruption`, #18) | ✓ | ✓ |
 | The VAD runs in the user aggregator and each edge is also pushed UPSTREAM, to the STT | SttCommit (THE ORDER; the receipts, numbered verdicts) | `check_vad_edges_are_pushed_upstream_to_the_stt` | `llm_response_universal.py:1237-1270` | ✓ | ✓ |
 | A context opens (`TTSStartedFrame`) for any non-blank text, before `run_tts` | LedgerPlayout (`UnspeakableOpens`) | `test_tts_stop_frame.py::test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text` | `services/tts_service.py:1147-1282` | ✓ (that test) | ✓ (main's suite) |
 | A context closes at its End only if the last `run_tts` yielded audio (the flag `on_turn_context_completed` reads) | LedgerPlayout (`CloseAtEnd`, `lp_endings`) | guard `engine_tts._require_close_at_end_flag` (source); `test_tts_stop_frame.py::test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` | `services/tts_service.py:722-746, 1348-1375` | ✓ (that test) | ✓ (main's suite) |
