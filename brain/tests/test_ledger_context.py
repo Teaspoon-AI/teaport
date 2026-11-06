@@ -4,7 +4,7 @@
 #
 # The ledger keys a bot turn on BotStarted/BotStopped, and "stopped" means 0.35s of
 # silence (pipecat's BOT_VAD_STOP_SECS). Anything the bot says back-to-back with no
-# gap is one playout. The consult narrator ("Still working on it.") fires on a fixed
+# gap is one playout. The consult narrator ("Still on it.") fires on a fixed
 # countdown with no regard for whether the bot is mid-reply, so it can begin its own
 # TTS context 2s into a reply and play straight after it — no gap, no BotStopped
 # between them. Before this fix the narrator's words and samples were folded into the
@@ -61,6 +61,7 @@ from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E40
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 REPLY = "I have queued the request; anything else you'd like?"  # 9 words
+# The narrator's line in the trace above; the timings below are built on its 4 words.
 FILLER = "Still working on it."  # 4 words — must NOT land in the reply's utterance
 SR = 24000
 

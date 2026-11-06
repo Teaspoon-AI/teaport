@@ -406,26 +406,30 @@ msgstr "माफ़ कीजिए, वॉइस असिस्टेंट �
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "माफ़ कीजिए, अभी आपकी आवाज़ नहीं सुनाई दे रही, स्पीच रिकग्निशन उपलब्ध नहीं है। थोड़ी देर बाद फिर से कोशिश कीजिए।"
 
-msgid "Still working on that — {topic}."
-msgstr "यह काम अभी चल रहा है — {topic}।"
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "ज़रूर — {phrase}।"
 
-msgid "Still working on it."
+msgid "On it."
+msgstr "इस पर काम शुरू हो गया है।"
+
+msgid "Still {phrase}."
+msgstr "यह काम अभी चल रहा है — {phrase}।"
+
+msgid "Still on it."
 msgstr "यह काम अभी चल रहा है।"
 
-msgid "Almost there — {topic}."
-msgstr "लगभग तैयार है — {topic}।"
-
-msgid "Almost there — hang tight."
-msgstr "लगभग तैयार है, थोड़ा धैर्य रखें।"
+msgid "This one's taking a bit longer."
+msgstr "इसमें थोड़ा ज़्यादा समय लग रहा है।"
 
 msgid "Looking up {q}."
 msgstr "{q} खोजा जा रहा है।"
 
 msgid "Opening that page."
 msgstr "वह पेज खोल रहे हैं।"
-
-msgid "I'll work on that — give me a moment."
-msgstr "इस पर काम शुरू करते हैं, एक पल दें।"
 
 msgid "One moment, let me set that up."
 msgstr "एक पल रुकिए, इसे तैयार किया जा रहा है।"

@@ -1236,7 +1236,7 @@ min = 1
 default = 12
 read = "startup"
 tier = "diag"
-help = "How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. It is also the longest that words no speech was detected for, heard after a turn and before its reply plays, are added to that turn rather than start a new one."
+help = "How long a committed turn can produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted."
 
 # ---- agent consult
 
@@ -1363,7 +1363,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "setup"
-help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
+help = "Agent-first routing: install the strict router directive and drop the acknowledgement spoken before each consult."
 
 [[settings]]
 name = "TEAPORT_RECALL_TIMEOUT"
@@ -1735,7 +1735,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them)."
+help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). When the agent answers with only a goodbye and does not go to sleep, the conversation sleeps once that goodbye has played (English only)."
 
 [[settings]]
 name = "TEAPORT_TOOL_ANSWER_PHONE_CALL"

@@ -417,26 +417,30 @@ msgstr "عذرًا، المساعد الصوتي مشغول بجلسة أخرى 
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "عذرًا، لا أستطيع سماعك الآن، فالتعرف على الكلام غير متاح. يُرجى المحاولة مجددًا بعد قليل."
 
-msgid "Still working on that — {topic}."
-msgstr "ما زلت أعمل على ذلك — {topic}."
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "حسنًا — {phrase}."
 
-msgid "Still working on it."
+msgid "On it."
+msgstr "جارٍ العمل على ذلك."
+
+msgid "Still {phrase}."
+msgstr "ما زلت أعمل على ذلك — {phrase}."
+
+msgid "Still on it."
 msgstr "ما زلت أعمل على ذلك."
 
-msgid "Almost there — {topic}."
-msgstr "اقتربنا من الانتهاء — {topic}."
-
-msgid "Almost there — hang tight."
-msgstr "اقتربنا من الانتهاء، لحظات."
+msgid "This one's taking a bit longer."
+msgstr "يستغرق هذا وقتًا أطول قليلًا."
 
 msgid "Looking up {q}."
 msgstr "أبحث عن {q}."
 
 msgid "Opening that page."
 msgstr "أفتح تلك الصفحة."
-
-msgid "I'll work on that — give me a moment."
-msgstr "سأعمل على ذلك، لحظة."
 
 msgid "One moment, let me set that up."
 msgstr "لحظة، سأجهّز ذلك."

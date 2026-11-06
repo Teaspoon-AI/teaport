@@ -397,7 +397,7 @@ async def test_partials_extend_across_a_line_break():
     print("  PASS captions keep extending across a line break")
 
 
-FILLER = "I'll work on that — give me a moment."
+FILLER = "Sure — checking the weather in Lima tomorrow."  # a consult's acknowledgement
 
 
 async def test_a_line_charted_ahead_is_not_charted_again():
@@ -411,7 +411,7 @@ async def test_a_line_charted_ahead_is_not_charted_again():
     await h.sentence("Lima will be cloudy tomorrow.", "ctx-answer")
     await h.feed(BotStoppedSpeakingFrame())
     assert h.sent[-1] == ("Lima will be cloudy tomorrow.", True), h.sent
-    assert not any("moment" in t for t, _ in h.sent), h.sent
+    assert not any("checking" in t for t, _ in h.sent), h.sent
     print("  PASS a line charted ahead plays without a second bubble")
 
 
@@ -465,7 +465,7 @@ async def test_many_lines_charted_ahead_are_each_charted_once():
         await h.feed(BotStoppedSpeakingFrame())
         await h.sentence(f"Answer number {i}.", str(uuid.uuid4()))
         await h.feed(BotStoppedSpeakingFrame())
-    assert not any("moment" in t for t, _ in h.sent), h.sent
+    assert not any("checking" in t for t, _ in h.sent), h.sent
     assert h.finals() == [f"Answer number {i}." for i in range(12)], h.sent
     assert list(h.tap._ahead_ctx) == fillers[-CaptionTap._AHEAD_MAX:], h.tap._ahead_ctx
     print("  PASS every filler in a long session is charted once")

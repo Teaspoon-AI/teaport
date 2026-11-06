@@ -406,26 +406,30 @@ msgstr "すみません、音声アシスタントはほかのセッション中
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "すみません、今は声が聞こえません。音声認識が使えない状態です。少し待ってからもう一度お試しください。"
 
-msgid "Still working on that — {topic}."
-msgstr "まだ作業中です（{topic}）。"
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "承知しました。{phrase}。"
 
-msgid "Still working on it."
+msgid "On it."
+msgstr "すぐに取りかかります。"
+
+msgid "Still {phrase}."
+msgstr "まだ作業中です（{phrase}）。"
+
+msgid "Still on it."
 msgstr "まだ作業中です。"
 
-msgid "Almost there — {topic}."
-msgstr "もうすぐ終わります（{topic}）。"
-
-msgid "Almost there — hang tight."
-msgstr "もうすぐ終わります、もう少しだけ。"
+msgid "This one's taking a bit longer."
+msgstr "今回は少し時間がかかっています。"
 
 msgid "Looking up {q}."
 msgstr "{q}を調べます。"
 
 msgid "Opening that page."
 msgstr "そのページを開きます。"
-
-msgid "I'll work on that — give me a moment."
-msgstr "今やりますね、少々お待ちください。"
 
 msgid "One moment, let me set that up."
 msgstr "少々お待ちください、準備します。"
