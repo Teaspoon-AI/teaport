@@ -393,8 +393,14 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   cut of it cancels the call.
 - **The session's end** (`Owed.close_session`, from the gate's cleanup and the room's
   sleep): a consult still running has its placeholder rewritten to its failure record,
-  owed, with no run. **Room sleep and wake** save and restore the owed records with the
-  conversation (`wake_gate`).
+  owed, with no run. The consult itself was cancelled just before, where the session's
+  end reached the LLM (`BoundedOpenAILLMService.end_with_session`, #122), so nothing lands
+  after it: `Land`'s `~ended` holds in the code. The agent's run it started still finishes
+  (an action asked for is done) and its answer is dropped (`tools._run_to_its_end`); a
+  consult called as the session ends starts its run and no waiter at all. Until
+  #122 the consult ran on into the teardown and its outcome landed in the closed book.
+  **Room sleep and wake** save and restore the owed records with the conversation
+  (`wake_gate`).
 - **A run that says nothing** (`SILENT`, `stay`): the model ends its turn there. The
   code tells the gate (`RunSilentFrame`) when the run's completion gave the TTS nothing it
   would speak -- counted with the TTS's own test (`tts_text.has_speech`), so a reply of
