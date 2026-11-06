@@ -897,15 +897,16 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # started is not one of them: it finishes, and only its answer is dropped
     # (tools._run_to_its_end, the owner's call on #122).
     _session_tasks = None
-    # Set once the session's end has begun ending its tasks: one registered after that (a
-    # tool call still running as the session ended) is cancelled at once, not missed.
-    _session_over = False
+    # Set once the session's end has begun ending its tasks: one registered after that is
+    # cancelled at once, not missed. A consult called after it starts no waiter at all,
+    # only the agent's run (tools._openclaw_agent_consult).
+    session_over = False
 
     def end_with_session(self, task):
         """`task` (made with create_task) is cancelled when the session ends (above)."""
         if task is None:
             return task
-        if self._session_over:
+        if self.session_over:
             task.cancel()
             return task
         if self._session_tasks is None:
@@ -916,7 +917,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
 
     async def _end_session_tasks(self):
         # Before the first await: whatever registers from here on is cancelled as it does.
-        self._session_over = True
+        self.session_over = True
         # Bounded: a task that will not end must not hold up the session's teardown (it
         # is then reported as dangling, as before).
         for task in list(self._session_tasks or ()):

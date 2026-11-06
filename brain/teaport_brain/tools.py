@@ -712,9 +712,7 @@ async def _run_to_its_end(consult):
     Only its answer is dropped. Shielded, the cancel ends the wait and not the run: the
     warm lane's request stays open (its client disconnecting would abort the run) and the
     CLI's child is not stopped (_run_openclaw stops it on a cancel). _BG holds the run."""
-    run = asyncio.ensure_future(consult)
-    _BG.add(run)
-    run.add_done_callback(_BG.discard)
+    run = _held(consult)
     try:
         return await asyncio.shield(run)
     except asyncio.CancelledError:
@@ -722,11 +720,33 @@ async def _run_to_its_end(consult):
         raise
 
 
+def _run_detached(consult) -> None:
+    """The agent's run `consult`, started with nothing waiting on it: one called as its
+    session ended (_openclaw_agent_consult). It finishes; its outcome is logged and dropped."""
+    _held(consult).add_done_callback(_ran_on)
+
+
+def _held(consult) -> asyncio.Task:
+    run = asyncio.ensure_future(consult)
+    _BG.add(run)
+    run.add_done_callback(_BG.discard)
+    return run
+
+
 def _ran_on(run) -> None:
-    """A run whose session ended first: its outcome, logged and dropped."""
-    if not run.cancelled() and run.exception() is None:
-        logger.info(f"openclaw_agent_consult(async): the agent's run ended after its session "
-                    f"did -- {_describe(run.result())}; dropped")
+    """A run whose session ended first: its outcome, logged and dropped -- or its error,
+    logged as the consult's own `except` logged it."""
+    if run.cancelled():
+        return
+    error = run.exception()
+    if error is not None:
+        logger.warning(f"openclaw_agent_consult(async) failed after its session ended: "
+                       f"{error!r}")
+        return
+    outcome = run.result()
+    (logger.info if outcome.text else logger.warning)(
+        f"openclaw_agent_consult(async): the agent's run ended after its session did -- "
+        f"{_describe(outcome)}; dropped")
 
 
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
@@ -926,8 +946,13 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         return
 
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
+    # Called as its session ends (#122): the completion that called it was still streaming
+    # when the session's EndFrame reached the LLM, behind it. Nothing goes to the relay:
+    # its call would be one more push into the ending session, behind the EndFrame. The
+    # agent is asked directly, as it is when a relay does not ack.
+    over = owed is not None and getattr(params.llm, "session_over", False) is True
     fut = None
-    if relay:
+    if relay and not over:
         fut = consult_bridge.create(call_id)
         # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by
         # its own name, with the arguments as OpenClaw reads them.
@@ -939,7 +964,14 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # waiter, acknowledge NOW so the turn ends and the user can keep talking, and tell
     # the answer when it lands (owed.py). This is the pattern mature voice platforms use
     # for slow sub-agent delegation.
-    if owed is not None:
+    if over:
+        # The agent's run starts all the same, as it did, and finishes: the owner's call is
+        # that an action asked for is done. With no waiter, no narrator and nothing pushed;
+        # its answer is dropped (_ran_on), and the owed book has closed it with the session.
+        logger.info("openclaw_agent_consult(async): called as the session ended; asking the "
+                    "agent directly, its answer to be dropped")
+        _run_detached(oc.agent_consult(_consult_message(args), timeout=_ASYNC_CONSULT_TIMEOUT))
+    elif owed is not None:
         consult = params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
             message=_consult_message(args), tts=tts))
@@ -947,6 +979,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         end_with_session = getattr(params.llm, "end_with_session", None)
         if end_with_session is not None:
             end_with_session(consult)
+    if owed is not None:
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome lands later (owed.py), rewriting this tool

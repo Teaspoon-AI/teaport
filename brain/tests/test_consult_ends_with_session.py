@@ -401,8 +401,8 @@ async def test_the_agents_request_runs_to_its_end_after_the_session():
 # ---------------------------------------------------------------- the teardown's gap
 
 async def test_a_task_registered_after_the_session_ended_is_cancelled_at_once():
-    """A consult registered once the session's end has taken its list of tasks (a tool call
-    still running as the session ended) is cancelled there and then, not missed."""
+    """A task registered once the session's end has taken its list of tasks is cancelled
+    there and then, not missed. (A consult called then registers none: below.)"""
     rig = Rig()
     await rig.start()
     try:
@@ -413,6 +413,96 @@ async def test_a_task_registered_after_the_session_ended_is_cancelled_at_once():
     assert rig.llm.end_with_session(late) is late
     done, _ = await asyncio.wait({late}, timeout=STEP_TIMEOUT_S)
     assert late in done and late.cancelled(), "registered after the end, it ran on"
+
+
+async def _called_as_it_ends(relay: bool):
+    """The consult is called while the session's EndFrame is on its way down: past the LLM
+    (whose stop() ended the session's tasks), not yet at the gate. As when the completion
+    that calls it was still streaming when stop_when_done or the client's close queued the
+    EndFrame behind it."""
+    from teaport_brain import consult_bridge
+
+    agent = _Agent()
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+    saved = oc.agent_consult
+    oc.agent_consult = agent
+    try:
+        rig = Rig()
+        await rig.start()
+        call = _Call(rig.llm)
+        over = []
+        process = rig.gate.process_frame
+
+        async def gate_sees(frame, direction):
+            if isinstance(frame, EndFrame) and not call.results:
+                over.append(getattr(rig.llm, "session_over", None))
+                await tools._openclaw_agent_consult(call, owed=rig.owed, gate=rig.gate,
+                                                    relay=relay, tts=rig.session.tts)
+            await process(frame, direction)
+        rig.gate.process_frame = gate_sees
+        try:
+            rig.seed()
+            await rig.end("drained")
+        finally:
+            await rig.close()
+        assert agent.state == "running", f"the agent's run is {agent.state!r}: never asked"
+        assert over == [True], over
+        assert call.results[0]["status"] == "working_in_background", call.results
+        agent.release.set()
+        await until(lambda: any("ended after its session did" in line for line in lines))
+    finally:
+        oc.agent_consult = saved
+        logger.remove(sink)
+    assert agent.state == "answered", agent.state
+    assert any("answered (27 chars); dropped" in line for line in lines)
+    pushed = [type(f).__name__ for f, _, ending in rig.pushed
+              if ending and isinstance(f, (OutputTransportMessageUrgentFrame, TTSSpeakFrame))]
+    assert not pushed, f"pushed into the ending session: {pushed}"
+    assert not [line for line in lines if "dangling tasks" in line]
+    assert not any(k.startswith(consult_bridge.CALL_ID_PREFIX) for k in consult_bridge._pending), (
+        consult_bridge._pending)
+    assert rig.gate.consults_running == 0, rig.gate.consults_running
+    assert rig.lands == [(CALL_ID, None, "unknown", True)], rig.lands
+
+
+async def test_a_consult_called_as_the_session_ends_still_asks_the_agent():
+    """The owner's call holds here too: the action asked for is done. No waiter is made, so
+    nothing is pushed and nothing dangles; the run starts, finishes, and is dropped."""
+    await _called_as_it_ends(relay=False)
+
+
+async def test_a_consult_called_as_a_relay_session_ends_sends_the_relay_nothing():
+    """On a relay session the call is not sent to the relay (a push behind the EndFrame),
+    no bridge entry is left behind, and the agent is asked directly."""
+    await _called_as_it_ends(relay=True)
+
+
+async def test_a_run_that_fails_after_its_session_ended_is_logged():
+    """The run's own error, once nobody waits on it, is logged as the consult's `except`
+    logged it -- not swallowed."""
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="DEBUG")
+    fail = asyncio.Event()
+
+    async def run():
+        await fail.wait()
+        raise RuntimeError("gateway client bug")
+    try:
+        before = len(tools._BG)
+        waiter = asyncio.ensure_future(tools._run_to_its_end(run()))
+        await until(lambda: len(tools._BG) > before)
+        waiter.cancel()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+        fail.set()
+        await until(lambda: any("gateway client bug" in line for line in lines))
+    finally:
+        logger.remove(sink)
+    line = next(line for line in lines if "gateway client bug" in line)
+    assert "WARNING" in line and "failed after its session ended" in line, line
 
 
 def main():
