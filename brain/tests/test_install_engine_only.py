@@ -295,24 +295,13 @@ def _quoted(text):
 
 
 def test_the_keys_it_adds_are_the_keys_phase_services_writes():
-    # Copied, not shared (phase_services is not this change's to restructure): the copy is
-    # checked here, values and the KOKORO_RESERVE_FPT rule both.
-    services = _fn("phase_services").splitlines()
-    i = next(i for i, ln in enumerate(services) if ln.strip().startswith('write_env "$ETC/engine.env"'))
-    call = ""
-    while True:
-        call += services[i]
-        if not services[i].rstrip().endswith("\\"):
-            break
-        i += 1
-    written = _quoted(call)[1:]
-    ours = _fn("engine_env_lines")
-    added = _quoted(ours[ours.index("ENGINE_ENV=("):])
-    assert written and added == written, (added, written)
-    fpt = [ln.strip() for ln in "\n".join(services).splitlines() if ln.strip().startswith("local fpt=")]
-    assert fpt and fpt[0] in ours, (fpt, ours)
+    # One list: phase_services writes engine_env_lines' keys, and --only engine adds the
+    # missing ones from the same call (#158 review: a copy had gone stale at 6 when #315
+    # moved phase_services to 8).
+    services = _fn("phase_services")
+    assert "engine_env_lines" in services and 'write_env "$ETC/engine.env" "${ENGINE_ENV[@]}"' in services, services
     # ... and what it computes, with and without an agent.
-    for agent, want in (("", "KOKORO_RESERVE_FPT=12"), ("openclaw", "KOKORO_RESERVE_FPT=6")):
+    for agent, want in (("", "KOKORO_RESERVE_FPT=12"), ("openclaw", "KOKORO_RESERVE_FPT=8")):
         rc, out = _run(tempdir("teaport-eng-env-"), f'AGENT_MODE={agent}; engine_env_lines; printf "%s\\n" "${{ENGINE_ENV[@]}}"',
                        ["engine_env_lines"])
         assert rc == 0 and out.splitlines()[0] == want and "ENGINE_PORT=8000" in out, out
