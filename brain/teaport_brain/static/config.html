@@ -483,8 +483,9 @@
   // it, its `detail` (#271). A body with none (not JSON: Caddy's 502 while the brain
   // restarts) names the status. expired: the front door's Settings session ran out.
   // The timeout is past the brain's slowest switch (wifi.switch, each step to its own
-  // limit: a rescan, two connects of 60 s with a rescan between, the connectivity check,
-  // the old network back in 60 s), so it only ends a request the box will never answer.
+  // limit: two connects of up to 60 s each (45 s asked, 15 s slack) with a rescan between,
+  // the connectivity check, the old network back in 60 s), so it only ends a request the
+  // box will never answer.
   const SWITCH_TIMEOUT_MS = 300000;
   const switchWifi = async (ssid, password, hidden) => {
     const lost = { text: 'Lost the box while it switched networks. If it joined ' + ssid + ', find it there (teaport.local); if not, it went back to its old network.' };
