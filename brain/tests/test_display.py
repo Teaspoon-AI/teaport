@@ -200,6 +200,7 @@ def test_columns_count_wide_letters_twice_and_marks_not_at_all(text, cols):
     ("\ud800x", "x"),
     ("\u202eemoh", "emoh"), ("x\u2066y\u2069 \u202az\u202c", "xy z"),   # bidi controls
     ("\n\t", "your network"), ("   ", "your network"),
+    ("\u200b", "your network"), ("\u200d \u200c", "your network"),  # marks alone draw nothing
     # A name's own spaces and characters stay: they are how it is written.
     ("東京\u3000カフェ", "東京\u3000カフェ"), ("Café\u00a0Wi-Fi", "Café\u00a0Wi-Fi"),
     ("my  net", "my  net"), (" lead", " lead"), ("trail ", "trail "),

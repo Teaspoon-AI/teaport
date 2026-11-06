@@ -122,7 +122,10 @@ def screen_text(text: str, unicode, fallback: str = "") -> str:
         return fold_ascii(text, fallback)
     kept = "".join(c for c in _CONTROL_SPACE.sub(" ", text)
                    if unicodedata.category(c) not in _NOT_TEXT and c not in _BIDI_CONTROLS)
-    return kept if kept.strip() else fallback
+    # Something to see: not only spaces and the zero-width format marks (Cf) kept for
+    # what they join, which alone draw nothing.
+    seen = any(not c.isspace() and unicodedata.category(c) != "Cf" for c in kept)
+    return kept if seen else fallback
 
 
 def _ascii(text: str) -> str:
