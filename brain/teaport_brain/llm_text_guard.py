@@ -394,11 +394,14 @@ def fold_degenerate_chars(text: str) -> str:
 def is_degenerate(cumulative: str) -> bool:
     """Has this completion collapsed into the ellipsis/whitespace attractor?
 
-    One-shot form of DegeneracyCounter. There is no "batch path" in the pipeline — the
-    guard only ever feeds deltas — so this exists for the tests, which use it as the
-    whole-string oracle that the incremental counter is checked against
-    (test_incremental_matches_oneshot). Kept in the module, not the test file, so the
-    oracle and the implementation cannot drift apart."""
+    One-shot form of DegeneracyCounter, for a completion that arrives whole instead of
+    streamed: agent_session.prepare_greeting judges the phone greeting, which it asks for
+    outside the pipeline, with it. Give it the RAW text, as the guard's counter gets its
+    deltas: the fold erases zero-width characters and collapses dot runs, so folded text
+    hides the collapse (#70). The tests also use it as the whole-string oracle that the
+    incremental counter is checked against (test_incremental_matches_oneshot). Kept in
+    the module, not the test file, so the oracle and the implementation cannot drift
+    apart."""
     counter = DegeneracyCounter()
     counter.feed(cumulative)
     return counter.tripped

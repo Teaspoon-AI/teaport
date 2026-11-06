@@ -58,6 +58,7 @@ from teaport_brain.tts_text import fold_unspeakable, split_clauses_ramp  # noqa:
 # would pass while asserting nothing.
 NBSP, NNBSP, ZWSP, WJ, BOM, NBHY, ELL = (
     "\u00a0", "\u202f", "\u200b", "\u2060", "\ufeff", "\u2011", "\u2026")
+ZWJ, ZWNJ = "\u200d", "\u200c"
 
 DOWN = FrameDirection.DOWNSTREAM
 
@@ -118,6 +119,13 @@ FOLDED_NOT_CUT = [
     "The log said Encoder... Decoder... Marlin... and then it stopped.",
 ]
 
+# Joiners are spelling, not contamination: U+200D/U+200C choose a conjunct's form in
+# Devanagari (half-form vs explicit virama) and hold an emoji ZWJ sequence together as
+# one glyph. Synthetic text, but the joiners sit where the script puts them, and there
+# are more than the cut's 40 of them (review of #70).
+JOINED = (f"क्{ZWJ}ष और क्{ZWNJ}ष, र्{ZWJ}य " * 10
+          + f"\U0001F468{ZWJ}\U0001F469{ZWJ}\U0001F467{ZWJ}\U0001F466 " * 4)
+
 HEALTHY = [
     "Well... okay then.",
     "I waited... and waited... then left.",     # two dramatic pauses
@@ -128,6 +136,7 @@ HEALTHY = [
     # scattered inside echoed words, never in a run.
     f"The voice{ZWSP}id is af{ZWSP}_heart.",
     f"Sure{BOM}, it is 18{NNBSP}degrees and{ZWSP} clear{WJ}, with rain{ZWSP} later.",
+    JOINED,
 ]
 
 
@@ -948,6 +957,16 @@ def test_zero_width_characters_count_by_mass():
         assert not is_degenerate(f"word{ch}" * 60), repr(ch)
 
 
+def test_joiners_are_spelling_not_zero_width():
+    """ZWJ/ZWNJ stay out of tts_text's _ZERO_WIDTH (review of #70). That one table drives
+    the fold, the guard's cut and the raw capture, so adding them would erase the joiners
+    from Hindi and emoji text, and cut a long healthy reply as a collapse."""
+    assert JOINED.count(ZWJ) + JOINED.count(ZWNJ) >= 40, "the fixture must pass the bar"
+    assert fold_unspeakable(JOINED) == JOINED
+    assert fold_degenerate_chars(JOINED) == JOINED
+    assert not is_degenerate(JOINED)
+
+
 def test_scattered_zero_width_on_the_worst_healthy_punctuation_does_not_cut():
     # The FOLDED_NOT_CUT cases peak at 16 punctuation chars; the most zero-width
     # characters a healthy reply has carried is 4. Both at once stay under the bar.
@@ -995,6 +1014,39 @@ async def test_scattered_zero_width_in_a_reply_folds_without_a_cut():
     await h.feed(LLMFullResponseEndFrame())
     assert not h.g._tripped
     assert h.spoken() == "The voice id is af_heart and the language is English.", h.spoken()
+
+
+async def test_a_prepared_greeting_is_judged_before_the_fold():
+    """agent_session.prepare_greeting asks for the phone greeting outside the pipeline,
+    so the streaming guard never sees it, and it called is_degenerate on the FOLDED text.
+    The fold erases zero-width characters and collapses a dot run to "...", so #70's
+    collapse passed as its truncated prefix and the caller was greeted mid-sentence
+    (review of #70). A degenerate greeting is refused: None, and greet() asks again
+    through the pipeline, where the guard is. A healthy one with stray contamination
+    still comes back folded."""
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from teaport_brain.agent_session import AgentSession
+
+    class LLM:
+        def __init__(self, text):
+            self.text = text
+
+        async def run_inference(self, context):
+            return self.text
+
+    stt = type("STT", (), {"stt_available": True, "slot_busy": False})()
+
+    async def prepared(text):
+        s = AgentSession(task=None, context=LLMContext([]), stt=stt, tts=None,
+                         llm=LLM(text), ledger=None, followup_gate=None)
+        return await s.prepare_greeting()
+
+    for degenerate in ("Hello, thanks for calling, how can" + ZWSP * 895,
+                       "Hi there" + "." * 2340, f"Hello{ELL * 6}"):
+        assert await prepared(degenerate) is None, repr(degenerate[:40])
+    assert (await prepared(f"Hello{NNBSP}there, thanks{ZWSP} for calling. How can I help?")
+            == "Hello there, thanks for calling. How can I help?")
+    assert await prepared(f"{ZWSP}{ZWSP}") is None   # nothing left after the fold
 
 
 async def test_raw_capture_logs_the_zero_width_collapse():

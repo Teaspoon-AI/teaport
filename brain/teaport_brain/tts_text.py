@@ -44,6 +44,9 @@ def _wordbreak_max(piece: str, max_chars: int) -> list:
 _NOBREAK_SPACES = re.compile("[\u00a0\u202f]")
 # Also what llm_text_guard's degeneracy counter and raw_llm_capture's degenerate pattern
 # count (#70): a code point added here is erased, counted toward the cut, and captured.
+# ZWJ/ZWNJ (U+200D/U+200C) are left out on purpose: they are spelling, not contamination
+# (Devanagari conjuncts, emoji sequences), and test_joiners_are_spelling_not_zero_width
+# fails if they are added.
 _ZERO_WIDTH = re.compile("[\u200b\u2060\ufeff]")
 _MD_BOLD = re.compile(r"\*{2,}")
 
