@@ -296,7 +296,9 @@ run UserTurn.tla ut_judge_noReask_nomissedbargein     "(expected: FAILS NoMissed
 run UserTurn.tla ut_judge_quietWindow_nounjudged     "(expected: FAILS NoUnjudgedWords — the pause resumes on its quiet window before the engine returns the caller's word, which then cuts the playing reply unjudged, #275)"
 run UserTurn.tla ut_judge_shipped_reach               "(expected: FAILS NoJudging — witness: words held for a verdict are reachable as shipped)"
 run UserTurn.tla ut_judge_shipped_all                 "(expected: holds — the barge-in judge's gate as shipped, on the shipped pause, with every property)"
-run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers and the heard-out bound as they are, the pause cap left out: everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_judge_pauseCap_resumeover         "(expected: FAILS NoResumeOverWords — the pause cap: it resumes the reply whatever holds it and the gate lets the held words on, the ACCEPTED RESIDUAL (the code's alternative, _past_pause, is on feat/judge-single-words))"
+run UserTurn.tla ut_judge_pauseCap_rest               "(expected: holds — the pause cap in: every other property ut_judge_shipped_timed checks)"
 echo
 echo "UserTurn.tla — the cut and the commit (FENCE, CutReplyFence) and the refused finalize's second commit (EARLY_FINAL)"
 run UserTurn.tla ut_fence_none_nocutaftercommit       "(expected: FAILS NoCutAfterCommit — before 2026-10-13: the late-start barge-in's commit overtakes its cut)"
@@ -329,6 +331,7 @@ run UserTurn.tla ut_post_gate_timed_rest                    "(expected: holds �
 run UserTurn.tla ut_post_asWritten_noskippedanswer          "(expected: FAILS NoSkippedAnswer — pipecat's skip for an open turn whose commit already ran: a result nothing answers (#196, not #17's fix))"
 run UserTurn.tla ut_shipped_all                      "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
 run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_shipped_judge_all                 "(expected: holds — ut_shipped_all with the barge-in judge: the gate on the shipped commit machinery, NoResumeOverWords and NoUnjudgedWords too)"
 run UserTurn.tla ut_talk_pause_reach                  "(expected: FAILS NoPauseInTailBand — witness: with TEAPORT_BARGE_PAUSE_TALK or _ROOM, Talk or the room pauses too, without the reply hold)"
 run UserTurn.tla ut_talk_judge_reach                  "(expected: FAILS NoJudging — witness: words held for a verdict are reachable on Talk with the pause on)"
 run UserTurn.tla ut_talk_shipped_all                  "(expected: holds — Talk or the room with TEAPORT_BARGE_PAUSE_TALK or _ROOM: the pause, no reply hold; every property but the two only the hold gives)"

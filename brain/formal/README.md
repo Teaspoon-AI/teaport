@@ -2733,7 +2733,8 @@ talking on over a "Stop." it never paused for.
 `shipped` holds all three with `HOLD = "gate"` and every property above, under the
 hold's `WORDS_IN_TIME` assumption (`ut_pause_shipped_all`, 1.5k states) and with the
 timers as they are (`ut_pause_shipped_timed`, every property but the accepted
-`NoStaleReply` residual, 3.5k states). Two **witness** rows prove it is not vacuous:
+`NoStaleReply` residual, 3.5k states; the pause cap is out of it, and harmless without a
+judge: the judge section's `pauseCap`). Two **witness** rows prove it is not vacuous:
 `ut_pause_shipped_reach_band` FAILS `NoPauseInTailBand` (a pause with 0.5–1 s left is
 reachable) and `ut_pause_shipped_reach_elapsed` FAILS `NoTailElapsed` (a held-back tail
 that would have ended is reachable).
@@ -2810,15 +2811,23 @@ The monitors:
 | `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
 | `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275) | ✓ | ✓ | ✗ |
 | `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
+| `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | |
 
 `shipped` holds every property the shipped pause holds:
 - `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 20k states. For
   the pause, that assumption is the report coming before the pauser's bound on waiting
   for it (2.5 s of quiet; on the box the same bounds passed a sliced turn's commit at
   most 1.98 s after it, p99 1.44 s, over 1,494 turns).
-- `ut_judge_shipped_timed`: the timers as they are, 118k states. Everything holds but
-  the accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked
-  there: a report later than the bound resumes the pause as the window did.
+- `ut_judge_shipped_timed`: the reply hold's timers and the heard-out bound as they are,
+  118k states, but not the pause cap (`pauseCap`, below). Everything holds but the
+  accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked there: a
+  report later than the bound resumes the pause as the window did.
+- `ut_shipped_judge_all`: the judge on the shipped commit machinery, `ut_shipped_all`
+  (`retryMerges`, the speculation, early finals) with `JUDGE = "shipped"`, every property
+  of both plus `NoResumeOverWords` and `NoUnjudgedWords`, under `WORDS_IN_TIME`: 298k
+  states. The other judge rows run the pause rows' smaller environment (`retryOnQuiet`,
+  no speculation, no early final: there `retryOnQuiet` and `retryMerges` are one
+  machine), which keeps each design's row small.
 
 The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 
@@ -2874,9 +2883,44 @@ What is not modelled:
 - That the notice comes behind every word of the speech. `HeardOut` assumes it; the STT
   keeps it by the bounds a sliced turn's final waits on (a word is returned once
   complete, so the start bound must pass the speech too), which
-  `test_stt_transcription_progress.py` pins. In these rows `NoUnjudgedWords` therefore
-  checks the pause's resume: no resume while words of the speech may still come.
-- The pause cap (at most 7.5 s, under the transport's 8 s write guard): a caller still talking keeps the pause; the cap ends it as a pause end.
+  `test_stt_transcription_progress.py` pins and `SttSlice.tla` checks (`ss_heard`,
+  `NoWordAfterHeard`; `ss_heard_endOnly` is the end bound alone). In segment mode the
+  notice rides `decoded_through_ms`, and that it bounds the interims is an engine
+  premise no model checks. In these rows `NoUnjudgedWords` therefore checks the pause's
+  resume: no resume while words of the speech may still come.
+- Which sessions wait for the notice at all. `HeardOutWait` ties the wait to `JUDGE`;
+  in the code it is the pauser's (`BargeInPauser`, HEARD OUT), with the judge on or off,
+  and only where the STT will answer (`stt.watch_heard`). Without a judge no property
+  here reads `unheard`, so the over-approximation loses nothing a row checks.
+
+**The pause cap (`JUDGE = "pauseCap"`): an accepted residual.** `BargeInPauser._cap` ends
+a pause `TEAPORT_BARGE_PAUSE_MAX_S` after its start whatever holds it: the judge's
+`hold_resume`, the heard-out wait, a caller still talking. Its resume
+(`PlayoutPauseFrame(paused=False)`) reaches `BargeInJudgeGate`, which lets everything it
+holds on ("the pause is over"), so a verdict slower than the cap is a question talked
+over, as `noHold`'s was. `ut_judge_pauseCap_resumeover` FAILS `NoResumeOverWords`, 10
+states:
+
+```
+... BotStart                 a reply plays
+VadStart                     the caller speaks over it: paused
+Interject                    their words -- held for the judge
+PauseCap                     the cap: the reply resumes, the caller still talking
+Interject                    their next words start the turn, over the resumed reply
+```
+
+It is accepted: the cap is seconds after the pause's start and the judge's request
+times out at 1.2 s, so it takes a judge that never answers and a caller talking for the
+whole cap. The code's alternative, words released by the cap judged as over the paused
+reply (`_past_pause`, added in 2c50b1b and taken out again in aa35e15), is on
+feat/judge-single-words. `ut_judge_pauseCap_rest` holds every other property
+`ut_judge_shipped_timed` checks with the cap in (187k states). `PauseCap` is enabled
+only in this design: with it on in every timed row (a scratch run, 2026-11-05)
+`ut_pause_shipped_timed`, `ut_shipped_timed` and `ut_post_gate_timed_rest` still hold --
+without a judge the cap's resume is a resume, and nothing those rows check is lost by
+it.
+- The pause cap's duration (`TEAPORT_BARGE_PAUSE_MAX_S`, default 6 s, at most 7.75 s,
+  under the transport's 8 s write guard). The cap itself is `PauseCap`, below.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
   dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
