@@ -255,7 +255,7 @@ sound through the wait. A phone call plays none unless you turn the typing on
 for calls with `SIP_THINKING_SOUND`. To change the setting and apply it, see
 [Configure teaport](/guides/configuration/).
 
-<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1499-1508#fead1c16 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1499-1508#932a0a19 -->
 
 Two other settings decide the typing on calls as well:
 
@@ -266,16 +266,19 @@ Two other settings decide the typing on calls as well:
 <!-- source: brain/teaport_brain/thinking_sound.py:446-451#8f6f8fd7; brain/teaport_brain/agent_session.py:1284-1286#8f3f8344 -->
 
 On a call, the typing plays only after the line has been quiet for
-`TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the
-caller speaks. An OLED face on the device doesn't type along to a call. Before
-you turn the typing on for calls, consider these points:
+`TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default. With `SIP_HALF_DUPLEX` off,
+the default, the typing stops when the caller speaks. An OLED face on the
+device doesn't type along to a call. Before you turn the typing on for calls,
+consider these points:
 
 - The typing is made at 24 kHz, and a phone line carries 8 kHz audio, which
   keeps little of the typing's click. Listen to it on a call.
 - With `SIP_HALF_DUPLEX` on, the brain doesn't hear the caller while the
-  typing plays, the same as while the agent speaks.
+  typing plays, the same as while the agent speaks. Speaking doesn't stop the
+  typing then: it plays until the answer is in, for at most
+  `TEAPORT_THINKING_MAX_S` per consult, 60 seconds by default.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:496-505#a874901e; brain/teaport_brain/config_schema.toml:1510-1520#82e31268; brain/teaport_brain/thinking_sound.py:88,127-128#0585ca7c; brain/teaport_brain/config_schema.toml:849#311309fd; brain/teaport_brain/sip_server.py:218-220,243-245#56c85e58; brain/teaport_brain/thinking_sound.py:19-20#ecb5e5d0 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:496-505#a874901e; brain/teaport_brain/config_schema.toml:1510-1520#82e31268; brain/teaport_brain/thinking_sound.py:88,127-128#0585ca7c; brain/teaport_brain/config_schema.toml:849#311309fd; brain/teaport_brain/sip_server.py:218-220,243-245#56c85e58; brain/teaport_brain/thinking_sound.py:19-20#ecb5e5d0; brain/teaport_brain/config_schema.toml:1898-1906#1e194b34; brain/teaport_brain/config_schema.toml:1535-1544#c03bea21; brain/teaport_brain/thinking_sound.py:545#72275270 -->
 
 ## Record calls
 
