@@ -819,8 +819,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # The round's calls still to give a final result, and whether one of those given asks
     # the model for an answer: a round whose results all ask for none (a background
     # consult's placeholder, tools.no_inference) is answered by no request, so it is spent
-    # with its last result -- or the consult's timeout cancel (run_llm, a minute on) would
-    # read as the caller's round.
+    # with its last result -- or a later request with no dispatch before it would read as
+    # the caller's round.
     _round_open: set = set()
     _round_asks = False
 

@@ -333,9 +333,9 @@ async def test_a_later_request_no_call_came_before_is_not_the_callers_round():
 
 async def test_a_round_whose_results_ask_no_answer_is_spent_with_them():
     """A background consult's placeholder asks for no answer (tools.no_inference): no
-    request answers the round, so it is spent with its last result. Its timeout cancel,
-    a minute on, runs the model with no dispatch before it; empty, that is not the
-    caller's turn (#15 review)."""
+    request answers the round, so it is spent with its last result. A later request with
+    no dispatch before it is then not the caller's turn; empty, it gets no line (#15
+    review)."""
     from pipecat.services.llm_service import FunctionCallResultProperties
 
     async def placeholder(params):
