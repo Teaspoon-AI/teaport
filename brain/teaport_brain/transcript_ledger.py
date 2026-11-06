@@ -263,8 +263,8 @@ class TranscriptLedger(BaseObserver):
     ledger tells a frame's sightings apart by the processor handling it:
     the LLM stream and spoken notices are read at the TTS (the text it will
     actually speak), a response's End frame sighted again downstream is pipecat's
-    post-drain re-push (see the module header), and an interruption cuts at its
-    first sighting and at the TTS's, never after (_interruption, #18).
+    post-drain re-push (see the module header), and an interruption cuts at each
+    sighting up to the TTS's own, never after (_interruption, #18).
     Without them -- the hermetic tests, and any pipeline whose observer carries no
     processor -- every frame counts on its first sighting, the drain signal is
     absent, and a turn is assumed fully synthesized once its response has ended.
@@ -353,8 +353,8 @@ class TranscriptLedger(BaseObserver):
         self._paused_at: Optional[float] = None
         self._seen: OrderedDict = OrderedDict()
         # InterruptionFrame ids already cut, each with its broadcast sibling's: "ahead"
-        # (cut at the pair's first sighting), "tts" (cut where the TTS sighted it), or
-        # "past" (the sibling of one the TTS sighted). See _interruption.
+        # (sighted, not yet by the TTS), "tts" (cut where the TTS sighted it), or "past"
+        # (the sibling of one the TTS sighted). See _interruption.
         self._cuts: OrderedDict = OrderedDict()
         # The interruption the TTS has just handled and the processor below it has not
         # yet sighted: until it does, the TTS output read there is from before it.
@@ -415,8 +415,8 @@ class TranscriptLedger(BaseObserver):
                     self._starts.append([self._vad_stops, t])
             return
 
-        # --- interruption: every open bot turn ends as cut-off -- at its first sighting
-        # and the TTS's, not at every processor it passes (#18) ---
+        # --- interruption: every open bot turn ends as cut-off -- at each sighting up
+        # to the TTS's own, not at the processors below it (#18) ---
         if isinstance(f, InterruptionFrame):
             self._interruption(f, t, proc,
                                getattr(data, "direction", None) is not FrameDirection.UPSTREAM)
@@ -637,17 +637,23 @@ class TranscriptLedger(BaseObserver):
         """Where an InterruptionFrame cuts (_interrupt). One interruption is sighted at
         every processor in turn -- the frame sent down from the user aggregator through
         the LLM, the TTS and the transport, and its broadcast sibling sent up through the
-        STT -- over ~40 ms live. It cuts at two of those sightings:
+        STT -- over ~40 ms live. It cuts at every sighting of the pair up to and
+        including the TTS's own:
 
-        - The pair's first, ahead of the LLM. The LLM cancels the completion it is
-          streaming as the frame passes it, and pushes that completion's End from a
-          finally AHEAD of the frame (LedgerPlayout.tla, LlmCancelEnd). Read at the TTS,
-          that End must find no stream: else the fragment is a finished response, queued
-          for the next context, given to the gist judge and settled as the whole answer.
-        - The TTS's own, where the LLM stream is read. What reached the TTS between the
-          two was ahead of the frame on the way down -- a completion the LLM began just
-          before it, a notice -- and the TTS flushes it with its queue; and the audio
-          its contexts pushed meanwhile (read below the TTS), the transport flushes.
+        - Those down to the LLM's. The LLM cancels the completion it is streaming as the
+          frame passes it, and pushes that completion's End from a finally AHEAD of the
+          frame (LedgerPlayout.tla, LlmCancelEnd). Read at the TTS, that End must find no
+          stream: else the fragment is a finished response, queued for the next context,
+          given to the gist judge and settled as the whole answer. A completion the LLM
+          began while the frame was still on its way to it (2-3 ms from the user
+          aggregator) is read at the TTS after the frame's first sighting; the LLM's own
+          sighting, before its cancel, is what ends it there. (One whose Start is still
+          between the LLM and the TTS as the frame passes the LLM is read after that
+          too, and its End as a finished reply's: a residual, as before #18.)
+        - The TTS's own, where the LLM stream is read. What reached the TTS before it was
+          ahead of the frame on the way down -- a completion's text, a notice -- and the
+          TTS flushes it with its queue; and the audio its contexts pushed meanwhile
+          (read below the TTS), the transport flushes.
 
         And at none after the TTS's. The TTS takes up the next response the moment it has
         handled the frame, while the frame is still on its way through a dozen processors
@@ -655,14 +661,15 @@ class TranscriptLedger(BaseObserver):
         wiped a response whose Start the TTS had just read (live 2026-09-04 18:05: a
         deferred post-tool completion, #17): its End took the cancelled branch, its
         context opened anonymous, and it played in full, charted nowhere (#18). This is
-        the LLM stream's own rule -- each frame read once, where the TTS reads it -- with
-        the one sighting before it the cancel needs.
+        the LLM stream's own rule -- each frame read where the TTS reads it -- with the
+        sightings ahead of it that the cancel needs.
 
         Every interruption starts above the TTS -- the user aggregator's broadcast at a
         turn start, CutReplyFence's push from the same aggregator -- in the one pipeline
         agent_session builds for the room, Talk and SIP, so the TTS sights each; one that
-        never reached the TTS would still be cut, at its first sighting. With no TTS named, or at a sighting with no processor
-        (the hermetic tests), the first sighting is the only cut.
+        never reached the TTS would still be cut, at the sightings it had. With no TTS
+        named, or at a sighting with no processor (the hermetic tests), the first
+        sighting is the only cut.
 
         Two things outlast the TTS's sighting. What the TTS pushed before it handled the
         frame still reaches the processor below it -- the TTS awaits its audio task's
@@ -689,6 +696,8 @@ class TranscriptLedger(BaseObserver):
             for key in (f.id, sib):
                 if key is not None:
                     self._remember(self._cuts, key, _MAX_CUTS, "ahead")
+        elif state == "ahead" and self._tts is not None and proc is not None:
+            self._interrupt(t)          # still on its way to the TTS (see above)
         elif state == "tts":
             if self._flushing == f.id:
                 self._flushing = None
@@ -1155,12 +1164,14 @@ class TranscriptLedger(BaseObserver):
             intended = ""
         if not intended:
             # Nothing was ever attributed to this turn: there is nothing to chart.
-            if entry is None and turn["pushed"] > 0 and heard > _EPS:
+            if entry is None and turn["pushed"] > 0 and heard > _STOP_WRITE_TOL:
                 # ... yet its audio played: the caller heard words the transcript does
                 # not have (PlayedIsCharted). Silent by design, that hid #18 -- a reply
                 # whose text a stray cut had wiped. Said here, where its playout is
                 # known, not when it opens: the chunks a barge-in leaves in flight
-                # between the TTS and the transport open such turns, and never play.
+                # between the TTS and the transport open such turns, and never play --
+                # past a write period at most, which a window the transport opened as
+                # the cut was on its way credits them (not words anyone heard).
                 why = ("its context was re-created after its turn was charted"
                        if turn["recreated"] else "no response was waiting for it")
                 logger.warning(f"LEDGER a TTS context ({turn['ctx']}) played {heard:.1f}s "

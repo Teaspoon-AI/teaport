@@ -2042,13 +2042,18 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   later sighting: its End found no stream, its context opened anonymous, and it played in
   full, charted nowhere (`PlayedIsCharted`; live 2026-09-04, a deferred post-tool
   completion, #17). Nothing in the model happens between two sightings, so it could not
-  reach that. The ledger now cuts at the frame's first sighting, above the LLM (the
-  cancel needs it: `LlmCancelEnd`), and at the TTS's, and at none after
-  (`TranscriptLedger._interruption`). That is the model's step: what the LLM sends after
-  it reaches the TTS after the TTS's cut. What the TTS pushed before its sighting and the
-  processor below it reads after is dropped until the frame's next sighting, and a pause
-  the transport announces while the frame travels is ended by its later sightings; the
-  model's `Interrupt` flushes both in the same step. The late cut is not kept as a
+  reach that. The ledger now cuts at each sighting up to and including the TTS's own
+  (those down to the LLM's are what the cancel needs: `LlmCancelEnd`), and at none
+  after (`TranscriptLedger._interruption`). What the LLM sends after it reaches the TTS
+  after the TTS's cut, so for every response the LLM starts after the frame passes it,
+  that is the model's step. One residual is not, as before #18: a completion whose
+  Start is still between the LLM and the TTS as the frame passes the LLM, and whose
+  cancelled End then reaches the TTS ahead of the frame, is read as a finished reply
+  (the model's `LlmStart` waits for the cancel; this Start came before it). What the
+  TTS pushed before its sighting and the processor below it reads after is dropped
+  until the frame's next sighting, and a pause the transport announces while the frame
+  travels is ended by its later sightings; the model's `Interrupt` flushes both in the
+  same step. The late cut is not kept as a
   rejected design here (it would be a `PlayedIsCharted` row: `Interrupt`, `LlmStart`, a
   second ledger cut); `test_ledger_playout.py`'s `test_o_` cases pin it on the real ledger.
 - **The corrector's messages are the charts' and the muted ones.** The model's context is

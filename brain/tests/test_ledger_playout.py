@@ -18,8 +18,8 @@
 #     sighted below it). The thinking sound's typing is not TTS audio at all (a plain
 #     OutputAudioRawFrame, never bot speech) and takes no part.
 #   - One InterruptionFrame is sighted at every processor too, over ~40 ms, and its
-#     broadcast sibling at those above the user aggregator. The ledger cuts at the
-#     pair's first sighting and at the TTS's, and never after (#18, cases o).
+#     broadcast sibling at those above the user aggregator. The ledger cuts at each
+#     sighting up to the TTS's own, and never after (#18, cases o).
 #
 # Each case is one of the review's findings on PR #13's ledger, in the frame shape the
 # pipeline produces (a shape the TTS cannot produce -- a context starting while an
@@ -818,6 +818,8 @@ async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():
 # ---- #18: one interruption, sighted at every processor -------------------------------
 
 JUDGE = SimpleNamespace(name="BargeInJudge#0")          # above the user aggregator
+FENCE = SimpleNamespace(name="CutReplyFenceHead#0")     # just below it: the first sighting
+LLM = SimpleNamespace(name="BoundedOpenAILLMService#0")
 STT = SimpleNamespace(name="EngineSTTService#0")        # further up: the sibling's path
 
 
@@ -850,8 +852,8 @@ async def test_o_a_reply_that_starts_while_the_interruption_travels_is_charted()
     passed it. Its Start and text are read at the TTS while the same frame is still on
     its way through the processors below. A cut at each of those sightings wiped it: its
     End took the "cancelled completion" branch, its context opened anonymous, and it
-    played in full, charted nowhere. The interruption is cut at the pair's first
-    sighting and at the TTS's, never after; a NEW interruption cuts the reply as ever."""
+    played in full, charted nowhere. The interruption is cut at each sighting up to the
+    TTS's own, never after; a NEW interruption cuts the reply as ever."""
     for cut_again in (False, True):
         f1, end1 = response(R1, 0.0)
         down, up = interruption()
@@ -903,7 +905,8 @@ async def test_o_the_tts_output_ahead_of_the_interruption_is_no_turn_behind_it()
     the interruption's next sighting (TranscriptLedger._interruption). Kept, the cut
     context's chunk and a context the TTS began just before the cut would sit ahead of
     the next reply in the transport's layout: that reply dated seconds late, and not
-    over when its window closes."""
+    over when its window closes. A window the transport opens as the frame comes down
+    credits the cut context's chunk a few ms of playout: no "charted nowhere" for that."""
     f1, end1 = response(R1, 0.0)
     f2, end2 = response(R2, 1.4)
     down, up = interruption()
@@ -914,6 +917,7 @@ async def test_o_the_tts_output_ahead_of_the_interruption_is_no_turn_behind_it()
             *siblings(BotStartedSpeakingFrame, 0.3),
             (down, 1.0, ABOVE),
             at(audio(1.0, "A"), 1.01),              # ahead of it: the TTS's cut sweeps it
+            *siblings(BotStartedSpeakingFrame, 1.012),  # ... after 8 ms of "playout"
             (down, 1.02, TTS),
             at(audio(1.0, "A"), 1.021),             # pushed before, read after the TTS's
             (started("Z"), 1.022, BELOW), at(audio(1.0, "Z"), 1.022),
@@ -984,6 +988,35 @@ async def test_o_a_cancelled_completions_end_finds_no_stream_at_the_tts():
     assert L._gen is None and not L._queue, (L._gen, list(L._queue))
     assert told == [], f"a cancelled completion's fragment went to the gist judge: {told}"
     assert got == [(True, False, None)], got
+
+
+async def test_o_a_completion_begun_as_the_interruption_reaches_the_llm_is_cancelled():
+    """Review of #18: the LLM starts a completion while the interruption is still on
+    its way to it (2-3 ms from the user aggregator live). Its Start and text reach the
+    TTS after the frame's first sighting; then the LLM sights the frame, cancels, and
+    pushes the End ahead of it. Cut at the first sighting and the TTS's alone, the
+    stream had reopened by then: the End closed the fragment as a finished reply -- the
+    gist judge asked on it, and the TTS's cut settling it with the fragment as its
+    whole text (Owed.tla, partialRecord). Every sighting up to the TTS's cuts, the LLM's
+    among them, before its cancel."""
+    from teaport_brain.owed import Reply
+    down, up = interruption()
+    start = LLMFullResponseStartFrame()
+    start.owed_reply = Reply("caller")
+    L = ledger()
+    got, told = [], []
+    L.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got.append((cut, audio, text))
+    L.on_reply_text = lambda r, t: told.append(t)
+    await feed(L, [
+        (down, 0.500, FENCE), (up, 0.5005, JUDGE),  # the first sighting
+        (start, 0.501, TTS), (LLMTextFrame("It will be sunny."), 0.5015, TTS),
+        (down, 0.503, LLM),                         # the LLM sights it, and cancels
+        (LLMFullResponseEndFrame(), 0.504, TTS),    # the cancelled End, ahead of it
+        (down, 0.505, ABOVE), (down, 0.506, TTS), (down, 0.507, BELOW),
+    ])
+    assert told == [], f"a cancelled completion's fragment went to the gist judge: {told}"
+    assert got == [(True, False, None)], got
+    assert L._gen is None and not L._queue, (L._gen, list(L._queue))
 
 
 async def test_o_a_pause_announced_while_the_interruption_travels_ends_with_it():
