@@ -469,18 +469,25 @@ def terms_of(item: str, request: str) -> frozenset:
 _POLARITY = frozenset({"yes", "no", "not"})
 
 
+# The words of a failure's statement that name what failed (failure_outcome): its terms.
+# Its other words are ones any reply says ("ai", "service", "ran", "hit": "Are you an
+# AI?" would close an owed billing failure, unjudged), and the hedge and the settings
+# hint are instructions riding with it.
+_FAILURE_TERMS = frozenset({"billing", "credit", "error", "empty"})
+
+
 def _terms(outcome: str, request: str, failure: Optional[str]) -> frozenset:
-    """A record's terms (Record.terms). A failure's are those of what happened, not of
-    the instructions riding with it: the hedge and the settings hint name a message, a
-    poll, a phone and settings, and "yes"/"no"/"not" say nothing of it. Without them a
-    reply that tells a failure in its own words ("a billing problem, want me to open your
-    settings?") shared nothing with a record of no terms, so it never closed it nor
-    counted a cut, and the note rode every turn (formal audit C1, 11-05). A timeout or an
-    unknown outcome has few or none of its own and leans on the request's words."""
+    """A record's terms (Record.terms). A failure's are the words of its statement that
+    name what failed (_FAILURE_TERMS): without them a reply that tells a failure in its
+    own words ("a billing problem, want me to open your settings?") shared nothing with
+    a record of no terms, so it never closed it nor counted a cut, and the note rode
+    every turn (formal audit C1, 11-05). A timeout or an unknown outcome names none, and
+    a telling of any failure in other words ("something went wrong") none of them: those
+    lean on the request's words and the record's own run, as before."""
     if not failure:
         return terms_of(outcome, request)
     core = outcome.replace(_ACTION_HEDGE, "").replace(BILLING_SETTINGS_HINT, "")
-    return terms_of(core, request) - _POLARITY
+    return terms_of(core, request) & _FAILURE_TERMS
 
 
 # ------------------------------------------------------------------------- the record

@@ -201,7 +201,7 @@ run Owed.tla ow_vadLevel          "(expected: FAILS NoRunMidTurn — a VAD-level
 run Owed.tla ow_endClearsTool     "(expected: FAILS NoRunMidTurn — the gate's turn ends at a completion's End with its call still out (\"Let me check.\" + a tool): the run goes before the answer)"
 run Owed.tla ow_staleFlag          "(expected: FAILS OwedResolves — the gate's tool round as one flag: a cancelled call's uninterruptible in-progress frame sets it after the barge-in, no completion clears it, the door and the lull stay shut)"
 run Owed.tla ow_adoptDropsKeys     "(expected: FAILS NoRepeatRecital — the commit adopting a speculation does not register the keys its note carried: a full telling is no evidence, and the lull tells it again)"
-run Owed.tla ow_failure           "(expected: holds — a failure record (one term-less item) under the design (about): every safety property)"
+run Owed.tla ow_failure           "(expected: holds — a failure record (one item, told whole) under the design (about): every safety property)"
 run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolves under FairSpec)"
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
 run Owed.tla ow_failNotAbout      "(expected: FAILS NoStaleNote — a failure record with no terms (before the formal audit's C1): a telling in its own words, by any reply but its run, is not about it, never closes it, and the note says NOT heard)"

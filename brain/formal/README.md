@@ -618,12 +618,16 @@ The model was written to lead the design, and it found these:
    gave a failure record no terms, so `Record.about` matched only the request's and the
    question's words, and a telling in the failure's own words (since #311, a billing
    failure's "...want me to open your settings?") never closed it nor counted as a cut;
-   the note said NOT heard on every turn after. The fix makes the premise true again:
-   a failure's terms are its statement's own (`owed._terms`: "ai", "billing", "credit",
-   "service" for a 402), without the hedge and the settings hint that ride with it, and
-   `Record.tells` reads a failure by `about`, one statement told whole. A timeout or an
-   unknown outcome states little of its own ("ran", nothing), so a telling of those that
-   names nothing of the request still closes only by its run, as before.
+   the note said NOT heard on every turn after. The fix makes the premise true for a
+   telling that names what failed: a failure's terms are the words of its statement
+   that do (`owed._terms`: "billing" and "credit" for a 402, "error", "empty"), not the
+   hedge or the settings hint that ride with it, nor words any reply says ("ai",
+   "service": "Are you an AI?" would close an owed billing failure), and `Record.tells`
+   reads a failure by `about`, one statement told whole. The residual: a timeout or an
+   unknown outcome names nothing of its own, and any failure told in other words ("it
+   timed out", "something went wrong") shares nothing with it. Such a telling that names
+   nothing of the request is still this row's trace, bounded as before by the record's
+   run and its one re-offer.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a

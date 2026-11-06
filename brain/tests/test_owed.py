@@ -250,12 +250,22 @@ def test_a_billing_failure_is_about_its_own_words():
     hedge are not its terms."""
     status, outcome = owed.failure_outcome("error", "HTTP 402", settings=True)
     rec = Record.make("k", CAL_REQ, outcome, failure=status)
-    assert rec.terms == {"ai", "billing", "credit", "service"}, rec.terms
+    assert rec.terms == {"billing", "credit"}, rec.terms
     assert rec.about(BILLING_REPLY) and rec.tells(BILLING_REPLY)
-    assert not rec.about("Want me to open your settings?")
-    assert not rec.about("It's eleven twenty-two at night.")
-    assert not rec.about("The upload failed.")
-    assert not rec.about("No, I could not find that.")
+    assert rec.about("Your AI account is out of credit.")
+    for other in ("Want me to open your settings?", "It's eleven twenty-two at night.",
+                  "The upload failed.", "No, I could not find that.",
+                  "As an AI, I don't have feelings, but thanks for asking!",
+                  "Customer service is open until five."):
+        assert not rec.about(other), other
+    # The other kinds: what names them, and the words any reply says do not.
+    for kind, named, other in (("error", "That hit an error, sorry.", "That song was a hit."),
+                               ("timeout", None, "I ran the numbers: about forty dollars."),
+                               ("unknown", None, "Sure, I can do that.")):
+        status, outcome = owed.failure_outcome(kind)
+        rec = Record.make("k", CAL_REQ, outcome, failure=status)
+        assert not rec.about(other), (kind, other)
+        assert named is None or rec.about(named), (kind, named)
 
 
 # =============================================================== the note

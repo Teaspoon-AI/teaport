@@ -7,9 +7,9 @@
 #       python test_cut_judge_eval.py
 #
 # TEAPORT_EVAL_CUT_SET=failures judges synthetic tellings of a consult's FAILURE instead
-# (owed.failure_outcome's kinds, the formal audit's C1, 2026-11-05): since a failure's
-# record has terms of its own, a cut caller reply in its own words reaches the judge
-# (owed.Owed._cut, no gist gate), and its prompt asks for a name, number, date... Labelled
+# (owed.failure_outcome's kinds, the formal audit's C1, 2026-11-05): a cut reply about a
+# failure (since C1, one naming it as its record does: "billing", "error") reaches the
+# judge with no gist gate (owed.Owed._cut), and its prompt asks for a name, number, date... Labelled
 # "heard" once what happened has been said; an offer or a question after it is the rest.
 #
 # Every cut of 12 live tellings (the box journal, 2026-10-18/19), after every word, is
