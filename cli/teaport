@@ -677,22 +677,35 @@ sip_keep_say() {
 sip_gateway_knows() { [ -x "$SIP_GATEWAY" ] && LC_ALL=C grep -qaF -e "$1" -- "$SIP_GATEWAY" 2>/dev/null; }
 
 # sip_conf_check <conf> — the gateway's own verdict (--check-config: the checks a start
-# runs, exiting 78 where a start would refuse the conf). 0: it passes. 1: refused, the
-# gateway's reason in SIP_WHY (its parser names the key and may quote the value it
-# refuses; it never prints the password or a line it cannot parse). 2: nothing to ask —
-# no gateway binary, or one built before --check-config (SIP_WHY says which).
+# runs, exiting 0 or 78, EX_CONFIG, where a start would refuse the conf: teaport-sip
+# main.cpp). 0: it passes. 1: refused — 78 only — the gateway's reason in SIP_WHY (its
+# parser names the key and may quote the value it refuses; it never prints the password
+# or a line it cannot parse). 2: nothing to ask — no gateway binary, or one built before
+# --check-config (SIP_WHY says which). 3: asked, and no verdict: any other exit (124, the
+# timeout; 126/127, it could not be run; 128+N, killed by signal N) says nothing about
+# the conf, so it is not called a refusal (#166). SIP_WHY then has the status and none
+# of the output: its last line can be any warning, one quoting a kept value among them.
 sip_conf_check() {
   local out rc=0 why
   SIP_WHY=""
   if [ ! -x "$SIP_GATEWAY" ]; then SIP_WHY="no gateway binary at $SIP_GATEWAY to check the conf with"; return 2; fi
   if ! sip_gateway_knows --check-config; then SIP_WHY="$SIP_GATEWAY has no --check-config (a build older than v0.5), so the conf is not checked by it"; return 2; fi
   out="$(timeout 20 "$SIP_GATEWAY" --check-config "$1" 2>&1 < /dev/null)" || rc=$?
-  [ "$rc" != 0 ] || return 0
-  why="$(printf '%s\n' "$out" | grep -aE '^\[main\] (config .* is not usable: |cannot read config )' | tail -1 || true)"
-  why="${why#\[main\] }"; why="${why#config "$1" is not usable: }"
-  [ -n "$why" ] || why="$(printf '%s\n' "$out" | tail -n 1)"
-  SIP_WHY="${why:-exit status $rc}"
-  return 1
+  case "$rc" in
+    0) return 0 ;;
+    78)
+      why="$(printf '%s\n' "$out" | grep -aE '^\[main\] (config .* is not usable: |cannot read config )' | tail -1 || true)"
+      why="${why#\[main\] }"; why="${why#config "$1" is not usable: }"
+      SIP_WHY="${why:-exit status 78, a config error, with no [main] line saying why}"
+      return 1 ;;
+    124) why="it did not finish within 20 s" ;;
+    126) why="it could not be run: a build for another machine?" ;;
+    127) why="it could not be run: a shared library missing?" ;;
+    *) if [ "$rc" -gt 128 ] && why="$(kill -l "$rc" 2>/dev/null)"; then why="killed by SIG$why"
+       else why="neither a pass, 0, nor a refusal, 78"; fi ;;
+  esac
+  SIP_WHY="$SIP_GATEWAY --check-config exited $rc ($why), which is no verdict on the conf"
+  return 3
 }
 
 # sip_allow_count <conf> — how many sip_source_allow entries it lists (a line may hold
@@ -708,15 +721,28 @@ sip_acl_mode() {
   m="$(journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
   m="${m##* }"; printf '%s' "${m,,}"
 }
+# sip_started_at — when the gateway's current run started, in seconds since the epoch:
+# the unit's ActiveEnterTimestamp, which under Type=simple is the fork of ExecStart, so
+# before the gateway reads its conf. Nothing when there is none or it does not parse.
+# systemctl writes it in the local zone, by its abbreviation, which date -d reads only
+# for the zones in its own table and the local one; under TZ=UTC0 systemctl writes UTC,
+# which date reads on any box and any systemd.
+sip_started_at() {
+  local t; t="$(TZ=UTC0 sip_unit_prop ActiveEnterTimestamp)"
+  [[ $t == *[0-9]* ]] || return 0
+  t="$(date -u -d "$t" +%s 2>/dev/null || true)"
+  if [[ $t =~ ^[0-9]+$ ]]; then printf '%s' "$t"; fi
+}
 # sip_filter_state <conf> — the source filter for `sip status` and doctor: what the
 # gateway runs, not only what the conf says. 0 when the running gateway confirms the
-# conf's mode (its [acl] line) and the conf passes its --check-config; 1 when the
-# gateway refuses the conf (or the mode is no mode at all); 2 when the conf's mode is not
-# confirmed — the gateway runs another (the conf changed since it started), has logged
-# none (not running, older than v0.6.6, which ignores the key, journal unreadable) — or
-# the conf cannot be read.
+# conf's mode (its [acl] line), the conf is no newer than the gateway's start, and it
+# passes its --check-config; 1 when the gateway refuses the conf (or the mode is no mode
+# at all); 2 when the conf's mode is not confirmed — the gateway runs another or the conf
+# changed since it started, it has logged none (not running, older than v0.6.6, which
+# ignores the key, journal unreadable or rotated), its --check-config gave no verdict —
+# or the conf cannot be read.
 sip_filter_state() {
-  local f="$1" mode n desc run chk=0 why
+  local f="$1" mode n desc run chk=0 why started changed
   [ -r "$f" ] || { printf 'unknown (%s cannot read %s)' "$(id -un)" "$f"; return 2; }
   mode="$(confval "$f" sip_source_filter)"; mode="${mode,,}"; n="$(sip_allow_count "$f")"
   # Set but empty is no mode: the gateway refuses `sip_source_filter =`, it is not log.
@@ -730,15 +756,30 @@ sip_filter_state() {
   sip_conf_check "$f" || chk=$?
   if [ "$chk" = 1 ]; then printf 'the gateway refuses %s (--check-config): %s' "$f" "$SIP_WHY"; return 1; fi
   run="$(sip_acl_mode)"
-  if [ -n "$run" ] && [ "$run" = "${mode:-log}" ] && [ "$chk" = 0 ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0; fi
   if [ -n "$run" ] && [ "$run" != "${mode:-log}" ]; then
     printf 'the conf says %s, but the running gateway reports %s (the conf changed since it started? teaport sip restart)' "${mode:-log}" "$run"; return 2
   fi
-  if [ -n "$run" ]; then why="$SIP_WHY"
+  if [ -n "$run" ] && [ "$chk" = 0 ]; then
+    # The [acl] line names the MODE and nothing else: the allowlist and every other key
+    # are the conf as it was at the gateway's start (#166). An SBC added to
+    # sip_source_allow with no restart since is not on the running list, and its calls
+    # are dropped while the mode still matches. So the ✓ is for a conf no newer than the
+    # run, to the second: a configure's install and start within one second keep it (so
+    # would an edit in the second after a start, which no hand edit is quick enough for).
+    started="$(sip_started_at)"; changed="$(stat -L -c %Y -- "$f" 2>/dev/null || true)"
+    if [ -n "$started" ] && [[ $changed =~ ^[0-9]+$ ]]; then
+      if [ "$changed" -le "$started" ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0; fi
+      printf 'the conf says %s; conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply' "$desc"; return 2
+    fi
+    why="cannot tell when the gateway started, so not whether it runs the conf as it is now"
+  elif [ "$chk" = 3 ]; then why="the gateway could not check the conf: $SIP_WHY"
+  elif [ -n "$run" ]; then why="$SIP_WHY"
   elif [ -x "$SIP_GATEWAY" ] && ! sip_gateway_knows sip_source_filter; then why="$SIP_GATEWAY does not know sip_source_filter (older than v0.6.6), so there is no filter at all"
   elif [ "$(active teaport-sip)" != active ]; then why="the gateway is not running"
   elif ! why="$(sip_journal_note)"; then :
-  else why="the gateway logged no [acl] line this run"; fi
+  # A long-running gateway's startup lines can rotate out of a volatile journal, so
+  # this is what was found, not what was logged (#166).
+  else why="no [acl] line found for this run (rotated out of the journal? teaport sip restart)"; fi
   printf 'the conf says %s; gateway not confirmed (%s)' "$desc" "$why"; return 2
 }
 
@@ -894,9 +935,9 @@ sip_conf_preflight() {
 # caller's whole message: a note here and a "could not write" there said it twice);
 # <fill>'s 2 (a source it could not read, for the caller to name); else 1. On a failure
 # the temp is gone and the conf as it was. With SIP_INSTALL_CHECK set (sip_go_live), the
-# gateway's --check-config must pass the staged conf (sip_conf_check), or it is 4 and
-# nothing is renamed. Each step is checked by hand: a caller's `||` turns set -e off in
-# here.
+# gateway's --check-config must pass the staged conf (sip_conf_check), or it is 4 (it
+# refuses it) or 5 (no verdict) and nothing is renamed. Each step is checked by hand: a
+# caller's `||` turns set -e off in here.
 sip_conf_install() {
   local dest mode="$2" tmp="" rc=0 ro=""
   dest="$(sip_conf_target "$1")"; shift 2
@@ -909,9 +950,11 @@ sip_conf_install() {
   [ "$rc" != 0 ] || [ -w "$tmp" ] || { ro=1; chmod u+w "$tmp"; } || rc=1
   [ "$rc" != 0 ] || "$@" > "$tmp" || { rc=$?; [ "$rc" = 2 ] || rc=1; }
   # The configure paths (sip_go_live) have the gateway check the staged conf before it is
-  # renamed in: 4, its reason in SIP_WHY, for one it refuses.
+  # renamed in: 4, its reason in SIP_WHY, for one it refuses; 5 for a check that gave no
+  # verdict (it crashed, timed out: #166), which installs nothing either.
   if [ "$rc" = 0 ] && [ -n "${SIP_INSTALL_CHECK:-}" ]; then
-    local crc=0; sip_conf_check "$tmp" || crc=$?; [ "$crc" != 1 ] || rc=4
+    local crc=0; sip_conf_check "$tmp" || crc=$?
+    case "$crc" in 1) rc=4 ;; 3) rc=5 ;; esac
   fi
   [ "$rc" != 0 ] || [ -z "$ro" ] || chmod u-w "$tmp" || rc=1
   if [ "$rc" = 0 ] && mv -f "$tmp" "$dest"; then sip_drop "$tmp"; return 0; fi
@@ -1248,12 +1291,18 @@ sip_probe_with() {
     *) die "could not write a probe conf in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed" ;;
   esac
   # The gateway's own checks first (sip_conf_check): a conf it refuses is not a failed
-  # registration, and is said as what it is. The die leaves through the cleanup trap.
+  # registration, and is said as what it is. A check with no verdict (it crashed, timed
+  # out: #166) stops the configure too, said as that and not as a refusal: the binary
+  # that would run this conf did not get through its own checks of it, so the test
+  # registration would most likely hit the same and be reported as the trunk's failure,
+  # and nothing would vouch for the conf it installs. The die leaves through the cleanup
+  # trap.
   local crc=0
   sip_conf_check "$testconf" || crc=$?
   case "$crc" in
     1) die "the gateway refuses the conf (--check-config): $SIP_WHY — no REGISTER attempted, nothing installed${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
     2) printf 'note: %s\n' "$SIP_WHY" ;;
+    3) die "the gateway could not check the conf: $SIP_WHY — no REGISTER attempted, nothing installed${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
   esac
   sip_probe_register "$testconf" "$testuds" "$label"
 }
@@ -1270,13 +1319,14 @@ sip_test_register_conf() {
 # <mode> as there), then the units enabled and (re)started and the registration read
 # back. <source> as in sip_probe_with: the file named, "" for none. The staged conf goes
 # through the gateway's --check-config before it is renamed in (SIP_INSTALL_CHECK), so a
-# conf the gateway would refuse never replaces one it runs on.
+# conf the gateway would refuse, or could not check, never replaces one it runs on.
 sip_go_live() {
   local mode="$1" src="$2" SIP_INSTALL_CHECK=1; shift 2
   sip_conf_install "$SIP_CONF" "$mode" "$1" 5060 "$SIP_UDS" "${@:2}" || case "$?:$src" in
     2:?*) die "could not read $src (changed since the test registration?) — nothing installed, the installed conf, if any, is unchanged" ;;
     3:*) die "$SIP_WHY — nothing installed, the installed conf, if any, is unchanged" ;;
     4:*) die "the gateway refuses the new conf (--check-config): $SIP_WHY — nothing installed, the installed conf, if any, is unchanged${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
+    5:*) die "the gateway could not check the new conf: $SIP_WHY — nothing installed, the installed conf, if any, is unchanged${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
     *) die "could not write $SIP_CONF — the installed conf, if any, is unchanged" ;;
   esac
   printf 'installed %s%s (%s)\n' "${src:+$src -> }" "$SIP_CONF" "$(stat -L -c '%U:%G mode %a' "$SIP_CONF")"

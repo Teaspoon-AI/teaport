@@ -1064,18 +1064,47 @@ def test_fresh_writes_the_template_and_keeps_nothing():
     assert rc == 1 and "--fresh is for the wizard" in out, out
 
 
+# `sip status` and doctor with the unit and its journal stubbed: the gateway is ACTIVE
+# (active), its run INV (inv1) logged ACL (the [acl] line, none when empty), and it
+# started at STARTED, written as systemctl writes ActiveEnterTimestamp: in the zone TZ
+# gives it, by abbreviation. The CLI asks under TZ=UTC0, the one zone date -d always
+# reads; any other is written in one it does not (ZZZT), as a box's own can be.
+STATUS_STUBS = (
+    "svc_line() { :; }\nsip_line() { :; }\nsip_last_reg() { :; }\n"
+    'active() { echo "${ACTIVE-active}"; }\n'
+    'sip_unit_prop() { case "$1" in InvocationID) printf %s "${INV-inv1}" ;;\n'
+    '  ActiveEnterTimestamp) if [ "${TZ-}" = UTC0 ]; then printf %s "${STARTED-}"; else printf %s "${STARTED:+Thu 2026-11-05 12:00:00 ZZZT}"; fi ;;\n'
+    '  *) printf "" ;; esac; }\n'
+    'journalctl() { case "$*" in *_SYSTEMD_INVOCATION_ID=inv1*) printf "%s\\n" "[main] up" ${ACL:+"$ACL"} ;; *) return 0 ;; esac; }\n')
+DOCTOR_STUBS = (STATUS_STUBS + "sip_enabled() { return 0; }\nbrain_sip() { echo connected; }\n"
+                "sip_journal_note() { :; }\ninstalled() { return 0; }\n")
+ENFORCE1 = "sip_source_filter=enforce\nsip_source_allow = 192.0.2.10\n"
+
+
+def _systemd_time(t):
+    # ActiveEnterTimestamp as `systemctl show` writes it in UTC (TZ=UTC0).
+    return time.strftime("%a %Y-%m-%d %H:%M:%S UTC", time.gmtime(t))
+
+
+def _write_conf(conf, text, mtime):
+    conf.write_text(text); os.chmod(conf, 0o600); os.utime(conf, (mtime, mtime))
+
+
 def test_status_shows_the_source_filter_the_gateway_runs():
-    # A ✓ only when the RUNNING gateway's [acl] line confirms the conf and its
-    # --check-config passes it; otherwise what the conf says, "not confirmed", and why.
+    # A ✓ only when the RUNNING gateway's [acl] line confirms the conf, the conf is no
+    # newer than that run, and its --check-config passes it; otherwise what the conf
+    # says, "not confirmed", and why.
     d = _secrets()
     conf = d / "teaport-sip.conf"
     gw = _checking_gateway(d, "sbc.bad.example")
     old = d / "old-gw"; old.write_text("#!/bin/sh\nexit 0\n"); os.chmod(old, 0o755)
-    stubs = ("svc_line() { :; }\nsip_line() { :; }\nsip_last_reg() { :; }\n"
-             'active() { echo "${ACTIVE-active}"; }\n'
-             'sip_unit_prop() { case "$1" in InvocationID) printf %s "${INV-inv1}" ;; *) printf "" ;; esac; }\n'
-             'journalctl() { case "$*" in *_SYSTEMD_INVOCATION_ID=inv1*) printf "%s\\n" "[main] up" ${ACL:+"$ACL"} ;; *) return 0 ;; esac; }\n')
-    enforce1 = "sip_source_filter=enforce\nsip_source_allow = 192.0.2.10\n"
+    stubs = STATUS_STUBS
+    enforce1 = ENFORCE1
+    # The conf as written an hour ago; the gateway (by default) started ten minutes later.
+    t0 = int(time.time()) - 3600
+    after, before, same = _systemd_time(t0 + 600), _systemd_time(t0 - 600), _systemd_time(t0)
+    changed = ("the conf says enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry; "
+               "conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply")
     cases = [  # (conf text, env, said, rc)
         (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: a SIP request ...'",
          "enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry (the running gateway confirms it)", 0),
@@ -1092,7 +1121,21 @@ def test_status_shows_the_source_filter_the_gateway_runs():
         (enforce1, f"SIP_GATEWAY={old} ACL=''",
          f"the conf says enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry; gateway not confirmed ({old} does not know sip_source_filter (older than v0.6.6), so there is no filter at all)", 2),
         (enforce1, f"SIP_GATEWAY={gw} ACL='' ACTIVE=inactive INV=''", "gateway not confirmed (the gateway is not running)", 2),
-        (enforce1, f"SIP_GATEWAY={gw} ACL=''", "gateway not confirmed (the gateway logged no [acl] line this run)", 2),
+        # Running, but no [acl] line found: on a volatile journal a long run's startup lines
+        # rotate out, so this is what was found, not what was logged (#166).
+        (enforce1, f"SIP_GATEWAY={gw} ACL=''",
+         "gateway not confirmed (no [acl] line found for this run (rotated out of the journal? teaport sip restart))", 2),
+        # The mode matches, but the conf was written after the gateway started: the gateway
+        # runs the allowlist it read then, whatever the conf lists now (#166).
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{before}'", changed, 2),
+        ("", f"SIP_GATEWAY={gw} ACL='[acl] source filter LOG, NOT ENFORCED: x' STARTED='{before}'",
+         "the conf says log (the default): requests from elsewhere are logged ([acl] lines), not dropped; conf changed since the gateway started", 2),
+        # Written and started within one second (a configure's install, then its start).
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{same}'", "1 sip_source_allow entry (the running gateway confirms it)", 0),
+        # No start time to compare with, or none it can read: no ✓.
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED=''",
+         "gateway not confirmed (cannot tell when the gateway started, so not whether it runs the conf as it is now)", 2),
+        (enforce1, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='n/a'", "gateway not confirmed (cannot tell when the gateway started", 2),
         # Values the gateway refuses: never a ✓.
         ("sip_source_filter=enforce\nsip_source_allow = sbc.bad.example\n", f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x'",
          f"the gateway refuses {conf} (--check-config): sip_source_allow entry", 1),
@@ -1100,24 +1143,87 @@ def test_status_shows_the_source_filter_the_gateway_runs():
         ("sip_source_filter = enforcing\n", f"SIP_GATEWAY={old} ACL=''", "is not enforce, log or off", 1),
     ]
     for text, env, said, rc_want in cases:
-        conf.write_text(CONF + text); os.chmod(conf, 0o600)
-        rc, out = _run(d, f"{env}; sip_status", stubs)
+        _write_conf(conf, CONF + text, t0)
+        rc, out = _run(d, f"STARTED='{after}'; {env}; sip_status", stubs)
         assert rc == 0 and re.search(r"(?m)^  source filter +.*" + re.escape(said), out), (text, env, out)
-        rc, out = _run(d, f'{env}; sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+        assert (rc_want == 0) == ("confirms it" in out), (text, env, out)
+        rc, out = _run(d, f'STARTED=\'{after}\'; {env}; sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
         assert out.endswith(f" rc={rc_want}\n") and said in out, (text, env, out)
     # Doctor's line: ✓ / ✗ / ! by the same answer.
-    for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x'", "✓"),
+    for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{after}'", "✓"),
+                      (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{before}'", "!"),
                       (f"SIP_GATEWAY={old} ACL=''", "!")):
-        conf.write_text(CONF + enforce1); os.chmod(conf, 0o600)
-        doc = stubs + ("sip_enabled() { return 0; }\nbrain_sip() { echo connected; }\n"
-                       "sip_journal_note() { :; }\ninstalled() { return 0; }\n")
-        rc, out = _run(d, f"{env}; cmd_doctor || true", doc)
+        _write_conf(conf, CONF + enforce1, t0)
+        rc, out = _run(d, f"{env}; cmd_doctor || true", DOCTOR_STUBS)
         assert re.search(rf"{mark}\x1b\[0m SIP source filter: ", out), (env, out)
     if os.geteuid() != 0:
         os.chmod(conf, 0)
         rc, out = _run(d, f'sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"')
         assert "unknown (" in out and out.endswith(" rc=2\n"), out
         os.chmod(conf, 0o600)
+
+
+def _unsure_gateway(d):
+    # A gateway built with --check-config and sip_source_filter whose check ends in
+    # $CHECK_EXIT (0 when unset) after a warning that quotes a kept value, as its parser
+    # does for a key it does not know: 139 is a segfault, 124 the timeout's status, 127 a
+    # missing shared library; 78 a refusal with no [main] line to say why.
+    return _gateway(d, f"""# teaport-sip: --check-config, sip_source_filter
+if [ "$1" = --check-config ]; then
+  echo "$2" >> {d}/checked.log
+  echo '[config] unknown key aec_agressiveness = "kept-value-7f3a" (skipped)' >&2
+  exit "${{CHECK_EXIT:-0}}"
+fi
+touch {d}/started; echo "[reg] REGISTERED code=200 OK"; exec sleep 30""")
+
+
+def test_a_check_with_no_verdict_is_not_a_refusal():
+    # Only the gateway's 78 is a refusal (#166). Any other exit from --check-config (a
+    # crash, the timeout, a missing library) is "could not check", with its status and
+    # none of its output: the last line may be a warning that quotes a kept value.
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    conf = d / "teaport-sip.conf"
+    gw = _unsure_gateway(d)
+    t0 = int(time.time()) - 3600
+    run = f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{_systemd_time(t0 + 600)}'"
+    for code, why in ((139, "killed by SIGSEGV"), (124, "it did not finish within 20 s"),
+                      (127, "it could not be run: a shared library missing?"), (1, "neither a pass, 0, nor a refusal, 78")):
+        said = (f"gateway not confirmed (the gateway could not check the conf: {gw} --check-config exited {code} ({why}), "
+                "which is no verdict on the conf)")
+        _write_conf(conf, CONF + ENFORCE1, t0)
+        rc, out = _run(d, f"export CHECK_EXIT={code}; {run}; sip_filter_state {conf} && echo ' rc=0' || echo \" rc=$?\"", STATUS_STUBS)
+        assert said in out and out.endswith(" rc=2\n") and "refuses" not in out and "kept-value" not in out, (code, out)
+        # And whatever the [acl] line says, or whether the gateway runs at all.
+        rc, out = _run(d, f"export CHECK_EXIT={code}; {run} ACL='' ACTIVE=inactive INV=''; sip_status", STATUS_STUBS)
+        assert re.search(r"(?m)^  source filter +.*" + re.escape(said), out), (code, out)
+        # Doctor: a warning (!), not a failure (✗).
+        rc, out = _run(d, f"export CHECK_EXIT={code}; {run}; cmd_doctor || true", DOCTOR_STUBS)
+        assert re.search(r"!\x1b\[0m SIP source filter: .*" + re.escape(said), out), (code, out)
+        assert "kept-value" not in out, (code, out)
+    # 78 is a refusal even with no [main] line to give the reason, and the line it does
+    # have is not quoted in its place.
+    rc, out = _run(d, f"export CHECK_EXIT=78; {run}; sip_filter_state {conf} && echo ' rc=0' || echo \" rc=$?\"", STATUS_STUBS)
+    assert out == (f"the gateway refuses {conf} (--check-config): exit status 78, a config error, "
+                   "with no [main] line saying why rc=1\n"), out
+    rc, out = _run(d, f"export CHECK_EXIT=78; {run}; cmd_doctor || true", DOCTOR_STUBS)
+    assert re.search(r"✗\x1b\[0m SIP source filter in .*exit status 78", out) and "kept-value" not in out, out
+    # configure fails safe on one, and says it as what it is: before the test
+    # registration, no REGISTER sent...
+    rc, out = _run(d, f"export CHECK_EXIT=139; SIP_GATEWAY={gw}; {WIZARD}", LIVE_STUBS, {"TMPDIR": str(tmp)})
+    assert rc == 1 and (f"the gateway could not check the conf: {gw} --check-config exited 139 (killed by SIGSEGV), "
+                        "which is no verdict on the conf — no REGISTER attempted, nothing installed") in out, out
+    assert "refuses" not in out and "kept-value" not in out and "TURN_ON" not in out, out
+    assert not (d / "started").exists() and list(tmp.iterdir()) == [] and conf.read_text() == CONF + ENFORCE1
+    # ...and at the install (the probe stubbed out), where the conf stays as it was.
+    rc, out = _run(d, f"export CHECK_EXIT=124; SIP_GATEWAY={gw}; {WIZARD}", WIZARD_STUBS)
+    assert rc == 1 and (f"the gateway could not check the new conf: {gw} --check-config exited 124 (it did not finish "
+                        "within 20 s), which is no verdict on the conf — nothing installed, the installed conf, if any, "
+                        "is unchanged") in out, out
+    assert "refuses" not in out and "TURN_ON" not in out and _temps(d) == [] and conf.read_text() == CONF + ENFORCE1, out
+    # A check that passes goes ahead.
+    rc, out = _run(d, f"SIP_GATEWAY={gw}; {WIZARD}", WIZARD_STUBS)
+    assert rc == 0 and "TURN_ON" in out and "s3cret" in conf.read_text(), out
 
 
 def main():
