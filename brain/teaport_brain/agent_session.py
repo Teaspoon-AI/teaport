@@ -1271,11 +1271,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     if claims is not None:
         claims.taken_words = taken_words
     # Type through a long openclaw_agent_consult consult, heard while the line is quiet; the
-    # room's face types along (its bridge announces "typing"). Not on a phone call,
-    # but in agent-first: there it is all that covers the wait (tools._fallback_line).
+    # room's face types along (its bridge announces "typing"). A phone call types with
+    # SIP_THINKING_SOUND on (#242), and in agent-first whatever it says: there it is all
+    # that covers the wait (tools._fallback_line). A call's features have no "typing",
+    # so its bed never types for the face; its typing echoes on the line like speech
+    # (sip_server's half-duplex).
     bed = (ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
                          gate=followup_gate)
-           if thinking_sound.ENABLED and (front_end != "sip" or AGENT_FIRST) else None)
+           if thinking_sound.enabled_for(front_end, AGENT_FIRST) else None)
     # Says something when a completion fails, in the voice's language (read live, as
     # WifiSetupVoice reads it). With no model it is always there: it answers every
     # request for a reply in the LLM's place (llm_error_speaker.py, NO MODEL AT ALL) --

@@ -71,8 +71,8 @@
 # emitters, and the turn-timing taps it previously lacked (captions/transcript
 # frames are harmlessly dropped by the SIP serializer — no SIP control type carries
 # them). Tools run exactly like the OpenClaw path: the async openclaw_agent_consult consult
-# lands in owed.py and is told through the FollowupGate (no typing over the wait: a
-# phone call gets no ThinkingSound, outside agent-first), so a caller gets REAL tool results instead of
+# lands in owed.py and is told through the FollowupGate (typed over with SIP_THINKING_SOUND
+# on, or in agent-first: thinking_sound.enabled_for), so a caller gets REAL tool results instead of
 # hallucinated ones. On SIP there is no OpenClaw plugin to service the native
 # openclaw_agent_consult round-trip: the session has no relay
 # (tools.ToolContext.relay), so openclaw_agent_consult goes straight to the
@@ -202,8 +202,8 @@ _CONFIRM_SECS = 10.0
 class HalfDuplexInputGate(FrameProcessor):
     """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
     un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in. And while
-    the thinking sound's typing is heard (agent-first: a phone call gets none else),
-    which is no bot speech but echoes all the same.
+    the thinking sound's typing is heard (agent-first, or SIP_THINKING_SOUND on): no bot
+    speech, but echo all the same; the caller goes unheard, so cannot stop it either.
 
     The one SIP-specific processor — passed to build_agent_session as an
     input-side processor (inserted right after transport.input())."""
