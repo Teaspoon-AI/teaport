@@ -1230,8 +1230,11 @@ def build_agent_session(transport, *, voice: str | None = None,
         stt.barge_hold = lambda on: barge_pauser.hold_resume(on, who="the turn's final")
         barge_pauser.before_cap = stt.close_held
         # A quiet line resumes once the STT has heard the speech out, where its engine
-        # reports how far it has transcribed (barge_pause.py HEARD OUT, #275).
+        # reports how far it has transcribed (barge_pause.py HEARD OUT, #275) -- so the
+        # report is asked for, whatever the speculative reply wants (audit A2: asked by
+        # the speculation alone, the default configuration resumed on the window).
         barge_pauser.watch_heard = stt.watch_heard
+        stt.transcription_progress = True
         logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
                     "speech and resumes if no words follow")
     # Words over a paused reply go to a one-word judge before they start the turn

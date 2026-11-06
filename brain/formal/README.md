@@ -1090,8 +1090,9 @@ Not checked here: **segment mode's** watch. There `_heard_through` is the report
 `decoded_through_ms`, and the premise that no interim of the speech before it comes
 after the report saying so is the engine's, not verified by any model (SttCommit.tla has
 no report). Nor which sessions answer at all: `watch_heard` declines (and the pauser
-resumes on its window) unless the session asked for the report or slices -- the default
-configuration asks for neither (audit 2026-11-05, A2).
+resumes on its window) unless the session asked for the report or slices. Since audit
+A2 every session with the pauser asks (`agent_session`); `UserTurn.tla`'s `REPORT` shows
+what one that did not lost (`ut_judge_noReport_nounjudged`).
 
 Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio to 4, a
 word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
@@ -3009,7 +3010,7 @@ The monitors:
 |---|---|---|---|---|
 | `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ | ✓ |
 | `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
-| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275; and today in a session that asks for no progress report, the default configuration, audit A2) | ✓ | ✓ | ✗ |
+| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275, and the default configuration until A2) | ✓ | ✓ | ✗ |
 | `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
 | `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | ✗ (not checked in the timed rows) |
 
@@ -3060,9 +3061,12 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
   first written, "Stop." waited for the verdict on "Okay" and then for a judge of its own
   (the PR #232 review).
 - `NoUnjudgedWords`: **words said over a paused reply are the judge's to decide.**
-  `quietWindow`, 10 states (also the shipped gate in a session that asks for no progress
-  report, where `watch_heard` declines and the pauser resumes on its window: the default
-  configuration, audit A2, so this row is what the default loses):
+  `quietWindow`, 10 states. Also the shipped gate in a session that asked for no progress
+  report, where `watch_heard` declines and the pauser resumes on its window: with the
+  judge on, the default configuration until audit A2 (segment mode, no speculative
+  reply), now `REPORT = "notAsked"` (`ut_judge_noReport_nounjudged`, the same trace). Since
+  A2 every session with the pauser asks for the report (`REPORT = "asked"`, every other
+  row):
 
   ```
   ... BotStart                 a reply plays

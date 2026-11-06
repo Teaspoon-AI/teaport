@@ -666,7 +666,9 @@ PREVIEW_AT_STOP = setting("TEAPORT_STT_PREVIEW_AT_STOP")
 #
 # Asked for only when the session will use it: build_agent_session sets
 # transcription_progress when the speculative reply is on and set to wait for the
-# report, so with either off the handshake is what it was.
+# report, and when the barge-in pauser is built (its heard-out watch, watch_heard), so
+# with neither the handshake is what it was. (The strategy's speculation frames then go
+# out with nothing to speculate: it ignores them without a speculator.)
 _REPORT_MARGIN_MS = setting("TEAPORT_STT_TRANSCRIBED_MARGIN_MS")
 
 # The barge-in pauser's watch (watch_heard, barge_pause.py HEARD OUT): how far past the

@@ -28,8 +28,9 @@
 #     from the very sample it stopped on -- the audio waited in the transport's own
 #     queue -- so nothing is lost or repeated. It resumes a short grace after the STT
 #     says the speech had no turn in it: where the engine reports how far it has
-#     transcribed, once that report has passed the speech (HEARD OUT, below); else once
-#     its close came back so (a final under the word guard, or a wordless close).
+#     transcribed -- the session asks for the report wherever this pauser is built --
+#     once that report has passed the speech (HEARD OUT, below); else once its close
+#     came back so (a final under the word guard, or a wordless close).
 #     Failing that, it resumes TEAPORT_BARGE_PAUSE_RESUME_S after the line went quiet,
 #     or, while the report is awaited, the longer of that and _HEARD_WAIT_S. With the
 #     VAD's own stop delay, a cough stalls the bot about ENDPOINT_STOP_SECS + 0.9 s (the
@@ -80,8 +81,10 @@
 # does not come: the longer of it and _HEARD_WAIT_S. On the box the same bounds passed a
 # turn's commit a median 0.73 s after it, at most 1.98 s (1,494 turns), so a cough waits
 # a little longer than the window made it wait. A blip waits too -- on Talk's 0.2 s
-# stop a short "yeah" is one. An engine without the report, or a session that has none
-# yet, resumes on the window as before. formal/UserTurn.tla's NoUnjudgedWords checks it
+# stop a short "yeah" is one. The session asks for the report wherever the pauser is
+# built (agent_session; before audit A2 only the speculative reply asked, and the default
+# configuration resumed on the window). An engine without the report, or a session that
+# has none yet, resumes on the window as before. formal/UserTurn.tla's NoUnjudgedWords checks it
 # (JUDGE = "quietWindow" is the window alone).
 #
 # Three things it does NOT pause, each because pausing there cost more than it saved:

@@ -178,12 +178,11 @@
 (*                       caller's speech out (the engine's report has       *)
 (*                       passed it: every word of it is in), #275.          *)
 (* JUDGE = "quietWindow" -- the shipped gate with the resume on a timer of  *)
-(*                       quiet alone (before #275): a word the engine       *)
-(*                       returns after it lands on the resumed reply,       *)
-(*                       which no gate holds, and cuts it unjudged. Also    *)
-(*                       what the shipped gate does today in a session      *)
-(*                       that asks for no progress report (watch_heard      *)
-(*                       declines): the default configuration (audit A2).   *)
+(*                       quiet alone (before #275, and the default          *)
+(*                       configuration until A2, which asked for no         *)
+(*                       progress report: REPORT = "notAsked"): a word the  *)
+(*                       engine returns after it lands on the resumed       *)
+(*                       reply, which no gate holds, and cuts it unjudged.  *)
 (* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
 (*                       resume (0.8 s of quiet) can come first.            *)
 (* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
@@ -280,7 +279,12 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
                            \* (TRUE: as it is). FALSE: the premise, see VadStop
           CALLS,           \* a call overtaken by its own cancel (see the header)
           POSTTOOL,        \* the answer to a tool's result, under the caller's speech (#17)
-          JUDGE            \* the barge-in judge's gate (#224, see the header)
+          JUDGE,           \* the barge-in judge's gate (#224, see the header)
+          REPORT           \* "asked": the session asks the engine for its transcription
+                           \* report wherever the pauser is built (audit A2, as shipped);
+                           \* "notAsked": only the speculative reply asked for it, so the
+                           \* default configuration's watch_heard declines and the pause
+                           \* resumes on its window (before A2)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -670,9 +674,10 @@ Judged == JUDGE /= "off" /\ JudgeWindow
 \* An over-approximation: the wait is the pauser's own (barge_pause.py HEARD OUT), not
 \* the judge's, so the code waits with TEAPORT_BARGE_JUDGE off too, and only where the
 \* STT will answer (stt.watch_heard: a session that asked for the engine's report, or
-\* a sliced one). Without a judge no property here reads `unheard`, so tying the wait
-\* to JUDGE loses nothing a row checks.
-HeardOutWait == JUDGE \notin {"off", "quietWindow"}
+\* a sliced one -- REPORT: every session with the pauser asks, since audit A2). Without
+\* a judge no property here reads `unheard`, so tying the wait to JUDGE loses nothing a
+\* row checks.
+HeardOutWait == JUDGE \notin {"off", "quietWindow"} /\ REPORT = "asked"
 
 \* The gate lets what it holds on: the words start the turn as they would have.
 JudgeRelease ==
@@ -1920,6 +1925,7 @@ TypeOK ==
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
     /\ JUDGE \in {"off", "shipped", "noHold", "noReask", "quietWindow", "pauseCap"}
+    /\ REPORT \in {"asked", "notAsked"}
     /\ judging \in BOOLEAN /\ grown \in BOOLEAN /\ stopHeld \in BOOLEAN
     /\ resumedUnder \in BOOLEAN /\ resumeOverWords \in BOOLEAN
     /\ unheard \in BOOLEAN /\ unjudged \in BOOLEAN

@@ -1291,6 +1291,11 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     out = session.ledger._output
     pauser = out.previous
     assert isinstance(pauser, BargeInPauser), f"above the SIP transport: {pauser!r}"
+    # Its heard-out watch needs the engine's report: asked for with the pauser, the
+    # speculative reply off as by default (audit A2), or it resumes on its window.
+    from teaport_brain import speculate
+    assert not speculate.ENABLED and session.stt.transcription_progress, (
+        speculate.ENABLED, session.stt.transcription_progress)
     p = session.tts
     while not isinstance(p, LLMUserAggregator):
         p = p.previous
@@ -1312,6 +1317,7 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
 
     talk = build_agent_session(_Transport())          # no supports_playout_pause
     assert not isinstance(talk.ledger._output.previous, BargeInPauser)
+    assert not talk.stt.transcription_progress, "no pauser, no speculation: not asked"
     assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 
