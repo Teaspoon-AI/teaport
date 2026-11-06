@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:337-446#7b0dfd66 -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:337-446#debb199d -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -138,7 +138,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:337-446#7b0dfd66 -->
+<!-- source: cli/teaport:337-446#debb199d -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1640#2ca3ef5a; install.sh:1949-2013#6358e06b -->
+<!-- source: install.sh:1640#2ca3ef5a; install.sh:1956-2025#8db50552 -->
 
 ## The page opens but nothing happens
 
@@ -334,7 +334,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1949-2013#6358e06b; install.sh:1821-1866#cd323bfa -->
+<!-- source: install.sh:1956-2025#8db50552; install.sh:1828-1873#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -379,7 +379,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2033-2037#3c1e6011; install.sh:2122-2125#b1e28ef5 -->
+<!-- source: install.sh:2045-2049#3c1e6011; install.sh:2143-2146#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -388,7 +388,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:337-446#7b0dfd66 -->
+<!-- source: cli/teaport:337-446#debb199d -->
 
 **Fix**
 

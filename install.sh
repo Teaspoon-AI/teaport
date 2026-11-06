@@ -1683,8 +1683,15 @@ render_unit() {  # render_unit <template.in> <dest-name>
                           -e "s#@NODE@#$node_bin#g" \
                           -e "s#@SIP_GATEWAY@#$sip_gateway#g" -e "s#@SIP_CONF@#$sip_conf#g" \
                           -e "s#@SIP_UDS@#$sip_uds#g" "$tpl")"
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
-  else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
+  # Through write_root, so the unit is root's and 0644 whatever sudo's umask (#199). systemd
+  # reads a 0600 unit as root all the same, but `systemctl cat` reads it as whoever runs it,
+  # and that is how the CLI (installed) and --only brain tell an installed unit from none.
+  # A unit masked here (a link to /dev/null) stays masked: install would replace the link with
+  # the unit, where tee wrote through it into /dev/null and kept the operator's mask.
+  if [ "$(readlink "/etc/systemd/system/$out" 2>/dev/null)" = /dev/null ]; then
+    warn "$out is masked on this machine; left masked (systemctl unmask $out, then re-run, to install it)"
+  elif [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
+  else write_root "/etc/systemd/system/$out" "$body"; fi
 }
 write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # Keys passed here are OURS: rewritten every run so a repair restores them. Everything
@@ -1980,6 +1987,11 @@ reissue_short_intermediate() {
 # one -- with Caddy's defaults, every 8 hours. Caddy renews at a third of the lifetime left,
 # so a year-long leaf changes about every 8 months. A year also stays inside what Apple
 # accepts from a root a user installed (825 days).
+#
+# Written through write_root: root's and 0644, not whatever sudo's umask makes it (#199).
+# The package's caddy.service runs Caddy as User=caddy, and a 0600 Caddyfile stops it from
+# starting or reloading. Nothing in it needs hiding: the operator's certificate and key go
+# in by path only (phase_frontdoor checks that the caddy user can read them).
 write_caddyfile() {
   local path="$1" tls=("    tls {" "        issuer internal {" "            lifetime $LEAF_LIFETIME"
                        "        }" "    }")
@@ -1988,7 +2000,7 @@ write_caddyfile() {
     local how="local CA, leaf $LEAF_LIFETIME"; if [ -n "$TLS_CERT" ]; then how="own certificate $TLS_CERT"; fi
     printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, Settings on :%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$SETTINGS_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
   fi
-  printf '%s\n' \
+  write_root "$path" "$(printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
     "" \
@@ -2059,7 +2071,7 @@ write_caddyfile() {
     "    handle {" \
     "        respond 404" \
     "    }" \
-    "}" | SUDO tee "$path" >/dev/null
+    "}")"
 }
 
 # set_avahi_hostname <name> — publish <name>.local over mDNS. Best-effort: if avahi's conf
@@ -2078,12 +2090,21 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 6 when an agent coexists (RAM shared), 12 voice-only. The code
+  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
   # default (50) OOMs an 8GB box — the installer must always set it.
   # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
-  # so reserving the voice-only amount alongside it is the direction that OOMs. 6 is the
-  # measured-safe sandbox figure and is conservative for the (lighter) host gateway.
-  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=6
+  # so reserving the voice-only amount alongside it is the direction that OOMs.
+  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
+  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
+  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
+  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
+  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
+  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
+  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
+  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
+  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
+  # sandbox is an agent too and gets 8 the same way.
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
@@ -2208,17 +2229,36 @@ install_config_sudoers() {
 
 # Caddy isn't in the stock Ubuntu repos — add its official Cloudsmith apt repo (idempotent),
 # then install. Keeps the TLS front door patched by apt instead of a frozen, sha-pinned R2 binary.
+# The key and the list are root's and 0644, set rather than left to sudo's umask (#199): apt
+# checks the repo's signature as its _apt user, which a 0600 key shuts out (the repo reads
+# as unsigned, and apt-get update fails), and apt run by anyone but root cannot open a 0600
+# list. Caddy's own instructions chmod o+r both for the same reason.
+CADDY_KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg   # the list's signed-by= names it
+CADDY_APT_LIST=/etc/apt/sources.list.d/caddy-stable.list
 install_caddy_apt() {
-  local key=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  local list=/etc/apt/sources.list.d/caddy-stable.list
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] add Caddy apt repo + apt-get install -y caddy\n'; return; fi
+  local tmp repo
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] add Caddy apt repo (key and list root:root 0644) + apt-get install -y caddy\n'; return; fi
   SUDO apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-  if [ ! -f "$key" ]; then
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor -o "$key" || die "cannot fetch the Caddy repo key"
+  if [ ! -f "$CADDY_KEYRING" ]; then
+    # Dearmored into a temp and installed from there (it is binary: no write_root), so the
+    # key is there only when the whole fetch worked.
+    tmp="$(mktemp)"
+    if ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor > "$tmp"; then
+      rm -f "$tmp"; die "cannot fetch the Caddy repo key"
+    fi
+    SUDO install -D -m 0644 -o root -g root "$tmp" "$CADDY_KEYRING" || { rm -f "$tmp"; die "cannot install the Caddy repo key"; }
+    rm -f "$tmp"
   fi
-  if [ ! -f "$list" ]; then
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | SUDO tee "$list" >/dev/null || die "cannot fetch the Caddy repo list"
+  if [ ! -f "$CADDY_APT_LIST" ]; then
+    repo="$(curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt')" || die "cannot fetch the Caddy repo list"
+    write_root "$CADDY_APT_LIST" "$repo" || die "cannot write the Caddy repo list"
   fi
+  # The modes are set again on every run, not only when the files are written: a run before
+  # #199 under umask 077 left both 0600, and the -f checks above skip them on the re-run
+  # that is meant to repair the box. (The units and the Caddyfile need no such step:
+  # write_root's install replaces the file and sets its mode each time.)
+  { SUDO chown root:root "$CADDY_KEYRING" "$CADDY_APT_LIST" && SUDO chmod 0644 "$CADDY_KEYRING" "$CADDY_APT_LIST"; } \
+    || die "cannot set $CADDY_KEYRING and $CADDY_APT_LIST to root:root 0644"
   SUDO apt-get update -qq
   SUDO apt-get install -y caddy
   command -v caddy >/dev/null || die "caddy not installed after apt"
