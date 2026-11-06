@@ -12,7 +12,7 @@ and the release manifest, and it reads the layout the installer creates: `/opt/t
 The installer puts the command at `/usr/local/bin/teaport`. Run `teaport` with no arguments, or `teaport help`, to print the
 command summary. An unknown command or option prints an error and exits 1.
 
-<!-- source: install.sh:1021,1030#738c080b; cli/teaport:33,1551-1561#0144faa8 -->
+<!-- source: install.sh:1398,1407#738c080b; cli/teaport:33,1551-1561#0144faa8 -->
 
 The paths and ports in this reference are the defaults that the command reads at startup.
 `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`, `TEAPORT_MANIFEST_URL`,
@@ -119,10 +119,10 @@ it prints the installed value and the remote value.
 When nothing differs, it prints `up to date.` and exits 0. With differences, `--check` also
 prints `(--check) not applying.` and exits 0. Without `--check`, the command does not apply
 the update: it prints the `install.sh` command to run instead, `install.sh --only brain`
-for a brain-only change, and exits 1. It also exits 1 when the installed manifest is
+for a brain-only change or `install.sh --only engine` for an engine release, and exits 1. It also exits 1 when the installed manifest is
 missing, the download fails, or the downloaded manifest is not valid JSON.
 
-<!-- source: cli/teaport:198-200,452,470-477#0eba0883 -->
+<!-- source: cli/teaport:198-200,452,470-477#b90b909f -->
 
 Example:
 

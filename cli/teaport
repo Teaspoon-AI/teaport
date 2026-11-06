@@ -472,9 +472,9 @@ PY
   [ "$check_only" = 1 ] && { echo "  (--check) not applying."; return 0; }
   # Applying swaps only changed artifacts + restarts only affected units — the same
   # idempotent, sha-verifying path install.sh runs. Wire it in once get.teaspoon.tech hosts
-  # real artifacts; until then, install.sh is the update path — and for the brain alone,
-  # `install.sh --only brain` rebuilds just its venv from uv.lock, without the engine.
-  die "apply not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+  # real artifacts; until then, install.sh is the update path — for the brain alone,
+  # `install.sh --only brain` (its venv from uv.lock); for the engine alone, --only engine.
+  die "apply not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
 }
 
 # ---- logs ------------------------------------------------------------------
