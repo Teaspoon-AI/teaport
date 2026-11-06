@@ -791,9 +791,9 @@ class BoundedOpenAILLMService(OpenAILLMService):
     def _answers_caller(self, reply, context) -> bool:
         """Does this request answer the caller (#15)? A commit whose context ends with
         words they said (owed.is_caller_message: not a greeting's cue, not a note's
-        reaction order), or the answer to a tool round such a commit began and nothing in
-        it has spoken yet (run_function_calls). Never a run of ours, which may mean to say
-        nothing (_run_said_nothing)."""
+        reaction order), or the answer to a tool round such a commit began, where nothing
+        has spoken yet but a lookup's preamble (run_function_calls). Never a run of ours,
+        which may mean to say nothing (_run_said_nothing)."""
         if reply is None or reply.kind in owed_mod.RUNS:
             return False
         if reply.kind == owed_mod.POST:
