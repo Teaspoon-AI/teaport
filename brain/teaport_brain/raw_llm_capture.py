@@ -50,6 +50,7 @@ from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
     SENTENCE_SPLIT,
+    ZERO_WIDTH,
     is_sentence_repeat,
 )
 
@@ -64,7 +65,27 @@ ENABLED = setting("TEAPORT_RAW_LLM_CAPTURE")
 # dot-run length was previously spelled out in three files under two different values, so
 # widening it in one place made this log and the guard's trip line report different counts
 # for the same completion.
-_DEGENERATE = re.compile(r"\.{%d,}|\u2026\s*\u2026|\*\*" % MIN_DOT_RUN)
+#
+# And a run of zero-width characters (#70). Live 2026-09-26, a completion collapsed into
+# 895 consecutive U+200B after a healthy prefix. None of the three shapes above matched,
+# so the one zero-width collapse on record was never captured: no raw bytes and no
+# after_tool, only the zwsp count below, which reports but does not trigger. Three, with
+# nothing but whitespace between them, because healthy replies carry 1-4 single ones
+# scattered inside echoed words (llm_text_guard's _TRIP_PUNCT_CHARS), and a run of
+# characters with no width is never speech.
+#
+# "Whitespace between" for the same reason the ellipsis rule has its \s*: a collapse is
+# rarely one character. #70's own onset mixed U+202F in with the U+200B, and a tail that
+# alternates U+200B with "\n" or U+202F (both \s in Python) trips the guard. A strict
+# run never matched it, so the guard cut a completion the capture never logged. For the
+# same reason, the ellipsis rule looks past zero-width characters: "\u2026\u200b\u2026"
+# is two ellipses with nothing visible between them. Built from tts_text's table, so a
+# code point added to the fold is matched here too.
+_MIN_ZERO_WIDTH_RUN = 3
+_ZW = ZERO_WIDTH.pattern
+_DEGENERATE = re.compile(
+    r"\.{%d,}|\u2026(?:\s|%s)*\u2026|\*\*|%s(?:\s*%s){%d,}"
+    % (MIN_DOT_RUN, _ZW, _ZW, _ZW, _MIN_ZERO_WIDTH_RUN - 1))
 
 # Per-code-point counters. Explicit \uXXXX escapes, never the literal character: a
 # literal U+00A0 here is two indistinguishable-from-a-space bytes in the source, and
