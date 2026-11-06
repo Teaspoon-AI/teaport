@@ -1040,6 +1040,13 @@ to the margin late, the margin's own reason -- comes after the answer. `UserTurn
 | `off` | no watch: every other row here, at the state counts they had | — |
 | `shipped` | the lesser of the two bounds (`ss_heard`; witness `ss_heard_reach`) | ✓ |
 | `endOnly` | the end bound alone, as before 3a46b6c's F1 -- which also had the speculation's smaller margin (`_REPORT_MARGIN_MS`, 100 ms); the step granularity cannot show that half (`ss_heard_endOnly`) | ✗ |
+| `final` | a proposal, rejected 2026-11-06: a turn's final (not timed out) whose position is past the voice end answers the watch too, to save the 0.26 s a 0-word "mm-hmm" waited on the report (`ss_heard_final`, one commit) | ✗ |
+
+`final`, ~144k states: the commit lands at the voice end, and a word stamped to start
+there -- inside the margin, its stamps trailing its voice -- is the next turn's; the
+first turn's empty final answers the watch with it still to come. Waiting for the start
+bound past the margin as well would make it `HeardFire`'s own condition: the final
+already needs the end bound past its position.
 
 `endOnly`, 9 states: a word starts before the voice end and ends two steps later; the
 decoder reaches its end, the report puts `end_through_ms` there (no word that ends
@@ -1051,6 +1058,33 @@ caller's later words still to come (it does not wait for every word). The watch 
 have no commits (`MaxCommits = 0`): a preview carries no word into what is in hand and a
 turn only moves words within it, so nothing the watch reads changes; with one commit and
 one stop (the bounds never frozen) the holds row was 2.3M states, against 272k.
+
+**An early settle** (`EARLY`; audit 2026-11-05, A3). A turn's final has three
+triggers (`_final_overdue`): the decoder's timeout, which `Overdue` models -- by then
+every word before the position has been sent, and it is received ahead of the report
+that settles the turn -- and two that come at any time: the 6 s backstop of the wall
+clock (an engine that stopped reporting), and the reply's pause at its cap
+(`close_held`). `EarlySettle` is those: the oldest turn waiting on its final settles now,
+timed out, on the words in hand. A turn whose provisional went out with words its
+preview vouched for, not yet sent, has delivered them; when they arrive, late, they went
+to the open turn (`_slice_delta`: a settled turn takes none), and the next commit's
+preview, no longer trimmed by the settled turn (`_past_earlier` read only the turns
+waiting), asked them again.
+
+| EARLY | | `NoDoubleDeliver`, `NoDeliveredOpen` |
+|---|---|---|
+| `off` | no early settle: every other row here | — |
+| `shipped` | before A3 (`ss_early_shipped`) | ✗ |
+| `kept` | as shipped (`_early`): the settled turn stops waiting but keeps its stretch -- a late word ending in it is its own whatever its spelling, one past it that its preview vouched for too, and the trim reads its vouching -- until the bounds pass it, as its final would have waited; its final then settles, its correction with it. A late word below a settled turn is a later turn's whose preview vouched for it (it delivered it) -- in the code the first vouched word of the first such turn, as `_spend_later` reads them (a late "a" is no later "about"); the model's words are unique, so it is any. Not kept: a deferred turn, an empty provisional, or one the decoder's clock settled (no word of it is still to come). (`ss_early_kept`, ~4.8M states; `--full` `ss_early_kept_lossy`, lossy previews, ~20M) | ✓ |
+
+`NoDeliveredOpen`: no word a turn delivered sits in the open turn, which the next commit
+would deliver again. An early settle is incomplete by design (the backstop's accepted
+cost): a late word of a turn that delivered nothing of it still goes to the open turn and
+the next turn, once -- so the `EARLY` rows check `NoWordTwice`, `NoDoubleDeliver` and
+`NoDeliveredOpen`, not `FinalComplete`, `NoDropAtCut` or `RightTurn`. Not modelled: a late
+word spelled otherwise than its preview had it (the model's words are unique), which the
+kept turn takes by its stretch and its final corrects
+(`test_stt_turn_text.py::test_a_turn_settled_early_corrects_a_late_word_the_preview_spelled_otherwise`).
 
 Not checked here: **segment mode's** watch. There `_heard_through` is the report's
 `decoded_through_ms`, and the premise that no interim of the speech before it comes

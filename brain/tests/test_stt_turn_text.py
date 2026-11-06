@@ -340,8 +340,13 @@ async def test_a_word_below_a_settled_turn_is_kept_for_the_open_one():
     await turn(s)
     await preview(s, 1000, " hi")
     await progress(s, 1000 + stt_mod._VOUCH_MS)    # " hi" never came: final at the margin
-    await delta(s, " late", 500)            # the engine's bound did not hold
+    lines, sink = _lines()
+    try:
+        await delta(s, " late", 500)            # the engine's bound did not hold
+    finally:
+        stt_mod.logger.remove(sink)
     assert s._interim_buffer == " late" and s.interims()[-1] == " late"
+    assert not s._early and any("was settled" in m for m in lines), lines
 
 
 # ---- words are never lost -------------------------------------------------------------
@@ -839,6 +844,218 @@ async def test_a_preview_soon_after_a_commit_does_not_ask_the_turn_befores_word_
     assert not s._turns and s.corrections() == [], s.corrections()
 
 
+async def _settled_early(s):
+    """The oldest turn waiting on its final settles now on the words in hand: the
+    backstop's wall clock (the pause's cap, close_held, takes the same path)."""
+    was, stt_mod._FINAL_BACKSTOP_SECS = stt_mod._FINAL_BACKSTOP_SECS, 0.0
+    try:
+        await progress(s, 0)
+    finally:
+        stt_mod._FINAL_BACKSTOP_SECS = was
+
+
+async def test_a_turn_settled_early_keeps_its_vouched_word_from_the_next_turn():
+    # Audit A3 (2026-11-05): the backstop (or the pause's cap) settled the first turn
+    # before the word its preview vouched for came. Its provisional delivered that word.
+    # The next commit's preview has it at its front, and the word, late, ends inside the
+    # first turn's margin: neither may deliver it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " further?")
+    assert s.finals() == [("further?", 1)]
+    await _settled_early(s)
+    assert not s._turns, "settled"
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " further? Okay.")
+    assert s.finals() == [("further?", 1), ("Okay.", 2)], s.finals()
+    await delta(s, " further", 1150, start=800)
+    await delta(s, "?", 1150, start=800)
+    await delta(s, " Okay", 1800, start=1500)
+    await delta(s, ".", 1800, start=1500)
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert not s._turns and s.corrections() == [], s.corrections()
+    assert not s._early, "forgotten once the bounds passed it"
+
+
+async def test_a_turn_settled_early_corrects_a_late_word_the_preview_spelled_otherwise():
+    # Review F2: the late word comes back spelled otherwise than the preview had it. It is
+    # still the settled turn's (it ends in its stretch), not the open turn's, and its
+    # final, once the bounds pass, corrects it -- once.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " further?")
+    await _settled_early(s)
+    await delta(s, " farther?", 950, start=700)
+    assert not s._open_words and s.interims() == [], (s._open_words, s.interims())
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " further? Okay.")      # the trim reads its vouching yet
+    assert s.finals() == [("further?", 1), ("Okay.", 2)], s.finals()
+    await delta(s, " Okay.", 1800, start=1500)
+    counted = s._turn_same + s._turn_differs
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    fixes = [(c.stop_n, c.final) for c in s.corrections()]
+    assert fixes == [(1, "farther?")], fixes
+    assert not s._early and not s._turns
+    # Counted once, at its timeout: its late final is no second turn (review round 2).
+    assert s._turn_same + s._turn_differs == counted + 1, "the second turn alone"
+
+
+async def test_a_turn_the_decoder_s_clock_settled_is_not_kept():
+    # Review F1: settled by the decoder's timeout, every word of the turn has been sent
+    # (the engine's premise): what its preview still vouches for will never come, and
+    # must not trim a later preview's own words.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " further")
+    await delta(s, " farther", 950, start=700)
+    await progress(s, 900, decoded=1000 + stt_mod._FINAL_TIMEOUT_MS + stt_mod._VOUCH_MS)
+    assert not s._turns and not s._early, "settled on the decoder's clock, not kept"
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " Further, I said.")
+    assert s.finals()[-1] == ("Further, I said.", 2), s.finals()
+
+
+async def test_a_late_word_a_later_preview_vouched_for_is_that_turn_s():
+    # Review round 1 (the model, lossy previews): the first turn's preview missed its
+    # word, and the turn settled early with nothing to keep; the next turn's preview has
+    # the word and delivered it. Late, below the settled turn, it is the next turn's --
+    # spent -- not the open turn's, which would deliver it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    assert not s._early, "nothing it delivered to keep"
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " hi Okay.")
+    assert s.finals()[-1] == ("hi Okay.", 2), s.finals()
+    interims = list(s.interims())
+    await delta(s, " hi", 900, start=700)          # late, below the settled turn
+    assert not s._open_words and s.interims() == interims, s._open_words
+    await delta(s, " Okay.", 1800, start=1500)
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._turns, s.corrections()
+
+
+async def test_a_kept_turn_takes_only_its_own_stretch_and_a_word_s_pieces():
+    # The turn before it settled on its bounds: a late word below that one is not the
+    # kept turn's (the open turn takes it, as ever). And the rest of a word the kept turn
+    # took follows it there.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " hi")
+    await delta(s, " hi", 900, start=700)
+    await progress(s, 1000 + stt_mod._VOUCH_MS)    # final on its bounds
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " further?")
+    await _settled_early(s)
+    kept = s._early[0]
+    assert kept.lo_ms == 1000 and s._last_drop is None, (kept.lo_ms, s._last_drop)
+    await delta(s, " fur", 1900, start=1600)
+    await delta(s, "ther?", 1900, start=1600)      # the same word's second piece
+    assert [w for w, *_ in kept.words] == [" fur", "ther?"], kept.words
+    await delta(s, " late", 500)                   # below the turn before it
+    assert [w for w, *_ in s._open_words] == [" late"], s._open_words
+    s._websocket = None                            # the session drops
+    await s._disconnect_websocket()
+    assert not s._early, "a new session's clock is not the kept turn's"
+
+
+async def test_a_late_word_claims_only_a_later_turn_s_front_vouched_word():
+    # Review round 2: below a settled turn, a late " a" is no later preview's "about":
+    # only the first vouched word of the first turn that has any is claimed, whole. Taken,
+    # "about." -- vouched for past that turn's position -- would come unvouched and be
+    # delivered again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " so about.")
+    await delta(s, " a", 900, start=800)           # late, below the settled turn
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await delta(s, " so", 1500, start=1300)
+    await delta(s, " about.", 2100, start=1900)    # past the cut, vouched for
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and [w for w, *_ in s._open_words] == [" a"], (
+        s.corrections(), s._open_words)
+
+
+async def test_a_late_word_below_a_kept_turn_s_stretch_is_not_its_vouched_word():
+    # Review round 3: a late " a" below a kept turn's stretch is not that turn's
+    # "about" (vouched for past its position) by prefix. The front-word rule decides it:
+    # " so", not " a" -- the open turn has it; "about." stays vouched, and comes once.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)                        # nothing delivered: not kept
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " so about.")
+    await _settled_early(s)                        # kept: its stretch from 1000
+    assert len(s._early) == 1 and s._early[0].lo_ms == 1000
+    await delta(s, " a", 900, start=800)           # below its stretch
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await delta(s, " so", 1500, start=1300)
+    await delta(s, " about.", 2100, start=1900)    # past its position, vouched for
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._early, s.corrections()
+
+
+async def test_a_late_word_at_the_front_of_a_kept_turn_s_preview_is_that_turn_s():
+    # The genuine case of the front-word rule, for a kept turn: the settled turn's
+    # preview missed its word, the next turn's has it first and delivered it, then
+    # settled early too (kept). Late, below that turn's stretch, the word is its own --
+    # not the open turn's, which would deliver it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " hi Okay.")
+    await _settled_early(s)
+    assert len(s._early) == 1
+    await delta(s, " hi", 900, start=700)          # below its stretch, its front word
+    assert not s._open_words, s._open_words
+    await delta(s, " Okay.", 1800, start=1500)
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._early, s.corrections()
+
+
+async def test_a_kept_turn_whose_bounds_never_move_goes_after_the_backstop_s_wait():
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " further?")
+    await _settled_early(s)
+    assert len(s._early) == 1
+    s._early[0].kept_at -= stt_mod._FINAL_BACKSTOP_SECS + 1
+    await progress(s, 0)                           # the engine stopped reporting
+    assert not s._early and s.corrections() == []
+
+
+async def test_a_late_word_below_a_turn_settled_early_is_not_delivered_again():
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, " so")
+    assert s.finals() == [("so", 1)]
+    await _settled_early(s)
+    interims = list(s.interims())
+    await delta(s, " so", 900)                     # late, below the settled turn
+    assert s.interims() == interims and not s._open_words, (
+        "a word its provisional delivered, announced again for the open turn")
+    await delta(s, " later", 1500)                 # the caller's next word: the open turn's
+    assert s._open_words and s._open_words[0][0] == " later"
+
+
 async def test_the_turn_before_s_words_are_trimmed_past_one_its_preview_missed():
     # The earlier preview missed its turn's first word but had its second; the later
     # preview has both. The second is the earlier turn's and is not asked again; the
@@ -1133,11 +1350,19 @@ async def test_the_cap_s_close_says_what_became_of_a_turn_before_the_barge_in():
         stt_mod.logger.remove(sink)
     first = next(line for line in lines if "VAD stop 1:" in line)
     assert ("its final not waited for: a barge-in after it closes at the reply's pause "
-            "cap" in first and "settled as its provisional text; any correction its "
-            "final would have made is lost" in first), first
+            "cap" in first and "settled as its provisional text; its late words stay "
+            "its own, and its final, once the bounds pass it, still corrects it"
+            in first), first
     second = next(line for line in lines if "VAD stop 2:" in line)
     assert "the reply's pause at its cap" in second and "closed on the 1 word" in second
     assert s.finals() == [("hi there", 1), ("Stop.", 2)] and not s._turns, s.finals()
+    # Audit A3 at the cap: the first turn's words, late, are its own -- not the open
+    # turn's, nor delivered again -- and its final, once the bounds pass, matches.
+    await delta(s, " hi", 600, start=300)
+    await delta(s, " there", 900, start=650)
+    assert not s._open_words, s._open_words
+    await progress(s, 1600 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._early, s.corrections()
 
 
 async def test_two_held_barge_ins_hold_the_pause_until_the_last_one_closes():
@@ -1674,10 +1899,12 @@ async def test_a_timeout_says_what_it_waited_for_and_a_backstop_after_it_is_coun
         stt_mod.logger.remove(sink)
 
 
-async def test_a_timed_out_turn_s_late_word_goes_to_the_open_turn_not_the_next():
+async def test_a_timed_out_turn_s_late_words_are_its_own_not_the_next_or_the_open():
     # After the wall-clock backstop (an engine that stopped reporting), the timed-out
     # turn's words come at last, with the next turn not yet final: they are not that
-    # turn's (they end before its stretch) and its correction must not add them.
+    # turn's (they end before its stretch) and its correction must not add them. Nor are
+    # they the open turn's (audit A3): the timed-out turn's provisional, "in the
+    # kitchen.", delivered them, and a later commit would deliver them again.
     saved = stt_mod._FINAL_BACKSTOP_SECS
     stt_mod._FINAL_BACKSTOP_SECS = 0.3
     lines, sink = _lines()
@@ -1697,8 +1924,7 @@ async def test_a_timed_out_turn_s_late_word_goes_to_the_open_turn_not_the_next()
         await delta(s, " Thanks.", 1700, start=1500)
         await progress(s, 2000)
         assert s.corrections() == [], [(c.kind, c.final) for c in s.corrections()]
-        assert [w for w, *_ in s._open_words] == [" the", " kitchen."], s._open_words
-        assert any("was settled" in m for m in lines), lines
+        assert s._open_words == [], s._open_words
     finally:
         stt_mod._FINAL_BACKSTOP_SECS = saved
         stt_mod.logger.remove(sink)
