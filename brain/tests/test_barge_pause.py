@@ -1168,6 +1168,10 @@ async def _ringing(max_secs=3.0):
 async def test_the_live_ringtone_shape_pauses_twice_then_not():
     # Review (2a, probe 1): rings of 0.6 s -- no blips -- each heard out by the STT with
     # no words in it, a second or so apart: two pauses, and the rest are skipped.
+    import re
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
     out, p, task, run = await _ringing()
     p.watch_heard = _Watch()
     try:
@@ -1180,7 +1184,12 @@ async def test_the_live_ringtone_shape_pauses_twice_then_not():
                 await p.on_speech_heard(p._watch)
             await asyncio.sleep(0.3)
         assert p.pauses == 2 and p.skipped_noisy == 3, (p.pauses, p.skipped_noisy)
+        # The journal's pause lengths, the numbers the live diagnosis read (review 2).
+        held = [float(m.group(1)) for line in lines
+                if (m := re.search(r"resumed after ([0-9.]+)s", line))]
+        assert len(held) == 2 and all(h >= 0.6 for h in held), held
     finally:
+        logger.remove(sink)
         await task.cancel()
         await run
 
@@ -1225,6 +1234,60 @@ async def test_the_limit_lifts_once_there_is_no_sound_to_skip():
         bp._NOWORD_WINDOW_S = window
         await task.cancel()
         await run
+
+
+async def test_a_sound_that_outlasts_the_window_keeps_the_limit_on():
+    # Review round 2: the window counts from where the last skipped sound ended, so one
+    # that lasts longer than it does not lift the limit at the next ring.
+    from teaport_brain import barge_pause as bp
+    window, bp._NOWORD_WINDOW_S = bp._NOWORD_WINDOW_S, 0.5
+    out, p, task, run = await _ringing()
+    try:
+        p._resume_secs = 0.1
+        for _ in range(2):
+            await p.on_onset(True)
+            await asyncio.sleep(0.05)
+            await p.on_onset(False)
+            await asyncio.sleep(0.25)
+        assert p._noisy
+        await p.on_onset(True)                             # a ring longer than the window
+        await asyncio.sleep(0.8)
+        await p.on_onset(False)
+        await asyncio.sleep(0.05)
+        await p.on_onset(True)                             # the next ring at once
+        await asyncio.sleep(0.05)
+        assert not p.paused and p._noisy, "lifted mid-noise"
+    finally:
+        bp._NOWORD_WINDOW_S = window
+        await task.cancel()
+        await run
+
+
+async def test_the_session_s_judge_says_its_words_to_the_pauser():
+    # Review round 2: the session wires the judge's hold with words=True -- a backchannel
+    # being judged re-arms the limit (agent_session), as the judge's own rig cannot show.
+    from teaport_brain import barge_pause as bp
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.sip_transport import SipGatewayTransport, make_sip_params
+
+    saved, bp.JUDGE = bp.JUDGE, True
+    wire = _Wire()
+    try:
+        session = build_agent_session(SipGatewayTransport(wire.connection, make_sip_params()))
+        pauser = session.ledger._output.previous
+        gate, q = None, session.tts
+        while q is not None and gate is None:
+            gate = q if isinstance(q, bp.BargeInJudgeGate) else None
+            q = q.previous
+        assert isinstance(pauser, BargeInPauser) and gate is not None
+        pauser._noisy = True
+        gate._hold_resume(True)
+        assert not pauser._noisy, "the judge's hold is on words"
+        gate._hold_resume(False)
+    finally:
+        bp.JUDGE = saved
+        wire.connection.close()
+        wire.gw_sock.close()
 
 
 async def test_words_reported_between_pauses_do_not_mark_the_next_one():

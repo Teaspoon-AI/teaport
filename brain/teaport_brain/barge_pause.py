@@ -107,11 +107,13 @@
 #     pauses, the onset test nor the VAD's start, until words come (over the pause or
 #     over the playing reply), the reply ends, or _NOWORD_WINDOW_S pass with no sound to
 #     skip. Meanwhile words over the reply are not judged either: they barge in on the
-#     word count, as without the pause. A ringtone near the box, music, a TV: each read as a speech onset, and the
-#     reply (the box's own "Someone's calling me..." on 2026-11-06) was paused over and
-#     over, the user hearing almost nothing of it. Echo residue that trips the onset
-#     test the same. A backchannel (words, judged or under the word guard) re-arms it;
-#     a pause the cap ended while the judge or the STT held it does not count.
+#     word count, as without the pause. A ringtone near the box, music, a TV: each read
+#     as a speech onset, and the reply (the box's own "Someone's calling me..." on
+#     2026-11-06) was paused over and over, the user hearing almost nothing of it. Echo residue that trips the onset
+#     test the same. A backchannel (words, judged or under the word guard) re-arms it --
+#     with a word guard over one word, so can the bot's own echo transcribed as one word
+#     the echo guard let through; a pause the cap ended while the judge or the STT held
+#     it does not count.
 #
 # The echo guard is the onset test itself: 128 ms of Silero confidence >= 0.6, which
 # typically fires within ~100-250 ms of the onset of real speech -- well ahead of the
@@ -502,6 +504,10 @@ class BargeInPauser(FrameProcessor):
             self._heard = False
             if self._may_pause(source):
                 await self._pause(source)
+        elif self._noisy and not self._speaking:
+            # A sound skipped while the limit holds has ended: still sound to skip, so the
+            # window counts from its end, not its start (one that outlasts the window).
+            self._noisy_at = time.monotonic()
         elif self._paused and not self._speaking:
             # A blip resumes on a shorter window -- but waits for the STT like any speech
             # where it will report: a short word is short too.
@@ -625,10 +631,10 @@ class BargeInPauser(FrameProcessor):
         if not self._paused:
             return
         held = asyncio.get_running_loop().time() - self._pause_t0
-        worded, held = self._worded, self._cap_held
+        worded, cap_held = self._worded, self._cap_held
         self._end()
         self.resumes += 1
-        if counted and not worded and not held:
+        if counted and not worded and not cap_held:
             self._note_noword()
         logger.info(f"BARGE-PAUSE: resumed after {held:.2f}s ({why}); pauses with no "
                     f"words in the last {_NOWORD_WINDOW_S:.0f}s: {len(self._noword_at)}")
