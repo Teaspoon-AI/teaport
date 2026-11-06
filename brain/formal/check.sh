@@ -5,8 +5,10 @@
 #
 # --full adds the rows too large for the default run: today six SttCommit rows (the
 # carry, the missed stop, the repaired final and the reset in their full environments) whose state
-# spaces are tens of millions, and SttSlice's three-word rows and its peek with frozen
-# bounds (formal/README.md).
+# spaces are tens of millions, and SttSlice's three-word rows, its peek with frozen
+# bounds, and its peek at the owed-peek row's bounds (formal/README.md). The default run
+# does not guard every shipped fix: the peek's owed flag (_Peek.owed) is guarded only by
+# SttSlice's two --full peek rows.
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
 # manual gate, to run before merging any change to SttCommit.tla or SttSlice.tla or to the
 # paths they model (stt.py's commits, the hold, the backstop, the carry; the slicing).
@@ -433,7 +435,7 @@ run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the pe
 run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
 run SttSlice.tla ss_noTrim          "(expected: FAILS NoDoubleDeliver — a later preview's words the turn before still expects, asked again)"
 run SttSlice.tla ss_noOrder         "(expected: FAILS NoDoubleDeliver — a turn after one that put nothing with words on goes on at its preview: its words delivered twice, out of order)"
-run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed)"
+run SttSlice.tla ss_noPeekOwed      "(expected: FAILS NoDoubleDeliver — a peek adopted after the turn that owed words settled goes on at its preview, taken while they were owed; the shipped design at these bounds is --full's ss_peekOwed_shipped)"
 run SttSlice.tla ss_heard           "(expected: holds — AS SHIPPED, the heard-out watch (#275): answered once both bounds are the margin past the voice end, no word of the speech comes after)"
 run SttSlice.tla ss_heard_reach     "(expected: FAILS HeardAllSent — witness: the watch is answered with the caller's later words still to come)"
 run SttSlice.tla ss_heard_endOnly   "(expected: FAILS NoWordAfterHeard — before 3a46b6c: the end bound alone, a word the voice end falls inside comes after the answer)"
@@ -442,6 +444,7 @@ if [ "$FULL" = 1 ]; then
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
+  run SttSlice.tla ss_peekOwed_shipped "(expected: holds — the peek as shipped at ss_noPeekOwed's bounds: the owed flag keeps the adopted peek waiting, ~31M states)"
   limit=$ROW_TIMEOUT
 fi
 echo

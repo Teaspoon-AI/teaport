@@ -832,7 +832,7 @@ after a commit may come before that commit's preview. The brain closes turns at 
 | DESIGN | | `RightTurn` | `FinalComplete` | `NoDropAtCut` | `NoLateInterim` | `NoSplitOnResume` | `NoStuckFinal` | `NoDoubleDeliver` |
 |---|---|---|---|---|---|---|---|---|
 | `shipped`, `PEEKS` FALSE | the preview at the verdict (`ss_shipped`; frozen bounds and lossy previews `ss_shipped_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`, `ss_peekOwed_shipped`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `arrival` | a turn is the words received by its preview | ✗ | | | | | | |
 | `endMargin` | every word ending less than the margin past the cut is the turn's | ✗ | | | | | | |
 | `decoded` | final once `decoded_through_ms` passes the commit | | ✗ | | | | | |
@@ -857,7 +857,12 @@ half a second apart) is answered with the turn before's words the main stream ha
 before, which put nothing with words on, still has its final to come, whose words then go
 on again, after it (the re-review's S2); `noPeekOwed` adopts a peek whose preview was
 taken while a turn owed words, after that turn settled (`ss_peek_freeze` found it; the
-peek now remembers, `_Peek.owed`). The code trims an earlier turn's owed words from the
+peek now remembers, `_Peek.owed`). **The default run does not guard that fix**:
+`ss_noPeekOwed` shows the rejected design fails, but at `ss_peek`'s bounds `noPeekOwed`
+holds too (1.89M states, the audit of 2026-11-05), so the shipped design is checked
+against it only by `--full`'s `ss_peek_freeze` and `ss_peekOwed_shipped` (the shipped
+design at `ss_noPeekOwed`'s own bounds: holds, 31.4M states, ~8 min on two workers, as
+the audit's verifier measured it). The code trims an earlier turn's owed words from the
 preview's front run (as many words as are owed, and two more): each word there that is
 an owed word still ahead of the pointer is dropped, and the pointer moves past it, so an
 owed word the later preview lacks is skipped. With words unique and in time order that
@@ -937,8 +942,9 @@ word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, a
 witnesses and rejected rows under 1.2M each (`ss_noPeekOwed` 3.3M before its trace,
 ~2.5 min on two workers); `ss_heard` 272k (~15 s on two workers), its two FAILS rows
 under 25k. `--full` adds three words: `ss_shipped_full`
-~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
-on five cores).
+~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
+on five cores), and `ss_peekOwed_shipped` ~31M (the same without frozen bounds, `NoDoubleDeliver`
+only: ~8 min on two workers).
 
 ### Known limits of this model
 
