@@ -414,8 +414,9 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
 | `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
 | `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
-| `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 82,388 states |
-| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 22,400 states |
+| `ow_failure` | `OUTCOME = "failure"` (one item: what the failure states), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 88,938 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 67,134 states |
+| `ow_failNotAbout` | a failure record with no terms (`owed.py` 9349e35 until the formal audit's C1): a telling that names nothing of the request is about it only when it is the record's own run | ✗ `NoStaleNote` | the failure lands mid-turn; the caller's reply tells it in its own words ("a billing problem, want me to open your settings?") and plays through; the record stays owed, and the lull's re-offer says NOT heard (11 steps) |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
 | `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 267,278 states |
@@ -602,15 +603,36 @@ The model was written to lead the design, and it found these:
    rendered) or cut after its last word, the caller heard it in full on another path,
    and the lull told it again. Fix (`RUNCLOSE = "about"`, `OUTCOME = "failure"`): a
    term-less item also closes on any noted reply heard to its end that is about the
-   record (`owed._about`: a non-common word shared with the request). The premise, the
-   corpus test's to check: a failure is one statement, told whole or not at all, and the
-   telling is the reply. An unrelated reply shares nothing with the request and closes
-   nothing.
+   record (`owed.Record.about`: a non-common word shared with the request, or, since
+   finding 11, with the failure's own statement). The premise, the corpus test's to
+   check: a failure is one statement, told whole or not at all, and the telling is the
+   reply. An unrelated reply shares nothing with either and closes nothing.
 10. **An adopted speculation's keys must reach the evidence** (`ow_adoptDropsKeys`). The
    speculation renders its note in its own task, and the adopting commit is the reply
    whose ending is the evidence: if it registers none of the keys, a full telling never
    closes the record, and the lull tells it again. The code read the keys off the wrong
    object (the speculation's wrapper, not its stream) until Fable's final review.
+11. **Every telling of a failure must be about it** (`ow_failNotAbout`, the formal audit's
+   C1, 2026-11-05). The model takes a failure's telling to be about the record
+   (`PlayGot("tell") = {"all"}`, `About`, a failure closing on `g = "all"`). The code
+   gave a failure record no terms, so `Record.about` matched only the request's and the
+   question's words, and a telling in the failure's own words (since #311, a billing
+   failure's "...want me to open your settings?") never closed it nor counted as a cut;
+   the note said NOT heard on every turn after. The fix makes the premise true for a
+   telling that names what failed: a failure's terms are the words of its statement
+   that do (`owed._terms`: "billing" and "credit" for a 402, "error", "empty"), not the
+   hedge or the settings hint that ride with it, nor words any reply says ("ai",
+   "service": "Are you an AI?" would close an owed billing failure), and `Record.tells`
+   reads a failure by `about`, one statement told whole. The residual: a timeout or an
+   unknown outcome names nothing of its own, and any failure told in other words ("it
+   timed out", "something went wrong") shares nothing with it. Such a telling that names
+   nothing of the request is still this row's trace: the record stays owed after it was
+   heard, and later turns carrying the note may tell it again (`RetellOnce` falls under
+   the mutation too), until the record's run, its eviction or the conversation's end (a
+   room's sleep keeps it, `wake_gate`). The
+   other side of the four words: a reply on another subject that says one of them
+   ("your credit card statement", "an error in that article") is about the record, and
+   closes it played through, unjudged, or counts as a cut telling.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
@@ -1307,6 +1329,7 @@ STT connect. Time is not: every bounded wait is a step that may happen.
 | `sa_overlap_refused` | before the SIP claim fix, with the overlap `SipCall.tla` found | `NoEngineRefusal` ✗ |
 | `sa_overlap_redecide` | an arbiter-side alternative, not taken: decide again after the end | all ✓ |
 | `sa_roomWakes` | witness | `NoSilentLiveEnd` ✗ (accepted) |
+| `sa_roomAwake` | the room awake and never flipping (`MODE = "awake"`, no wake race): the user says yes and the hold fails | all ✓ (before the HOLD_FAILED fix, `NoSilentLiveEnd` ✗) |
 
 "All": `SttOnlyHolder` (only the holder's STT is connected), `OneConversation` (never two
 sessions live and not on hold), `NoEngineRefusal` (no session the arbiter let in is
@@ -1358,7 +1381,17 @@ case that can no longer arise would be a second guard on one contract.
 or a Talk session (TAKEN) by a decision taken while it was asleep; `_end_for` closes a
 room silently for both whatever `asleep()` says by then, so a room that wakes in between
 — one event-loop tick, decide to the ending task's first step — is cut off without a
-word instead of being asked.
+word instead of being asked. That is the only silent end left of an awake room.
+
+The other one was a failed hold (2026-11-05): an awake room is asked (PROMPT), the user
+says yes, and `AgentSession.hold` raises or runs past `HOLD_WAIT_SECS`. `_acquire` ended it
+as CALL_IN, which `_end_for` closes a room for without a word, and the held conversation
+was lost with no "where were we?" later. `sa_roomAwake` (`MODE = "awake"`: the room never
+flips, so the wake race cannot happen) found it in 12 states: `Ask(yes)`, `HoldFail`,
+`HoldDone(CALL_IN)`, `EndCall`. The end is now `HOLD_FAILED`: silent only for an asleep
+room, and an awake room or a Talk session is told, by the call line, unless the hold's
+own "back in a moment" already played (`AgentSession.hold_line_said`: no second
+goodbye). The model abstracts the telling as "not silent", so `sa_roomAwake` holds.
 
 ### Known limits of this model
 
@@ -1368,7 +1401,7 @@ word instead of being asked.
   `HOLD_WAIT_SECS` (muted, the gate held, possibly the STT let go); `_acquire` then ends
   the conversation — but if the call's acquire was cancelled meanwhile (the caller hung
   up), nothing does, and the conversation stays the holder, muted. Not modelled;
-  `session_arbiter.py:410-416` / `agent_session.py:772-786`.
+  `session_arbiter.py:413-419` / `AgentSession.hold` (`agent_session.py:589`).
 - Engine refusals are immediate: `stt.py`'s retry budget (`SttSlot.tla`) is what the
   SETTLE sleeps lean on, and is not modelled here.
 - END_WAIT_SECS' timeout (a holder that never lets go) is not a step: past it the arbiter
