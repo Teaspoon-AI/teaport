@@ -669,3 +669,7 @@ msgstr "Ваш аккаунт ИИ подключён, но на нём пока
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "Извините, я сейчас не могу ответить: аккаунт, который я использую для ответов, требует внимания, и повторная попытка не поможет. Скажите «открой настройки», чтобы это исправить."
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "Извини, я потерял мысль. Можешь повторить?"

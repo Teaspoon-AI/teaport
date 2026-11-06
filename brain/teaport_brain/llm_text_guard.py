@@ -112,6 +112,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain import i18n
 from teaport_brain.conversation_log import quoted
 from teaport_brain.settings import setting
 from teaport_brain.services import FunctionCallsDispatchedFrame
@@ -268,10 +269,21 @@ def unglue_sentences(text: str, before: str = "") -> str:
 # EMPTY LLMTextFrame — which both restored the total silence this line exists to prevent
 # and opened a phantom word-timestamp slot. setting() reads an empty value as "not set",
 # and the line itself lives here, next to the reasons for its wording.
-RECOVERY_TEXT = (
-    setting("TEAPORT_LLM_GUARD_RECOVERY")
-    or " Sorry, I lost my train of thought there. Could you say that again?"
-)
+RECOVERY_LINE = i18n.N_("Sorry, I lost my train of thought there. Could you say that again?")
+
+
+def recovery_text(lang: str | None = None) -> str:
+    """The recovery line for a session whose voice speaks `lang` (an espeak code, as
+    EngineTTSService.espeak_language; None: the source language), leading space included:
+    the operator's TEAPORT_LLM_GUARD_RECOVERY as written, else the line in the session's
+    language -- read at each use, so a voice switch is followed. An empty completion
+    (#15) speaks it on ordinary turns, so a German room must not hear it in English."""
+    override = setting("TEAPORT_LLM_GUARD_RECOVERY")
+    return override if override else " " + i18n.for_espeak(lang)._(RECOVERY_LINE)
+
+
+# The line in the source language: what a component built without a language speaks.
+RECOVERY_TEXT = recovery_text()
 
 # Trip thresholds, calibrated against the nine live captures and healthy speech:
 # every capture >= 37 chars trips within its first ~50 characters; a reply using
@@ -382,8 +394,10 @@ class LLMTextGuard(FrameProcessor):
     open and close the turn even when every text frame between them is swallowed.
     """
 
-    def __init__(self):
+    def __init__(self, lang_fn=None):
         super().__init__()
+        # The session's voice language, for the recovery line (recovery_text).
+        self._lang_fn = lang_fn or (lambda: None)
         self._pending = ""
         self._pending_frame = None
         self._reset_response()
@@ -596,7 +610,7 @@ class LLMTextGuard(FrameProcessor):
                 # well: its deliberate leading space reads as a sentence break after a
                 # healthy prefix, but with nothing forwarded it is a whitespace-only
                 # frame, which opens the phantom caption slot the strip exists to stop.
-                await self._emit(RECOVERY_TEXT, direction)
+                await self._emit(recovery_text(self._lang_fn()), direction)
                 return
             leaked = _SPECIAL_TOKEN.findall(frame.text) if "<|" in frame.text else ()
             if leaked:
@@ -706,7 +720,7 @@ class LLMTextGuard(FrameProcessor):
                     f"{self._received} chars received, nothing forwarded; "
                     f"speaking the recovery line so the turn does not end in silence"
                 )
-                await self._emit(RECOVERY_TEXT, direction)
+                await self._emit(recovery_text(self._lang_fn()), direction)
                 # Latch it like any other trip (see the module header): this End can
                 # be the watchdog's premature one, and a real answer arriving in the
                 # next segment of the SAME completion must be swallowed, not glued
