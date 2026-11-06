@@ -139,10 +139,11 @@
 #     longer after the pause, and the ledger's heard cut (lag_secs) and the
 #     captions are short of what was heard by the same amount -- the same assumption
 #     the ledger already made on Talk for every cut, pause or not.
-#   * The room bridge counts a pause as the reply's end (its mouth timing, a goodbye
-#     "heard out"): the bridge's part of #255. (The reply's words wait out a pause on
-#     the transport's voice clock -- playout_pause.py -- so the brain's own readers of
-#     them do not.)
+#   * A client that reads a quiet speaker as the reply's end must be told of a pause:
+#     the room bridge asks to be (?features=pause, talk_transport's pause_notice), so its
+#     goodbye "heard out" and its idle timer wait one out; its mouth follows the audio
+#     stream, not the card. The reply's words wait out a pause on the transport's voice
+#     clock (playout_pause.py). Another client that ends on silence would need the same.
 #   * A caller who talks without pause for longer than the cap hears the bot resume
 #     over them until their words arrive.
 #
@@ -186,8 +187,8 @@ from teaport_brain.word_tokens import word_tokens
 
 # On for every transport that can pause (playout_pause.PausablePlayout: SIP and /talk)
 # -- on /talk only with a switch of its own as well (talk_pauses), off by default. The
-# room mic has its own, off until the room bridge follows a pause too (#255; Known
-# limits).
+# room mic has its own, off by default too: there the echo and the face are the box's own
+# to get right (#255; Known limits).
 ENABLED = setting("TEAPORT_BARGE_PAUSE")
 TALK_ENABLED = setting("TEAPORT_BARGE_PAUSE_TALK")
 ROOM_ENABLED = setting("TEAPORT_BARGE_PAUSE_ROOM")

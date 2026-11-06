@@ -59,7 +59,7 @@ from teaport_brain.barge_pause import PlayoutPauseFrame  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.playout_pause import VoiceClock  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
-from teaport_brain.tts_text import has_speech  # noqa: E402
+from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech  # noqa: E402
 
 SR = 24000
 
@@ -539,6 +539,175 @@ async def test_j_a_stop_frame_a_write_early_still_closes_the_turn_at_once():
     assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
     assert not utts[0].interrupted and utts[0].heard_fraction >= 0.99, utts[0].heard_fraction
     assert utts[1].interrupted and 0.45 < utts[1].heard_fraction < 0.55, utts[1].heard_fraction
+
+
+# Issue #19, the live trace (2026-09-04 18:05, S12 rerun): seq 3 played 16.33-19.41, and
+# seq 4 was pushed at 17.99 behind it, so it played from 19.41. Its word pts started at
+# 18.62 -- seq 3's LAST WORD's pts, where pipecat anchors a new context -- not at 19.41.
+LIMA_BEFORE = "Lima is home to about twelve million people."           # seq 3: 8 words
+LIMA = "Lima's population is roughly twelve million people."           # seq 4: 7 words
+LIMA_BEFORE_PTS = [16.33, 16.62, 16.98, 17.22, 17.41, 17.80, 18.17, 18.62]
+LIMA_PTS = [18.62, 18.89, 19.89, 20.04, 20.41, 20.76, 21.09]           # as traced
+# Seq 4's words anchored where its audio really starts: engine_tts's floor.
+RIGHT_PTS = [round(p + 19.41 - LIMA_PTS[0], 2) for p in LIMA_PTS]
+
+
+def lima(pts, *, stood=0.0, pause_at=16.7, cut=20.23):
+    """Seq 3 and seq 4 in one window, seq 4's words at `pts`, the caller cutting seq 4 at
+    `cut` (20.23: 0.82 s into its 3.23 s). With `stood`, a pause that long from `pause_at`
+    holds seq 3, and everything after it plays that much later on the pipeline clock; on
+    the voice clock, where the words are, nothing moves. The settle feed's heard texts,
+    by reply, are in L.settled."""
+    f3, end3 = response(LIMA_BEFORE, 15.9)
+    f4, end4 = response(LIMA, 17.8)
+    for frames, name in ((f3, "seq3"), (f4, "seq4")):
+        frames[0][0].owed_reply = SimpleNamespace(name=name)
+    L = ledger()
+    L.settled = {}
+    L.on_reply_end = lambda reply, heard, **kw: L.settled.setdefault(reply.name, heard)
+    pause = [(PlayoutPauseFrame(paused=True), pause_at, OUT),
+             (PlayoutPauseFrame(paused=False), pause_at + stood, OUT)] if stood else []
+    return L, sorted(f3 + [                         # the pause in its place in time
+        (started("s3"), 16.1, BELOW), at(audio(3.08, "s3"), 16.2), drained(end3, 16.25),
+        *[(word(w, p, "s3"), 16.25, BELOW)
+          for w, p in zip(LIMA_BEFORE.split(), LIMA_BEFORE_PTS)],
+        *siblings(BotStartedSpeakingFrame, 16.33),  # seq 3 plays 16.33-19.41
+        *pause,
+    ] + f4 + [
+        (started("s4"), 17.95, BELOW), at(audio(3.23, "s4"), 17.99),   # queued: from 19.41
+        *[(word(w, p, "s4"), 18.0, BELOW) for w, p in zip(LIMA.split(), pts)],
+        drained(end4, 18.05),
+        (copy(3.08), 19.41 + stood, AFTER),
+        (InterruptionFrame(), cut + stood),
+    ], key=lambda frame: frame[1])
+
+
+async def test_j_a_queued_reply_is_heard_by_its_own_playout_not_where_its_words_were_anchored():
+    """Issue #19. A reply queued behind another's audio plays when that audio ends, but
+    pipecat anchors its words at the previous reply's last word (engine_tts floors that
+    at the previous audio's end since PR #13 -- this is the ledger's own guard, for any
+    schedule that still comes in early). Every pts was 0.79 s early, so "is" (pts 19.89,
+    under the cut at 20.03) was charted heard though its audio began after the cut: the
+    caller heard "Lima's popu--". The ledger knows where the reply's audio started
+    (19.41) and reads the words from there: the fraction's two words, not three -- in
+    the chart and in the settle feed, which closes a record on them (Owed.tla)."""
+    L, seq = lima(LIMA_PTS)
+    await feed(L, seq)
+    utts = bot(L)
+    assert [u.text for u in utts] == [LIMA_BEFORE, LIMA], [u.text[:24] for u in utts]
+    assert not utts[0].interrupted and utts[0].heard_fraction >= 0.99, utts[0].heard_fraction
+    cut = utts[1]
+    assert cut.interrupted and 0.2 < cut.heard_fraction < 0.3, cut.heard_fraction
+    assert abs(cut.t_start - 19.41) < 0.01, cut.t_start
+    assert cut.heard_text == "Lima's population", repr(cut.heard_text)
+    assert L.settled == {"seq3": LIMA_BEFORE, "seq4": "Lima's population"}, L.settled
+
+    # By the whole 0.79 s, not that less a lead: the engine stamps a context's first word
+    # at its anchor, not a lead early. Cut at 21.30, "twelve" (pts 20.41) starts at 21.40.
+    L, seq = lima(LIMA_PTS, cut=21.30)
+    await feed(L, seq)
+    assert L.settled["seq4"] == "Lima's population is roughly", L.settled
+
+    # The same reply with its words anchored where its audio starts (engine_tts's floor,
+    # the normal case): nothing to move, and the same two words.
+    L, seq = lima(RIGHT_PTS)
+    await feed(L, seq)
+    assert bot(L)[1].heard_text == "Lima's population", repr(bot(L)[1].heard_text)
+    assert L.settled["seq4"] == "Lima's population", L.settled
+
+
+async def test_j_a_pause_ahead_of_a_queued_reply_moves_none_of_its_words():
+    """The words and the cut are on the voice clock, which a pause stands still. The
+    ledger lays a queued reply's playout out on the pipeline clock, where a pause ahead
+    of it makes it start a second later: 20.41, against words anchored at 19.41 on the
+    voice clock. Read on the voice clock that start is 19.41 too, so a right schedule is
+    not moved -- moved by the pause, the cut would lose both words the caller heard."""
+    L, seq = lima(RIGHT_PTS, stood=1.0)
+    await feed(L, seq)
+    cut = bot(L)[1]
+    assert abs(cut.t_start - 20.41) < 0.01, cut.t_start
+    assert cut.interrupted and 0.2 < cut.heard_fraction < 0.3, cut.heard_fraction
+    assert cut.heard_text == "Lima's population", repr(cut.heard_text)
+    assert L.settled["seq4"] == "Lima's population", L.settled
+
+    # And a schedule anchored at the previous reply's last word is still moved, by its
+    # own error alone (0.79 s), not by the pause as well.
+    L, seq = lima(LIMA_PTS, stood=1.0)
+    await feed(L, seq)
+    assert bot(L)[1].heard_text == "Lima's population", repr(bot(L)[1].heard_text)
+    assert L.settled["seq4"] == "Lima's population", L.settled
+
+
+async def test_j_a_pause_after_a_queued_reply_is_laid_out_moves_its_start_with_it():
+    """Review round 1: seq 4 is laid out to start at 19.41 when its audio arrives (17.99);
+    then a pause holds seq 3's tail, 18.5-19.5, and seq 4 really starts at 20.41. Its
+    start kept the layout's pre-pause 19.41, which on the voice clock reads 18.41, early
+    by the pause: the guard's 0.79 s shrank to 0 and the cut charted "is" again. At the
+    resume a turn that had not started is laid out again (_resume): it starts at 20.41,
+    19.41 on the voice clock, and the words move by their own 0.79 s -- for a short
+    pause as for a long one, and not at all for a right schedule."""
+    for pts, stood in ((LIMA_PTS, 1.0), (LIMA_PTS, 0.3), (RIGHT_PTS, 1.0)):
+        L, seq = lima(pts, stood=stood, pause_at=18.5)
+        await feed(L, seq)
+        cut = bot(L)[1]
+        assert abs(cut.t_start - (19.41 + stood)) < 0.01, (stood, cut.t_start)
+        assert cut.interrupted and 0.2 < cut.heard_fraction < 0.3, (stood, cut.heard_fraction)
+        assert cut.heard_text == "Lima's population", (pts[0], stood, cut.heard_text)
+        assert L.settled["seq4"] == "Lima's population", (pts[0], stood, L.settled)
+
+
+async def test_j_a_reply_that_opens_its_window_is_cut_on_its_own_schedule():
+    """#19's guard moves nothing in the one-reply-at-a-time flow. BotStarted reaches the
+    ledger a little after the TTS anchored the words on the reply's first audio (17 ms
+    here; up to 140 ms in the suite's real pipelines on a loaded machine), and a schedule
+    may have its first word a lead early too (the Talk barge-pause rig stamps one so).
+    Neither is a schedule anchored before its audio could play: the cut keeps the five
+    words whose audio began before it, in the chart and in the settle feed."""
+    for first in (0.6, 0.6 - CAPTION_LEAD_SECS):         # the engine's; the rig's
+        f1, end1 = response(R1, 0.0)
+        f1[0][0].owed_reply = SimpleNamespace(name="r1")
+        pts = [first] + [0.6 + 0.3 * k - CAPTION_LEAD_SECS for k in range(1, 12)]
+        L = ledger()
+        settled = {}
+        L.on_reply_end = lambda reply, heard, **kw: settled.setdefault(reply.name, heard)
+        await feed(L, f1 + [
+            (started("R1"), 0.5, BELOW), at(audio(4.0, "R1"), 0.5), drained(end1, 0.55),
+            *[(word(w, p, "R1"), 0.55, BELOW) for w, p in zip(R1.split(), pts)],
+            *siblings(BotStartedSpeakingFrame, 0.617),
+            (InterruptionFrame(), 2.0),                  # pts + lead <= 2.0: five words
+        ])
+        cut = bot(L)[0]
+        assert cut.interrupted and cut.heard_text == "The forecast for tomorrow is", (
+            first, cut.heard_text)
+        assert settled == {"r1": "The forecast for tomorrow is"}, (first, settled)
+
+
+async def test_j_with_no_caption_lead_a_late_bot_started_moves_nothing():
+    """Review round 1: the slack must not shrink with the caption lead, which is tunable
+    down to 0 (TTS_CAPTION_LEAD_SECS). The engine stamps a reply's first word at its
+    anchor, so the whole slack is its margin for BotStarted's latency: at lead 0 a
+    BotStarted 140 ms late (the most the suite has shown) moved every word 0.14 s when the
+    slack was the lead plus 0.05 s, and the cut lost "is". Twelve words 0.3 s apart from
+    0.6, BotStarted at 0.74, cut at 1.85: five words were heard."""
+    import teaport_brain.transcript_ledger as tl
+    lead, tl._PTS_LEAD_SECS = tl._PTS_LEAD_SECS, 0.0
+    try:
+        f1, end1 = response(R1, 0.0)
+        f1[0][0].owed_reply = SimpleNamespace(name="r1")
+        L = ledger()
+        settled = {}
+        L.on_reply_end = lambda reply, heard, **kw: settled.setdefault(reply.name, heard)
+        await feed(L, f1 + [
+            (started("R1"), 0.5, BELOW), at(audio(4.0, "R1"), 0.5), drained(end1, 0.55),
+            *[(word(w, 0.6 + 0.3 * k, "R1"), 0.55, BELOW) for k, w in enumerate(R1.split())],
+            *siblings(BotStartedSpeakingFrame, 0.74),
+            (InterruptionFrame(), 1.85),
+        ])
+    finally:
+        tl._PTS_LEAD_SECS = lead
+    cut = bot(L)[0]
+    assert cut.interrupted and cut.heard_text == "The forecast for tomorrow is", cut.heard_text
+    assert settled == {"r1": "The forecast for tomorrow is"}, settled
 
 
 async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas():
