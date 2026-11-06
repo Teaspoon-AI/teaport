@@ -61,7 +61,7 @@ SUDO() {
   case "$1" in
     tee) [ ! -e "$2" ] || chmod u+rw "$2"; command tee "$2" ;;   # root writes through the mode
     install) mkdir -p "$(dirname "${@: -1}")"; cat > "${@: -1}" ;;
-    mkdir|rm) "$@" ;;
+    mkdir|rm|touch) "$@" ;;
     *) : ;;
   esac
 }
@@ -82,9 +82,11 @@ def _line(prefix: str) -> str:
 
 
 # The engine layout as install.sh defines it, under the test's $PREFIX.
-LAYOUT = "".join(_line(p) for p in ("ENGINE_STAGE=", "ENGINE_ROLLBACKS=", "ENGINE_KEEP=", "ENGINE_FILES="))
+LAYOUT = "".join(_line(p) for p in ("ENGINE_STAGE=", "ENGINE_ROLLBACKS=", "ENGINE_SWAP_MARK=", "ENGINE_KEEP=",
+                                    "ENGINE_FILES=", "ENGINE_MODELS="))
 LAYOUT += 'ENGINE_UNIT="$T/etc/systemd/teaport-engine.service" ENGINE_CHANGED="" ENGINE_KEPT=""\n'
-ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe",
+ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe", "engine_copies",
+              "engine_swap_abort", "engine_swap_recover",
               "engine_keep_live", "engine_swap_in", "engine_restore", "engine_rollback_target",
               "engine_prune", "manifest_take_py", "manifest_take"]
 
@@ -200,7 +202,7 @@ def test_the_dry_run_shows_the_plan_off_the_appliance_and_touches_nothing():
                  "display engine license", "check espeak-ng, libopenblas.so.0 and libcudnn.so.9",
                  f"-o {tmp}/opt/engine.staged/bin/voxtral.part", f"-o {tmp}/opt/engine.staged/bin/g2p/kokoro_g2p.v2.dict.part",
                  f"-o {tmp}/opt/engine.staged/THIRD_PARTY_NOTICES.txt.part",
-                 f"-o {tmp}/opt/models/voxtral/consolidated.safetensors.part",   # the models are checked too
+                 f"-o {tmp}/opt/engine.staged/models/voxtral/consolidated.safetensors.part",   # the models are staged too
                  "nothing to keep for --rollback engine",
                  f"add to {tmp}/etc/engine.env the keys it lacks", "KOKORO_RESERVE_FPT=12", "VOX_REQUIRE_DICT_G2P=1",
                  "render teaport-engine.service.in -> /etc/systemd/system/teaport-engine.service",
@@ -356,7 +358,8 @@ def test_only_engine_stages_what_differs_and_leaves_the_live_engine_alone():
     rc, out = _phase(tmp, "engine")
     assert rc == 0, out
     # The POS tagger already matches: kept, not downloaded. The rest wait in the stage.
-    assert "CHANGED bin/voxtral bin/g2p/kokoro_g2p.v2.dict THIRD_PARTY_NOTICES.txt\n" in out, out
+    assert ("CHANGED bin/voxtral bin/g2p/kokoro_g2p.v2.dict THIRD_PARTY_NOTICES.txt "
+            "models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf\n") in out, out
     assert "have kokoro_pos.bin (sha ok)" in out, out
     assert set(_live(tmp).values()) == {"old"}, _live(tmp)
     stage = pathlib.Path(tmp, "opt/engine.staged")
@@ -374,7 +377,7 @@ def test_a_full_run_swaps_the_new_files_in_and_keeps_the_old_engine():
                     "bin/g2p/kokoro_pos.bin": "old", "THIRD_PARTY_NOTICES.txt": "new"}, live
     assert not pathlib.Path(tmp, "opt/engine.staged").exists(), out
     (copy,) = _copies(tmp)
-    assert re.fullmatch(r"\d{8}-\d{6}-1\.5", copy), copy
+    assert re.fullmatch(r"000001-\d{8}T\d{6}Z-1\.5", copy), copy
     kept = pathlib.Path(tmp, "opt/engine.rollback", copy)
     for rel in ENGINE_REL:
         assert (kept / rel).read_text().startswith("old "), rel
@@ -430,17 +433,19 @@ def _copy(tmp, name, tag, complete=True):
 def test_pruning_keeps_the_newest_two_and_nothing_incomplete():
     tmp = tempdir("teaport-eng-prune-")
     _engine(tmp, "live")
-    for i, name in enumerate(("20261001-000000-1.2", "20261002-000000-1.3", "20261003-000000-1.4",
-                              "20261004-000000-1.5")):
+    for i, name in enumerate(("000001-20261001T000000Z-1.2", "000002-20261002T000000Z-1.3",
+                              "000003-20261003T000000Z-1.4", "000004-20261004T000000Z-1.5")):
         _copy(tmp, name, f"v{i}")
-    _copy(tmp, "20261006-000000-1.6.partial", "x", complete=False)   # an interrupted copy
-    _copy(tmp, "20261005-000000-x", "x", complete=False)             # no binary in it
+    _copy(tmp, "000006-20261006T000000Z-1.6.partial", "x", complete=False)   # an interrupted copy
+    _copy(tmp, "000005-20261005T000000Z-x", "x", complete=False)             # no binary in it
+    stray = _copy(tmp, "by-hand-1.4", "hand")                                # not one of ours
     hand = _write(pathlib.Path(tmp, "opt/bin/voxtral.rollback-1.3"), "by hand\n")
     rc, out = _run(tmp, 'engine_rollback_target; engine_prune', ENGINE_FNS)
     assert rc == 0, out
     # The rollback target is the newest complete copy, not the partial or the empty one.
-    assert out.splitlines()[0] == f"{tmp}/opt/engine.rollback/20261004-000000-1.5", out
-    assert _copies(tmp) == ["20261003-000000-1.4", "20261004-000000-1.5"], _copies(tmp)
+    assert out.splitlines()[0] == f"{tmp}/opt/engine.rollback/000004-20261004T000000Z-1.5", out
+    assert _copies(tmp) == ["000003-20261003T000000Z-1.4", "000004-20261004T000000Z-1.5", "by-hand-1.4"], _copies(tmp)
+    assert (stray / "bin/voxtral").exists()
     assert hand.read_text() == "by hand\n" and _live(tmp)["bin/voxtral"] == "live"
 
 
@@ -472,13 +477,13 @@ def _rollback(tmp, env=None):
 def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
     tmp = tempdir("teaport-eng-rb-")
     _engine(tmp, "new", release="1.6")
-    old = _copy(tmp, "20261001-000000-1.5", "old")
+    old = _copy(tmp, "000001-20261001T000000Z-1.5", "old")
     for rel in ENGINE_REL[1:]:
         _write(old / rel, f"old {rel.rsplit('/', 1)[-1]}\n")
     _write(old / "engine.json", json.dumps({"engine": {
         "release": "1.5", "assets": {"l4t38-cu13": {"sha256": _sha("old voxtral\n")}}}}))
     rc, out = _rollback(tmp)
-    assert rc == 0 and "done — engine rolled back to 20261001-000000-1.5" in out and "RESTART" in out, out
+    assert rc == 0 and "done — engine rolled back to 000001-20261001T000000Z-1.5" in out and "RESTART" in out, out
     assert set(_live(tmp).values()) == {"old"}, _live(tmp)
     unit = pathlib.Path(tmp, "etc/systemd/teaport-engine.service")
     assert unit.read_text() == "unit old\n", unit.read_text()
@@ -497,7 +502,7 @@ def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
 def test_rollback_with_nothing_kept_refuses():
     tmp = tempdir("teaport-eng-rb-")
     _engine(tmp, "new")
-    _copy(tmp, "20261001-000000-1.5.partial", "old", complete=False)
+    _copy(tmp, "000001-20261001T000000Z-1.5.partial", "old", complete=False)
     rc, out = _rollback(tmp)
     assert rc != 0 and "DIE no previous engine to roll back to" in out and "RESTART" not in out, out
     assert set(_live(tmp).values()) == {"new"}
@@ -506,19 +511,19 @@ def test_rollback_with_nothing_kept_refuses():
 def test_a_rollback_that_does_not_come_up_says_how_to_undo_it():
     tmp = tempdir("teaport-eng-rb-")
     _engine(tmp, "new", release="1.6")
-    _copy(tmp, "20261001-000000-1.5", "old")
+    _copy(tmp, "000001-20261001T000000Z-1.5", "old")
     rc, out = _rollback(tmp, {"RESTART_FAILS": "1"})
-    assert rc != 0 and "did not come back on 20261001-000000-1.5" in out and "--rollback engine again" in out, out
+    assert rc != 0 and "did not come back on 000001-20261001T000000Z-1.5" in out and "--rollback engine again" in out, out
 
 
 def test_rollback_dry_run_shows_the_plan_and_moves_nothing():
     tmp = tempdir("teaport-eng-rb-")
     _engine(tmp, "new", release="1.6")
-    _copy(tmp, "20261001-000000-1.5", "old")
+    _copy(tmp, "000001-20261001T000000Z-1.5", "old")
     rc, out = _run(tmp, ROLLBACK_STUBS + 'DRY_RUN=1; main_rollback_engine', ROLLBACK_FNS)
     assert rc == 0 and "keep the live engine (1.6)" in out and "move the engine in" in out, out
     assert "RESTART" not in out and "verify it listens on :8000" in out, out
-    assert set(_live(tmp).values()) == {"new"} and _copies(tmp) == ["20261001-000000-1.5"]
+    assert set(_live(tmp).values()) == {"new"} and _copies(tmp) == ["000001-20261001T000000Z-1.5"]
 
 
 # --- --only engine's swap: restart, verify, roll back on its own ----------------------------
@@ -531,12 +536,13 @@ engine_dropins_note() { :; }
 engine_restart() {
   local n; n="$(cat "$T/restarts" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$T/restarts"
   echo "RESTART on $(cut -d' ' -f1 "$PREFIX/bin/voxtral") / $(cat "$ENGINE_UNIT")"
+  if [ -n "${LOSE_KEPT:-}" ]; then rm -rf "$ENGINE_KEPT"; fi   # the kept copy gone before the rollback
   [ "${RESTARTS:$n:1}" = 1 ]
 }
 engine_verify() { echo VERIFY; }
 systemctl() { [ "$1" = is-active ] && [ "${ACTIVE:-1}" = 1 ]; }
 '''
-SWAP_FNS = ENGINE_FNS + ["sudo_ready", "engine_swap"]
+SWAP_FNS = ENGINE_FNS + ["sudo_ready", "engine_swap", "env_add_missing", "env_put_back"]
 
 
 def _swap(tmp, changed=True, env=None):
@@ -560,7 +566,7 @@ def test_a_new_engine_that_does_not_come_up_is_rolled_back_with_its_unit():
     tmp = tempdir("teaport-eng-swap-")
     _engine(tmp, "old", release="1.5")
     rc, out = _swap(tmp, env={"RESTARTS": "01"})
-    assert rc != 0 and "DIE rolled back: the engine is running what it ran before" in out, out
+    assert rc != 0 and "DIE rolled back: the engine is running on what it had before this run" in out, out
     assert "RESTART on new / unit new" in out and "RESTART on old / unit old" in out, out
     assert set(_live(tmp).values()) == {"old"} and _copies(tmp) == [], (_live(tmp), _copies(tmp))
     assert pathlib.Path(tmp, "etc/systemd/teaport-engine.service").read_text() == "unit old\n"
@@ -575,7 +581,8 @@ def test_a_new_unit_alone_that_does_not_come_up_gets_the_previous_unit_back():
     tmp = tempdir("teaport-eng-swap-")
     _engine(tmp, "same", release="1.6")
     rc, out = _swap(tmp, changed=False, env={"RESTARTS": "01"})
-    assert rc != 0 and "putting the previous unit back" in out and "RESTART on same / unit same" in out, out
+    assert rc != 0 and "put back as they were before this run: the unit\n" in out, out
+    assert "RESTART on same / unit same" in out, out
     assert pathlib.Path(tmp, "etc/systemd/teaport-engine.service").read_text() == "unit same\n"
 
 
@@ -614,6 +621,238 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
         if not dry:
             want.insert(4, "engine_libs_check")   # a dry run only says it would check
         assert steps == want, (installed, dry, out)
+
+
+MODELS = ("models/voxtral/consolidated.safetensors", "models/kokoro/Kokoro_espeak_F16.gguf")
+
+
+def _models(tmp, tag):
+    for m in MODELS:
+        _write(pathlib.Path(tmp, "opt", m), f"{tag} {m.rsplit('/', 1)[-1]}\n")
+
+
+def _live_models(tmp):
+    return {m: pathlib.Path(tmp, "opt", m).read_text().split()[0] for m in MODELS}
+
+
+def test_a_release_that_changes_the_models_puts_the_old_ones_back_when_it_fails():
+    # Round 1 (#339): the models went live before the swap, and a rollback left them new.
+    tmp = tempdir("teaport-eng-models-")
+    _engine(tmp, "old", release="1.5")
+    _models(tmp, "old")
+    mf = _manifest(tmp)
+    pathlib.Path(tmp, "restarts").unlink(missing_ok=True)
+    script = f'{PHASE_STUBS}{SWAP_STUBS}MF="{mf}"; ONLY=engine; phase_engine; ENV_ADDED=0; engine_swap; echo SWAPPED'
+    rc, out = _run(tmp, script, SWAP_FNS + ["phase_engine"], {"RESTARTS": "01"})
+    assert rc != 0 and "the engine files, models and unit" in out and "rolled back" in out, out
+    assert set(_live(tmp).values()) == {"old"} and set(_live_models(tmp).values()) == {"old"}, out
+    assert "with the model(s) consolidated.safetensors Kokoro_espeak_F16.gguf" in out, out
+    # The same release, coming up: the new models are live and the old ones kept, linked.
+    tmp = tempdir("teaport-eng-models-")
+    _engine(tmp, "old", release="1.5")
+    _models(tmp, "old")
+    mf = _manifest(tmp)
+    rc, out = _run(tmp, script.replace(f'MF="{mf}"', f'MF="{_manifest(tmp)}"'), SWAP_FNS + ["phase_engine"], {"RESTARTS": "1"})
+    assert rc == 0 and set(_live_models(tmp).values()) == {"new"}, out
+    (copy,) = _copies(tmp)
+    for m in MODELS:
+        assert pathlib.Path(tmp, "opt/engine.rollback", copy, m).read_text().startswith("old "), m
+
+
+def test_rollback_moves_the_kept_models_back_and_keeps_the_ones_it_replaces():
+    tmp = tempdir("teaport-eng-models-")
+    _engine(tmp, "new", release="1.6")
+    _models(tmp, "new")
+    old = _copy(tmp, "000001-20261001T000000Z-1.5", "old")
+    _write(old / MODELS[0], "old consolidated.safetensors\n")   # 1.5 had another STT model
+    rc, out = _rollback(tmp)
+    assert rc == 0 and _live_models(tmp) == {MODELS[0]: "old", MODELS[1]: "new"}, out
+    (copy,) = _copies(tmp)
+    kept = pathlib.Path(tmp, "opt/engine.rollback", copy)
+    assert (kept / MODELS[0]).read_text().startswith("new ") and not (kept / MODELS[1]).exists(), copy
+    rc, out = _rollback(tmp)   # and undone
+    assert rc == 0 and set(_live_models(tmp).values()) == {"new"} and _live(tmp)["bin/voxtral"] == "new", out
+
+
+def test_a_clock_behind_still_makes_the_newest_copy():
+    # Round 1 (#339): copies were named by local time, so a box booted in another year (no
+    # RTC) made one that sorted oldest, and pruning removed the copy this run had just made.
+    tmp = tempdir("teaport-eng-clock-")
+    _engine(tmp, "old", release="1.5")
+    _copy(tmp, "000001-20261101T000000Z-1.3", "v13")
+    _copy(tmp, "000002-20261102T000000Z-1.4", "v14")
+    _write(pathlib.Path(tmp, "opt/engine.staged/bin/voxtral"), "new voxtral\n")
+    rc, out = _run(tmp, 'date() { echo 20250101T000000Z; }; ENGINE_CHANGED=" bin/voxtral"; engine_swap_in; '
+                        'echo "KEPT $ENGINE_KEPT"; engine_rollback_target', ENGINE_FNS)
+    assert rc == 0, out
+    assert _copies(tmp) == ["000002-20261102T000000Z-1.4", "000003-20250101T000000Z-1.5"], _copies(tmp)
+    assert out.splitlines()[-1].endswith("/000003-20250101T000000Z-1.5"), out
+
+
+def test_pruning_never_removes_the_copy_this_run_made():
+    tmp = tempdir("teaport-eng-clock-")
+    for name in ("000001-20261101T000000Z-1.3", "000002-20261102T000000Z-1.4", "000003-20261103T000000Z-1.5"):
+        _copy(tmp, name, "x")
+    rc, out = _run(tmp, 'ENGINE_KEEP=1; ENGINE_KEPT="$ENGINE_ROLLBACKS/000001-20261101T000000Z-1.3"; engine_prune', ENGINE_FNS)
+    assert rc == 0 and _copies(tmp) == ["000001-20261101T000000Z-1.3", "000003-20261103T000000Z-1.5"], (_copies(tmp), out)
+
+
+def test_a_rollback_copy_that_is_gone_is_refused_loudly_and_nothing_restarts():
+    tmp = tempdir("teaport-eng-gone-")
+    _engine(tmp, "live")
+    rc, out = _run(tmp, 'engine_restore "$ENGINE_ROLLBACKS/000009-x-1.0"; echo RESTORED', ENGINE_FNS)
+    assert rc != 0 and "DIE cannot put the engine in" in out and "RESTORED" not in out, out
+    assert "engine files back" not in out and set(_live(tmp).values()) == {"live"}, out
+    # In engine_swap's rollback: the kept copy vanished; the run stops, and restarts nothing on it.
+    tmp = tempdir("teaport-eng-gone-")
+    _engine(tmp, "old", release="1.5")
+    rc, out = _swap(tmp, env={"RESTARTS": "01", "LOSE_KEPT": "1"})
+    assert rc != 0 and "DIE cannot put the engine in" in out and out.count("RESTART on") == 1, out
+
+
+def test_a_rename_that_fails_mid_swap_puts_the_kept_engine_back():
+    # Round 1 (#339): a failed mv left a new binary beside an old dict, and nothing undid it.
+    tmp = tempdir("teaport-eng-mid-")
+    _engine(tmp, "old", release="1.5")
+    for rel in ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict"):
+        _write(pathlib.Path(tmp, "opt/engine.staged", rel), f"new {rel.rsplit('/', 1)[-1]}\n")
+    # The rename fails once (FAIL_ONCE) or on every try (a disk gone read-only, say).
+    script = ('mv() { case "${@: -1}" in */opt/bin/g2p/kokoro_g2p.v2.dict) '
+              'if [ ! -e "$T/failed" ] || [ -z "${FAIL_ONCE:-}" ]; then touch "$T/failed"; echo "mv: simulated failure"; return 1; fi ;; esac; '
+              'command mv "$@"; }\nENGINE_CHANGED=" bin/voxtral bin/g2p/kokoro_g2p.v2.dict"; engine_swap_in; echo SWAPPED')
+    rc, out = _run(tmp, script, ENGINE_FNS, {"FAIL_ONCE": "1"})
+    assert rc != 0 and "could not move bin/g2p/kokoro_g2p.v2.dict into place" in out and "SWAPPED" not in out, out
+    assert "back as it was before this run" in out and set(_live(tmp).values()) == {"old"}, (_live(tmp), out)
+    assert not pathlib.Path(tmp, "opt/engine.swapping").exists() and _copies(tmp) == [], _copies(tmp)
+    # Failing for good: the putting back fails too, says so, and leaves the marker for the next run.
+    tmp = tempdir("teaport-eng-mid-")
+    _engine(tmp, "old", release="1.5")
+    for rel in ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict"):
+        _write(pathlib.Path(tmp, "opt/engine.staged", rel), f"new {rel.rsplit('/', 1)[-1]}\n")
+    rc, out = _run(tmp, script, ENGINE_FNS)
+    assert rc != 0 and "DIE could not move bin/g2p/kokoro_g2p.v2.dict back from" in out, out
+    assert pathlib.Path(tmp, "opt/engine.swapping").exists(), out
+
+
+def test_a_swap_a_power_cut_stopped_is_put_right_by_the_next_run():
+    tmp = tempdir("teaport-eng-mid-")
+    _engine(tmp, "old", release="1.5")
+    kept = _copy(tmp, "000001-20261101T000000Z-1.5", "old")
+    for rel in ENGINE_REL[1:]:
+        _write(kept / rel, f"old {rel.rsplit('/', 1)[-1]}\n")
+    _write(pathlib.Path(tmp, "opt/bin/voxtral"), "new voxtral\n")             # the binary went in; the rest did not
+    mark = _write(pathlib.Path(tmp, "opt/engine.swapping"), f"{kept}\n")
+    rc, out = _run(tmp, 'engine_swap_recover; echo RECOVERED', ENGINE_FNS)
+    assert rc == 0 and "stopped half way" in out and set(_live(tmp).values()) == {"old"}, (_live(tmp), out)
+    assert not mark.exists() and _copies(tmp) == [], out
+    # A marker that names something not ours is not followed.
+    _write(pathlib.Path(tmp, "elsewhere/bin/voxtral"), "evil voxtral\n")
+    _write(mark, f"{tmp}/elsewhere\n")
+    rc, out = _run(tmp, 'engine_swap_recover', ENGINE_FNS)
+    assert rc == 0 and "nothing was kept from before it" in out and _live(tmp)["bin/voxtral"] == "old", out
+    assert not mark.exists()
+
+
+def test_rollback_after_an_interrupted_swap_puts_back_the_engine_before_it_and_no_further():
+    tmp = tempdir("teaport-eng-mid-")
+    _engine(tmp, "mixed", release="1.6")
+    _copy(tmp, "000001-20261001T000000Z-1.4", "older")
+    kept = _copy(tmp, "000002-20261101T000000Z-1.5", "old")
+    _write(pathlib.Path(tmp, "opt/engine.swapping"), f"{kept}\n")
+    rc, out = _rollback(tmp)
+    assert rc == 0 and "RESTART" in out and _live(tmp)["bin/voxtral"] == "old", out
+    assert _copies(tmp) == ["000001-20261001T000000Z-1.4"], _copies(tmp)
+
+
+def test_a_failed_new_engine_takes_back_the_engine_env_keys_it_added():
+    tmp = tempdir("teaport-eng-env-")
+    _engine(tmp, "old", release="1.5")
+    env = _write(pathlib.Path(tmp, "etc/engine.env"), "# tuned\nKOKORO_RESERVE_FPT=8\n")
+    _write(pathlib.Path(tmp, "opt/engine.staged/bin/voxtral"), "new voxtral\n")
+    pathlib.Path(tmp, "restarts").unlink(missing_ok=True)
+    script = (f'{SWAP_STUBS}env_add_missing "{env}" KOKORO_RESERVE_FPT=6 TTS_CTX=192; '
+              'ENGINE_CHANGED=" bin/voxtral"; engine_swap')
+    rc, out = _run(tmp, script, SWAP_FNS, {"RESTARTS": "01"})
+    assert rc != 0 and ", and engine.env" in out and env.read_text() == "# tuned\nKOKORO_RESERVE_FPT=8\n", out
+
+
+def test_a_masked_engine_unit_is_refused_before_anything_is_downloaded():
+    tmp = tempdir("teaport-eng-mask-")
+    _engine(tmp, "old", unit=False)
+    unit = pathlib.Path(tmp, "etc/systemd/teaport-engine.service")
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.symlink_to("/dev/null")
+    stubs = ('MANIFEST_URL=mf\nsystemctl() { [ "$1" = cat ]; }\ncheck_brain_source() { echo STEP; }\n'
+             'fetch_manifest() { echo STEP; }\n')
+    rc, out = _run(tmp, stubs + 'HERE="$T"; main_engine_only', ["main_engine_only"])
+    assert rc != 0 and "DIE teaport-engine.service is masked" in out and "STEP" not in out, out
+    rc, out = _run(tmp, stubs + 'HERE="$T"; DRY_RUN=1; main_engine_only', ["main_engine_only"])
+    assert "WARN teaport-engine.service is masked" in out, out
+
+
+def test_a_partial_download_resumes_only_into_the_same_file():
+    tmp = tempdir("teaport-eng-resume-")
+    _engine(tmp, "old")
+    dest = pathlib.Path(tmp, "opt/engine.staged/models/voxtral/consolidated.safetensors")
+    _write(f"{dest}.part", "half\n")
+    _write(f"{dest}.sha256", "aaaa\n")
+    stub = 'download() { if [ -e "$2.part" ]; then echo "RESUME $(cat "$2.part")"; else echo FRESH; fi; }\n'
+    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors aaaa', ENGINE_FNS)
+    assert rc == 0 and "RESUME half" in out, out
+    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors bbbb', ENGINE_FNS)
+    assert rc == 0 and "FRESH" in out and dest.with_name(dest.name + ".sha256").read_text() == "bbbb\n", out
+
+
+def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
+    tmp = tempdir("teaport-eng-resume-")
+    dest = pathlib.Path(tmp, "f.bin")
+    script = ('curl() { local o; while [ $# -gt 0 ]; do [ "$1" = -o ] && o="$2"; shift; done; echo corrupt > "$o"; }\n'
+              f'download https://x/f.bin "{dest}" {_sha("good" + chr(10))}')
+    rc, out = _run(tmp, script, ["download"])
+    assert rc != 0 and "sha256 mismatch" in out and not pathlib.Path(f"{dest}.part").exists(), out
+
+
+# --- one installer at a time -----------------------------------------------------------------
+
+def _lock_script(tmp):
+    body = (STUBS + "".join(_fn(f) for f in ("installer_lock",)) +
+            f'STATE="{tmp}/state"\n' + _line("INSTALL_LOCK=") +
+            'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; ARGS=("$@")\n'
+            'installer_lock; echo "LOCKED RUN ${TEAPORT_INSTALL_LOCKED:-no} $*"\n')
+    return _write(pathlib.Path(tmp, "install-lock-probe.sh"), body)
+
+
+def test_a_second_run_stops_at_once_while_one_holds_the_lock():
+    if not any(os.access(os.path.join(d, "flock"), os.X_OK) for d in os.environ.get("PATH", "").split(os.pathsep)):
+        raise appliance.Unavailable("no flock(1) here (util-linux); the appliance and CI have it")
+    tmp = tempdir("teaport-eng-lock-")
+    script = _lock_script(tmp)
+    env = {**os.environ, "T": str(tmp)}
+    p = subprocess.run(["bash", str(script), "--only", "engine"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0 and "LOCKED RUN 1 --only engine" in p.stdout, p.stdout + p.stderr
+    lock = pathlib.Path(tmp, "state/install.lock")
+    holder = subprocess.Popen(["flock", str(lock), "-c", "echo held; exec sleep 30"], stdout=subprocess.PIPE, text=True,
+                              start_new_session=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        p = subprocess.run(["bash", str(script), "--only", "engine"], capture_output=True, text=True, env=env)
+        assert p.returncode != 0 and "DIE another install.sh is running on this box" in p.stdout, p.stdout + p.stderr
+        assert "LOCKED RUN" not in p.stdout
+        # A dry run takes no lock: it says a real run would stop, and goes on.
+        p = subprocess.run(["bash", "-c", f'DRY=1; source /dev/stdin <<< "$(sed "s/^installer_lock;/DRY_RUN=1; installer_lock;/" {script})"'],
+                           capture_output=True, text=True, env=env)
+        assert "a real run stops here" in p.stdout and "LOCKED RUN no" in p.stdout, p.stdout + p.stderr
+    finally:
+        os.killpg(holder.pid, 9)   # flock and the sleep it holds the lock for
+        holder.wait()
+
+
+def test_without_flock_a_run_says_so_and_goes_on():
+    tmp = tempdir("teaport-eng-lock-")
+    rc, out = _run(tmp, 'have() { [ "$1" != flock ] && command -v "$1" >/dev/null 2>&1; }\n'
+                        f'STATE="{tmp}/state"; HERE="$T"; ARGS=(); {_line("INSTALL_LOCK=")}installer_lock; echo WENT_ON',
+                   ["installer_lock"])
+    assert rc == 0 and "WARN flock is missing" in out and "WENT_ON" in out, out
 
 
 # --- the health check ----------------------------------------------------------------------

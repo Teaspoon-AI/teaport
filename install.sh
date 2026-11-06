@@ -36,10 +36,10 @@
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
-# THIRD_PARTY_NOTICES.txt) it downloads the ones whose sha256 differs from the manifest's
-# beside the live ones, and checks them as a full run does (ldd, and cuDNN, OpenBLAS and
-# espeak-ng on the system); the models are checked and fetched only when they differ. Then
-# it keeps the live engine for a rollback, moves the new files in, renders
+# THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# from the manifest's beside the live ones, and checks them as a full run does (ldd, and
+# cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
+# rollback (with any model it replaces), moves the new files in, renders
 # teaport-engine.service from this checkout and restarts the engine (the brain goes down
 # and comes back with it, and reconnects), and checks it listens and stays up with its G2P
 # dict loaded, putting the previous engine back on its own if it does not.
@@ -49,7 +49,8 @@
 # A run that changes nothing restarts nothing.
 # `--rollback engine` puts the previous engine back, its unit with it, and keeps the one
 # it replaces, so a second run undoes it. Two are kept, in $PREFIX/engine.rollback/; a full
-# run that changes the engine keeps one there too.
+# run that changes the engine keeps one there too. Every run that changes anything holds
+# $STATE/install.lock, so a second one started meanwhile stops at once (installer_lock).
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -92,6 +93,7 @@ ALLOW_STALE_SOURCE="${TEAPORT_ALLOW_STALE_SOURCE:-0}"
 DRY_RUN=0
 ONLY=""       # --only <component>: "" = the whole appliance
 ROLLBACK=""   # --rollback <component>
+ARGS=("$@")   # as given: installer_lock runs this script again with them
 # Where this script lives — lets a checkout install its own brain/plugin/systemd.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -143,6 +145,32 @@ read_env_file() {
   else sudo cat "$1"; fi
 }
 
+# --- one run at a time ---------------------------------------------------------
+# Two runs at once trample each other: a full run's phase_engine stages and swaps the same
+# engine files an --only engine run has staged (#158), and either can be half way through
+# the brain's link. So a run holds an exclusive lock on $INSTALL_LOCK from main's first
+# step to its last, and a second run stops at once and says so. flock(1) holds it, and runs
+# this script again as its child with the lock's descriptor closed (-o): a process the run
+# starts and leaves running (a gateway, say) inherits nothing, so the lock ends with the
+# run. The lock file is root's (0644), which every user can open to lock. A dry run takes
+# no lock; it says when a real run would stop.
+INSTALL_LOCK="$STATE/install.lock"
+installer_lock() {
+  local me="$HERE/${BASH_SOURCE[0]##*/}" rc=0
+  [ -z "${TEAPORT_INSTALL_LOCKED:-}" ] || return 0   # the child: flock(1) holds it for us
+  if ! have flock; then warn "flock is missing: nothing stops a second install.sh from running beside this one"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -e "$INSTALL_LOCK" ]; then flock -n -E 75 "$INSTALL_LOCK" true 2>/dev/null || rc=$?; fi
+    if [ "$rc" = 75 ]; then warn "another install.sh is running on this box now ($INSTALL_LOCK) — a real run stops here"; fi
+    return 0
+  fi
+  if [ ! -f "$me" ]; then warn "not run from a file, so not locked: nothing stops a second install.sh from running beside this one"; return 0; fi
+  if [ ! -e "$INSTALL_LOCK" ]; then SUDO mkdir -p "$STATE"; SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
+  TEAPORT_INSTALL_LOCKED=1 flock -n -o -E 75 "$INSTALL_LOCK" bash "$me" ${ARGS[@]+"${ARGS[@]}"} || rc=$?
+  if [ "$rc" = 75 ]; then die "another install.sh is running on this box (it holds $INSTALL_LOCK) — let it finish, then run this again"; fi
+  exit "$rc"
+}
+
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
 fetch_manifest() {
@@ -176,7 +204,9 @@ download() {
   log "download $(basename "$dest")"
   run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
   if [ "$DRY_RUN" != 1 ]; then
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || die "sha256 mismatch: $dest"; }
+    # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
+    # stage is kept across runs, #158), and fail the same way each time.
+    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
     mv "$dest.part" "$dest"
   fi
 }
@@ -450,44 +480,70 @@ setup_logs() {
 # --- engine: staged, swapped in whole, one rollback away ---------------------------------
 # The engine is a binary and three files of its own release (the manifest's g2p_dict note:
 # "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
-# from <exe_dir>/g2p/, and the THIRD_PARTY_NOTICES.txt for what it is built from.
+# from <exe_dir>/g2p/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# models go with it here too: a release that changes one changes what the binary loads.
 # phase_engine used to download each over the live one in turn, so a run that failed half
 # way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
 # releases, and nothing kept the one before: every rollback copy on the box was made by
 # hand (#158). Now:
 #
-#   $PREFIX/engine.staged/<file>    this run's downloads: only the files whose sha256
-#                                   differs from the live one's; gone once they are live
-#   $PREFIX/engine.rollback/<when>-<release>/
+#   $PREFIX/engine.staged/<file>    the downloads: only the files whose sha256 differs
+#                                   from the live one's. Kept across runs, each beside a
+#                                   <file>.sha256 naming the file it is a download of, so
+#                                   an interrupted download resumes (models are GBs) and
+#                                   one of another release is never resumed into this one.
+#                                   Gone once they are live.
+#   $PREFIX/engine.rollback/<n>-<when>-<release>/
 #                                   the engine as it was before a run changed it: its
-#                                   files, the unit it ran under (teaport-engine.service)
-#                                   and its manifest entry (engine.json). The newest
-#                                   $ENGINE_KEEP are kept.
+#                                   files, the models the run replaced, the unit it ran
+#                                   under (teaport-engine.service) and its manifest entry
+#                                   (engine.json). <n> counts up, so the newest is the one
+#                                   with the highest <n> whatever the clock says (a box
+#                                   with no RTC can boot in another year; <when> is UTC,
+#                                   for people). The newest $ENGINE_KEEP are kept.
+#   $PREFIX/engine.swapping         there only while the staged files are moved in
+#                                   (engine_swap_recover).
 #
 # A staged file goes live by rename (engine_swap_in): an engine that is running keeps the
 # file it has open, and each path names a whole file throughout. --rollback engine renames
 # a kept engine back in (engine_restore) after keeping the live one the same way, so a
-# second rollback undoes the first. The kept files are copies, not hard links: a hand
-# deploy that cp's a binary over bin/voxtral writes into its inode, and would rewrite a
-# hard-linked rollback copy with it.
+# second rollback undoes the first. A file the run is about to replace is kept by a hard
+# link, free even for a model: the rename that follows leaves the copy the only name of
+# the old file. Every other engine file is copied, never linked: a hand deploy that cp's a
+# binary over bin/voxtral writes into its inode, and would rewrite a linked copy with it.
+# A model the run does not replace is not kept (it is the same in both). So a copy made by
+# a run that changed a model holds the old model (the Voxtral one is ~4.4 GB) until it is
+# pruned. The models' tekken.json/params.json have no sha256 in the manifest; they are
+# fetched in place on every run, as before, and are not kept.
+# Swapping a release directory behind one symlink would make the swap one rename; it would
+# move the engine out of bin/ (which uv shares) and THIRD_PARTY_NOTICES.txt out of
+# $PREFIX, where the unit, doctor and the docs name them: a follow-up, not this.
 ENGINE_STAGE="$PREFIX/engine.staged"
 ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
+ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
 ENGINE_KEEP=2
 ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
 ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
 ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
 ENGINE_KEPT=""      # the rollback copy this run made (engine_keep_live)
 
 # engine_fetch <url> <file> <sha256> — one engine file (a path under $PREFIX): left alone
 # when the live one already matches <sha256>, else downloaded into $ENGINE_STAGE and
-# added to ENGINE_CHANGED.
+# added to ENGINE_CHANGED. download() resumes a partial one and skips a whole one.
 engine_fetch() {
-  local url="$1" rel="$2" sha="$3"
+  local url="$1" rel="$2" sha="$3" dest="$ENGINE_STAGE/$2"
   if [ -f "$PREFIX/$rel" ] && echo "$sha  $PREFIX/$rel" | sha256sum -c --status 2>/dev/null; then
-    log "have ${rel##*/} (sha ok)"; return 0
+    log "have ${rel##*/} (sha ok)"
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part" "$dest.sha256"; fi
+    return 0
   fi
-  run mkdir -p "$(dirname "$ENGINE_STAGE/$rel")"
-  download "$url" "$ENGINE_STAGE/$rel" "$sha"
+  run mkdir -p "$(dirname "$dest")"
+  if [ "$(cat "$dest.sha256" 2>/dev/null || true)" != "$sha" ]; then
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part"; fi
+    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" > "$dest.sha256"; fi
+  fi
+  download "$url" "$dest" "$sha"
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
 }
 
@@ -517,28 +573,44 @@ engine_describe() {
   case "$out" in *$'\t'*) ;; *) ENGINE_ENTRY='{"engine": {"release": "unknown"}}' ;; esac
 }
 
-# engine_keep_live — copy the live engine (ENGINE_FILES, the unit it runs under, its manifest
-# entry) to a new rollback copy, and set ENGINE_KEPT. Built under a .partial name and
-# renamed once complete, so an interrupted copy is never taken for a rollback target. A
-# copy that fails (a full disk) stops the run: a swap with no way back is what this ends.
+# engine_copies — the rollback copies, newest first, NUL-separated: the directories whose
+# name starts with the six-digit count engine_keep_live gives them. Anything else in there
+# is not this installer's, and is neither a target nor pruned.
+engine_copies() {
+  local d
+  while IFS= read -r -d '' d; do
+    case "${d##*/}" in [0-9][0-9][0-9][0-9][0-9][0-9]-*) printf '%s\0' "$d" ;; esac
+  done < <(find "$ENGINE_ROLLBACKS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz)
+}
+
+# engine_keep_live <files> — keep the live engine (ENGINE_FILES, the models among <files>,
+# the unit it runs under, its manifest entry) as a new rollback copy, and set ENGINE_KEPT.
+# <files> are the ones about to be replaced: linked, not copied (see above). Built under a
+# .partial name and renamed once complete, so an interrupted copy is never taken for a
+# rollback target. A copy that fails (a full disk) stops the run before anything moved.
 engine_keep_live() {
-  local rel snap fail
+  local replacing=" ${1:-} " rel snap fail d n=0
   ENGINE_KEPT=""
   if [ ! -f "$PREFIX/bin/voxtral" ]; then log "no live engine — nothing to keep for --rollback engine"; return 0; fi
   engine_describe "$PREFIX/bin/voxtral"
-  snap="$ENGINE_ROLLBACKS/$(date +%Y%m%d-%H%M%S)-$ENGINE_RELEASE"
+  while IFS= read -r -d '' d; do d="${d##*/}"; d="${d%%-*}"; if [ "$((10#$d))" -gt "$n" ]; then n="$((10#$d))"; fi; done < <(engine_copies)
+  snap="$ENGINE_ROLLBACKS/$(printf '%06d' $((n + 1)))-$(date -u +%Y%m%dT%H%M%SZ)-$ENGINE_RELEASE"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] keep the live engine (%s) for --rollback engine: %s\n' "$ENGINE_RELEASE" "$snap"; return 0
   fi
-  if [ -e "$snap" ]; then snap="$snap-$$"; fi
   fail="could not keep the live engine for a rollback in $snap (disk full?) — nothing was swapped"
   log "keeping the live engine ($ENGINE_RELEASE) for --rollback engine: $snap"
   rm -rf "$snap.partial"
   mkdir -p "$snap.partial" || die "$fail"
-  for rel in "${ENGINE_FILES[@]}"; do
+  for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
     [ -f "$PREFIX/$rel" ] || continue
-    { mkdir -p "$(dirname "$snap.partial/$rel")" && cp -p "$PREFIX/$rel" "$snap.partial/$rel"; } \
-      || { rm -rf "$snap.partial"; die "$fail"; }
+    mkdir -p "$(dirname "$snap.partial/$rel")" || { rm -rf "$snap.partial"; die "$fail"; }
+    if contains " $rel " "$replacing"; then
+      ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
+        || { rm -rf "$snap.partial"; die "$fail"; }
+    elif contains " $rel " " ${ENGINE_FILES[*]} "; then
+      cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { rm -rf "$snap.partial"; die "$fail"; }
+    fi
   done
   if [ -f "$ENGINE_UNIT" ]; then
     cp "$ENGINE_UNIT" "$snap.partial/teaport-engine.service" || { rm -rf "$snap.partial"; die "$fail"; }
@@ -550,64 +622,116 @@ engine_keep_live() {
 
 # engine_swap_in — make the staged files live: keep the live engine first (engine_keep_live),
 # then rename each staged file over its live one. Nothing staged: nothing changes.
+# The renames are one per file, so the engine is whole only before and after them. A rename
+# that fails, or a run stopped in between (Ctrl-C, a kill), puts the kept engine back at
+# once (engine_swap_abort); for what nothing can catch (SIGKILL, a power cut), the marker
+# stays, and the next run puts the kept engine back first (engine_swap_recover).
 engine_swap_in() {
   local rel
   if [ -z "$ENGINE_CHANGED" ]; then
-    log "engine files: the live ones are the manifest's"; run rm -rf "$ENGINE_STAGE"; return 0
+    log "engine files: the live ones are the manifest's"
+    if [ -e "$ENGINE_STAGE" ]; then run rm -rf "$ENGINE_STAGE"; fi
+    return 0
   fi
-  engine_keep_live
+  engine_keep_live "$ENGINE_CHANGED"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] move the new%s into %s\n' "$ENGINE_CHANGED" "$PREFIX"; return 0; fi
+  printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK" || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
+  trap 'engine_swap_abort "the run was stopped while it moved the engine files in"' INT TERM HUP
   for rel in $ENGINE_CHANGED; do
-    mkdir -p "$(dirname "$PREFIX/$rel")"; mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"
+    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
+      || engine_swap_abort "could not move $rel into place"
   done
+  trap - INT TERM HUP
+  rm -f "$ENGINE_SWAP_MARK"
   rm -rf "$ENGINE_STAGE"
   log "engine files live:$ENGINE_CHANGED"
   engine_prune
 }
 
-# engine_restore <copy> — rename a rollback copy's files back over the live ones, put its
-# unit back (systemd reads it at the caller's daemon-reload) and its manifest entry, and
-# remove the copy: it is the live engine now. A file the copy lacks (one its release did
-# not have) stays as it is.
+# engine_swap_abort <why> — a swap stopped half way: put the kept engine back, whole, and
+# stop. With nothing kept (no engine before this run), say what to do instead.
+engine_swap_abort() {
+  trap - INT TERM HUP
+  if [ -n "$ENGINE_KEPT" ] && [ -f "$ENGINE_KEPT/bin/voxtral" ]; then
+    warn "$1 — putting the engine before this run back (${ENGINE_KEPT##*/})"
+    engine_restore "$ENGINE_KEPT"
+    rm -f "$ENGINE_SWAP_MARK"
+    die "$1; the engine is back as it was before this run — run this again"
+  fi
+  die "$1; the engine files may be a mix of two releases — run this again to finish"
+}
+
+# engine_swap_recover — the marker of a swap that something uncatchable stopped (SIGKILL, a
+# power cut): the live engine may be two releases at once, and starts that way. Put the
+# engine kept before that swap back, whole, before this run looks at what is live; the
+# run then stages and swaps as usual. Called by phase_engine and --rollback engine.
+engine_swap_recover() {
+  local kept
+  [ -f "$ENGINE_SWAP_MARK" ] || return 0
+  kept="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"
+  case "$kept" in "$ENGINE_ROLLBACKS"/*) ;; *) kept="" ;; esac   # only ever one of ours
+  if [ "$DRY_RUN" = 1 ]; then
+    warn "an engine swap was stopped half way ($ENGINE_SWAP_MARK): a real run puts ${kept:+${kept##*/}, }the engine before it, back first"
+    return 0
+  fi
+  if [ -n "$kept" ] && [ -f "$kept/bin/voxtral" ]; then
+    warn "an engine swap was stopped half way — putting the engine before it back first (${kept##*/})"
+    engine_restore "$kept"
+  else
+    warn "an engine swap was stopped half way, and nothing was kept from before it: this run replaces what is live"
+  fi
+  rm -f "$ENGINE_SWAP_MARK"
+}
+
+# engine_restore <copy> — rename a rollback copy's files back over the live ones (its models
+# too, when it kept any), put its unit back (systemd reads it at the caller's daemon-reload)
+# and its manifest entry, and remove the copy: it is the live engine now. A file the copy
+# lacks (one its release did not have, or a model it did not replace) stays as it is.
+# A copy without its binary is no engine: refused, loudly, before anything moves.
 engine_restore() {
-  local snap="$1" rel
+  local snap="$1" rel models=""
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] move the engine in %s back into %s, with its unit and manifest entry\n' "$snap" "$PREFIX"; return 0
   fi
-  for rel in "${ENGINE_FILES[@]}"; do
-    if [ -f "$snap/$rel" ]; then mkdir -p "$(dirname "$PREFIX/$rel")"; mv -f "$snap/$rel" "$PREFIX/$rel"; fi
+  [ -f "$snap/bin/voxtral" ] || die "cannot put the engine in $snap back: it is gone or has no bin/voxtral — the live engine files were left as they are"
+  for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
+    [ -f "$snap/$rel" ] || continue
+    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$snap/$rel" "$PREFIX/$rel"; } \
+      || die "could not move $rel back from $snap — the engine files may be a mix of two releases (what is left to move back is in $snap)"
+    if contains " $rel " " ${ENGINE_MODELS[*]} "; then models="$models ${rel##*/}"; fi
   done
   if [ -f "$snap/teaport-engine.service" ]; then write_root "$ENGINE_UNIT" "$(cat "$snap/teaport-engine.service")"; fi
   if [ -f "$snap/engine.json" ]; then manifest_take "$snap/engine.json" engine; fi
   rm -rf "$snap"
-  log "engine files back from ${snap##*/}"
+  log "engine files back from ${snap##*/}${models:+, with the model(s)$models}"
 }
 
 # engine_rollback_target — print the newest complete rollback copy; fail when there is none.
-# Names start with a sortable timestamp.
 engine_rollback_target() {
   local d
   while IFS= read -r -d '' d; do
     case "$d" in *.partial) continue ;; esac
     if [ -f "$d/bin/voxtral" ]; then printf '%s\n' "$d"; return 0; fi
-  done < <(find "$ENGINE_ROLLBACKS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz)
+  done < <(engine_copies)
   return 1
 }
 
 # engine_prune — keep the newest $ENGINE_KEEP rollback copies and remove the rest, and any
 # copy left incomplete (.partial, or without a binary). The live engine is not in there, so
-# a count is all it takes. Never fails the run. The hand-made bin/voxtral.rollback-* copies
-# on some boxes are not this installer's, and stay.
+# a count is all it takes; the copy this run made is never removed, whatever its place.
+# Never fails the run. The hand-made bin/voxtral.rollback-* copies on some boxes are not
+# this installer's, and stay.
 engine_prune() {
   local d n=0
   while IFS= read -r -d '' d; do
+    if [ -n "$ENGINE_KEPT" ] && [ "$d" -ef "$ENGINE_KEPT" ]; then n=$((n + 1)); continue; fi
     case "$d" in
       *.partial) ;;
       *) if [ -f "$d/bin/voxtral" ] && [ "$n" -lt "$ENGINE_KEEP" ]; then n=$((n + 1)); continue; fi ;;
     esac
     log "removing old engine rollback copy $d"
     run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
-  done < <(find "$ENGINE_ROLLBACKS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz)
+  done < <(engine_copies)
 }
 
 # manifest_take <from.json> <key...> — set those top-level keys of the installed manifest
@@ -645,10 +769,11 @@ phase_engine() {
   log "engine + models -> $PREFIX"
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
   SUDO chown -R "$RUN_USER" "$PREFIX"
-  # The engine's own files are staged, not downloaded over the live ones (engine_fetch), and
-  # go live together once all of them have verified (engine_swap_in, below).
+  # The engine's own files and its models are staged, not downloaded over the live ones
+  # (engine_fetch), and go live together once all of them have verified (engine_swap_in,
+  # below). A swap a power cut stopped is put right first (engine_swap_recover).
+  engine_swap_recover
   ENGINE_CHANGED=""
-  run rm -rf "$ENGINE_STAGE"
   engine_fetch "$(mget engine.assets.$ASSET_KEY.url)" bin/voxtral "$(mget engine.assets.$ASSET_KEY.sha256)"
   # The binary that will run: the staged one when it is new, the live one when it matched.
   local bin="$PREFIX/bin/voxtral" kept=""
@@ -719,12 +844,12 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     engine_fetch "$notices_url" THIRD_PARTY_NOTICES.txt "$notices_sha"
   fi
+  engine_fetch "$(mget models.voxtral.url)" models/voxtral/consolidated.safetensors "$(mget models.voxtral.sha256)"
+  engine_fetch "$(mget models.kokoro.url)"  models/kokoro/Kokoro_espeak_F16.gguf     "$(mget models.kokoro.sha256)"
   # A full run makes them live now (its restart is phase_services'). --only engine does it
   # itself, right before its restart, so that it can check the result and put the previous
-  # engine back (engine_swap).
+  # engine back, models included (engine_swap).
   if [ "$ONLY" != engine ]; then engine_swap_in; fi
-  download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
-  download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
   for aux in tekken.json params.json; do
     local u; u="$(python3 -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
@@ -849,18 +974,20 @@ engine_swap() {
   fi
   log "teaport-engine: ${why:-it is not running}"
   if engine_restart; then return 0; fi
+  # Put back all this run changed: the engine's files and models with its unit (the kept
+  # copy), or the unit alone; and the keys it added to engine.env.
+  local back=""
   if [ -n "$ENGINE_KEPT" ]; then
-    warn "the engine did not come back — putting the one before it back (${ENGINE_KEPT##*/})"
-    engine_restore "$ENGINE_KEPT"
+    engine_restore "$ENGINE_KEPT"; back="the engine files, models and unit (${ENGINE_KEPT##*/})"
   elif [ -n "$before" ] && [ "$before" != "$after" ]; then
-    warn "the engine did not come back on the new unit — putting the previous unit back"
-    write_root "$ENGINE_UNIT" "$before"
-  else
-    die "the engine did not come back, and this run changed nothing it could put back — see: $journal"
+    write_root "$ENGINE_UNIT" "$before"; back="the unit"
   fi
+  if [ "$ENV_ADDED" != 0 ]; then env_put_back; back="${back:+$back, and }engine.env"; fi
+  [ -n "$back" ] || die "the engine did not come back, and this run changed nothing it could put back — see: $journal"
+  warn "the engine did not come back — put back as they were before this run: $back"
   SUDO systemctl daemon-reload
   if engine_restart; then
-    die "rolled back: the engine is running what it ran before this run again. The failed start is in: $journal"
+    die "rolled back: the engine is running on what it had before this run. The failed start is in: $journal"
   fi
   die "rolled back, but the engine is not healthy there either — see: $journal"
 }
@@ -2169,8 +2296,9 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # only fills gaps, so that a key a new engine release needs reaches a box without it.
 # Read as write_env reads (privileged when the plain read fails; a file that cannot be read
 # is not rewritten) and written as it writes (root:$RUN_USER 0640). Nothing to add: the
-# file is not written. Sets ENV_ADDED to the number of keys added.
-ENV_ADDED=0
+# file is not written. Sets ENV_ADDED to the number of keys added, and keeps the file as it
+# was for env_put_back (engine_swap's rollback takes the keys back out).
+ENV_ADDED=0 ENV_FILE="" ENV_BEFORE="" ENV_EXISTED=0
 env_add_missing() {
   local path="$1"; shift
   local existing="" have=" " line key add=() kept=()
@@ -2209,10 +2337,23 @@ env_add_missing() {
     return 0
   fi
   log "adding ${#add[@]} key(s) $path lacks: ${add[*]%%=*}"
+  ENV_FILE="$path" ENV_BEFORE="$existing" ENV_EXISTED=0
+  if [ -e "$path" ]; then ENV_EXISTED=1; fi
   { if [ -n "$existing" ]; then printf '%s\n' "$existing"; fi
     printf '%s\n' "${add[@]}"
   } | SUDO tee "$path" >/dev/null
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
+}
+
+# env_put_back — undo env_add_missing's last write: the file as it was, or no file.
+env_put_back() {
+  [ "$ENV_ADDED" != 0 ] && [ -n "$ENV_FILE" ] || return 0
+  if [ "$ENV_EXISTED" = 1 ]; then
+    { if [ -n "$ENV_BEFORE" ]; then printf '%s\n' "$ENV_BEFORE"; fi; } | SUDO tee "$ENV_FILE" >/dev/null
+  else
+    SUDO rm -f "$ENV_FILE"
+  fi
+  ENV_ADDED=0
 }
 
 # engine_env_lines — the keys phase_services writes to engine.env, with the values it writes
@@ -3414,6 +3555,12 @@ main_engine_only() {
     local msg="no installed engine here ($PREFIX/bin/voxtral, teaport-engine.service) — --only engine updates one; run install.sh without --only first"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
   fi
+  # A masked unit stays masked (render_unit, #199), so the restart and check that decide the
+  # swap could not run: say so before anything is downloaded.
+  if [ "$(readlink "$ENGINE_UNIT" 2>/dev/null || true)" = /dev/null ]; then
+    local masked="teaport-engine.service is masked on this machine — --only engine would install an engine nothing starts; systemctl unmask teaport-engine.service first"
+    if [ "$DRY_RUN" = 1 ]; then warn "$masked"; else die "$masked"; fi
+  fi
   # Before anything is downloaded: render_unit would only find it missing after the swap.
   [ -f "$HERE/systemd/teaport-engine.service.in" ] || die "missing unit template: $HERE/systemd/teaport-engine.service.in"
   check_brain_source   # this checkout's freshness, in what --only engine installs (ENGINE_ONLY_PATHS)
@@ -3447,13 +3594,30 @@ main_engine_only() {
 # brain): a failure is said, and the next --rollback is how to go back.
 main_rollback_engine() {
   log "teaport installer — engine rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
-  local target; target="$(engine_rollback_target)" || die "no previous engine to roll back to (nothing kept in $ENGINE_ROLLBACKS)"
+  local target="" rel replacing=""
+  # A swap that was stopped half way: putting back the engine before it IS the rollback.
+  if [ -f "$ENGINE_SWAP_MARK" ]; then
+    target="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"; target="${target:-the engine before an interrupted swap}"
+  else
+    target="$(engine_rollback_target)" || die "no previous engine to roll back to (nothing kept in $ENGINE_ROLLBACKS)"
+  fi
   log "rolling the engine back to ${target##*/}"
   if [ "$DRY_RUN" != 1 ]; then sudo_ready "roll the engine back"; fi
-  # Renames into bin/ and $PREFIX: theirs to own, as phase_engine leaves them.
-  SUDO chown "$RUN_USER" "$PREFIX"; SUDO chown -R "$RUN_USER" "$PREFIX/bin" "$ENGINE_ROLLBACKS"
-  engine_keep_live
-  engine_restore "$target"
+  # Renames into bin/, models/ and $PREFIX: theirs to own, as phase_engine leaves them.
+  SUDO chown "$RUN_USER" "$PREFIX"; SUDO chown -R "$RUN_USER" "$PREFIX/bin" "$PREFIX/models" "$ENGINE_ROLLBACKS"
+  if [ -f "$ENGINE_SWAP_MARK" ]; then
+    engine_swap_recover
+  else
+    # Keep what the rollback replaces (a model the kept engine has, too), so that a second
+    # --rollback engine undoes this one whole.
+    for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do [ ! -f "$target/$rel" ] || replacing="$replacing $rel"; done
+    engine_keep_live "$replacing"
+    # The renames back are one per file, as in a swap: marked the same way, so a run stopped
+    # among them is put back whole (to the engine kept just now) by the next one.
+    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK"; fi
+    engine_restore "$target"
+    if [ "$DRY_RUN" != 1 ]; then rm -f "$ENGINE_SWAP_MARK"; fi
+  fi
   SUDO systemctl daemon-reload
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] restart teaport-engine.service, verify it listens on :%s and stays up\n' "$ENGINE_PORT"
@@ -3466,6 +3630,7 @@ main_rollback_engine() {
 }
 
 main() {
+  installer_lock
   if [ "$ROLLBACK" = brain ]; then main_rollback_brain; return; fi
   if [ "$ROLLBACK" = engine ]; then main_rollback_engine; return; fi
   if [ "$ONLY" = brain ]; then main_brain_only; return; fi

@@ -12,7 +12,7 @@ The installer applies every update. The `teaport update` command compares the de
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: cli/teaport:17,451-452#81a89efd; install.sh:735,3438#841be564 -->
+<!-- source: cli/teaport:17,451-452#81a89efd; install.sh:860,3585#841be564 -->
 
 ## Check for updates
 
@@ -63,11 +63,11 @@ The run builds a new Python environment from `brain/uv.lock` beside the live one
 
 The swap restarts the local audio bridge with the brain when the `teaport-local-audio` service is active; the brain's health alone decides whether the swap stays.
 
-<!-- source: install.sh:1190-1192,1208-1210#ab020d70 -->
+<!-- source: install.sh:1317-1319,1335-1337#ab020d70 -->
 
 A Talk session in progress ends at the restart. A phone call stays connected at the gateway, and the brain rejoins it with a short notice that it lost the connection.
 
-<!-- source: install.sh:1268#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
+<!-- source: install.sh:1395#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
 
 Nothing else changes: no engine download, no license prompt, no systemd unit or `/etc/teaport` edit. A brain change that needs a new unit or a new setting there ships in a full run instead.
 
@@ -93,29 +93,33 @@ bash <(curl -fsSL https://get.teaspoon.tech/teaport) --only engine
 
 <!-- source: install.sh:3,12,37-38#5088e1dc -->
 
-The engine comes from the release manifest, and the `teaport-engine` unit comes from the checkout. Of the engine's files, the binary, its pronunciation dictionary, its part-of-speech tagger, and `THIRD_PARTY_NOTICES.txt`, the run downloads only the ones whose sha256 differs from the manifest. It downloads them beside the live files, so the engine keeps serving, and checks them as a full run does. It also checks the models, and downloads one only when its sha256 differs.
+The engine comes from the release manifest, and the `teaport-engine` unit comes from the checkout. The run downloads only the files whose sha256 differs from the manifest, out of the engine's binary, its pronunciation dictionary, its part-of-speech tagger, `THIRD_PARTY_NOTICES.txt`, and its two models. It downloads them beside the live files, so the engine keeps serving, and checks them as a full run does. If a download is interrupted, the next run continues it where it stopped.
 
-<!-- source: install.sh:37-41,476,484-492,725#9b97d2b1 -->
+<!-- source: install.sh:37-41,490-495,526,534-548,847-848#2a1a01bd -->
 
-Then the run keeps a copy of the live engine for a rollback, moves the new files in, renders `teaport-engine.service`, and restarts the engine. The brain reconnects to it. The run checks that the engine listens on its port within three minutes, stays up, and loaded its pronunciation dictionary. If the engine does not come back healthy, the run puts the previous engine and its unit back by itself, and fails.
+Then the run keeps a copy of the live engine for a rollback, moves the new files in, renders `teaport-engine.service`, and restarts the engine. The brain reconnects to it. The run checks that the engine listens on its port within three minutes, stays up, and loaded its pronunciation dictionary. If the engine does not come back healthy, the run puts back the previous engine with its models and its unit, removes the keys it added to `engine.env`, and fails.
 
-<!-- source: install.sh:42-45,758,765,773,784,827-866#c88457fe -->
+<!-- source: install.sh:42-45,890,898,909,975-993#671772e7 -->
+
+If the run stops while it moves the new files in, it puts the previous engine back. If a power cut stops it there, the next run of the installer does that first. The installer runs one at a time: a second run started while one is running stops right away with `another install.sh is running on this box`.
+
+<!-- source: install.sh:148-172,623-628,651-684#82ebe49d -->
 
 The engine takes about a minute to load its models after a restart, and a Talk session or a phone call in progress loses the engine. When the engine's files, its unit, and `engine.env` are already current and the engine is running, the run checks the engine and doesn't restart it.
 
-<!-- source: install.sh:49,799,842-848#7a387a56; brain/teaport_brain/config_schema.toml:66#80379fdf -->
+<!-- source: install.sh:49,924,967-973#7a387a56; brain/teaport_brain/config_schema.toml:66#80379fdf -->
 
 `/etc/teaport/engine.env` gains only the keys it lacks. A value that is already in the file stays, so a `KOKORO_RESERVE_FPT` that you tuned survives the update. A full run writes the installer's values over it.
 
-<!-- source: install.sh:46-47,2197,2211,2553-2555#b176008a -->
+<!-- source: install.sh:46-47,2325,2339,2694-2696#b176008a -->
 
 The run asks you to accept the engine license only when its version differs from the one you accepted. It installs no system packages: it checks that `espeak-ng`, `libopenblas.so.0`, and `libcudnn.so.9` are present, and stops when one is missing. Nothing else changes: no brain build and no other unit.
 
-<!-- source: install.sh:47-48,3421-3427#d2f3ce52 -->
+<!-- source: install.sh:47-48,3568-3574#d2f3ce52 -->
 
 If a drop-in changes the engine's unit, for example one that a manual deployment left in `/run`, the run names it and leaves it in place. Remove it if you don't need it, and then run `sudo systemctl daemon-reload`.
 
-<!-- source: install.sh:809-818#c43a4851 -->
+<!-- source: install.sh:934-943#c43a4851 -->
 
 ### Update everything
 
@@ -127,7 +131,7 @@ Run the installer with no component flag:
 
 The full run repeats the installation and downloads only the artifacts that differ. It builds the brain the way the brain-only run does, and after every unit and env file is written, it points the `venv` link at the new release, restarts the engine and the brain in one step, and checks that they come back. A full run has no automatic rollback; roll the brain or the engine back by hand afterward.
 
-<!-- source: install.sh:5,29-33#a295df7b; install.sh:50-52#0fe94c92; cli/teaport:477#8d9b9f6b -->
+<!-- source: install.sh:5,29-33#a295df7b; install.sh:50-52#c6d99e84; cli/teaport:477#8d9b9f6b -->
 
 ## Roll back the brain
 
@@ -141,11 +145,11 @@ To put the previous environment back, run the rollback on its own:
 
 The run makes `venv.previous`, the environment the last brain update replaced, the live environment again: it points `venv` at that release, restarts the brain, and checks it comes back. The `teaport` command and the configuration helper come with it, because each environment carries the ones built in it.
 
-<!-- source: install.sh:11,20-21,912-917,1279-1283#8bcd3541 -->
+<!-- source: install.sh:11,20-21,1039-1044,1406-1410#8bcd3541 -->
 
 The installer accepts two components, `brain` and `engine`, and `--only` and `--rollback` do not combine in one run.
 
-<!-- source: install.sh:113-116#ffc7d7a8 -->
+<!-- source: install.sh:115-118#ffc7d7a8 -->
 
 The brain-only update rolls back on its own when the brain fails its health check. A full run does not; use the rollback by hand there.
 
@@ -161,13 +165,13 @@ To put the previous engine back, run the rollback on its own:
    ./install.sh --rollback engine
    ```
 
-The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
+The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under and any model it kept. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
 
-<!-- source: install.sh:13,50-51,572-584,3444-3465#f653150b -->
+<!-- source: install.sh:13,50-51,691-707,3591-3630#b9eab268 -->
 
 The engine-only update rolls back on its own when the engine fails its check. A rollback doesn't: if the engine doesn't come back, the run stops and says so. A full run doesn't roll back either; use the rollback by hand there.
 
-<!-- source: install.sh:45,51-52,725,3446-3447,3462#cfa8e5ec -->
+<!-- source: install.sh:45,51-52,852,3593-3594,3626#a9536167 -->
 
 ## Choose a release channel
 
@@ -181,21 +185,21 @@ Both the installer and `teaport update` read the URL or local path in `TEAPORT_M
 TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 ```
 
-<!-- source: install.sh:55,80#0f9477e2; cli/teaport:20,195#d418858c -->
+<!-- source: install.sh:56,81#0f9477e2; cli/teaport:20,195#d418858c -->
 
 No command takes a channel option: the installer parses `--dry-run`, `--accept-eula`, `--only`, `--rollback`, and `--help`, and `teaport update` parses `--check`. The variable is how you choose.
 
-<!-- source: install.sh:99-109#ef93f814; cli/teaport:449-450#07b8ea70 -->
+<!-- source: install.sh:101-111#ef93f814; cli/teaport:449-450#07b8ea70 -->
 
 ## Retained releases
 
 Every brain build lands in a new environment under `venvs/` in the install root. The `venv` symlink names the live one; `venv.previous`, the one before it, is the rollback target. The installer keeps the newest three releases, plus the live release and the rollback target, and prunes the rest before each build.
 
-<!-- source: install.sh:34-35,912-917,1332-1339#bb84da25 -->
+<!-- source: install.sh:34-35,1039-1044,1459-1466#bb84da25 -->
 
-A run that changes the engine's files first keeps the engine they replace in `engine.rollback/` in the install root: its files, the unit it ran under, and its entry from the installed manifest, in a directory named for the time and the release. The installer keeps the newest two and removes the rest. A run that changes no engine file keeps nothing.
+A run that changes the engine's files first keeps the engine they replace in `engine.rollback/` in the install root: its files, the unit it ran under, its entry from the installed manifest, and any model the run replaces. Each copy is numbered, so the newest copy is the one with the highest number, whatever the device's clock says. The installer keeps the newest two and removes the rest. A run that changes no engine file keeps nothing. A copy that holds a model takes that model's disk space until the installer removes the copy; the speech-to-text model is about 4.4 GB.
 
-<!-- source: install.sh:457-466,475,524-529,553-557,601-606#85e3a3ad -->
+<!-- source: install.sh:496-503,510-516,524,586-597,719-723#e163601c -->
 
 ## What's next
 
