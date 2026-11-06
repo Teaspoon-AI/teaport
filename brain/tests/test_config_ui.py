@@ -60,6 +60,40 @@ OPENAI_API_KEY=sk-hand-added-must-not-leak
 
 _REAL_WIFI_SETUP_BUSY = config_ui._wifi_setup_busy
 
+# What setup() changes outside this file (and OPENCLAW_GATEWAY_TOKEN, which
+# test_a_secret_is_written_as_the_brain_reads_it clears, and the DISCORD_BOT_TOKEN row's
+# file, which a bridge test points into its temp HOME), saved before the first test and
+# put back after the last (#220). The suite runs this script in a process of its own, so
+# it never saw the leak. One pytest process running it beside other files did:
+# `pytest test_config_ui.py test_agent_key.py` handed the later tests a temp HOME, no
+# LLM_API_KEY, and a key file pointed into that temp HOME. pytest calls these two
+# (xunit-style); a run as a script has nothing after it to leak into.
+_ENV = ("HOME", "GATEWAY_TOKEN", "LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN")
+_ATTRS = ((config_ui, ("ETC_DIR", "SIP_CONF", "_privileged", "_unit_states", "_wifi_setup_busy",
+                       "check_key")),
+          (agent_key, ("SHARES",)))
+_FILES = ("LLM_API_KEY", "OPENCLAW_GATEWAY_TOKEN", "DISCORD_BOT_TOKEN")
+_SAVED: dict = {}
+
+
+def setup_module():
+    _SAVED["env"] = {k: os.environ.get(k) for k in _ENV}
+    _SAVED["attrs"] = [(mod, name, getattr(mod, name)) for mod, names in _ATTRS for name in names]
+    _SAVED["files"] = {name: config_ui._rows()[name]["file"] for name in _FILES}
+
+
+def teardown_module():
+    for k, v in _SAVED.pop("env").items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    for mod, name, value in _SAVED.pop("attrs"):
+        setattr(mod, name, value)
+    rows = config_ui._rows()
+    for name, path in _SAVED.pop("files").items():
+        rows[name]["file"] = path
+
 
 def setup():
     etc = tempdir("teaport-etc-")

@@ -9,6 +9,7 @@
 #
 # Run: python test_lockcheck.py   (or via pytest test_suite.py)
 #
+import importlib.metadata as md
 import json
 import os
 import sys
@@ -67,7 +68,11 @@ def _record(site):
     """`record` in a venv holding <site> alone (it reads sys.path, as in a real venv)."""
     out = os.path.join(tempdir("teaport-lock-"), "teaport-build.json")
     saved = sys.path[:]
-    sys.path[:] = [site]
+    # The stdlib stays on the path, as in a real venv: only the entries that hold
+    # distribution records (site-packages, a checkout's egg-info) give way to <site>.
+    # A path of <site> alone failed on Python 3.14, whose argparse imports locale and
+    # _colorize lazily inside ArgumentParser(): "No module named 'locale'" (#220).
+    sys.path[:] = [p for p in saved if not any(md.distributions(path=[p]))] + [site]
     try:
         rc = lockcheck.main(["record", out, "--source", "s", "--revision", "r", "--lock-sha", "x", "--uv", "u"])
     finally:
