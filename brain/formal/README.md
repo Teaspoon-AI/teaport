@@ -9,10 +9,10 @@ asyncio makes the mapping unusually clean. The atomic grain is not a judgment ca
 awaits becomes one TLA+ action, and there is a defensible correspondence between the
 spec and the Python.
 
-State spaces run from a few hundred states to a few hundred thousand (the largest
-default rows, `vc_voice_nohold` at 600k and `lp_all` at 405k, take under a minute with
-two workers; `--full`'s rows are tens of millions). The default run — every `run` line
-in `check.sh` — takes about 20 minutes on CI's runner, so it is cheap to keep there.
+State spaces run from a few dozen states to a few million (the largest default row,
+`vc_voice` at 2.4M states, takes about half a minute with two workers; most are under
+10 s; `--full`'s rows are tens of millions). The default run — every `run` line in
+`check.sh` — takes about 20 minutes on CI's runner, so it is cheap to keep there.
 
 ## Running them
 
@@ -72,7 +72,7 @@ Three designs and a mutant, selected by the `MODE` constant:
 | `asWritten` | `gate.wait_until_delivered()` — waits on `_busy`/`_idle` | ✗ | ✗ |
 | `gateOnOwn` | wait for *our* completion to start, then end | ✓ | ✗ |
 | `retireOnRead` | **as shipped**: retire at the **first text** of the completion whose request carried the order (`FollowupTrigger`); an order nobody answered goes only by `ClientNotes`' expiry or a newer order | ✓ (2.8k states) | ✓ |
-| `retireOnStart` | the mutant: retire at `LLMFullResponseStartFrame`, which pipecat pushes before the request is built | ✗ (3 steps) | ✓ |
+| `retireOnStart` | the mutant: retire at `LLMFullResponseStartFrame`, which pipecat pushes before the request is built | ✗ (3 steps) | ✓ (vacuously: nothing ever answers) |
 
 The as-written design violates **both**: the trigger can be retired before anything
 read it, *and* — on a different interleaving — stay live long enough for two
@@ -1695,7 +1695,7 @@ the rest on the real ledger.
 | `lp_guarded` | `HeardPrefixOnOwn`, the corrector of the first fix (`"guarded"`: still the newest message, cut by cut) | ✗ (14) — below |
 | `lp_unspeakable_tail` | `HeardPrefixOnOwn`, `Unspeakable = {r1}`, the `"seq"` corrector before the emoji fix (`"seqTail"`: with no newer reply, the newest message, speech or not) | ✗ (13) — below |
 | `lp_failed` | every property but `NoUnheardAheadOfPlayed`, with the corrector's three, `Failed = {r1}`, **as shipped** (`Corrector = "seq"`) | ✓ (85k, ~10 s) |
-| `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
+| `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (517k for the two-reply rows, ~40 s with two workers; 2026-11-05) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
 ### The 2026-10-14 audit: what the model had drifted from
@@ -3292,7 +3292,7 @@ playout, and the two could overlap. `engine_tts._freeze_playout` freezes the TTS
 playout model through them and, when the last one ends, moves the anchor of a reply
 queued behind (`_prev_audio_end_ns`) by the time since the first began. Since #255 the
 reply hold is the only freeze source (`_freezes` holds one), so the overlap the `SLOT`
-rows found is the record of the design before; the arithmetic is still the TTS's. The check is that arithmetic, against a ground-truth
+rows found is the record of the design before. The check is that arithmetic, against a ground-truth
 count of the ticks playout was stopped (round-2 review: the first version only checked
 "frozen while stopped", close to a tautology). Each part runs in its own rows (`PART`).
 
@@ -3357,7 +3357,7 @@ filler playing over the held reply).
 | `vc_wall` | **before #255**: released on the pipeline clock | ✗ (a word stamped before a pause comes out the pause early) | — |
 | `vc_holdWall` | voice / **wall** / voice | ✗ (a pause during the hold counts twice in the held reply's shift) | — |
 | `vc_stampWall` | voice / voice / **wall** | ✗ (a clause after a gap placed at the pipeline clock's now) | — |
-| `vc_voice` | **as shipped**, with the hold | ✓ (540k states) | ✓ |
+| `vc_voice` | **as shipped**, with the hold | ✓ (2.4M states, ~30 s with two workers; 2026-11-05) | ✓ |
 | `vc_voice_nohold` | as shipped, no hold | ✓ (600k states) | ✓ |
 
 `WordsOnVoice`: every unit, when the listener starts hearing it, has its word released
