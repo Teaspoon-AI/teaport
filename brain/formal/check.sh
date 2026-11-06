@@ -210,7 +210,7 @@ run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other prope
 run Owed.tla ow_judgeWrong        "(expected: FAILS ClosedOnEvidence — the cut judge answers HEARD when the rest held part of the answer (the residual, 1/145 measured): the record closes unheard)"
 run Owed.tla ow_prefixLexical     "(expected: FAILS ClosedOnEvidence — a cut decided by the lexical rule on the heard prefix (a8fa2ba): two content words of each item close it before its facts are out)"
 run Owed.tla ow_judgeOwes         "(expected: FAILS NoRunAfterHeard — OWES, the residual: the judge answers OWED (or not in time) though all was heard (14/96 measured, at the trailing edge); the record stays owed and the lull re-offers it)"
-run Owed.tla ow_judgeOwes_rest    "(expected: holds — OWES: every property but the re-offer's repeat of what was heard)"
+run Owed.tla ow_judgeOwes_rest    "(expected: holds — OWES: every property, RetellOnce included, but NoRunAfterHeard (the re-offer's repeat of what was heard) and NoStaleNote (the note says unheard meanwhile; 10 steps))"
 run Owed.tla ow_gist_lexical      "(expected: FAILS RetellOnce — CLOSE lexical with LEXMISS, as shipped in #204: a one-fact answer told in the caller's words reads as not covering, and every noted turn re-tells it (2026-10-23 14:06))"
 run Owed.tla ow_gist_noBackstop   "(expected: FAILS RetellOnce — the gist judge with no backstop: a judge that answers OWED on full tellings (PTOWES) re-tells a heard answer on every turn)"
 run Owed.tla ow_gist_oneReply     "(expected: FAILS RetellOnce — the judges read the one reply, not what was heard of the record: a re-telling cut before its facts is OWED though the telling before it was heard)"
