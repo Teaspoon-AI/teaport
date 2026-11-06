@@ -752,6 +752,12 @@ class Setup:
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
         while True:
+            # A request left from before (a second tap while the last join began) is
+            # dropped now, while the setup network is down and no new one can come: from
+            # here on every request is kept. Not after "ap_up" is written -- that is when
+            # phones are told the network is back, and one asking at once would be lost.
+            self.request = None
+            self.wake.clear()
             ok, err = self.nm.ap_up(dev, ssid, password)
             if not ok:
                 log(f"setup network failed: {err}")
@@ -797,8 +803,6 @@ class Setup:
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
                             qr=shown and code is not None, unicode=shown and s.unicode)
-            self.request = None
-            self.wake.clear()
             while not self.wake.wait(timeout=1.0):
                 if time.monotonic() >= self.deadline:
                     self.status.set("timeout")

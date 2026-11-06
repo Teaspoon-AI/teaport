@@ -490,6 +490,31 @@ def test_a_good_join_ends_connected():
     assert ("join", "home", "homepass1", False) in nm.events and nm.events[-1] == ("ap_delete",)
 
 
+def test_a_join_request_as_the_setup_network_is_announced_is_kept():
+    """A phone asks the moment "ap_up" is written (that is when the voice and the page
+    know the network is back): its request is the one to follow, not one to clear as
+    stale -- once at the start, and again when the network comes back after a failure."""
+    status = _Recorded(tempdir())
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    setup = ws.Setup(nm, status, port=0, minutes=0.2, bind="127.0.0.1")
+    _no_avahi(setup)
+    setup.serve = lambda: None    # no page: the request is put as the page puts it
+    record = status.set
+
+    def set_and_ask(phase, **kw):
+        record(phase, **kw)
+        if phase == "ap_up":      # the page's POST, landing right after the status write
+            setup.request = ("home", "wrongpass" if "failed" not in
+                             [s["phase"] for s in status.history] else "homepass1", False)
+            setup.wake.set()
+
+    status.set = set_and_ask
+    assert setup.run("teaport-9e35", "47190352") == 0
+    assert [s["phase"] for s in status.history] == [
+        "scanning", "ap_up", "joining", "failed", "ap_up", "joining", "connected"]
+    assert ("join", "home", "homepass1", False) in nm.events
+
+
 def test_a_failed_join_brings_the_setup_network_back_with_the_reason():
     nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
     rc, seen = _run_setup(nm, post=[{"ssid": "home", "password": "wrongpass"},
@@ -723,6 +748,16 @@ def test_with_unicode_the_names_and_the_readers_words_reach_the_avatar_unchanged
         (RU.p("screen", "Wi-Fi"), [RU.p("screen", "Connected to"), "Дом"])]
     assert title == "Режим подключения" and details[0] == "Сеть  Кухня"   # translated
     assert sent[0]["qr"] == "WIFI:T:WPA;S:Кухня;P:47190352;;"
+
+
+@pytest.mark.parametrize("ssid", ["東京\u3000カフェ", "Café\u00a0Box", "my  box"])
+def test_a_name_written_with_its_own_spaces_is_shown_as_it_is(ssid):
+    """An ideographic space, a no-break space or two spaces are how the name is written:
+    a screen that draws every script shows it so, not "(scan the code)" in its place."""
+    screen, sent = _screen(unicode=True)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid=ssid)
+    assert sent[0]["lines"][0] == f"Network  {ssid}" and sent[0]["qr"]
+    assert "shown on my screen" in wv.instructions(dict(seen[1], qr=False), EN)
 
 
 def test_the_screens_follow_the_voice_then_the_page_that_asked_for_the_join():

@@ -196,9 +196,14 @@ def test_columns_count_wide_letters_twice_and_marks_not_at_all(text, cols):
 
 @pytest.mark.parametrize("name, shown", [
     ("Evil\nLine", "Evil Line"),            # a newline would draw a second line over the next
-    ("home\x1b[2J", "home[2J"), ("a\tb\x00c", "a bc"), ("\ud800x", "x"), ("\ue000x", "x"),
+    ("Evil\r\nLine", "Evil Line"), ("a\tb\x00c", "a bc"), ("home\x1b[2J", "home[2J"),
+    ("\ud800x", "x"),
     ("\u202eemoh", "emoh"), ("x\u2066y\u2069 \u202az\u202c", "xy z"),   # bidi controls
-    ("  two   spaces  ", "two spaces"), ("\n\t", "your network"),
+    ("\n\t", "your network"), ("   ", "your network"),
+    # A name's own spaces and characters stay: they are how it is written.
+    ("東京\u3000カフェ", "東京\u3000カフェ"), ("Café\u00a0Wi-Fi", "Café\u00a0Wi-Fi"),
+    ("my  net", "my  net"), (" lead", " lead"), ("trail ", "trail "),
+    ("\ue000x", "\ue000x"), ("\U000F0001priv", "\U000F0001priv"),        # private use
     ("क्\u200dष", "क्\u200dष"), ("می\u200cخواهم", "می\u200cخواهم"),     # joiners scripts need
 ])
 def test_what_no_screen_draws_is_dropped_even_where_every_script_is_drawn(name, shown):

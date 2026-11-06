@@ -43,6 +43,7 @@
 #
 import json
 import os
+import re
 import socket
 import threading
 import unicodedata
@@ -101,26 +102,27 @@ def fold_ascii(text: str, fallback: str = "your network") -> str:
 
 
 # What no screen draws as text, whatever its fonts: controls (a newline would start a
-# second line over the next one), surrogates, private-use characters, and the bidi
-# embedding, override and isolate controls (U+202A-202E, U+2066-2069), which would turn
-# the rest of the line around. The marks and joiners scripts need (ZWJ, ZWNJ) stay.
-_NOT_TEXT = frozenset(("Cc", "Cs", "Co"))
+# second line over the next one), surrogates, and the bidi embedding, override and
+# isolate controls (U+202A-202E, U+2066-2069), which would turn the rest of the line
+# around. Whitespace that is a control (a tab, a newline, a line separator) is a space, a
+# run of it one; the spaces a name is written with (U+0020 as many as it has, U+00A0,
+# U+3000) are its own and stay, as do the marks and joiners scripts need (ZWJ, ZWNJ).
+_NOT_TEXT = frozenset(("Cc", "Cs"))
 _BIDI_CONTROLS = frozenset(map(chr, (*range(0x202A, 0x202F), *range(0x2066, 0x206A))))
+_CONTROL_SPACE = re.compile("[\t\n\v\f\r\x1c-\x1f\x85\u2028\u2029]+")
 
 
 def screen_text(text: str, unicode, fallback: str = "") -> str:
     """`text` (a network's name, a caller id) as it goes on a screen: as it is when the
     avatar says "unicode" (`unicode`: its features' value, or whether it draws "unicode"),
-    but for what no screen draws (_NOT_TEXT, _BIDI_CONTROLS) and with every run of
-    whitespace one space; else folded into ASCII (fold_ascii). `fallback` when nothing is
-    left. The one rule for text on the avatar (#207): every sender asks it, so no two
-    can disagree."""
+    but for what no screen draws (_NOT_TEXT, _BIDI_CONTROLS, _CONTROL_SPACE); else folded
+    into ASCII (fold_ascii). `fallback` when nothing but spaces is left. The one rule for
+    text on the avatar (#207): every sender asks it, so no two can disagree."""
     if not unicode:
         return fold_ascii(text, fallback)
-    kept = "".join(" " if c.isspace() else c for c in text
-                   if c.isspace() or not (unicodedata.category(c) in _NOT_TEXT
-                                          or c in _BIDI_CONTROLS))
-    return " ".join(kept.split()) or fallback
+    kept = "".join(c for c in _CONTROL_SPACE.sub(" ", text)
+                   if unicodedata.category(c) not in _NOT_TEXT and c not in _BIDI_CONTROLS)
+    return kept if kept.strip() else fallback
 
 
 def _ascii(text: str) -> str:
