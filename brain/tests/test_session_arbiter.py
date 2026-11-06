@@ -1055,6 +1055,88 @@ async def test_a_client_gone_before_the_done_is_no_error():
     await asyncio.wait_for(task, 1)                                 # logged, not raised
 
 
+async def _hold_fails_for_a_call(name, *, line_said):
+    """`name` (a conversation) said yes to a call and could not be put on hold: the
+    arbiter ends it as HOLD_FAILED. `line_said`: hold() had played its step-away line."""
+    _fresh()
+    ws, session, claim = await _holding(name)
+    session.hold_line_said = line_said
+
+    async def hold():
+        raise RuntimeError("could not hold")
+    claim.hold, claim.ask, claim.resume = hold, (lambda call: _true()), (lambda: _true())
+    call = arb.Claim(arb.CALL, client="sip", label="call")
+    assert await arb.ARBITER.acquire(call) is None
+    _fresh()
+    return ws, session
+
+
+async def _true():
+    return True
+
+
+async def test_an_awake_room_whose_hold_fails_is_told_unless_the_hold_line_played():
+    """E2: the user said yes and the hold failed. The room closes with a word, not
+    silently -- the call line if hold()'s own "back in a moment" never played, and no
+    second goodbye if it did."""
+    ws, session = await _hold_fails_for_a_call("room", line_said=False)
+    assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
+    assert [f.text for f in session.task.queued if isinstance(f, TTSSpeakFrame)] == [arb.call_line("en-us")]
+    ws, session = await _hold_fails_for_a_call("room", line_said=True)
+    assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
+    assert not [f for f in session.task.queued if isinstance(f, TTSSpeakFrame)]
+
+
+async def test_a_talk_session_whose_hold_fails_is_told_unless_the_hold_line_played():
+    ws, session = await _hold_fails_for_a_call("talk", line_said=False)
+    assert ws.closed[-1] == (gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)
+    assert [f.text for f in session.task.queued if isinstance(f, TTSSpeakFrame)] == [arb.call_line("en-us")]
+    ws, session = await _hold_fails_for_a_call("talk", line_said=True)
+    assert ws.closed[-1] == (gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)
+    assert not [f for f in session.task.queued if isinstance(f, TTSSpeakFrame)]
+
+
+async def test_an_asleep_room_whose_hold_fails_closes_silently():
+    _fresh()
+    ws = _WS({})
+    session = _session(ws)
+    session.task.on_cancel = None
+    await gs._end_for(ws, session, arb.HOLD_FAILED, room=True, asleep=True)
+    assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
+    assert not [f for f in session.task.queued if isinstance(f, TTSSpeakFrame)]
+
+
+async def test_a_failing_call_line_still_closes_and_cancels_the_session():
+    _fresh()
+    ws = _WS({})
+    session = _session(ws)
+
+    async def broken(*a, **k):
+        raise RuntimeError("pipeline gone")
+    session.say_last_line = broken
+    await gs._end_for(ws, session, arb.HOLD_FAILED, room=True, asleep=False)
+    assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
+    assert session.task.cancelled
+
+
+async def test_hold_says_it_played_its_line_only_once_it_has():
+    ws = _WS({})
+    session = _session(ws)
+    session.stt = SimpleNamespace(hold=lambda: _true())
+    assert session.hold_line_said is False
+    seen = []
+    orig = session.say_last_line
+
+    async def say(*a, **k):
+        seen.append(session.hold_line_said)      # not yet, while the line plays
+        return await orig(*a, **k)
+    session.say_last_line = say
+    session.hold_line_said = True                # left over from an earlier hold
+    await session.hold("back in a moment", 1.0)
+    assert seen == [False] and session.hold_line_said is True
+    session._keeper.cancel()
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
