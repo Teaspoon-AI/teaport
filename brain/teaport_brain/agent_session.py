@@ -66,7 +66,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
-from teaport_brain import call_recording, credit, echo_guard
+from teaport_brain import call_recording, credit, echo_guard, goodbye
 from teaport_brain import endpoint_debug
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
@@ -1300,6 +1300,21 @@ def build_agent_session(transport, *, voice: str | None = None,
         llm.owed = owed
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
+    # The room said goodbye but did not sleep (#221): a reply that is only a goodbye,
+    # heard out, in a turn that did not call end_conversation, sends the room back to
+    # sleep the tool's own way (goodbye.py), once the book has settled it. Only where that
+    # tool is offered -- the room's bridge with wake words (client:sleep) -- and so never
+    # on a phone call.
+    goodbye_sleep = None
+    if (front_end == "room" and llm is not None
+            and any(t.name == goodbye.TOOL for t in session_tools)):
+        goodbye_sleep = goodbye.GoodbyeSleep(context=context, owed=owed, gate=followup_gate,
+                                             lang_fn=voice_lang, llm=llm)
+
+        def _reply_end(reply, heard, **kw):
+            owed.settle(reply, heard, **kw)
+            goodbye_sleep.reply_end(reply, heard, **kw)
+        ledger.on_reply_end = _reply_end
     if wake_gate is not None:
         wake_gate.owed = owed
     # Retires ClientNotes' reaction order at the completion that reads it. Must sit
@@ -1585,6 +1600,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         wake_gate.start_with_notice = session.start_with_notice
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
+    session.goodbye_sleep = goodbye_sleep  # the room's goodbye backstop (goodbye.py), or None
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:
         prompt.session = session

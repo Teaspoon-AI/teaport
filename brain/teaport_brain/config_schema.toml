@@ -1735,7 +1735,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them)."
+help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). When the agent answers with only a goodbye and does not go to sleep, the conversation sleeps once that goodbye has played (English only)."
 
 [[settings]]
 name = "TEAPORT_TOOL_ANSWER_PHONE_CALL"

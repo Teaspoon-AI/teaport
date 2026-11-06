@@ -351,6 +351,9 @@ class FollowupGate(FrameProcessor):
         # run waits for.
         self._speech_clear = asyncio.Event()
         self._speech_clear.set()
+        # The same end (_ended), to wait on: a wait on the caller's speech (speech_over)
+        # ends with the session, not at its cap after it.
+        self._ended_event = asyncio.Event()
         # The run's slot (module header, THE RUN): (keys, purpose, context, task), or
         # None. Its own, beside the post-tool answer's _held_answer: HoldNoLoss.
         self._run = None
@@ -397,6 +400,45 @@ class FollowupGate(FrameProcessor):
         """A tool call is waiting for its result (the consult narrator skips its line
         then: a control call's result waits behind any audio, tools.CONTROL_TIMEOUT_S)."""
         return bool(self._calls_out)
+
+    @property
+    def turn_in_flight(self) -> bool:
+        """A completion is streaming, or a turn's answering completion is still to come
+        (_llm, _turn): the conversation has gone on past a reply that just played (the
+        goodbye backstop's check, goodbye.py)."""
+        return self._llm or self._turn
+
+    @property
+    def caller_speaking(self) -> bool:
+        """Caller speech is pending at the VAD level (_vad, _speech_pending): they are
+        talking, or stopped too short a while ago for their words to have come. No turn
+        need have opened: a turn starts on their words (the goodbye backstop's hold,
+        goodbye.py; the run's door holds on the same)."""
+        return self._vad or self._speech_pending
+
+    @property
+    def ended(self) -> bool:
+        """The session is ending or over (its End, Stop or Cancel reached the gate)."""
+        return self._ended
+
+    async def speech_over(self) -> bool:
+        """Wait until the caller's pending speech is over, as the run's door does (the #198
+        hold): True once it is -- their words started a turn, or none came within the
+        release window -- False at the hold's cap (answer_max_secs) with them still
+        talking, or at once when the session ends (ended): a wait does not outlive it."""
+        if self._ended:
+            return False
+        if not (self._vad or self._speech_pending):
+            return True
+        clear = asyncio.ensure_future(self._speech_clear.wait())
+        ended = asyncio.ensure_future(self._ended_event.wait())
+        try:
+            done, _ = await asyncio.wait({clear, ended}, timeout=self._answer_max_secs,
+                                         return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            clear.cancel()
+            ended.cancel()
+        return clear in done and not self._ended
 
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
@@ -493,9 +535,11 @@ class FollowupGate(FrameProcessor):
         return True
 
     def _end_interruption_waits(self) -> None:
-        """The pipeline is over: what waits in interrupted_since goes on."""
+        """The pipeline is over: what waits in interrupted_since goes on, and so does a
+        wait on the caller's speech (speech_over)."""
         self._ended = True
         self._interrupted.set()
+        self._ended_event.set()
 
     def _settle_deliveries(self, interrupted: bool, *, only_if_spoke: bool = False):
         for d in list(self._deliveries):
