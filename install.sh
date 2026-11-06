@@ -2085,13 +2085,13 @@ phase_services() {
   # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
   # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
   # figure, so each full install put the box back on 6 and it was restored to 8 by hand
-  # (2026-10-15, 10-31, 11-01; #264). #167 measured the box's RAM at 8 on 2026-10-14 and
-  # found nothing leaking: the engine holds ~4.3 GB of GPU buffers that never swap,
-  # leaving ~3.2 GB for everything else, kernel included. It also bounded the one
-  # resident that grows: the gateway's JS heap is capped at 1536 MiB (cap_openclaw_heap;
-  # it used ~380 MB, ~1 GB RSS) instead of OpenClaw's half of RAM (3773 MiB), and the
-  # voice path goes last to the OOM killer (OOMScoreAdjust=-500 in its units). The heap
-  # cap is the host gateway's; a NemoClaw sandbox is an agent too and gets 8 the same way.
+  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
+  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
+  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
+  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
+  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
+  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
+  # sandbox is an agent too and gets 8 the same way.
   local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
