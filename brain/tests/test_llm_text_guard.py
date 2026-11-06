@@ -519,7 +519,13 @@ async def test_a_leading_emoticon_is_kept_whole():
     before it, and a colon that opens no emoticon, still go."""
     for deltas, want in (([":)"], ":)"), ([";-) sure."], ";-) sure."), (["... :D"], ":D"),
                          ([": hello there."], "hello there."), (["!! Okay."], "Okay."),
-                         (["... it was the worst of times"], "it was the worst of times")):
+                         (["... it was the worst of times"], "it was the worst of times"),
+                         # A letter closer with a word behind it is that word's first
+                         # letter (#187 review): ":Peru" is not ":P" + "eru".
+                         ([":Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":Done."], "Done."), ([":D'accord."], "D'accord."),
+                         ([":(laughs) Sure."], "(laughs) Sure."), ([":[Sure.]"], "[Sure.]"),
+                         ([":D sure."], ":D sure."), ([":3"], ":3"), ([":(."], ":(.")):
         h = Guard()
         await h.feed(LLMFullResponseStartFrame())
         for d in deltas:
@@ -531,24 +537,57 @@ async def test_a_leading_emoticon_is_kept_whole():
 async def test_an_emoticon_split_across_deltas_is_kept_whole():
     """#187: the strip judges one frame at a time, so ":" then ")" lost the colon all
     the same -- the lone ":" had no closer in view, and history recorded ")". A leading
-    opener is held for the next delta, which keeps it whole or strips it exactly as one
-    delta would: ": Hello" is still "Hello"."""
+    opener is held for the next delta, which keeps it whole or strips it as one delta
+    would: ": Hello" is still "Hello", and so is every split here.
+
+    The review's cases: a #15 retry inherits a held ":" from its first attempt, and its
+    answer does not open with a face (":" + "Peru's ...", ":" + "(laughs)"); a closer
+    can be a word's start split off (":", "P", "eru's"); `$` matched before a final
+    newline, so ":\\n" held the ":" and dropped the "\\n"; a "<" in the delta skipped
+    the hold."""
     for deltas, want in (([":", ")"], ":)"), ([";", "-) sure."], ";-) sure."),
                          ([":-", ")"], ":-)"), ([":", "-", ")"], ":-)"),
-                         ([":'", "("], ":'("),
+                         ([":'", "("], ":'("), ([":", "D"], ":D"),
                          (["... ", ":", "D"], ":D"), (["..", ".", ":", ")"], ":)"),
                          (["=", ")"], "=)"), (["::", ")"], ":)"),
                          ([":", " Hello"], "Hello"), ([":", " Hello."], "Hello."),
-                         ([";", " so, yes."], "so, yes."), ([":-", " no"], "- no")):
+                         ([";", " so, yes."], "so, yes."), ([":-", " no"], "- no"),
+                         ([":", "Peru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "Done."], "Done."), ([":", "D'accord."], "D'accord."),
+                         ([":", "P", "eru's capital is Lima."], "Peru's capital is Lima."),
+                         ([":", "D", " sure."], ":D sure."), ([":D", "one."], "Done."),
+                         ([":", "(laughs) Sure."], "(laughs) Sure."), ([":(", "laughs)"], "(laughs)"),
+                         ([":)", " Sure."], ":) Sure."),
+                         ([":\n", "Okay"], "Okay"), ([":", "\n", "Okay."], "Okay."),
+                         (["=\n", "Hello."], "=\nHello."), (["<|end|>:", ")"], ":)")):
+        said = []
+        for split in (deltas, ["".join(deltas)]):
+            h = Guard()
+            await h.feed(LLMFullResponseStartFrame())
+            for d in split:
+                await h.text(d)
+            await h.feed(LLMFullResponseEndFrame())
+            forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+            ids = [f.id for f in forwarded]
+            assert len(ids) == len(set(ids)), (split, "a frame was pushed twice", h.spoken())
+            said.append(h.spoken())
+        assert said == [want, want], (deltas, "split, one delta:", said)
+
+
+async def test_a_face_held_to_the_end_rides_its_own_frame():
+    """Pass-through text keeps the frame it arrived on (see _emit), a held face too: the
+    punctuation before it is dropped as the strip would drop it, so the face's delta
+    carries nothing else and the End sends the face out on that frame, not a fresh one."""
+    for texts in ((":D",), ("... :)",), ("...", ":P")):
         h = Guard()
         await h.feed(LLMFullResponseStartFrame())
-        for d in deltas:
-            await h.text(d)
+        sent = [LLMTextFrame(text=t) for t in texts]
+        for frame in sent:
+            await h.feed(frame)
         await h.feed(LLMFullResponseEndFrame())
-        assert h.spoken() == want, (deltas, h.spoken())
         forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
-        ids = [f.id for f in forwarded]
-        assert len(ids) == len(set(ids)), (deltas, "a frame was pushed twice", h.spoken())
+        assert [f.id for f in forwarded] == [sent[-1].id], (texts, h.spoken())
+        assert h.spoken() == texts[-1].lstrip(". "), (texts, h.spoken())
 
 
 async def test_a_reply_of_a_lone_colon_ends_like_any_punctuation_reply():
