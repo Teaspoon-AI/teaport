@@ -187,6 +187,15 @@ _MAX_HOLDBACK = 4
 # smiled (probe 2026-10-14). An emoticon is kept whole, as an emoji is: the TTS has
 # nothing to say for either, and history keeps what the model wrote.
 _LEADING_PUNCT = re.compile(r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*])[\s.,;:!?\u2026])+")
+# ...nor into one split across deltas (#187): the strip judges one frame at a time, so
+# ":" then ")" lost the colon all the same, the lone ":" having no closer in view. While
+# the strip is still stripping, a delta that ends in an emoticon's opener holds it back
+# for the next delta, as _HOLDBACK holds a trailing ".." -- the next delta keeps it whole
+# or strips it, exactly as one delta would. One still held at the End flushes through the
+# strip with the fold's tail, so a lone ":" is still "nothing forwarded" (#16), and a
+# barge-in drops it with the rest of _pending. Only an opener the strip is about to reach
+# is held, so a reply that has begun is never delayed.
+_EMOTICON_OPEN = re.compile(r"[:;=]['-]?$")
 
 # Where the repeat cut closes a sentence in the folded stream. A run of terminators
 # is one boundary; no following whitespace is required, because the live 08:32
@@ -439,7 +448,8 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
 
     def _fold_streaming(self, text: str) -> str:
-        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK."""
+        """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK and
+        _EMOTICON_OPEN."""
         text = self._pending + text
         self._pending = ""
         # Before the holdback split: a held-back ".." rejoined here is the closer the
@@ -453,6 +463,15 @@ class LLMTextGuard(FrameProcessor):
         elif "<" in text:
             m = _TOKEN_HOLDBACK.search(text)
             if m:
+                self._pending = m.group(0)
+                text = text[:m.start()]
+        elif not self._forwarded:
+            # A leading emoticon's opener: held only if the strip would still reach it --
+            # every held frame, and this delta up to the opener, strips to nothing.
+            m = _EMOTICON_OPEN.search(text)
+            if m and not any(_LEADING_PUNCT.sub("", t) for t in
+                             [t for _, t in self._held]
+                             + [fold_degenerate_chars(text[:m.start()])]):
                 self._pending = m.group(0)
                 text = text[:m.start()]
         folded = fold_degenerate_chars(text) if text else ""
