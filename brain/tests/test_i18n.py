@@ -37,6 +37,9 @@ def _modules() -> list[tuple[str, ast.Module]]:
 # modules that set them. Any other non-literal argument fails the test: an f-string, a
 # concatenation or a variable is text that would ship untranslated with nothing red.
 DYNAMIC = {
+    "llm_text_guard.py": {
+        "i18n.for_espeak(lang)._(RECOVERY_LINE)",  # RECOVERY_LINE: N_() there (#15)
+    },
     "credit.py": {
         "t._(msgid)",                        # PAGE_LINES: N_() there (#280)
     },
