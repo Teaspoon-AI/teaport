@@ -874,7 +874,7 @@ after a commit may come before that commit's preview. The brain closes turns at 
 | DESIGN | | `RightTurn` | `FinalComplete` | `NoDropAtCut` | `NoLateInterim` | `NoSplitOnResume` | `NoStuckFinal` | `NoDoubleDeliver` |
 |---|---|---|---|---|---|---|---|---|
 | `shipped`, `PEEKS` FALSE | the preview at the verdict (`ss_shipped`; frozen bounds and lossy previews `ss_shipped_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `--full`: `ss_peek_full`, `ss_peek_freeze`, `ss_peekOwed_shipped`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `arrival` | a turn is the words received by its preview | ✗ | | | | | | |
 | `endMargin` | every word ending less than the margin past the cut is the turn's | ✗ | | | | | | |
 | `decoded` | final once `decoded_through_ms` passes the commit | | ✗ | | | | | |
@@ -899,7 +899,12 @@ half a second apart) is answered with the turn before's words the main stream ha
 before, which put nothing with words on, still has its final to come, whose words then go
 on again, after it (the re-review's S2); `noPeekOwed` adopts a peek whose preview was
 taken while a turn owed words, after that turn settled (`ss_peek_freeze` found it; the
-peek now remembers, `_Peek.owed`). The code trims an earlier turn's owed words from the
+peek now remembers, `_Peek.owed`). **The default run does not guard that fix**:
+`ss_noPeekOwed` shows the rejected design fails, but at `ss_peek`'s bounds `noPeekOwed`
+holds too (1.89M states, the audit of 2026-11-05), so the shipped design is checked
+against it only by `--full`'s `ss_peek_freeze` and `ss_peekOwed_shipped` (the shipped
+design at `ss_noPeekOwed`'s own bounds: holds, 31.4M states, ~8 min on two workers, as
+the audit's verifier measured it). The code trims an earlier turn's owed words from the
 preview's front run (as many words as are owed, and two more): each word there that is
 an owed word still ahead of the pointer is dropped, and the pointer moves past it, so an
 owed word the later preview lacks is skipped. With words unique and in time order that
@@ -937,12 +942,51 @@ pass the run's bound, which is not modelled.
   timeout (`ss_shipped_timeout`), a turn closed on a peek (`ss_peek_adopted`) and a peek
   the caller talked past (`ss_peek_dropped`).
 
+**The heard-out watch (`HEARD`, #275).** As the line goes quiet over a paused reply, the
+barge-in pauser asks the STT to say when every word of the caller's speech is in hand
+(`stt.watch_heard`, barge_pause.py HEARD OUT), and resumes no sooner. The STT answers
+(`SpeechHeardFrame`, `_push_if_heard`) once `_heard_through` is `_HEARD_MARGIN_MS` (the
+margin, one step) past the voice end: in a sliced session the lesser of
+`end_through_ms` and `audio_through_ms`, as a turn's final waits on both. `Watch` places
+the watch at the audio sent so far (a voice end placed earlier is the same watch placed
+when the audio was there), `HeardFire` answers it, and `NoWordAfterHeard` says no word
+that starts before the voice end plus the margin -- the speech's words, their stamps up
+to the margin late, the margin's own reason -- comes after the answer. `UserTurn.tla`'s
+`HeardOut` assumes exactly that; this is where it is checked, for the sliced session.
+
+| HEARD | | `NoWordAfterHeard` |
+|---|---|---|
+| `off` | no watch: every other row here, at the state counts they had | — |
+| `shipped` | the lesser of the two bounds (`ss_heard`; witness `ss_heard_reach`) | ✓ |
+| `endOnly` | the end bound alone, as before 3a46b6c's F1 (`ss_heard_endOnly`) | ✗ |
+
+`endOnly`, 9 states: a word starts before the voice end and ends two steps later; the
+decoder reaches its end, the report puts `end_through_ms` there (no word that ends
+*below* it is still to come), the bound is the margin past the voice end, and the watch is
+answered with that word still in the engine. With the margin in the property a one-step
+word (`WLEN = 1`) that starts inside the margin fails it too; the row runs `WLEN = 2`,
+the cut inside a word. `ss_heard_reach` shows the shipped watch is answered with the
+caller's later words still to come (it does not wait for every word). The watch rows
+have no commits (`MaxCommits = 0`): a preview carries no word into what is in hand and a
+turn only moves words within it, so nothing the watch reads changes; with one commit and
+one stop (the bounds never frozen) the holds row was 2.3M states, against 272k.
+
+Not checked here: **segment mode's** watch. There `_heard_through` is the report's
+`decoded_through_ms`, and the premise that no interim of the speech before it comes
+after the report saying so is the engine's, not verified by any model (SttCommit.tla has
+no report). Nor which sessions answer at all: `watch_heard` declines (and the pauser
+resumes on its window) unless the session asked for the report or slices -- the default
+configuration asks for neither (audit 2026-11-05, A2).
+
 Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio to 4, a
 word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
 ~20 s; `ss_shipped_freeze` ~9.4M (the bounds frozen or moving, previews lossy), ~1-3 min; the
-witnesses and rejected rows under 1.2M each. `--full` adds three words: `ss_shipped_full`
-~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
-on five cores).
+witnesses and rejected rows under 1.2M each (`ss_noPeekOwed` 3.3M before its trace,
+~2.5 min on two workers); `ss_heard` 272k (~15 s on two workers), its two FAILS rows
+under 25k. `--full` adds three words: `ss_shipped_full`
+~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
+on five cores), and `ss_peekOwed_shipped` ~31M (the same without frozen bounds, `NoDoubleDeliver`
+only: ~8 min on two workers).
 
 ### Known limits of this model
 
@@ -1022,8 +1066,11 @@ over. The aggregator adds words as a part and commits on its own task at any tim
 - **`BargePaused`** — a barge-in's words reach the judging holder while the reply's pause
   holds. The pause ends on its own once its window is out and no final is on its way; a
   barge-in turn that waits on its final holds it (`stt.barge_hold`), and `noHold`, where it
-  does not, delivers a lone "Stop." after the reply resumed -- to the unpaused two-word
-  guard (the re-review's S1). The window is assumed to outlast the preview.
+  does not, delivers its words after the reply resumed: decided over a playing reply, with
+  no judge to ask, and a one-word answer meets the unpaused two-word guard. The re-review's
+  S1 was a lone "Stop." lost that way; since #216 (`PauseAwareMinWordsStrategy._count`) a
+  stop utterance starts the turn paused or not, so that one no longer is. The window is
+  assumed to outlast the preview.
 
 Run: each row is a few thousand states, ~1 s.
 
@@ -2751,7 +2798,8 @@ talking on over a "Stop." it never paused for.
 `shipped` holds all three with `HOLD = "gate"` and every property above, under the
 hold's `WORDS_IN_TIME` assumption (`ut_pause_shipped_all`, 1.5k states) and with the
 timers as they are (`ut_pause_shipped_timed`, every property but the accepted
-`NoStaleReply` residual, 3.5k states). Two **witness** rows prove it is not vacuous:
+`NoStaleReply` residual, 3.5k states; the pause cap is out of it, and harmless without a
+judge: the judge section's `pauseCap`). Two **witness** rows prove it is not vacuous:
 `ut_pause_shipped_reach_band` FAILS `NoPauseInTailBand` (a pause with 0.5–1 s left is
 reachable) and `ut_pause_shipped_reach_elapsed` FAILS `NoTailElapsed` (a held-back tail
 that would have ended is reachable).
@@ -2828,15 +2876,23 @@ The monitors:
 | `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
 | `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275) | ✓ | ✓ | ✗ |
 | `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
+| `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | |
 
 `shipped` holds every property the shipped pause holds:
 - `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 20k states. For
   the pause, that assumption is the report coming before the pauser's bound on waiting
   for it (2.5 s of quiet; on the box the same bounds passed a sliced turn's commit at
   most 1.98 s after it, p99 1.44 s, over 1,494 turns).
-- `ut_judge_shipped_timed`: the timers as they are, 118k states. Everything holds but
-  the accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked
-  there: a report later than the bound resumes the pause as the window did.
+- `ut_judge_shipped_timed`: the reply hold's timers and the heard-out bound as they are,
+  118k states, but not the pause cap (`pauseCap`, below). Everything holds but the
+  accepted `NoStaleReply` residual, and `NoUnjudgedWords`, which is not checked there: a
+  report later than the bound resumes the pause as the window did.
+- `ut_shipped_judge_all`: the judge on the shipped commit machinery, `ut_shipped_all`
+  (`retryMerges`, the speculation, early finals) with `JUDGE = "shipped"`, every property
+  of both plus `NoResumeOverWords` and `NoUnjudgedWords`, under `WORDS_IN_TIME`: 298k
+  states. The other judge rows run the pause rows' smaller environment (`retryOnQuiet`,
+  no speculation, no early final: there `retryOnQuiet` and `retryMerges` are one
+  machine), which keeps each design's row small.
 
 The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
 
@@ -2892,9 +2948,17 @@ What is not modelled:
 - That the notice comes behind every word of the speech. `HeardOut` assumes it; the STT
   keeps it by the bounds a sliced turn's final waits on (a word is returned once
   complete, so the start bound must pass the speech too), which
-  `test_stt_transcription_progress.py` pins. In these rows `NoUnjudgedWords` therefore
-  checks the pause's resume: no resume while words of the speech may still come.
-- The pause cap (at most 7.5 s, under the transport's 8 s write guard): a caller still talking keeps the pause; the cap ends it as a pause end.
+  `test_stt_transcription_progress.py` pins and `SttSlice.tla` checks (`ss_heard`,
+  `NoWordAfterHeard`; `ss_heard_endOnly` is the end bound alone). In segment mode the
+  notice rides `decoded_through_ms`, and that it bounds the interims is an engine
+  premise no model checks. In these rows `NoUnjudgedWords` therefore checks the pause's
+  resume: no resume while words of the speech may still come.
+- Which sessions wait for the notice at all. `HeardOutWait` ties the wait to `JUDGE`;
+  in the code it is the pauser's (`BargeInPauser`, HEARD OUT), with the judge on or off,
+  and only where the STT will answer (`stt.watch_heard`). Without a judge no property
+  here reads `unheard`, so the over-approximation loses nothing a row checks.
+- The pause cap's duration (`TEAPORT_BARGE_PAUSE_MAX_S`, default 6 s, at most 7.75 s,
+  under the transport's 8 s write guard). The cap itself is `PauseCap`, below.
 - A bot that stops while paused. `BotStop` is a reply's end, so "a paused reply cannot
   finish" holds in the model. pipecat also says the bot stopped when its audio queue runs
   dry mid-reply (the TTS has not filled a gap), and a pause can land in that gap: the
@@ -2904,6 +2968,35 @@ What is not modelled:
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.
+
+**The pause cap (`JUDGE = "pauseCap"`): an accepted residual.** `BargeInPauser._cap` ends
+a pause `TEAPORT_BARGE_PAUSE_MAX_S` after its start whatever holds it: the judge's
+`hold_resume`, the heard-out wait, a caller still talking. Its resume
+(`PlayoutPauseFrame(paused=False)`) reaches `BargeInJudgeGate`, which lets everything it
+holds on ("the pause is over"), so a verdict slower than the cap is a question talked
+over, as `noHold`'s was. `ut_judge_pauseCap_resumeover` FAILS `NoResumeOverWords`, 10
+states:
+
+```
+... BotStart                 a reply plays
+VadStart                     the caller speaks over it: paused
+Interject                    their words -- held for the judge
+PauseCap                     the cap: the reply resumes, the caller still talking
+Interject                    their next words start the turn, over the resumed reply
+```
+
+It is accepted (audit 2026-11-05, B1): it needs a hold still waiting when the cap comes,
+seconds after the pause's start -- a caller talking over the paused reply for most of
+the cap, each request with its own 1.2 s wait (`_JUDGE_WAIT_S`) and asked again as their
+words grow -- and its cost is the reply playing on under them until those words start
+the turn. The code's alternative, words released by the cap judged as over the paused
+reply (`_past_pause`, added in 2c50b1b and taken out again in aa35e15), is on
+feat/judge-single-words. `ut_judge_pauseCap_rest` holds every other property
+`ut_judge_shipped_timed` checks with the cap in (187k states). `PauseCap` is enabled
+only in this design: with it on in every timed row (a scratch run, 2026-11-05)
+`ut_pause_shipped_timed`, `ut_shipped_timed` and `ut_post_gate_timed_rest` still hold --
+without a judge the cap's resume is a resume, and nothing those rows check is lost by
+it.
 
 ### The cut and the commit (`FENCE`, `CutReplyFence`)
 
@@ -3525,11 +3618,15 @@ the design and the wire:
 | `stop` | `unmarked` | shipped until 2026-10-15, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
 | `stop` | `marked` | shipped until 2026-10-15, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
 | `receipts` | `unmarked` | as shipped since 2026-10-15, on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
-| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
+| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`, `_lost`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
 
 The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
 the VAD where pipecat runs it; the `receipts` rows are the repair, in the code since
-2026-10-15 (THE ORDER, What was changed).
+2026-10-15 (THE ORDER, What was changed). `sc_final_receipts_lost` (audit 2026-11-05,
+A5) is the default run's one final row with a verdict lost (`MaxLost = 1`, no engine
+close): the hold's expiry answers that stop, and with the expiry disabled in a scratch
+copy it fails `NoStrandedTurn` where the rows without a loss still hold. Every other
+default row that checks these two runs `MaxLost = 0`, `MaxMissed = 0` and `CARRY = FALSE`.
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -3649,7 +3746,7 @@ rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_bli
 two clock rows) run without it.
 
 **The default run and `--full`.** See THE ORDER's scale note below: since 2026-10-14
-`--full` holds the six rows too large for the default run, the carry's three among
+`--full` holds the six rows too large for the default run, the carry's four among
 them.
 
 ### THE ORDER (2026-10-14): where the VAD runs
@@ -3920,6 +4017,25 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   disarmed with the ceiling at that close, deliberately, and the stale-end monitor is not
   consulted at it either: what `TurnStop` leaves owed is what the owed-close rule then
   keeps the *next* turn from ending on.
+- **Slice mode's commit timing is in neither model** (audit 2026-11-05, A4). Every row
+  here is segment mode, and `SttSlice.tla` takes when a turn closes as given ("when is
+  SttCommit.tla's business"). With `TEAPORT_STT_TURN_TEXT=slice` a commit changes nothing
+  in the engine's stream, so the hold this model checks is not there: a complete
+  verdict commits at once, with no wait for the caller's pause (`_commit_at_pause`,
+  `stt.py:1648`); the turn's close adopts the stop's peek instead of committing again
+  (`_send_commit`, `:2095`); the strategy gets the turn's text at its preview, or, when
+  the turn is deferred (a preview cut short, none of the caller's words over the bot, an
+  earlier turn's words still owed), at its final or on the words in hand
+  (`_push_turn`, `:2285-2300`); and a disconnect closes a deferred turn on the
+  words in hand before the reset (`_disconnect_websocket`, `:2930`). So nothing checks
+  `NoStaleTurnEnd`, `NoStrandedTurn` or `NoSplitOnIncomplete` for a sliced session's
+  closes against the stop strategy's count and receipts; what each sliced turn holds is
+  `SttSlice.tla`'s, and what its final delivers `TurnText.tla`'s.
+- **The engine's buffer cut is not modelled** (A6). Its ~15 s buffer closes the
+  segment and sends no done at all (`stt.py`'s note on the commit a done answers, at
+  the done handler): the STT never learns of it. `EngineClose` is the endpointer's
+  close, which always answers with a done; a segment cut that way keeps only the
+  interims it streamed.
 - **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
   cut left its stamp for the next done to inherit); the turn it strands ends on the
   watchdog, and the receive task owns the reconnect.
@@ -3928,7 +4044,8 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   distinct states (4 min 4 s), `sc_voice` 4.3 million (2 min 32 s; the missed stop moved
   to `sc_voice_missed`), `sc_vadStop_sound` 3.7 million (1 min 31 s), `sc_voice_final`
   1.3 million (36 s), `sc_verdict_numbered` 1.1 million (37 s), the three `receipts`
-  final rows 260,000 to 480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every
+  final rows 260,000 to 480,000 each (under 20 s; `sc_final_receipts_lost`, added
+  2026-11-05, 37,146 in 12 s), `sc_carry_off` 260,000 (8 s); every
   row that falls finds its trace in 8 to 15 states, in a second or a few. `--full`:
   `sc_final_receipts_full` 26.6 million (15 min), `sc_voice_missed` 27.9 million
   (14 min), `sc_vadStop_sound_carry` 5.6 million (3 min 16 s), `sc_voice_carry` 5.7
