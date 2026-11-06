@@ -84,8 +84,9 @@
 #     start (the caller resumed) cancels it -- the text will differ, so the tokens are
 #     wasted either way and stopping the stream stops the bill. A start for the words
 #     and context already being asked (the final confirming the interim) keeps the
-#     stream it has. The session's end closes it too (the strategy's cleanup): a stream
-#     nothing will adopt must not keep billing after the hangup.
+#     stream it has; a restart's [SPEC] miss line names the clause of that check that
+#     failed (_why_restart, #119). The session's end closes it too (the strategy's
+#     cleanup): a stream nothing will adopt must not keep billing after the hangup.
 #   * Nothing waits on a stale stream's teardown. A miss and a cancel hand the HTTP
 #     close to a background task and return: the ordinary request (or the VAD start
 #     being handled) is on the turn's critical path, the close is not.
@@ -244,6 +245,83 @@ def _same_ask(live: list, asked: list) -> bool:
             and _ends_stripped(live[-1]) == _ends_stripped(asked[-1]))
 
 
+def _first_difference(a, b) -> int:
+    """Where two sequences known to differ (two texts, two message lists) first do: the
+    index of the first unequal item, or the shorter one's length if it is a prefix."""
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            return i
+    return min(len(a), len(b))
+
+
+def _role(message) -> str:
+    """A context message's role, for a log line -- never its content."""
+    return str(message.get("role")) if isinstance(message, dict) else type(message).__name__
+
+
+def _differences(old_text: str, new_text, old: list, new: list) -> list:
+    """What moved between what a speculation asked (`old_text` on `old`, the messages
+    before the user message) and what is asked now, as [SPEC] miss fields (#119): the
+    lengths, the first index that differs, the role of the message there. The quoted
+    text is cut at 40 characters (and is only its length without
+    TEAPORT_LOG_CONVERSATIONS), which made a restart on the same words read as one on
+    new ones; these fields carry no words, so they are the same with the switch on or
+    off. `new_text` None: not a text (a message whose content is a list)."""
+    fields = []
+    if new_text is not None:
+        fields.append(f"chars={len(old_text)}->{len(new_text)}")
+        if new_text != old_text:
+            fields.append(f"text-at={_first_difference(old_text, new_text)}")
+    if new != old:
+        at = _first_difference(old, new)
+        fields.append(f"msgs={len(old)}->{len(new)} "
+                      f"msg-at={at}:{_role(new[at] if at < len(new) else old[at])}")
+    return fields
+
+
+def _why_restart(live: _Speculation, text: str, tools, asked: list):
+    """Why a start() on `text`, against `asked` (the context now, the pending note in it)
+    and `tools`, cannot keep the live speculation: (reason, detail) for the [SPEC] miss
+    line, or None -- already asked, the stream is kept.
+
+    Every clause is checked, not the first that fails, and named in `differs=`: text,
+    tools (by identity), context (the messages before the user message), failed, empty.
+    The reason is `superseded` when the words differ, as it always was. For the SAME
+    words it is the miss take() would have logged for the old stream at the commit:
+    spec-failed, empty, tools-changed or ctx-changed, in take()'s order. Until #119 that
+    restart was logged `superseded` too, and a live one (2026-10-10, an engine self-close
+    final confirming a report-started speculation word for word) could not be told from
+    a final with new words. This is the one renamed case: box tooling parses these lines
+    (#304), so the other reasons keep their names and the fields go at the end of the
+    line, after the tally."""
+    failed = []
+    if live.text != text:
+        failed.append("text")
+    if tools is not live.tools:
+        failed.append("tools")
+    if asked != live.messages[:-1]:
+        failed.append("context")
+    if live.error is not None:
+        failed.append("failed")
+    elif live.done and not live.chunks:
+        failed.append("empty")
+    if not failed:
+        return None
+    if "text" in failed:
+        reason = "superseded"
+    elif live.error is not None:
+        reason = f"spec-failed ({type(live.error).__name__})"
+    elif live.done and not live.chunks:
+        reason = "empty"
+    elif "tools" in failed:
+        reason = "tools-changed"
+    else:
+        reason = "ctx-changed"
+    detail = [f"differs={','.join(failed)}"]
+    detail += _differences(live.text, text, live.messages[:-1], asked)
+    return reason, " ".join(detail)
+
+
 class Speculator:
     """Owns at most one speculation per session.
 
@@ -378,14 +456,15 @@ class Speculator:
         asked = copy.deepcopy(ctx.messages) + copy.deepcopy(
             self._pending() if self._pending is not None else [])
         live = self._current
-        if (live is not None and live.text == text and ctx.tools is live.tools
-                and asked == live.messages[:-1] and live.error is None
-                and not (live.done and not live.chunks)):
+        # Nothing live: the cancel only bumps the epoch (see __init__).
+        restart = (_why_restart(live, text, ctx.tools, asked) if live is not None
+                   else ("superseded", ""))
+        if restart is None:
             # Already asked: the final confirming the interim it was started on, with
             # nothing written since. Restarting would throw the head start away -- unless
             # the stream it has failed or came back empty, which take() would only miss.
             return True
-        await self.cancel("superseded")
+        await self.cancel(*restart)
         snapshot = asked + [{"role": "user", "content": text}]
         request = LLMContext(list(snapshot), tools=ctx.tools, tool_choice=ctx.tool_choice)
         spec = _Speculation(snapshot, ctx.tools, text)
@@ -426,14 +505,16 @@ class Speculator:
         await self.cancel(reason)
         return True
 
-    async def cancel(self, reason: str):
+    async def cancel(self, reason: str, detail: str = ""):
+        """End the live speculation as a miss for `reason`; `detail` (a restart's account
+        of what differed, _why_restart) goes at the end of its line."""
         self._epoch += 1
         spec, self._current = self._current, None
         if spec is None:
             return
         self.misses += 1
         logger.info(f"[SPEC] miss reason={reason} after {time.monotonic() - spec.started:.2f}s "
-                    f"{quoted(spec.text[:40])} {self._tally()}")
+                    f"{quoted(spec.text[:40])} {self._tally()}{f' {detail}' if detail else ''}")
         self._release(spec)
 
     async def close(self):
@@ -452,6 +533,7 @@ class Speculator:
         if spec is None:
             return None
         live = context.messages
+        detail = []
         if spec.done and spec.error is not None:
             reason = f"spec-failed ({type(spec.error).__name__})"
         elif spec.done and not spec.chunks:
@@ -471,11 +553,17 @@ class Speculator:
             reason = ("ctx-changed"
                       if _ends_stripped(live[-1]) == _ends_stripped(spec.messages[-1])
                       else "text-differs")
+            # Which message moved, or where the words part (#119): the same fields as a
+            # restart's, after the tally.
+            words = live[-1].get("content")
+            detail = _differences(spec.text, words.strip() if isinstance(words, str) else None,
+                                  spec.messages[:-1], live[:-1])
         else:
             reason = None
         if reason is not None:
             self.misses += 1
-            logger.info(f"[SPEC] miss reason={reason} {quoted(spec.text[:40])} {self._tally()}")
+            logger.info(f"[SPEC] miss reason={reason} {quoted(spec.text[:40])} {self._tally()}"
+                        f"{''.join(f' {d}' for d in detail)}")
             self._release(spec)
             return None
         self.hits += 1

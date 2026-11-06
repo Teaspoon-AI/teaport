@@ -28,10 +28,19 @@
 # the real Speculator -- to the commit: the ceiling's final equal to the interim (modulo
 # the engine's leading space) is a hit; one that differs in its punctuation is a miss.
 #
+# Last, #119: a start that cannot keep the live speculation names on its [SPEC] miss line
+# which clause of the already-asked check failed and where, with no words in it, and the
+# same words get the reason the commit would have missed with (ctx-changed, ...), not
+# "superseded". The live shape over a pipeline -- the engine's report asks, then the
+# engine's own close confirms the same words -- keeps its stream with nothing between;
+# MemoryRecall's search landing between, or the heard-context corrector's pass at the
+# second start, each fails the context clause, a restart the commit would have needed.
+#
 # Run: python test_speculative_reply.py  (or via pytest test_suite.py)
 #
 import asyncio
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +55,8 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
     SmartTurnParams,
 )
 from loguru import logger  # noqa: E402
+from pipecat.adapters.schemas.function_schema import FunctionSchema  # noqa: E402
+from pipecat.adapters.schemas.tools_schema import ToolsSchema  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -81,6 +92,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
     SMARTTURN_STOP_SECS,
+    NO_STOP,
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
     NoSpeechReportFrame,
@@ -89,9 +101,13 @@ from teaport_brain.endpointing import (  # noqa: E402
     SttProgressFrame,
     TurnVerdictFrame,
 )
+from teaport_brain import memory_recall as recall_mod  # noqa: E402
+from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
+from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
 from teaport_brain.services import BoundedOpenAILLMService  # noqa: E402
 from teaport_brain.speculate import Speculator  # noqa: E402
-from teaport_brain.stt import TeaportSTTService  # noqa: E402
+from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
+from teaport_brain.transcript_ledger import Utterance  # noqa: E402
 
 # ---------------------------------------------------------------- the Speculator
 
@@ -1477,6 +1493,297 @@ async def test_over_a_pipeline_a_final_with_other_punctuation_is_a_miss():
     (message, adopted), speculator, opened = await _over_a_pipeline("Tell me a story.")
     assert message == {"role": "user", "content": "Tell me a story."}
     assert not adopted and speculator.hits == 0 and speculator.misses == 1
+
+
+# ---------------------------------------------------------------- #119: what a restart says
+
+# The prefix every [SPEC] miss line had before #119, which box tooling reads (#304): the
+# new fields only follow it.
+_MISS_SHAPE = re.compile(r"\[SPEC\] miss reason=(\S+(?: \(\w+\))?) (?:after \d+\.\d\ds )?"
+                         r".+ hits=\d+ misses=\d+(?P<fields>(?: \S+)*)$")
+
+
+def _miss(lines, reason):
+    """The one [SPEC] miss line among `lines`, checked against the old shape, with
+    `reason`; returns the fields after the tally."""
+    misses = [line for line in lines if line.startswith("[SPEC] miss")]
+    assert len(misses) == 1, lines
+    shape = _MISS_SHAPE.match(misses[0])
+    assert shape is not None, misses[0]
+    assert shape.group(1) == reason, (reason, misses[0])
+    return shape.group("fields").strip()
+
+
+async def test_a_restart_names_the_clause_that_failed():
+    """start()'s already-asked check has five clauses. A restart used to say
+    "superseded" whichever failed, so the final confirming the interim word for word
+    and restarted for another reason read, in a line that shows 40 characters at most,
+    like one with new words (live 2026-10-10). Now every failed clause is named, with
+    where it failed -- lengths, the first index, the role of the message there, no
+    words -- and for the same words the reason is the miss the old stream would have
+    been at the commit."""
+    words = "what time is it"
+    # Other words: "superseded", as ever, and where they part.
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    await spec.start(words)
+    await _settle()
+    with _SpecLines() as journal:
+        await spec.start(words + "?")
+    assert _miss(journal.lines, "superseded") == "differs=text chars=15->16 text-at=15"
+    await spec.close()
+    # The same words on a context a note has joined since: ctx-changed, and which message.
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    await spec.start(words)
+    await _settle()
+    ctx.add_message(dict(_NOTE))
+    with _SpecLines() as journal:
+        await spec.start(words)
+    assert (_miss(journal.lines, "ctx-changed")
+            == "differs=context chars=15->15 msgs=1->2 msg-at=1:system")
+    await _settle()
+    assert len(opened) == 2, "the restart is still made: the old snapshot lacks the note"
+    await spec.close()
+    # ... and the tools replaced (LLMSetToolsFrame gives the context a new object).
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    await spec.start(words)
+    await _settle()
+    ctx.set_tools(ToolsSchema(standard_tools=[FunctionSchema(
+        name="clock", description="the time", properties={}, required=[])]))
+    with _SpecLines() as journal:
+        await spec.start(words)
+    assert _miss(journal.lines, "tools-changed") == "differs=tools chars=15->15"
+    await spec.close()
+    # A stream that failed, or ended with nothing in it: take() would only miss it.
+    ctx, agg, llm, spec, opened = _rig(parts=(), fail=True)
+    await spec.start(words)
+    await _settle()
+    llm._open_stream = _llm(opened)._open_stream  # the provider is back
+    with _SpecLines() as journal:
+        await spec.start(words)
+    assert _miss(journal.lines, "spec-failed (RuntimeError)") == "differs=failed chars=15->15"
+    await _settle()
+    spec._current._stream.end()
+    await _settle()
+    with _SpecLines() as journal:
+        await spec.start(words)
+    assert _miss(journal.lines, "empty") == "differs=empty chars=15->15"
+    await spec.close()
+    # Kept: nothing said at all.
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    await spec.start(words)
+    await _settle()
+    with _SpecLines() as journal:
+        assert await spec.start(" " + words + " ")
+    assert journal.lines == [] and len(opened) == 1
+    await spec.close()
+
+
+async def test_a_miss_at_the_commit_names_what_moved():
+    """take()'s ctx-changed and text-differs lines carry the same fields: which message
+    moved, or where the words part."""
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    spec._pending = lambda: [_NOTE]
+    await spec.start("what do I like")
+    await _settle()
+    ctx.add_message(dict(_FRESHER))
+    ctx.add_message({"role": "user", "content": "what do I like"})
+    with _SpecLines() as journal:
+        await llm.get_chat_completions(ctx)
+    assert (_miss(journal.lines, "ctx-changed")
+            == "chars=14->14 msgs=2->2 msg-at=1:system"), journal.lines
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    await spec.start("so what time")
+    await _settle()
+    ctx.add_message({"role": "user", "content": " so, what time "})
+    with _SpecLines() as journal:
+        await llm.get_chat_completions(ctx)
+    assert _miss(journal.lines, "text-differs") == "chars=12->13 text-at=2", journal.lines
+
+
+ASKED = "What year was the Ford Motor Company founded?"   # 2026-10-10's words
+RECALLED = "the user collects old Fords"
+
+
+async def _report_then_the_engines_own_close(*, landed="never"):
+    """#119's shape, live 2026-10-10, over a real pipeline with MemoryRecall above the
+    aggregator as agent_session places it. The interim fires a memory search; the VAD
+    stop is judged INCOMPLETE; the engine's report (SpeechDecodedFrame) asks the
+    speculation. Then the engine closes the segment on its own with the same words: a
+    final stamped NO_STOP (stt.py _close), which pays no stop, so the turn stays open
+    and the final-triggered path asks again (_maybe_speculate). Then the ceiling, and
+    the wordless close its commit returns, stamped with the stop, ends the turn.
+
+    `landed`: when the search returns its hit -- "never", "first" (before the report's
+    start, so its note is in that snapshot) or "between" (after it, before the final,
+    which injects it). Returns the [SPEC] and MemoryRecall lines, the commit's
+    (message, adopted), the Speculator, the requests opened and the starts made."""
+    ceiling = 0.3
+    opened, starts, lines = [], [], []
+    go = asyncio.Event()
+
+    async def search(query, max_results=3):
+        await go.wait()
+        return [RECALLED]
+
+    analyzer = Incomplete(sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=ceiling))
+    strategy = LateStartTurnStopStrategy(turn_analyzer=analyzer)
+    context = LLMContext([{"role": "system", "content": "be brief"}])
+    pair = LLMContextAggregatorPair(
+        context,
+        user_params=user_aggregator_params(
+            user_turn_strategies=UserTurnStrategies(
+                start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+                stop=[strategy],
+            ),
+            user_turn_stop_timeout=3600,
+        ),
+    )
+    recall = MemoryRecall(context)
+    speculator = Speculator(llm=_llm(opened), aggregator=pair.user(),
+                            pending=recall.pending_messages)
+    speculator.on_decode = True
+    real_start = speculator.start
+
+    async def start(text, why="", **kwargs):
+        kept = speculator._current
+        asked = await real_start(text, why, **kwargs)
+        starts.append((why, asked, kept is not None and speculator._current is kept))
+        return asked
+
+    speculator.start = start
+    strategy.speculator = speculator
+    commit = TakeAtCommit(speculator)
+    task = PipelineTask(Pipeline([recall, pair.user(), commit]), observers=[])
+    started = asyncio.Event()
+
+    @task.event_handler("on_pipeline_started")
+    async def _started(_task, _frame):
+        started.set()
+
+    sink = logger.add(lambda m: lines.append(m.record["message"]),
+                      filter=lambda r: r["message"].startswith(("[SPEC]", "MemoryRecall")),
+                      format="{message}")
+    real_search, recall_mod.memory_search = recall_mod.memory_search, search
+    running = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    loop = asyncio.get_running_loop()
+
+    async def until(holds, audio=False):
+        """Until `holds` (at most STEP_LIMIT_S), with silence flowing if `audio`."""
+        deadline = loop.time() + STEP_LIMIT_S
+        while not holds() and loop.time() < deadline:
+            if audio:
+                await recall.queue_frame(InputAudioRawFrame(
+                    audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1))
+            await asyncio.sleep(CHUNK_MS / 1000)
+        assert holds(), "a step did not happen within the limit"
+
+    try:
+        await asyncio.wait_for(started.wait(), STEP_LIMIT_S)
+        await recall.queue_frame(SttProgressFrame(reported=True))
+        await recall.queue_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        for _ in range(400 // CHUNK_MS):
+            await recall.queue_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
+                                                        num_channels=1))
+        await recall.queue_frame(InterimTranscriptionFrame(" " + ASKED, "u", "t", None))
+        await until(lambda: recall._inflight is not None)          # the search is out
+        if landed == "first":
+            go.set()
+            await until(lambda: recall.pending_messages())
+        await recall.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        # No audio until the report has asked (see _over_a_pipeline): the ceiling counts it.
+        await until(lambda: strategy._incomplete_n == 1)
+        await recall.queue_frame(SpeechDecodedFrame(stop_n=1))
+        await until(lambda: len(opened) == 1)
+        if landed == "between":
+            go.set()
+            await until(lambda: recall.pending_messages())
+        await recall.queue_frame(FinalTranscriptionFrame(ASKED, "u", "t", finalized=True,
+                                                         stop_n=NO_STOP))
+        await until(lambda: len(starts) == 2)
+        await until(lambda: strategy._turn_complete, audio=True)   # the ceiling
+        assert not commit.taken, "the engine's own close paid no stop: the turn waits"
+        await recall.queue_frame(SegmentDoneFrame(stop_n=1))       # the ceiling's commit
+        await until(lambda: commit.taken, audio=True)
+        assert len(commit.taken) == 1, commit.taken
+        return lines, commit.taken[0], speculator, opened, starts
+    finally:
+        await task.cancel()
+        await running
+        recall_mod.memory_search = real_search
+        logger.remove(sink)
+
+
+REPORTED = "interim transcribed through, verdict INCOMPLETE"
+CONFIRMED = "verdict INCOMPLETE, ceiling running"
+
+
+async def test_the_engines_own_close_with_the_same_words_keeps_the_reports_stream():
+    """Nothing written between the two starts: the final's start keeps the stream, and
+    the commit adopts the request the report opened -- the head start kept."""
+    for landed in ("never", "first"):
+        lines, (message, adopted), speculator, opened, starts = \
+            await _report_then_the_engines_own_close(landed=landed)
+        assert [(why, kept) for why, _, kept in starts] == [(REPORTED, False),
+                                                            (CONFIRMED, True)], starts
+        assert message == {"role": "user", "content": ASKED}
+        assert adopted and len(opened) == 1 and speculator.misses == 0, (landed, lines)
+        # A hit before the report's start is in its snapshot, where the final puts it.
+        assert (any(m.get("content", "").endswith(RECALLED) for m in opened[0].messages)
+                == (landed == "first")), opened[0].messages
+
+
+async def test_a_memory_hit_landing_between_the_starts_fails_the_context_clause():
+    """The search fired on the interim returns after the report's start and before the
+    final: the final injects its note (and says so), and the final's start finds the
+    same words on a context that has moved. That is the context clause, at the note --
+    a restart the commit would have needed (the old snapshot lacks the note), so it is
+    made, and named."""
+    lines, (message, adopted), speculator, opened, starts = \
+        await _report_then_the_engines_own_close(landed="between")
+    assert [(why, asked, kept) for why, asked, kept in starts] == [
+        (REPORTED, True, False), (CONFIRMED, True, False)], starts
+    assert "MemoryRecall injected 1 snippet(s)" in lines, lines
+    assert (_miss(lines, "ctx-changed")
+            == "differs=context chars=45->45 msgs=1->2 msg-at=1:system"), lines
+    assert adopted and len(opened) == 2 and speculator.hits == 1, lines
+    assert opened[1].messages[1]["content"].endswith(RECALLED)
+
+
+async def test_a_cut_reconciled_between_the_starts_fails_the_context_clause():
+    """HeardContextCorrector's pass before the final's snapshot (reconcile_for_snapshot)
+    consumes a cut that landed on the ledger after the report's: a note added ("note"
+    mode), or the cut reply rewritten to what was heard ("truncate": only a reply
+    committed since its last pass, which here is the reply itself landing between). The
+    words are the same and the context clause fails at that message; the commit's own
+    pass changes nothing more, so the restarted request is adopted."""
+    reply, heard = "Ford was founded in 1903 by Henry Ford and twelve investors.", \
+        "Ford was founded in 1903"
+    for mode, moved in (("note", "msgs=3->4 msg-at=3:system"),
+                        ("truncate", "msgs=2->3 msg-at=2:assistant")):
+        ctx, agg, llm, spec, opened = _rig(parts=())
+        ctx.add_message({"role": "user", "content": "tell me about Ford"})
+        if mode == "note":
+            ctx.add_message({"role": "assistant", "content": reply})
+        ledger = SimpleNamespace(events=[])
+        corrector = HeardContextCorrector(ledger, ctx, mode=mode)
+        spec._before_snapshot = corrector.reconcile_for_snapshot
+        await spec.start(ASKED)
+        await _settle()
+        if mode == "truncate":
+            ctx.add_message({"role": "assistant", "content": reply})
+        ledger.events.append(Utterance(speaker="assistant", text=reply, t_start=0.0,
+                                       t_end=1.0, interrupted=True, heard_fraction=0.4,
+                                       heard_text=heard))
+        with _SpecLines() as journal:
+            assert await spec.start(ASKED)
+        assert (_miss(journal.lines, "ctx-changed")
+                == f"differs=context chars=45->45 {moved}"), (mode, journal.lines)
+        await _settle()
+        corrector._reconcile()                      # the commit's pass: nothing left to do
+        ctx.add_message({"role": "user", "content": ASKED})
+        out = await llm.get_chat_completions(ctx)
+        assert spec.hits == 1 and spec.misses == 1 and len(opened) == 2, mode
+        await out.close()
 
 
 def main():
