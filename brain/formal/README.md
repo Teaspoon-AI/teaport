@@ -653,11 +653,15 @@ ends.
 - **A cut before the TTS opened** (#79) is taken as heard-nothing. The feed reads a cut
   with no charted turn that way (`TranscriptLedger._interrupt` settles a reply still
   streaming or queued for its context as heard nothing), never "leave it as delivered".
-  `test_owed.py` chains the real ledger into the real book for it
-  (`test_a_run_cut_before_its_tts_opened_stays_owed_and_is_reoffered_once`; with the
-  interruption ahead of the reply's Start,
-  `test_a_run_whose_start_the_cut_overtook_is_settled_at_the_readers_bound`): the
-  record stays owed and is re-offered once (#313).
+  `test_owed.py` chains the real ledger into the real book for both branches, a reply
+  still streaming
+  (`test_a_run_cut_before_its_tts_opened_stays_owed_and_is_reoffered_once`) and one
+  queued for its context
+  (`test_a_run_cut_while_queued_for_its_tts_context_stays_owed_and_is_reoffered_once`),
+  and for an interruption that overtook the reply's Start, which `Owed.settled`
+  settles at its bound
+  (`test_a_run_whose_start_the_cut_overtook_is_settled_at_the_readers_bound`). In each,
+  the record stays owed and is re-offered once (#313).
 - **Room sleep and wake** persistence (`wake_gate.py`) and the session end's rewrite of
   a running consult's placeholder are not modelled (`test_owed.py` covers both).
 - **Durations.** The settle wait's bound (`SETTLE_WAIT_S`), the debounce before a run

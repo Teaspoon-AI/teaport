@@ -1807,13 +1807,15 @@ async def landing_run():
     """A consult landed and its landing run rendered, the ledger wired to the book as the
     session wires them. The wiring is inline in build_agent_session, not factored out, so
     this mirrors it:
-      - agent_session.py:1092 `ledger = TranscriptLedger(tts=tts, output=...)`, and
-        :1246-1247 `ledger.on_reply_text = owed.reply_text`, `ledger.on_reply_end =
-        owed.settle` (the book's gate is book()'s FakeGate, for :1238's FollowupGate);
-      - services.py, the run's request: process_frame's Reply for the gate's RunFrame
-        (:667), _open_stream's `owed.view(...)` (:746) and _rendered's `owed.noted(reply,
-        noted, context.get_messages())` (:695), and push_frame's `frame.owed_reply =
-        reply` on the completion's Start (:682).
+      - agent_session.build_agent_session: `ledger = TranscriptLedger(tts=tts,
+        output=transport_output)`, `owed = Owed(context, gate=followup_gate, ...)` (the
+        gate here is book()'s FakeGate), `ledger.on_reply_text = owed.reply_text` and
+        `ledger.on_reply_end = owed.settle`;
+      - services.BoundedOpenAILLMService, the run's request: process_frame's
+        `owed_mod.Reply(frame.purpose, frame.keys)` for the gate's RunFrame,
+        _open_stream's `self.owed.view(...)`, _rendered's `self.owed.noted(reply, noted,
+        context.get_messages())`, and push_frame's `frame.owed_reply = reply` on the
+        completion's Start.
     Returns (book, ctx, gate, ledger, start): `start` is the run's Start, its reply on it."""
     b, ctx, gate = book(reoffer_quiet_s=0.05)
     ledger = TranscriptLedger(tts=TTS)
@@ -1866,7 +1868,10 @@ async def owed_and_reoffered_once(b, ctx, gate, status=owed.NOT_HEARD, cuts=0):
     view, keys = await b.view(ctx, owed.COMMIT)
     note = view.get_messages()[-2]["content"]
     assert keys == ("call-hn",) and note == measured_note(status), note
-    assert gate.asked == [], f"asked before the line went quiet: {gate.asked}"
+    # Neither the cut nor the render asked for a run itself (a second landing run, an early
+    # re-offer). This runs before the lull's first tick, so it does not test the lull's
+    # wait for quiet: test_the_lull_waits_for_quiet_and_for_the_settle does.
+    assert gate.asked == [], f"the cut or the render asked for a run: {gate.asked}"
     gate.quiet = 1.0
     done, _ = await asyncio.wait({b._lull}, timeout=10.0)
     assert done, f"the lull still running after 10 s, asked {gate.asked}"
@@ -1883,6 +1888,18 @@ async def test_a_run_cut_before_its_tts_opened_stays_owed_and_is_reoffered_once(
     b, ctx, gate, ledger, start = await landing_run()
     await at_the_tts(ledger, [(start, 0.0), (LLMTextFrame("Tesla Roadster is"), 0.0),
                               (InterruptionFrame(), 0.12)])
+    assert b.record("call-hn").heard_quote == "", b.record("call-hn").heard_quote
+    await owed_and_reoffered_once(b, ctx, gate)
+
+
+async def test_a_run_cut_while_queued_for_its_tts_context_stays_owed_and_is_reoffered_once():
+    """#79's other branch (_interrupt's queue): the run's whole stream reached the TTS, its
+    End read there, but no context had opened for it when the cut came. The ledger
+    settles it heard nothing, with its whole text, and the book keeps the record owed,
+    unquoted, with no cut telling: the same outcome as a run cut while streaming."""
+    b, ctx, gate, ledger, start = await landing_run()
+    await at_the_tts(ledger, [(start, 0.0), (LLMTextFrame(TELLING), 0.0),
+                              (LLMFullResponseEndFrame(), 0.05), (InterruptionFrame(), 0.12)])
     assert b.record("call-hn").heard_quote == "", b.record("call-hn").heard_quote
     await owed_and_reoffered_once(b, ctx, gate)
 
