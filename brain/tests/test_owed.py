@@ -1859,6 +1859,149 @@ async def test_a_reply_whose_end_reached_the_tts_before_the_cut_is_no_fragment()
     assert got2 == [None], got2
 
 
+# =============================================================== the ledger into the book (#79)
+#
+# The two halves above and in the book's tests pin a cut before the TTS opened one at a
+# time (test_a_reply_cut_before_its_tts_opened_was_heard_nothing, the ledger's call;
+# test_a_run_that_ends_without_closing_arms_the_reoffer, a settle by hand). These chain
+# the real ledger into the real book, so neither half can drift from the other (#313).
+
+async def landing_run():
+    """A consult landed and its landing run rendered, the ledger wired to the book as the
+    session wires them. The wiring is inline in build_agent_session, not factored out, so
+    this mirrors it:
+      - agent_session.build_agent_session: `ledger = TranscriptLedger(tts=tts,
+        output=transport_output)`, `owed = Owed(context, gate=followup_gate, ...)` (the
+        gate here is book()'s FakeGate), `ledger.on_reply_text = owed.reply_text` and
+        `ledger.on_reply_end = owed.settle`;
+      - services.BoundedOpenAILLMService, the run's request: process_frame's
+        `owed_mod.Reply(frame.purpose, frame.keys)` for the gate's RunFrame,
+        _open_stream's `self.owed.view(...)`, _rendered's `self.owed.noted(reply, noted,
+        context.get_messages())`, and push_frame's `frame.owed_reply = reply` on the
+        completion's Start.
+    Returns (book, ctx, gate, ledger, start): `start` is the run's Start, its reply on it."""
+    b, ctx, gate = book(reoffer_quiet_s=0.05)
+    ledger = TranscriptLedger(tts=TTS)
+    ledger.on_reply_text = b.reply_text
+    ledger.on_reply_end = b.settle
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    assert gate.asked == [(["call-hn"], owed.RUN)], gate.asked
+    gate.asked.clear()
+    reply = Reply(owed.RUN, ("call-hn",))
+    _, noted = await b.view(ctx, reply.kind, reply.keys)
+    b.noted(reply, noted, ctx.get_messages())
+    assert noted == ("call-hn",) and not b.is_settled(), "the run carries the note, unsettled"
+    start = LLMFullResponseStartFrame()
+    start.owed_reply = reply
+    return b, ctx, gate, ledger, start
+
+
+# What the session's TTS is handed: the LLM stream and the interruption.
+_INTO_TTS = (LLMFullResponseStartFrame, LLMTextFrame, LLMFullResponseEndFrame,
+             InterruptionFrame)
+
+
+async def pushed_to_tts(ledger, frames):
+    """`frames` handed to the TTS (the ledger's on_push_frame), not yet read by it."""
+    for f in frames:
+        await ledger.on_push_frame(SimpleNamespace(frame=f, destination=TTS))
+
+
+async def at_the_tts(ledger, seq):
+    """`seq` as the session's ledger sights it: a frame bound for the TTS (the LLM
+    stream, an interruption) pushed to it and then read there, once; the TTS's own frames
+    as they pass."""
+    for f, t in seq:
+        if isinstance(f, _INTO_TTS):
+            await pushed_to_tts(ledger, [f])
+        await _feed_ledger(ledger, [(f, t)], TTS)
+
+
+async def owed_and_reoffered_once(b, ctx, gate, status=owed.NOT_HEARD, cuts=0):
+    """Once the run's reply has settled (any verdict it waits for in): the record is still
+    owed with its re-offer armed, the caller's next request carries the note saying
+    `status`, and the quiet line asks for the re-offer exactly once (the lull, waited on
+    until it ends: once it has asked, nothing is due)."""
+    rec = b.record("call-hn")
+    await judged(b)
+    assert b.is_settled(), "the run's reply never settled"
+    assert (rec.state, rec.missed, rec.cuts) == (OWED, True, cuts), (rec.state, rec.missed,
+                                                                     rec.cuts)
+    ctx.add_message({"role": "user", "content": "Sorry, what was that?"})
+    view, keys = await b.view(ctx, owed.COMMIT)
+    note = view.get_messages()[-2]["content"]
+    assert keys == ("call-hn",) and note == measured_note(status), note
+    # Neither the cut nor the render asked for a run itself (a second landing run, an early
+    # re-offer). This runs before the lull's first tick, so it does not test the lull's
+    # wait for quiet: test_the_lull_waits_for_quiet_and_for_the_settle does.
+    assert gate.asked == [], f"the cut or the render asked for a run: {gate.asked}"
+    gate.quiet = 1.0
+    done, _ = await asyncio.wait({b._lull}, timeout=10.0)
+    assert done, f"the lull still running after 10 s, asked {gate.asked}"
+    assert gate.asked == [(["call-hn"], owed.REOFFER)], gate.asked
+    assert rec.state == OWED and rec.reoffers == 1, (rec.state, rec.reoffers)
+
+
+async def test_a_run_cut_before_its_tts_opened_stays_owed_and_is_reoffered_once():
+    """#79 end to end (Owed.tla CutGot(s, "gen") = {"nothing"}): the landing run is cut
+    after its first token, while the TTS is still gathering its first clause -- no
+    context opened. The ledger settles it heard nothing, and the book keeps the record
+    owed and unquoted, with no cut telling counted: the caller's next request says they
+    have NOT heard it, and the quiet line re-offers it once."""
+    b, ctx, gate, ledger, start = await landing_run()
+    await at_the_tts(ledger, [(start, 0.0), (LLMTextFrame("Tesla Roadster is"), 0.0),
+                              (InterruptionFrame(), 0.12)])
+    assert b.record("call-hn").heard_quote == "", b.record("call-hn").heard_quote
+    await owed_and_reoffered_once(b, ctx, gate)
+
+
+async def test_a_run_cut_while_queued_for_its_tts_context_stays_owed_and_is_reoffered_once():
+    """#79's other branch (_interrupt's queue): the run's whole stream reached the TTS, its
+    End read there, but no context had opened for it when the cut came. The ledger
+    settles it heard nothing, with its whole text, and the book keeps the record owed,
+    unquoted, with no cut telling: the same outcome as a run cut while streaming."""
+    b, ctx, gate, ledger, start = await landing_run()
+    await at_the_tts(ledger, [(start, 0.0), (LLMTextFrame(TELLING), 0.0),
+                              (LLMFullResponseEndFrame(), 0.05), (InterruptionFrame(), 0.12)])
+    assert b.record("call-hn").heard_quote == "", b.record("call-hn").heard_quote
+    await owed_and_reoffered_once(b, ctx, gate)
+
+
+async def test_a_run_whose_start_the_cut_overtook_is_settled_at_the_readers_bound():
+    """#79, the interruption overtaking the run's Start: the Start and its first token
+    were handed to the TTS, which never read them, so the ledger never claims the reply.
+    The readers' bounded wait (Owed.settled) gives up and settles it heard nothing: the
+    same outcome as a cut the ledger saw. The bound is settled()'s `timeout` (its
+    default, SETTLE_WAIT_S, is bound at its def), shortened here as
+    test_a_reply_that_never_settles_holds_one_render_not_every_one does."""
+    b, ctx, gate, ledger, start = await landing_run()
+    await pushed_to_tts(ledger, [start, LLMTextFrame("Tesla Roadster is")])
+    await at_the_tts(ledger, [(InterruptionFrame(), 0.12)])
+    assert not b.is_settled(), "the ledger settled a reply it never read"
+    await b.settled(timeout=0.05)
+    assert b.record("call-hn").heard_quote == "", b.record("call-hn").heard_quote
+    await owed_and_reoffered_once(b, ctx, gate)
+
+
+async def test_a_run_cut_after_its_first_words_keeps_what_was_heard():
+    """The control: the same run, but its TTS context opened and played "Tesla Roadster"
+    before the cut. The ledger settles that prefix, audible, and the book follows the
+    heard-prefix rules: still owed, quoted, one cut telling (#231), the caller's next
+    request says what they heard, and the quiet line re-offers it once."""
+    b, ctx, gate, ledger, start = await landing_run()
+    await at_the_tts(ledger, [
+        (start, 0.0), (LLMTextFrame("Tesla Roadster is"), 0.0),
+        (TTSStartedFrame(context_id="r"), 0.05), (_ctx(_audio(2.0), "r"), 0.05),
+        (BotStartedSpeakingFrame(), 0.05), (_ctx(_word("Tesla", 0.1), "r"), 0.06),
+        (_ctx(_word("Roadster", 0.4), "r"), 0.06), (_ctx(_word("is", 0.9), "r"), 0.06),
+        (InterruptionFrame(), 0.7)])
+    assert b.record("call-hn").heard_quote == "Tesla Roadster", b.record("call-hn").heard_quote
+    await owed_and_reoffered_once(
+        b, ctx, gate, cuts=1,
+        status="They heard only \"Tesla Roadster\" before they spoke, which is not the whole "
+               "answer.")
+
+
 
 # =============================================================== the decline, cut tellings (#231)
 
