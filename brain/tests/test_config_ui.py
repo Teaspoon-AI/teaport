@@ -705,6 +705,11 @@ def test_wifi_section(monkeypatch=None):
         assert client.post("/api/wifi/scan", headers=H).json()["networks"][0]["ssid"] == "cafe"
         r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "short"})
         assert r.status_code == 400
+        # The reason reads on after "Could not switch to <name>: " on the page.
+        r = client.post("/api/wifi/connect", headers=H, json={"ssid": "é" * 17, "password": ""})
+        assert r.status_code == 400 and r.json()["detail"] == "that network name is too long for Wi-Fi"
+        r = client.post("/api/wifi/connect", headers=H, json={"ssid": " ", "password": ""})
+        assert r.status_code == 400 and r.json()["detail"] == "enter the network's name"
         r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "cafepass1"})
         assert r.json() == {"ok": True, "ssid": "cafe", "error": None}
         # A switch that does not work: the new profile goes, the old network comes back.
@@ -846,7 +851,7 @@ def test_the_page_shows_why_the_brain_did_not_switch():
                             "body": {"ssid": "cafe", "password": "cafepass1", "hidden": False}}
                            for base, _ in cases.values()]
 
-    switching = "Switching to cafe… this can take up to a minute."
+    switching = "Switching to cafe… this can take a few minutes."
 
     def refused(text, href=""):  # the form as it was: the password still in its field
         return {"out": text, "pw": "cafepass1", "rendered": None, "href": href}
