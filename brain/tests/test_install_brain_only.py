@@ -441,6 +441,49 @@ def test_the_arp_drop_in_leaves_a_non_jetson_alone_but_a_dry_run_shows_it():
     assert _sysctls(tmp) == ["sysctl -q --system"], _sudo_calls(tmp)
 
 
+# --- the systemd units are root's and 0644, whatever the umask (#199) ------------------
+
+def _render(tmp, dry_run=False):
+    """render_unit for two of the real templates, under umask 077, with the real write_root;
+    sudo recorded. SUDO install writes under $T/root with the -m mode set (as install sets
+    it), SUDO tee under $T/root as the umask leaves it."""
+    script = (f'HERE="{INSTALL.parent}" RUN_USER=op PREFIX=/opt/teaport ETC=/etc/teaport '
+              f'SANDBOX=sb SECRETS=/home/op/.config/teaport DRY_RUN={int(dry_run)}; umask 077\n'
+              'SUDO() { printf "%s\\n" "$*" >> "$T/sudo.log"; local dest="$T/root${*: -1}" mode="" prev="" a\n'
+              '  mkdir -p "$(dirname "$dest")"\n'
+              '  case "$1" in\n'
+              '    install) for a in "$@"; do if [ "$prev" = -m ]; then mode="$a"; fi; prev="$a"; done\n'
+              '             cat > "$dest"; chmod "$mode" "$dest" ;;\n'
+              '    tee) command tee "$dest" >/dev/null ;;\n'
+              '  esac; }\n'
+              'render_unit teaport-brain.service.in teaport-brain.service\n'
+              'render_unit teaport-engine.service.in teaport-engine.service\n')
+    return _run(tmp, script, ["write_root", "render_unit"])
+
+
+def test_a_unit_is_written_through_write_root_and_reads_back_as_anyone():
+    # systemd reads a 0600 unit as root, but `systemctl cat` reads it as the caller: the
+    # CLI (installed) and --only brain took a unit sudo's umask left 0600 for none at all.
+    tmp = tempdir("teaport-units-")
+    rc, out = _render(tmp)
+    assert rc == 0, out
+    assert _sudo_calls(tmp) == [f"install -D -m 0644 -o root -g root /dev/stdin /etc/systemd/system/{u}"
+                                for u in ("teaport-brain.service", "teaport-engine.service")]
+    for u in ("teaport-brain.service", "teaport-engine.service"):
+        unit = pathlib.Path(tmp, "root/etc/systemd/system", u)
+        assert oct(unit.stat().st_mode & 0o777) == "0o644", u
+        text = unit.read_text()
+        assert "User=op\n" in text and "@USER@" not in text and "ExecStart=" in text, text
+
+
+def test_a_dry_run_names_each_unit_once_and_writes_none():
+    tmp = tempdir("teaport-units-")
+    rc, out = _render(tmp, dry_run=True)
+    assert rc == 0 and out.count("[dry-run]") == 2, out
+    assert "[dry-run] render teaport-brain.service.in -> /etc/systemd/system/teaport-brain.service" in out
+    assert _sudo_calls(tmp) == [] and not pathlib.Path(tmp, "root").exists(), out
+
+
 # --- the freshness check looks at what is installed ----------------------------------
 
 def _git(cwd, *args):

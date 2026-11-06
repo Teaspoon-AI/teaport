@@ -1683,8 +1683,11 @@ render_unit() {  # render_unit <template.in> <dest-name>
                           -e "s#@NODE@#$node_bin#g" \
                           -e "s#@SIP_GATEWAY@#$sip_gateway#g" -e "s#@SIP_CONF@#$sip_conf#g" \
                           -e "s#@SIP_UDS@#$sip_uds#g" "$tpl")"
+  # Through write_root, so the unit is root's and 0644 whatever sudo's umask (#199). systemd
+  # reads a 0600 unit as root all the same, but `systemctl cat` reads it as whoever runs it,
+  # and that is how the CLI (installed) and --only brain tell an installed unit from none.
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
-  else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
+  else write_root "/etc/systemd/system/$out" "$body"; fi
 }
 write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # Keys passed here are OURS: rewritten every run so a repair restores them. Everything
@@ -1980,6 +1983,11 @@ reissue_short_intermediate() {
 # one -- with Caddy's defaults, every 8 hours. Caddy renews at a third of the lifetime left,
 # so a year-long leaf changes about every 8 months. A year also stays inside what Apple
 # accepts from a root a user installed (825 days).
+#
+# Written through write_root: root's and 0644, not whatever sudo's umask makes it (#199).
+# The package's caddy.service runs Caddy as User=caddy, and a 0600 Caddyfile stops it from
+# starting or reloading. Nothing in it needs hiding: the operator's certificate and key go
+# in by path only (phase_frontdoor checks that the caddy user can read them).
 write_caddyfile() {
   local path="$1" tls=("    tls {" "        issuer internal {" "            lifetime $LEAF_LIFETIME"
                        "        }" "    }")
@@ -1988,7 +1996,7 @@ write_caddyfile() {
     local how="local CA, leaf $LEAF_LIFETIME"; if [ -n "$TLS_CERT" ]; then how="own certificate $TLS_CERT"; fi
     printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, Settings on :%s, %s, local CA "%s", + /teaport-ca.crt over http and https)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$SETTINGS_PORT" "$how" "$FRONTDOOR_CA_NAME"; return
   fi
-  printf '%s\n' \
+  write_root "$path" "$(printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
     "" \
@@ -2059,7 +2067,7 @@ write_caddyfile() {
     "    handle {" \
     "        respond 404" \
     "    }" \
-    "}" | SUDO tee "$path" >/dev/null
+    "}")"
 }
 
 # set_avahi_hostname <name> — publish <name>.local over mDNS. Best-effort: if avahi's conf
@@ -2208,16 +2216,28 @@ install_config_sudoers() {
 
 # Caddy isn't in the stock Ubuntu repos — add its official Cloudsmith apt repo (idempotent),
 # then install. Keeps the TLS front door patched by apt instead of a frozen, sha-pinned R2 binary.
+# The key and the list are root's and 0644, set rather than left to sudo's umask (#199): apt
+# checks the repo's signature as its _apt user, which a 0600 key shuts out (the repo reads
+# as unsigned, and apt-get update fails), and apt run by anyone but root cannot open a 0600
+# list. Caddy's own instructions chmod o+r both for the same reason.
+CADDY_KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg   # the list's signed-by= names it
+CADDY_APT_LIST=/etc/apt/sources.list.d/caddy-stable.list
 install_caddy_apt() {
-  local key=/usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  local list=/etc/apt/sources.list.d/caddy-stable.list
+  local tmp repo
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] add Caddy apt repo + apt-get install -y caddy\n'; return; fi
   SUDO apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
-  if [ ! -f "$key" ]; then
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor -o "$key" || die "cannot fetch the Caddy repo key"
+  if [ ! -f "$CADDY_KEYRING" ]; then
+    # Dearmored into a temp and installed from there (it is binary: no write_root), so the
+    # key is there only when the whole fetch worked.
+    tmp="$(mktemp)"
+    if ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor > "$tmp"; then
+      rm -f "$tmp"; die "cannot fetch the Caddy repo key"
+    fi
+    SUDO install -D -m 0644 -o root -g root "$tmp" "$CADDY_KEYRING"; rm -f "$tmp"
   fi
-  if [ ! -f "$list" ]; then
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | SUDO tee "$list" >/dev/null || die "cannot fetch the Caddy repo list"
+  if [ ! -f "$CADDY_APT_LIST" ]; then
+    repo="$(curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt')" || die "cannot fetch the Caddy repo list"
+    write_root "$CADDY_APT_LIST" "$repo"
   fi
   SUDO apt-get update -qq
   SUDO apt-get install -y caddy
