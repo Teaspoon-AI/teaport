@@ -770,3 +770,7 @@ msgstr "AI 계정은 연결됐지만 아직 크레딧이 없어요. OpenRouter �
 
 msgid "Sorry, I can't answer right now: the account I use for my answers needs attention, and trying again won't help. Say \"open my settings\" to fix it."
 msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 계정에 확인이 필요하고, 다시 시도해도 해결되지 않아요. 고치시려면 '설정 열어 줘'라고 말해 주세요."
+
+# The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
+msgid "Sorry, I lost my train of thought there. Could you say that again?"
+msgstr "죄송해요, 하던 생각을 놓쳤어요. 다시 한번 말씀해 주시겠어요?"
