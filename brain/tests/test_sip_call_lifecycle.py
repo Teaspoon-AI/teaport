@@ -42,6 +42,12 @@
 #      state short of confirmed must build nothing, and the live confirmed after it
 #      greets normally.
 #
+# And what a call is built with:
+#
+#   6. No client features, so its typing bed (SIP_THINKING_SOUND, #242) types for no
+#      face; whether it is half-duplex, as SIP_THINKING_SOUND types no such call; and the
+#      half-duplex gate is handed the call's own bed, whose typing echoes.
+#
 # Run: python test_sip_call_lifecycle.py
 #
 import asyncio
@@ -166,6 +172,7 @@ class _FakeSession:
     build_kw = {}       # call id -> what build_agent_session was given (recording=, ...)
     PREPARED = "Hello there."
     llm = object()       # a model to answer with (none: sip_server's no-model line, #277)
+    thinking_sound = None  # the session's typing bed (agent_session), or None
 
     def __init__(self, call_id):
         self.call_id = call_id
@@ -351,6 +358,35 @@ async def test_the_matching_disconnected_does_tear_the_call_down():
             "the call's own disconnected did not tear it down")
     finally:
         await h.stop()
+
+
+async def test_a_call_is_built_for_no_face_and_hands_its_bed_to_the_half_duplex_gate():
+    """With SIP_THINKING_SOUND on (#242), or in agent-first, a call's session has a typing
+    bed. The call is built with no client features, so not "typing": its bed types for
+    no face (the OLED face types along to the room bridge's session alone). The session
+    is told whether the call is half-duplex: SIP_THINKING_SOUND types no such call. And
+    the half-duplex gate, when on, is handed the call's own bed (agent-first's): the
+    typing is no bot speech, but echoes on the line all the same."""
+    saved = sip_server.HALF_DUPLEX
+    for half_duplex in (False, True):
+        sip_server.HALF_DUPLEX = half_duplex
+        _FakeSession.thinking_sound = bed = object()
+        h = _Harness()
+        try:
+            await h.start()
+            await h.call_state("A", "confirmed")
+            assert await wait_until(lambda: "A" in _FakeSession.greeted), "call A never came up"
+            kw = _FakeSession.build_kw["A"]
+        finally:
+            await h.stop()
+            sip_server.HALF_DUPLEX, _FakeSession.thinking_sound = saved, None
+        assert kw["front_end"] == "sip", kw
+        assert "typing" not in kw.get("client_features", ()), kw
+        # The session is told, so SIP_THINKING_SOUND types no half-duplex call.
+        assert kw.get("half_duplex", False) is half_duplex, kw
+        gates = [p for p in kw.get("input_processors") or ()
+                 if isinstance(p, sip_server.HalfDuplexInputGate)]
+        assert [g.thinking_sound for g in gates] == ([bed] if half_duplex else []), gates
 
 
 async def test_a_slow_bring_up_does_not_block_the_receive_loop():

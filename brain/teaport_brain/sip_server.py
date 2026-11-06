@@ -71,8 +71,8 @@
 # emitters, and the turn-timing taps it previously lacked (captions/transcript
 # frames are harmlessly dropped by the SIP serializer — no SIP control type carries
 # them). Tools run exactly like the OpenClaw path: the async openclaw_agent_consult consult
-# lands in owed.py and is told through the FollowupGate (no typing over the wait: a
-# phone call gets no ThinkingSound, outside agent-first), so a caller gets REAL tool results instead of
+# lands in owed.py and is told through the FollowupGate (typed over with SIP_THINKING_SOUND
+# on, or in agent-first: thinking_sound.enabled_for), so a caller gets REAL tool results instead of
 # hallucinated ones. On SIP there is no OpenClaw plugin to service the native
 # openclaw_agent_consult round-trip: the session has no relay
 # (tools.ToolContext.relay), so openclaw_agent_consult goes straight to the
@@ -107,6 +107,7 @@ from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import credit
 from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
+from teaport_brain import thinking_sound
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.tasks import cancel_and_wait, wait_ended
 from teaport_brain.services import make_tts
@@ -202,8 +203,8 @@ _CONFIRM_SECS = 10.0
 class HalfDuplexInputGate(FrameProcessor):
     """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
     un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in. And while
-    the thinking sound's typing is heard (agent-first: a phone call gets none else),
-    which is no bot speech but echoes all the same.
+    the thinking sound's typing is heard (agent-first alone: SIP_THINKING_SOUND types no
+    half-duplex call), which is no bot speech but echoes all the same.
 
     The one SIP-specific processor — passed to build_agent_session as an
     input-side processor (inserted right after transport.input())."""
@@ -509,6 +510,22 @@ async def run(sock_path: str):
     await run_connection(sock, on_ready=sdnotify.ready)
 
 
+def half_duplex_line() -> str:
+    """The journal's line for the half-duplex gate, said as a gateway connects. ON is the
+    line worth noticing: it means the caller cannot barge in for the whole of every
+    reply, which is otherwise invisible. Say what that costs -- and, with
+    SIP_THINKING_SOUND set, that it does nothing while the gate is on: no call types
+    (thinking_sound.enabled_for, #242), and only the help text said so."""
+    if not HALF_DUPLEX:
+        return "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
+    line = (f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
+            f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
+            f"unset SIP_HALF_DUPLEX to restore barge-in")
+    if thinking_sound.SIP_ENABLED:
+        line += ". SIP_THINKING_SOUND has no effect while half-duplex is on: no call types"
+    return line
+
+
 async def run_connection(sock, on_ready=None):
     """Serve one gateway connection until the gateway goes away: control, audio, and a
     fresh pipeline per call. Every call ends with it."""
@@ -524,15 +541,7 @@ async def run_connection(sock, on_ready=None):
     params = make_sip_params(serializer)
     connection = SipConnection(sock, serializer)
 
-    # ON is the line worth noticing in a journal: it means the caller cannot barge in
-    # for the whole of every reply, which is otherwise invisible. Say what that costs.
-    logger.info(
-        f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
-        f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
-        f"unset SIP_HALF_DUPLEX to restore barge-in"
-        if HALF_DUPLEX else
-        "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
-    )
+    logger.info(half_duplex_line())
     if STT_MAKEUP_DB:
         logger.info(f"STT makeup gain: +{STT_MAKEUP_DB:g} dB on the caller signal into the "
                     "transcriber, recovering quiet speech over the bot -- see stt.py")
@@ -883,6 +892,7 @@ async def run_connection(sock, on_ready=None):
             # the short patience, not the asleep room's.
             host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
             recording=recording,
+            half_duplex=half_duplex is not None,  # (no SIP_THINKING_SOUND typing on it)
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound
