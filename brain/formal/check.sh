@@ -473,6 +473,7 @@ run SessionArbiter.tla sa_unaskable        "(expected: holds — answer_phone_ca
 run SessionArbiter.tla sa_overlap_refused  "(expected: FAILS NoEngineRefusal — before the SIP claim fix, with the overlap SipCall found: REPLACED resumes the held Talk, the call overwrites it)"
 run SessionArbiter.tla sa_overlap_redecide "(expected: holds — an arbiter-side alternative, NOT taken: the SIP fix removes the overlap instead)"
 run SessionArbiter.tla sa_roomWakes        "(expected: FAILS NoSilentLiveEnd — the ACCEPTED RESIDUAL: the room wakes between decide() and its end, one loop tick)"
+run SessionArbiter.tla sa_roomAwake        "(expected: holds — the room stays awake, so no wake race: a hold that fails ends it as HOLD_FAILED, told, never silently. Before 2026-11-05 this failed NoSilentLiveEnd)"
 echo
 echo "Ledger.tla — the transcript ledger's bot-turn state machine, as written at PR #13 (asWritten)"
 echo "  (the rejected design: every row fails, pinning the review's counterexamples)"

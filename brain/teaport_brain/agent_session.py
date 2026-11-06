@@ -320,6 +320,7 @@ class AgentSession:
         self.end_reason: str | None = None
         # On hold for a phone call (hold / resume), and what keeps it alive meanwhile.
         self.held = False
+        self.hold_line_said = False   # hold() played its step-away line (a failed hold adds no goodbye)
         self._keeper = None
         # Asks this conversation whether to take a phone call (call_prompt.CallPrompt);
         # None where it cannot be asked (build_agent_session decides).
@@ -593,10 +594,14 @@ class AgentSession:
         # First, before any await: a conversation-start notice playing now (greet()'s,
         # or a wake's) reads this when it ends -- it must not listen again, nor greet.
         self.holding = True
+        self.hold_line_said = False
         if self.wake_gate is not None:
             self.wake_gate.cancel_start()
         if line:
-            await self.say_last_line(line, max_secs, append_to_context=True)
+            # Played: a hold that fails after this has already told the user, and its end
+            # adds no second goodbye. (Not played to the end: the end tells them.)
+            self.hold_line_said = await self.say_last_line(line, max_secs,
+                                                           append_to_context=True)
         elif self.input_mute is not None:
             self.input_mute.muted = True
         self.followup_gate.set_held(True)
