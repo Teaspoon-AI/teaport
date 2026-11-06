@@ -33,6 +33,7 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
+    CancelFrame,
     EndFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -260,6 +261,23 @@ async def test_a_dropped_watch_is_forgotten():
     gate.drop_delivery(d)
     await _feed(gate, BotStartedSpeakingFrame(), BotStoppedSpeakingFrame())
     assert not d.done.is_set(), "a dropped watch still settled"
+
+
+async def test_a_wait_for_an_interruption_ends_with_the_pipeline():
+    """own_line's wait (#293): true once an interruption has passed; false as soon as
+    the pipeline ends (End or Cancel, while it waits or before it asks), none being due
+    -- not a wait to the cap for a frame that cannot come (#336's review, finding 1)."""
+    gate = _gate()
+    waiting = asyncio.ensure_future(gate.interrupted_since(gate.interruptions))
+    await _feed(gate, InterruptionFrame())
+    assert await asyncio.wait_for(waiting, 1) is True
+    for end in (CancelFrame(), EndFrame()):
+        gate = _gate()
+        waiting = asyncio.ensure_future(gate.interrupted_since(gate.interruptions))
+        await asyncio.sleep(0)
+        await _feed(gate, end)
+        assert await asyncio.wait_for(waiting, 1) is False, end
+        assert await asyncio.wait_for(gate.interrupted_since(gate.interruptions), 1) is False
 
 
 # --- the claim: one turn-free window, one waiter ---
