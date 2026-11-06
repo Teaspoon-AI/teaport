@@ -521,36 +521,60 @@ async def test_a_slow_or_capped_empty_reply_gets_the_line_at_once():
         services._RETRY_WITHIN_S = within
 
 
-async def test_a_mood_emoji_alone_is_retried_and_a_bracket_tag_is_moodtags():
-    """Through MoodTag as the session has it: a reply of only the mood emoji the prompt
-    asks for is wordless, so it is retried (and answered), and twice gets one line --
-    MoodTag's own bare-tag line does not add a second. A reply of only a bracketed tag
-    has letters, so it is not retried: MoodTag strips it and speaks the line itself."""
-    emoji = [_chunk("\U0001F622"), _chunk(finish="stop")]
-    tag = [_chunk("[mood: sad]"), _chunk(finish="stop")]
-    for name, replies, asks, expect in (("emoji, then the answer", (emoji, SAID), 2, [ANSWER]),
-                                        ("emoji twice", (emoji,), 2, [LINE]),
-                                        ("a bracket tag", (tag,), 1, [LINE])):
+async def test_a_reply_that_is_only_a_face_is_not_retried():
+    """A reply of only a face -- an emoticon or an emoji -- has no speech, but it said
+    that: the guard forwards it whole and history keeps it. Not asked again, and no
+    line glued onto it (review round 1b: ":):)Sorry, I lost my train of thought..."). A
+    mood tag alone, the emoji or the bracketed one, is MoodTag's: it strips the tag and
+    speaks the line itself, once. A face after an empty first attempt ends it there."""
+    def reply(text):
+        return [_chunk(text), _chunk(finish="stop")]
+
+    guard = (lambda: [LLMTextGuard()])
+    moods = (lambda: [MoodTag(), LLMTextGuard()])
+    for name, procs, replies, asks, expect in (
+            ("an emoticon", guard, (reply(":)"),), 1, ":)"),
+            ("a thumbs-up", guard, (reply("\U0001F44D"),), 1, "\U0001F44D"),
+            ("a mood emoji, moods off", guard, (reply("\U0001F622"),), 1, "\U0001F622"),
+            ("an emoticon, moods on", moods, (reply(":)"),), 1, ":)"),
+            ("a mood emoji, moods on", moods, (reply("\U0001F622"),), 1, LINE),
+            ("a bracket tag, moods on", moods, (reply("[mood: sad]"),), 1, LINE),
+            ("nothing, then a face", guard, (EMPTY, reply(":)")), 2, ":)"),
+            ("'...', then a face", guard, (reply("..."), reply(":)")), 2, ":)")):
         ctx = _context({"role": "user", "content": ASK})
         provider = _Provider(*replies)
         llm, _ = _llm(provider, ctx)
-        frames = await _run([llm, MoodTag(), LLMTextGuard()], LLMContextFrame(context=ctx))
+        frames = await _run([llm, *procs()], LLMContextFrame(context=ctx))
         assert len(provider.requests) == asks, (name, len(provider.requests))
-        assert [t.strip() for t in _texts(frames) if t.strip()] == expect, (
-            name, _texts(frames))
+        assert "".join(_texts(frames)).strip() == expect, (name, _texts(frames))
+
+
+def test_a_face_here_is_a_face_the_guard_keeps_whole():
+    """The service's emoticon is the guard's (its leading-punct strip keeps one whole):
+    one that the guard kept but this did not count as a face would be retried and have
+    the line glued onto it again."""
+    assert services._EMOTICON.pattern in llm_text_guard._LEADING_PUNCT.pattern
+    for face in (":)", ";-)", ":(", ":/", ":*", "=)", "\U0001F44D", "\u2764\ufe0f"):
+        assert services._shows_a_face(face), face
+        assert llm_text_guard._LEADING_PUNCT.sub("", face) == face, face
+    for none in ("", "...", "\n", "\u200b", "?!"):
+        assert not services._shows_a_face(none), repr(none)
 
 
 async def test_with_the_guard_off_the_service_still_recovers():
     """TEAPORT_LLM_TEXT_GUARD=0: no guard in the pipeline, so nothing cuts a collapse --
     it is retried like any reply with no words -- and the line, pushed by the service
-    itself, goes to the TTS with no leading space."""
+    itself, goes with no leading space when nothing came before it, and with one after
+    the "..." that, with no guard, reached the TTS and history ahead of it."""
     enabled = llm_text_guard.ENABLED
     llm_text_guard.ENABLED = False
     try:
         for name, replies, expect in (("a collapse, then the answer",
                                        ([_chunk("." * 60), _chunk(finish="stop")], SAID),
                                        ["." * 60, ANSWER]),
-                                      ("nothing twice", (EMPTY,), [LINE])):
+                                      ("nothing twice", (EMPTY,), [LINE]),
+                                      ("'...' twice", ([_chunk("..."), _chunk(finish="stop")],),
+                                       ["...", "...", " " + LINE])):
             ctx = _context({"role": "user", "content": ASK})
             provider = _Provider(*replies)
             llm, _ = _llm(provider, ctx)
@@ -586,11 +610,14 @@ async def test_an_adopted_speculation_is_retried_on_its_context():
 
 def main():
     tests = [v for k, v in sorted(globals().items())
-             if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
+             if k.startswith("test_") and callable(v)]
 
     async def run():
         for fn in tests:
-            await fn()
+            if asyncio.iscoroutinefunction(fn):
+                await fn()
+            else:
+                fn()
             print(f"  ok {fn.__name__}")
     asyncio.run(run())
 

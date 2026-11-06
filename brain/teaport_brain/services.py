@@ -14,7 +14,9 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -447,6 +449,19 @@ _RETRY_WITHIN_S = 2.0
 _NO_RECOVERY_AFTER = frozenset({"end_conversation", "restart_session", "answer_phone_call"})
 
 
+# An emoticon, as llm_text_guard's leading-punct strip keeps one whole (its _LEADING_PUNCT
+# lookahead; test_empty_completion checks the two agree).
+_EMOTICON = re.compile(r"[:;=]['-]?[()\[\]DPpOo3/\\|*]")
+
+
+def _shows_a_face(text: str) -> bool:
+    """Is there a face in `text`: an emoticon (":)") or an emoji (a Unicode "other
+    symbol")? A reply that is only one has no speech (tts_text.has_speech), but it is not
+    nothing: the guard keeps it whole and history keeps what the model wrote (#15)."""
+    return (bool(_EMOTICON.search(text))
+            or any(unicodedata.category(ch) == "So" for ch in text))
+
+
 def _as_sent(context) -> LLMContext:
     """`context` as it is now: its messages copied one level deep, so a write into one of
     them after this (a consult landing rewrites its placeholder in place, Owed._rewrite;
@@ -798,15 +813,18 @@ class BoundedOpenAILLMService(OpenAILLMService):
         error for LLMErrorSpeaker, no text for the guard -- and the caller waited 8-18 s
         in dead air and asked again; their repeat was answered. The retry is that repeat
         without the wait. The test is _run_said_nothing's (the TTS's has_speech), so a
-        reply of only "..." (#16), only a mood emoji or only zero-width spaces is caught
-        here too, with a retry before the guard's own line at the End: that line is for
-        a reply the guard emptied, and once this one is spoken the guard has forwarded
-        text and stays quiet. A collapse the guard cut has had the line already
-        (its trip). Inside the completion, before its End: downstream sees one reply.
+        reply of only "..." (#16) or only zero-width spaces is caught here too, with a
+        retry before the guard's own line at the End: that line is for a reply the guard
+        emptied, and once this one is spoken the guard has forwarded text and stays
+        quiet. A collapse the guard cut has had the line already (its trip). Inside the
+        completion, before its End: downstream sees one reply.
 
-        A reply that is only a bracketed mood tag ("[mood: sad]") has letters, so it reads
-        as speech here: MoodTag strips it and speaks the line itself at the End, without a
-        retry. The emoji the mood paragraph asks for is wordless and gets the retry.
+        A reply that is only a face -- an emoticon (":)") or an emoji -- said that
+        (_shows_a_face): the guard forwards it whole and history keeps it, so it is not
+        asked again, and no line is glued onto it (":):)Sorry, ..." when it was). A mood
+        tag alone, the emoji or the bracketed "[mood: sad]" (which has letters, so it is
+        speech here), is MoodTag's: it strips the tag and speaks the line itself at the
+        End.
 
         Not for legitimate silence: a run of ours (callers is never set for one); a
         completion a barge-in cancelled (CancelledError, never here); a turn the caller
@@ -847,14 +865,22 @@ class BoundedOpenAILLMService(OpenAILLMService):
                        "end in silence")
         # Imported here: llm_text_guard imports this module. The guard's own line, pushed
         # as the reply's text the way it pushes it: spoken, captioned and committed like
-        # any reply. Nothing was spoken before it, so no leading space.
+        # any reply. Its leading space stays when the attempts streamed anything (with the
+        # guard off, "..." reaches history ahead of it); with nothing before it, it goes.
         from teaport_brain.llm_text_guard import RECOVERY_TEXT
-        await self.push_frame(LLMTextFrame(text=RECOVERY_TEXT.lstrip()))
+        streamed = "".join(completion.raw).strip()
+        await self.push_frame(LLMTextFrame(
+            text=RECOVERY_TEXT if streamed else RECOVERY_TEXT.lstrip()))
 
     def _dealt_with(self, context, completion: _Completion, tail) -> bool:
-        """The empty reply is not this method's to answer: the caller moved on, or the
-        guard has cut it as a collapse and spoken its line over it (a retry's text would
-        be swallowed whole, and the End delayed for it)."""
+        """The empty reply is not this method's to answer: it is a face, the caller moved
+        on, or the guard has cut it as a collapse and spoken its line over it (a retry's
+        text would be swallowed whole, and the End delayed for it)."""
+        if _shows_a_face("".join(completion.raw)):
+            logger.info(f"{self}: the caller's turn came back with no words, only a face "
+                        "(an emoticon or emoji), which says something: no retry, no "
+                        "recovery line")
+            return True
         why = self._moved_on(context, tail)
         if why is None:
             from teaport_brain import llm_text_guard
