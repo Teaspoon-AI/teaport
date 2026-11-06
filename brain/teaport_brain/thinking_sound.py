@@ -9,9 +9,14 @@
 # each consult. Quick tools (time, host status, web_search) never type: only the tools in
 # _TRIGGER, which is just openclaw_agent_consult; and none is heard while an
 # openclaw_agent_control call waits, whose result the Talk client holds while it plays
-# audio (_CONTROL). Phone calls get no typing (agent_session
-# builds none for SIP) -- but in agent-first, where it is the only cover for the wait (no
-# "I'll work on that", no progress lines). Nor while the session is held for one.
+# audio (_CONTROL); nor while the session is held for a phone call. A phone call's own
+# session types only with SIP_THINKING_SOUND on (off by default, #242) and no half-duplex
+# gate on the call, or in agent-first, where it is the only cover for the wait (no "I'll
+# work on that", no progress lines) and which keeps its typing whatever SIP_THINKING_SOUND
+# says: enabled_for, which agent_session asks. Off by default because a call is where the
+# typing is least sure to help: it is rendered at 24 kHz for an 8 kHz line, it echoes
+# there like speech, and a background consult leaves the caller free to talk through the
+# wait. Its bed never types for the face: a call announces no "typing".
 #
 # A consult's start and end. A background consult (the default: the turn ends at once
 # on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,
@@ -74,6 +79,10 @@ from teaport_brain.followup_gate import RunSilentFrame
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_THINKING_SOUND")
+# The phone's own switch (#242), under the shared one: shared plus per front-end, as with
+# VAD_SAMPLE_RATE and SIP_VAD_SAMPLE_RATE. But where the phone's rate overrides the shared
+# one, this only adds to it: with ENABLED off nothing types, calls included (enabled_for).
+SIP_ENABLED = setting("SIP_THINKING_SOUND")
 
 _SR = 24000                 # engine TTS rate; the relay is 24 kHz both ways
 _CHUNK_MS = 40
@@ -431,6 +440,22 @@ def _prepare() -> None:
     n = _CHUNK * 2                          # bytes per chunk (int16 mono)
     # Every whole chunk, the last included (a partial tail chunk is dropped).
     _LOOP = [pcm[i:i + n] for i in range(0, len(pcm) - n + 1, n)]
+
+
+def enabled_for(front_end: str | None, agent_first: bool, half_duplex: bool = False) -> bool:
+    """Whether a session of `front_end` ("sip", "talk", "room", or None) types through its
+    long consults: ENABLED for every front-end; a phone call also needs SIP_ENABLED, or
+    agent-first (`agent_first`: tools.AGENT_FIRST), where the typing is all that covers
+    the wait and which keeps it either way (module comment).
+
+    SIP_ENABLED types no half-duplex call (`half_duplex`: the call has sip_server's
+    HalfDuplexInputGate, SIP_HALF_DUPLEX). That gate drops the caller's audio while the
+    typing is heard, before the VAD: a caller talking on through a background consult
+    would go unheard and could not stop it (the owner's decision on #242, 2026-11-06).
+    Agent-first types there as before: its turn waits on the consult anyway, and with
+    nothing else on the line the typing is all that tells the caller it is working."""
+    return bool(ENABLED and (front_end != "sip" or agent_first
+                             or (SIP_ENABLED and not half_duplex)))
 
 
 def warm() -> None:

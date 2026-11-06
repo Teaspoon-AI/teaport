@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2776#601f461e -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2787#e8508ceb -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -38,11 +38,11 @@ In `/etc/teaport/brain.env`.
 | `LLM_MODEL` | `gpt-oss-120b` | The served model name. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL). |
 | `LLM_REASONING_EFFORT` | `low` | Reasoning effort for models that support it. Set "" to disable for models that do not. One of `low`, `medium`, `high`, `""`. low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default. |
 | `LLM_MAX_TOKENS` | by `LLM_REASONING_EFFORT`: 1024 at `low`, 3072 at `medium`, 8192 at `high`, 4096 at `""` | Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint. |
-| `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
+| `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this, plus up to 2 s when an empty answer that came quickly is asked again. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
 | `LLM_EXTRA_BODY` | — | Optional JSON object merged into the request extra_body. OpenRouter routing example: {"provider":{"order":["Groq"],"allow_fallbacks":true}}. |
 | `TEAPORT_LLM_TEXT_GUARD` | **on** | Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse. |
 | `TEAPORT_FACE_MOOD` | `tag` | Where the OLED face's mood comes from. tag: the model begins a reply with a mood tag ([mood: sad], never spoken) when it has a clear feeling, and the reply's words are scored (VADER) when it gave none. text: the words only, no tag. off: the face is given no mood. One of `tag`, `text`, `off`. |
-| `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
+| `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call): after one quick retry, or straight away when there is no time to retry. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
 | `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help. |
 | `TEAPORT_RAW_LLM_CAPTURE` | **off** | Log a completion when it degenerates. Healthy turns log nothing. Its text is logged only with TEAPORT_LOG_CONVERSATIONS on. |
@@ -179,7 +179,8 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
-| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room (on a phone call only in agent-first mode, where nothing else covers the wait); the OLED face types along. |
+| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room; the OLED face types along. A phone call types only with SIP_THINKING_SOUND on (and SIP_HALF_DUPLEX off), or in agent-first mode, where nothing else covers the wait. Off turns the typing off everywhere, calls included. |
+| `SIP_THINKING_SOUND` | **off** | Typing on phone calls too, while a background agent consult runs, as in Talk and the room. Off, a call types only in agent-first mode (TEAPORT_AGENT_FIRST), which keeps its typing either way. TEAPORT_THINKING_SOUND=0 turns this off as well; the OLED face never types for a call. No effect with SIP_HALF_DUPLEX on: that drops the caller's audio while the typing plays, so a caller who talked on through the wait could not stop it. The typing is made at 24 kHz, and an 8 kHz phone line carries little of its click: listen to it on a call. |
 | `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Quiet on the line before the typing is heard. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the typing's limited peak (-6 dBFS). |
 | `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Most typing heard per consult; the face types for the whole consult. |
