@@ -1657,7 +1657,14 @@ class Restart:
     goes back, is not it: the goodbye can queue right behind that line, and ending at
     the gap between the two would cut it off. So: wait for an utterance that started
     after the restart was armed (up to RESTART_SPEECH_WAIT_SECS — the model may say
-    nothing), then for the speaker to go quiet."""
+    nothing), then for the speaker to go quiet.
+
+    Armed `said`, the goodbye has played already: the brain's own end_conversation, sent
+    once the model's goodbye was heard out without the model calling it (goodbye.py,
+    #221). There is no goodbye to come, so only the speaker going quiet is waited for --
+    waiting on "a newer utterance" would keep the room listening for
+    RESTART_SPEECH_WAIT_SECS after the box said it was going to sleep, and take the next
+    reply, to words said meanwhile, for the goodbye."""
 
     def __init__(self, play: "Playback", face: FaceTap, clock=time.monotonic):
         self._play, self._face, self._clock = play, face, clock
@@ -1669,10 +1676,11 @@ class Restart:
         # (end_conversation: back to waiting for a wake word).
         self.kind = "restart"
 
-    def arm(self, kind: str = "restart") -> None:
+    def arm(self, kind: str = "restart", said: bool = False) -> None:
         if self._before is None:
             self._before = set(self._seen)
             self.kind = kind
+            self.goodbye = said
             self.armed.set()
 
     def caption(self, utterance) -> None:
@@ -1712,6 +1720,10 @@ def client_tool(card: "Card", m: dict, restart: Restart) -> dict:
             return {"ok": True, "note": "Now say one short goodbye; the session restarts "
                                         "with a fresh conversation once it has played."}
         if name == "end_conversation" and wake_mode():
+            if m.get("said") is True:
+                # The brain's own call, not the model's: the goodbye has played (#221).
+                restart.arm("sleep", said=True)
+                return {"ok": True, "note": "The box goes back to sleep now."}
             restart.arm("sleep")
             return {"ok": True, "note": "Now say one short goodbye; the box goes back to "
                                         "sleep once it has played."}

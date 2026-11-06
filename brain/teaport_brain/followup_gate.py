@@ -390,6 +390,13 @@ class FollowupGate(FrameProcessor):
         then: a control call's result waits behind any audio, tools.CONTROL_TIMEOUT_S)."""
         return bool(self._calls_out)
 
+    @property
+    def turn_in_flight(self) -> bool:
+        """A completion is streaming, or a turn's answering completion is still to come
+        (_llm, _turn): the conversation has gone on past a reply that just played (the
+        goodbye backstop's check, goodbye.py)."""
+        return self._llm or self._turn
+
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
         snapshot for reporting, not a moment to act in (wait_until_idle(turn_free=True)

@@ -35,7 +35,9 @@
 # client's {"type": "tool_result", "call_id", "result"} (the same message, and the same
 # consult_bridge registry, the plugin already answers consults with). Only a client
 # that announced the feature is ever asked; the local audio bridge
-# (local_audio.py) announces volume and restart.
+# (local_audio.py) announces volume and restart. The brain calls one itself in one place:
+# end_conversation, in a room whose model said its goodbye and did not call it
+# (goodbye.py, #221), with "said": true beside the args -- the goodbye has played.
 #
 # Host-run tools (HOST_RUN_TOOLS) are OpenClaw's own, by its name and schema, and run
 # by its side of a Talk session: openclaw_agent_consult (the relay runs it) and
@@ -1047,12 +1049,14 @@ CLIENT_TOOL_TIMEOUT_S = 3.0
 CLIENT_CALL_PREFIX = "teaport-client-"
 
 
-async def _send_call(llm, kind: str, call_id: str, name: str, args: dict) -> None:
+async def _send_call(llm, kind: str, call_id: str, name: str, args: dict,
+                     extra: dict | None = None) -> None:
     """A call the client runs, as the message the plugin or the local bridge reads:
     {"type": "client_tool"} for a client tool, {"type": "tool_call"} for a host-run tool
-    (HOST_RUN_TOOLS), which the plugin hands to the relay's onToolCall."""
+    (HOST_RUN_TOOLS), which the plugin hands to the relay's onToolCall. `extra`: fields
+    of the brain's own beside the model's arguments (call_client_tool)."""
     await llm.push_frame(OutputTransportMessageUrgentFrame(message={
-        "type": kind, "call_id": call_id, "name": name, "args": args}))
+        **(extra or {}), "type": kind, "call_id": call_id, "name": name, "args": args}))
 
 
 async def _cancel_at_relay(llm, call_id: str) -> None:
@@ -1072,7 +1076,7 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
 
 
 async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
-                      timeout: float, *, after_cancel=None) -> tuple:
+                      timeout: float, *, after_cancel=None, extra: dict | None = None) -> tuple:
     """Send a call the client runs (_send_call) and wait for its tool_result:
     (result, None), or (None, "timeout") when none came in `timeout`, or (None,
     "unreachable") when the call could not be sent. A cancel of the call itself propagates
@@ -1088,7 +1092,7 @@ async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
     deadline = loop.time() + timeout
     sent = kept = False
     try:
-        await _send_call(llm, kind, call_id, name, args)
+        await _send_call(llm, kind, call_id, name, args, extra)
         sent = True
         # Shielded: a cancel of this wait leaves the future to the task below.
         return await asyncio.wait_for(asyncio.shield(fut), timeout), None
@@ -1126,20 +1130,30 @@ async def _outlive(name: str, call_id: str, fut, left: float, then) -> None:
         logger.warning(f"{name}: its late result was not passed on ({e!r})")
 
 
+async def call_client_tool(llm, name: str, args: dict, extra: dict | None = None) -> dict:
+    """Ask the client to perform `name` and return what it answers, as a dict: what a
+    client tool's handler hands the model (_client_tool), and what the brain gets when it
+    calls one itself, as the goodbye backstop calls end_conversation (goodbye.py, #221).
+    `extra`: fields of the brain's own in the message, beside the arguments (that one's
+    "said")."""
+    result, failure = await _ask_client(llm, "client_tool", CLIENT_CALL_PREFIX, name, args,
+                                        CLIENT_TOOL_TIMEOUT_S, extra=extra)
+    if failure == "timeout":
+        result = {"ok": False, "error": "the device did not respond"}
+    elif failure:
+        result = {"ok": False, "error": "the device could not be reached"}
+    if not isinstance(result, dict):
+        result = {"ok": True, "result": result}
+    logger.info(f"{name}: {quoted(str(result))}")
+    return result
+
+
 def _client_tool(name: str):
     """The handler for a tool the client performs: ask it, return what it answers.
     The model gets exactly one result for every call that is not itself cancelled."""
     async def handler(params: FunctionCallParams):
-        result, failure = await _ask_client(params.llm, "client_tool", CLIENT_CALL_PREFIX,
-                                            name, params.arguments or {}, CLIENT_TOOL_TIMEOUT_S)
-        if failure == "timeout":
-            result = {"ok": False, "error": "the device did not respond"}
-        elif failure:
-            result = {"ok": False, "error": "the device could not be reached"}
-        if not isinstance(result, dict):
-            result = {"ok": True, "result": result}
-        logger.info(f"{name}: {quoted(str(result))}")
-        await params.result_callback(result)
+        await params.result_callback(
+            await call_client_tool(params.llm, name, params.arguments or {}))
     return handler
 
 

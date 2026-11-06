@@ -1064,6 +1064,28 @@ def test_restart_without_a_goodbye_waits_then_goes(monkeypatch):
     assert fired == 2                                            # after the wait, not before
 
 
+def test_a_goodbye_already_said_sleeps_once_the_speaker_is_quiet(monkeypatch):
+    """The brain's own end_conversation ("said": #221): the model's goodbye has played,
+    and none is to come. The session ends once the speaker is quiet -- not after
+    RESTART_SPEECH_WAIT_SECS of listening, nor after the next reply."""
+    monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 30.0)
+    play = _Quiet()
+    restart = la.Restart(play, play)
+    restart.caption("u1")                                        # the goodbye, captioned
+
+    def tail_playing():
+        play.sounding = True                                     # its last word's echo
+        restart.arm("sleep", said=True)
+
+    def quiet():
+        play.sounding = False
+
+    fired = _restart_fired(restart, [(0.1, tail_playing), (0.1, quiet), (0.1, lambda: None)])
+    assert fired == 1, f"fired after step {fired}, not once the speaker was quiet"
+    assert restart.kind == "sleep"
+
+
 def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
     """restart_session: the bridge answers the tool, lets the goodbye play (none here,
     so it waits RESTART_SPEECH_WAIT_SECS), ends the session and dials a fresh one
@@ -1668,6 +1690,62 @@ def test_end_conversation_without_wake_words_is_refused():
     restart = la.Restart(_Quiet(), _Quiet())
     assert la.client_tool(Card, {"name": "end_conversation"}, restart)["ok"] is False
     assert not restart.armed.is_set()
+
+
+def test_the_brains_own_end_conversation_arms_a_goodbye_already_said(monkeypatch):
+    class Card:
+        volume = None
+    monkeypatch.setattr(la, "WAKE_WORDS", "hey teaport")
+    for said in (True, False, "true", None):
+        restart = la.Restart(_Quiet(), _Quiet())
+        m = {"name": "end_conversation", "args": {}}
+        if said is not None:
+            m["said"] = said
+        r = la.client_tool(Card, m, restart)
+        assert r["ok"] and restart.armed.is_set() and restart.kind == "sleep", (said, r)
+        assert restart.goodbye is (said is True), said         # only the brain's flag
+        assert ("goodbye" in r["note"]) is (said is not True), r
+
+
+def test_a_goodbye_the_model_said_without_the_tool_sleeps_once_heard_out(monkeypatch):
+    """#221: the model said its goodbye and did not call end_conversation; once it has
+    played, the brain calls it on the bridge with "said". The bridge answers and sleeps
+    when its speaker is quiet, without waiting for a goodbye still to come."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 30.0)
+    got = {}
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
+                await ws.send(json.dumps({"type": "transcript", "role": "assistant",
+                                          "text": "Going to sleep now. Good night.",
+                                          "final": True, "utterance": "ctx-goodbye"}))
+                await ws.send(json.dumps({"type": "client_tool", "call_id": "teaport-client-z",
+                                          "name": "end_conversation", "args": {},
+                                          "said": True}))
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), 2)
+                    if isinstance(msg, str):
+                        got["result"] = json.loads(msg)["result"]
+                        break
+            else:
+                got["second"] = _query(ws)
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: count[0] == 2, 3), "still awake after the goodbye"
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+    assert got["result"]["ok"] is True
+    assert "awake" not in got["second"]                 # asleep: no wake word, no mic
 
 
 def _device(mono):
