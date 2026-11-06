@@ -362,26 +362,30 @@ msgstr "Извините, голосовой ассистент сейчас з�
 msgid "Sorry, I can't hear you right now — my speech recognition isn't available. Please try again in a moment."
 msgstr "Извините, я вас сейчас не слышу — распознавание речи недоступно. Попробуйте ещё раз через минуту."
 
-msgid "Still working on that — {topic}."
-msgstr "Ещё работаю над этим — {topic}."
+#. Translators: {phrase} is the model's own few words, in this language, on what is
+#. being done for the user (in English: "looking up pastry shops on Burnet Road").
+#. Only an English session says the {phrase} lines today (tools._status_phrase);
+#. another says the plain ones (#120).
+msgid "Sure — {phrase}."
+msgstr "Конечно — {phrase}."
 
-msgid "Still working on it."
+msgid "On it."
+msgstr "Уже занимаюсь."
+
+msgid "Still {phrase}."
+msgstr "Ещё работаю над этим — {phrase}."
+
+msgid "Still on it."
 msgstr "Ещё работаю над этим."
 
-msgid "Almost there — {topic}."
-msgstr "Почти готово — {topic}."
-
-msgid "Almost there — hang tight."
-msgstr "Почти готово, секундочку."
+msgid "This one's taking a bit longer."
+msgstr "Это занимает чуть больше времени."
 
 msgid "Looking up {q}."
 msgstr "Ищу {q}."
 
 msgid "Opening that page."
 msgstr "Открываю страницу."
-
-msgid "I'll work on that — give me a moment."
-msgstr "Займусь этим, секунду."
 
 msgid "One moment, let me set that up."
 msgstr "Секунду, сейчас подготовлю."

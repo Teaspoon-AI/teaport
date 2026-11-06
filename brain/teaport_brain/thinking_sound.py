@@ -11,7 +11,7 @@
 # openclaw_agent_control call waits, whose result the Talk client holds while it plays
 # audio (_CONTROL). Phone calls get no typing (agent_session
 # builds none for SIP) -- but in agent-first, where it is the only cover for the wait (no
-# "I'll work on that", no progress lines). Nor while the session is held for one.
+# consult acknowledgement, no progress lines). Nor while the session is held for one.
 #
 # A consult's start and end. A background consult (the default: the turn ends at once
 # on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,

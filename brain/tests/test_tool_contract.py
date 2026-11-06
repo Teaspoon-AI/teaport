@@ -391,7 +391,8 @@ def _filler_call(captions_ahead):
         llm._teaport_spoke = False          # the model said nothing before the call
         await tools._wrap("openclaw_agent_consult", handler, lambda: "en",
                           captions_ahead=captions_ahead)(
-            _Params(llm, {"question": "the weather in Lima tomorrow"}))
+            _Params(llm, {"question": "the weather in Lima tomorrow",
+                          tools.CONSULT_STATUS: "checking the weather in Lima tomorrow"}))
         return llm.pushed
 
     def shape(f):
@@ -410,14 +411,14 @@ def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
     the consult fails if that session changes while it starts: the filler is final
     before the call that starts it, and its words are not charted again as they play
     (captions.caption_ahead)."""
-    line = "I'll work on that — give me a moment."
+    line = "Sure — checking the weather in Lima tomorrow."
     assert _filler_call(True) == [
         ("final", line), ("CaptionedAheadFrame", line), ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
 
 
 def test_elsewhere_the_filler_is_charted_as_it_plays():
-    line = "I'll work on that — give me a moment."
+    line = "Sure — checking the weather in Lima tomorrow."
     assert _filler_call(False) == [
         ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
