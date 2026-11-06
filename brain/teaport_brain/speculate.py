@@ -259,20 +259,22 @@ def _role(message) -> str:
     return str(message.get("role")) if isinstance(message, dict) else type(message).__name__
 
 
-def _differences(old_text: str, new_text, old: list, new: list) -> list:
+def _differences(old_text: str, new_text, old: list, new: list, moved=None) -> list:
     """What moved between what a speculation asked (`old_text` on `old`, the messages
     before the user message) and what is asked now, as [SPEC] miss fields (#119): the
     lengths, the first index that differs, the role of the message there. The quoted
     text is cut at 40 characters (and is only its length without
     TEAPORT_LOG_CONVERSATIONS), which made a restart on the same words read as one on
     new ones; these fields carry no words, so they are the same with the switch on or
-    off. `new_text` None: not a text (a message whose content is a list)."""
+    off. `new_text` None: not a text (a message whose content is a list). `moved`:
+    whether `old` and `new` differ, where the caller has compared them already (None:
+    compared here) -- a context can be long, and is walked again only to place it."""
     fields = []
     if new_text is not None:
         fields.append(f"chars={len(old_text)}->{len(new_text)}")
         if new_text != old_text:
             fields.append(f"text-at={_first_difference(old_text, new_text)}")
-    if new != old:
+    if moved if moved is not None else new != old:
         at = _first_difference(old, new)
         fields.append(f"msgs={len(old)}->{len(new)} "
                       f"msg-at={at}:{_role(new[at] if at < len(new) else old[at])}")
@@ -291,9 +293,9 @@ def _why_restart(live: _Speculation, text: str, tools, asked: list):
     spec-failed, empty, tools-changed or ctx-changed, in take()'s order. Until #119 that
     restart was logged `superseded` too, and a live one (2026-10-10, an engine self-close
     final confirming a report-started speculation word for word) could not be told from
-    a final with new words. This is the one renamed case: box tooling parses these lines
-    (#304), so the other reasons keep their names and the fields go at the end of the
-    line, after the tally."""
+    a final with new words. This is the one renamed case: the [SPEC] lines are read on
+    the box by hand or with ad-hoc scripts, so the other reasons keep their names and
+    fields are only appended, after the tally."""
     failed = []
     if live.text != text:
         failed.append("text")
@@ -318,7 +320,8 @@ def _why_restart(live: _Speculation, text: str, tools, asked: list):
     else:
         reason = "ctx-changed"
     detail = [f"differs={','.join(failed)}"]
-    detail += _differences(live.text, text, live.messages[:-1], asked)
+    detail += _differences(live.text, text, live.messages[:-1], asked,
+                           moved="context" in failed)
     return reason, " ".join(detail)
 
 
@@ -556,8 +559,11 @@ class Speculator:
             # Which message moved, or where the words part (#119): the same fields as a
             # restart's, after the tally.
             words = live[-1].get("content")
+            # ctx-changed: the words are equal, so _same_ask found the messages before
+            # them unequal; text-differs says nothing of those, and they are compared.
             detail = _differences(spec.text, words.strip() if isinstance(words, str) else None,
-                                  spec.messages[:-1], live[:-1])
+                                  spec.messages[:-1], live[:-1],
+                                  moved=True if reason == "ctx-changed" else None)
         else:
             reason = None
         if reason is not None:

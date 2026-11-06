@@ -1497,8 +1497,8 @@ async def test_over_a_pipeline_a_final_with_other_punctuation_is_a_miss():
 
 # ---------------------------------------------------------------- #119: what a restart says
 
-# The prefix every [SPEC] miss line had before #119, which box tooling reads (#304): the
-# new fields only follow it.
+# The prefix every [SPEC] miss line had before #119, which is what the journal is read
+# for on the box (by hand, or with ad-hoc scripts): the new fields only follow it.
 _MISS_SHAPE = re.compile(r"\[SPEC\] miss reason=(\S+(?: \(\w+\))?) (?:after \d+\.\d\ds )?"
                          r".+ hits=\d+ misses=\d+(?P<fields>(?: \S+)*)$")
 
@@ -1606,9 +1606,10 @@ RECALLED = "the user collects old Fords"
 
 async def _report_then_the_engines_own_close(*, landed="never"):
     """#119's shape, live 2026-10-10, over a real pipeline with MemoryRecall above the
-    aggregator as agent_session places it. The interim fires a memory search; the VAD
-    stop is judged INCOMPLETE; the engine's report (SpeechDecodedFrame) asks the
-    speculation. Then the engine closes the segment on its own with the same words: a
+    aggregator as agent_session places it, in the journal's order: an interim opens the
+    turn and fires a memory search; the VAD stop is judged INCOMPLETE; the interim that
+    lands after it has grown enough to fire the search again (23.042, 0.58 s after the
+    stop); the engine's report (SpeechDecodedFrame) asks the speculation. Then the engine closes the segment on its own with the same words: a
     final stamped NO_STOP (stt.py _close), which pays no stop, so the turn stays open
     and the final-triggered path asks again (_maybe_speculate). Then the ceiling, and
     the wordless close its commit returns, stamped with the stop, ends the turn.
@@ -1684,14 +1685,20 @@ async def _report_then_the_engines_own_close(*, landed="never"):
         for _ in range(400 // CHUNK_MS):
             await recall.queue_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
                                                         num_channels=1))
-        await recall.queue_frame(InterimTranscriptionFrame(" " + ASKED, "u", "t", None))
-        await until(lambda: recall._inflight is not None)          # the search is out
-        if landed == "first":
-            go.set()
-            await until(lambda: recall.pending_messages())
+        await recall.queue_frame(InterimTranscriptionFrame(" What year was", "u", "t", None))
+        await until(lambda: recall._inflight is not None)          # the first search
         await recall.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
         # No audio until the report has asked (see _over_a_pipeline): the ceiling counts it.
         await until(lambda: strategy._incomplete_n == 1)
+        # The decoder's lagging tail, after the stop: 44 characters re-fire the search
+        # (cancelling the first), the question mark does not.
+        await recall.queue_frame(InterimTranscriptionFrame(" " + ASKED[:-1], "u", "t", None))
+        await until(lambda: recall._fired_len == len(ASKED) - 1)
+        await recall.queue_frame(InterimTranscriptionFrame(" " + ASKED, "u", "t", None))
+        await until(lambda: strategy._interim == ASKED)
+        if landed == "first":
+            go.set()
+            await until(lambda: recall.pending_messages())
         await recall.queue_frame(SpeechDecodedFrame(stop_n=1))
         await until(lambda: len(opened) == 1)
         if landed == "between":
