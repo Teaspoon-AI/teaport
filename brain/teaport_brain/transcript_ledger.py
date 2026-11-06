@@ -649,7 +649,9 @@ class TranscriptLedger(BaseObserver):
           aggregator) is read at the TTS after the frame's first sighting; the LLM's own
           sighting, before its cancel, is what ends it there. (One whose Start is still
           between the LLM and the TTS as the frame passes the LLM is read after that
-          too, and its End as a finished reply's: a residual, as before #18.)
+          too. Its End can then be read as a finished reply's -- when no sighting between
+          the LLM and the TTS falls between the TTS's reads of that Start and that End:
+          a residual main has too.)
         - The TTS's own, where the LLM stream is read. What reached the TTS before it was
           ahead of the frame on the way down -- a completion's text, a notice -- and the
           TTS flushes it with its queue; and the audio its contexts pushed meanwhile
