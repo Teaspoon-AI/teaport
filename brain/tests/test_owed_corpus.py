@@ -97,7 +97,7 @@ OTHER = [NO_RUSH, GLAD, ONE_STORY, WAITING, HOST, HAMLET, WEATHER, SORRY,
          "Hello, great to have you here.", "Glad to hear it!",
          "You're welcome. Would you like me to continue with the rest of the soliloquy?"]
 
-# A failure record (one term-less item, Owed.tla OUTCOME = "failure") for the first
+# A failure record (one item, what failed: Owed.tla OUTCOME = "failure") for the first
 # request, as the session would have landed it had the consult timed out: closed by a
 # reply about it heard to its end (RUNCLOSE = "about"), never by an unrelated one. The
 # session's own lines are its negative controls; the told line is its telling.
