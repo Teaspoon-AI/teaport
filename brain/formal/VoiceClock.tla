@@ -60,6 +60,12 @@
 (* by its audio, less the lead -- tested); the lag's measurement (what the  *)
 (* transport sent and is still playing, _heard_until: tested); the one     *)
 (* frame of lead a resumed write keeps; a unit is one word and one tick.    *)
+(* Nor the other half of the ledger's cut: its heard_text is the LONGER of  *)
+(* the pts prefix checked here and an estimate from its layout's seconds    *)
+(* (read on the pipeline clock, clamped at the pause: _heard, _play_t), so  *)
+(* the estimate can over-report what the pts cut got right. Owed.tla's      *)
+(* ow_ledgerMax is that over-report's consequence; PlayoutPause.tla part 1  *)
+(* checks the layout half on its own.                                       *)
 (***************************************************************************)
 EXTENDS Integers
 
