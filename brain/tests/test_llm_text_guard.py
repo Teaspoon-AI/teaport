@@ -102,6 +102,8 @@ DEGENERATE = [
     "I can help... ... ... ... ...",
     f"{ELL}{NBSP}{NBSP}\n\n{ELL}{NBSP}{ELL}{NBSP}{ELL}{NBSP}{ELL}",
     "Let me check that.... hmm.... well.... so.... anyway....",
+    # #70, 2026-09-26: a healthy prefix, then 895 U+200B and nothing else.
+    "To be, or not to be: that is the question" + ZWSP * 895,
 ]
 
 # Below the cut threshold ON PURPOSE. A mild run is not a collapse: the fold still
@@ -122,6 +124,10 @@ HEALTHY = [
     f"Hmm{ELL} interesting{ELL} let me check.",  # two ellipses in ordinary prose
     "Sure, the forecast is 18 degrees and clear.",
     "The file is at /tmp/a...b if you want it.",
+    # Zero-width contamination as healthy replies carry it (#70): 1-4 per reply,
+    # scattered inside echoed words, never in a run.
+    f"The voice{ZWSP}id is af{ZWSP}_heart.",
+    f"Sure{BOM}, it is 18{NNBSP}degrees and{ZWSP} clear{WJ}, with rain{ZWSP} later.",
 ]
 
 
@@ -907,6 +913,113 @@ def test_unglued_text_is_what_the_tts_can_split():
                       ("Use ASP.NET Core", len("Use ASP."))):
         assert unglue_sentences(text) == text
         assert match_endofsentence(text) == cut, (text, match_endofsentence(text))
+
+
+# ------------------------------------------------- a zero-width collapse (#70)
+
+# The 2026-09-26 shape: gpt-oss streamed ~20 healthy tokens of a Hamlet recitation, a
+# few U+202F/U+200B around "'tis — the", then 895 U+200B deltas and nothing else until
+# the End. The fold erases zero-width characters, none of them is a dot or an ellipsis,
+# and the counter used to see nothing: the prefix played and the reply stopped mid-line
+# in silence, with no recovery line (the End rule is for a reply that forwarded nothing).
+# Where the prefix's stray characters sit is illustrative; the run is as recorded.
+HAMLET_PREFIX = ["To", " be", ",", " or", " not", " to", " be", ":", " that", " is",
+                 " the", " question", "—", " Whether", f"{NNBSP}'", "tis",
+                 f"{NNBSP}—", f"{ZWSP} the"]
+HAMLET_SPOKEN = "To be, or not to be: that is the question— Whether 'tis — the"
+HAMLET_COLLAPSE = [ZWSP] * 895
+
+
+def test_zero_width_characters_count_by_mass():
+    # Every code point of tts_text's zero-width table counts, one for one, against the
+    # same bar the dot and ellipsis mass uses; a handful never reaches it.
+    for ch in (ZWSP, WJ, BOM):
+        assert is_degenerate(ch * 40), repr(ch)
+        assert not is_degenerate(ch * 4), repr(ch)
+    assert is_degenerate((ZWSP + WJ + BOM) * 14)
+    c = DegeneracyCounter()
+    c.feed(f"voice{ZWSP}id{WJ}")
+    c.feed(BOM)
+    assert (c.zero_width, c.punct_chars) == (3, 3)
+    # No-break spaces deliberately do NOT count (see _TRIP_PUNCT_CHARS): they fold to a
+    # plain space, and they are the commonest contamination in HEALTHY replies. A
+    # captured bare no-break collapse would be the reason to revisit this, as a run.
+    for ch in (NBSP, NNBSP, NBHY):
+        assert not is_degenerate(f"word{ch}" * 60), repr(ch)
+
+
+def test_scattered_zero_width_on_the_worst_healthy_punctuation_does_not_cut():
+    # The FOLDED_NOT_CUT cases peak at 16 punctuation chars; the most zero-width
+    # characters a healthy reply has carried is 4. Both at once stay under the bar.
+    for text in FOLDED_NOT_CUT:
+        contaminated = text.replace(" ", f" {ZWSP}", 4)
+        assert contaminated.count(ZWSP) == 4, contaminated
+        assert not is_degenerate(contaminated), repr(contaminated)
+
+
+async def test_a_zero_width_collapse_cuts_and_speaks_the_recovery_line():
+    """#70: a healthy prefix and then 895 U+200B. The counter is fed the RAW delta, so
+    it sees the zero-width characters the fold is about to erase; it trips within the
+    first 40 of them, swallows the rest, and the turn ends on a sentence the user can
+    answer instead of mid-line in silence."""
+    for prefix, want in ((HAMLET_PREFIX, HAMLET_SPOKEN + RECOVERY_TEXT),
+                         ([], RECOVERY_TEXT.lstrip())):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in prefix:
+            await h.text(d)
+        assert not h.g._tripped, "the healthy prefix must not trip"
+        trip_at = None
+        for i, d in enumerate(HAMLET_COLLAPSE):
+            await h.text(d)
+            if trip_at is None and h.g._tripped:
+                trip_at = i
+        assert trip_at is not None and trip_at < 40, trip_at
+        # The delta that crossed the bar and every one after it: swallowed.
+        assert h.g._swallowed == len(HAMLET_COLLAPSE) - trip_at, h.g._swallowed
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == want, (prefix[:1], h.spoken())
+        assert h.spoken().count(RECOVERY_TEXT.strip()) == 1, h.spoken()
+        assert ZWSP not in h.spoken()
+        assert h.kinds()[0] == "LLMFullResponseStartFrame"
+        assert h.kinds()[-1] == "LLMFullResponseEndFrame"
+
+
+async def test_scattered_zero_width_in_a_reply_folds_without_a_cut():
+    # 1-4 scattered per reply is the healthy population (7 days of journal, #70).
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for d in ("The voice", f"{ZWSP} id is", f" af{ZWSP}_heart", f"{NNBSP}and{BOM} the",
+              f" language is{WJ} English."):
+        await h.text(d)
+    await h.feed(LLMFullResponseEndFrame())
+    assert not h.g._tripped
+    assert h.spoken() == "The voice id is af_heart and the language is English.", h.spoken()
+
+
+async def test_raw_capture_logs_the_zero_width_collapse():
+    """The same completion the guard cuts must reach the raw capture's log, with its
+    after_tool flag: _DEGENERATE matched dots, ellipses and "**" only, so the one
+    zero-width collapse on record left no raw bytes behind (#70)."""
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        h = Capture()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in HAMLET_PREFIX + HAMLET_COLLAPSE:
+            await h.feed(LLMTextFrame(text=d))
+        await h.feed(LLMFullResponseEndFrame())
+        # ...and a healthy reply with scattered ones stays out of the log.
+        await h.feed(LLMFullResponseStartFrame())
+        await h.feed(LLMTextFrame(text=f"The voice{ZWSP}id is af{ZWSP}_heart{ZWSP}."))
+        await h.feed(LLMFullResponseEndFrame())
+    finally:
+        logger.remove(sink)
+    captured = [ln for ln in lines if "RawLLMCapture: DEGENERATE" in ln]
+    assert len(captured) == 1, lines
+    assert "after_tool=False" in captured[0], captured[0]
+    assert "zwsp=896" in captured[0], captured[0]   # 895 + the prefix's one
 
 
 def main():

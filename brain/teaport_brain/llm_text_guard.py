@@ -118,6 +118,7 @@ from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
+    _ZERO_WIDTH,
     fold_unspeakable,
     is_sentence_repeat,
 )
@@ -296,6 +297,27 @@ _TRIP_COMBINED = 6
 # log. Counting the characters that belong to a collapse marker catches it by mass instead.
 # 40 sits above any punctuation a healthy spoken reply carries (the pinned FOLDED_NOT_CUT
 # cases peak at 16) and below the ~50 characters within which every live capture collapses.
+#
+# ZERO-WIDTH characters (tts_text's _ZERO_WIDTH: U+200B, U+2060, U+FEFF) add to that mass
+# one for one (#70). Live 2026-09-26, a Hamlet recitation streamed ~20 healthy tokens and
+# then 895 U+200B deltas and nothing else until the End. The fold erases them, none is a
+# dot or an ellipsis, and the counter saw nothing, so the prefix played and the reply
+# stopped mid-line ("Whether 'tis -- the"). No recovery line came either: the End rule is
+# for a reply that forwarded nothing, and this one had forwarded its prefix. It was the
+# 2340-dot dead air above again, in an invisible character. They are counted from the
+# RAW delta (process_frame feeds the counter before _fold_streaming): once folded there
+# is nothing left to count. Healthy replies carry 1-4 of them, scattered inside echoed
+# words (7 days of journal, #70), so a reply with the worst pinned punctuation (16) and
+# the most zero-width characters seen in a healthy reply (4) sits at 20 of the 40. The
+# collapse trips within its first 40.
+#
+# NO-BREAK characters (U+00A0/U+202F spaces, the U+2011 hyphen) do NOT count, on purpose.
+# They are the contamination healthy replies carry most (the header: between the word
+# parts of the tool-result strings the model echoes), and they fold to a plain space or
+# hyphen, so nothing of the reply is lost. The captures that carried them already trip
+# on their ellipses and dots without them. Counting them would push the HEALTHY
+# population toward the bar, to catch a shape no capture has shown. If a bare no-break
+# collapse is ever captured, count it as a run, the way dots are, not per character.
 _TRIP_PUNCT_CHARS = 40
 
 
@@ -313,16 +335,19 @@ class DegeneracyCounter:
     into ".." + "." still counts as one marker and not zero.
 
     `punct_chars` is the same evidence measured by mass rather than by occurrence, so a
-    single unbroken run — which is one marker however long — still registers. See
-    _TRIP_PUNCT_CHARS.
+    single unbroken run — which is one marker however long — still registers. Zero-width
+    characters add to it too, and `zero_width` counts them on their own so the trip line
+    can say which character it was. Feed it the RAW delta, since the fold erases them.
+    See _TRIP_PUNCT_CHARS.
     """
 
-    __slots__ = ("dot_runs", "ellipses", "punct_chars", "_run")
+    __slots__ = ("dot_runs", "ellipses", "punct_chars", "zero_width", "_run")
 
     def __init__(self):
         self.dot_runs = 0
         self.ellipses = 0
         self.punct_chars = 0
+        self.zero_width = 0
         self._run = 0
 
     def feed(self, text: str) -> None:
@@ -341,6 +366,10 @@ class DegeneracyCounter:
         n = text.count("\u2026")
         self.ellipses += n
         self.punct_chars += n
+        # By mass, from tts_text's table, so a code point added to the fold counts here too.
+        z = len(_ZERO_WIDTH.findall(text))
+        self.zero_width += z
+        self.punct_chars += z
 
     @property
     def tripped(self) -> bool:
@@ -569,6 +598,9 @@ class LLMTextGuard(FrameProcessor):
             # strip(): a completion whose only content is a newline before its tool
             # call did not answer in words, and must not be apologised for.
             self._received += len(frame.text.strip())
+            # The RAW delta, before _fold_streaming below: the fold erases zero-width
+            # characters, and a counter fed the folded text never saw the 895-U+200B
+            # collapse of #70.
             self._counter.feed(frame.text)
             if self._counter.tripped:
                 self._tripped = True
@@ -578,6 +610,7 @@ class LLMTextGuard(FrameProcessor):
                     f"{self._forwarded} forwarded chars "
                     f"(dot_runs={self._counter.dot_runs} "
                     f"ellipses={self._counter.ellipses} "
+                    f"zero_width={self._counter.zero_width} "
                     f"punct_chars={self._counter.punct_chars}); "
                     f"swallowing the rest and speaking the recovery line"
                 )

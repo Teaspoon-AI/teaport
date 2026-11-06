@@ -50,6 +50,7 @@ from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
     SENTENCE_SPLIT,
+    _ZERO_WIDTH,
     is_sentence_repeat,
 )
 
@@ -64,7 +65,18 @@ ENABLED = setting("TEAPORT_RAW_LLM_CAPTURE")
 # dot-run length was previously spelled out in three files under two different values, so
 # widening it in one place made this log and the guard's trip line report different counts
 # for the same completion.
-_DEGENERATE = re.compile(r"\.{%d,}|\u2026\s*\u2026|\*\*" % MIN_DOT_RUN)
+#
+# And a run of zero-width characters (#70). Live 2026-09-26, a completion collapsed into
+# 895 consecutive U+200B after a healthy prefix. None of the three shapes above matched,
+# so the one zero-width collapse on record was never captured: no raw bytes and no
+# after_tool, only the zwsp count below, which reports but does not trigger. Three in a
+# row, because healthy replies carry 1-4 single ones scattered inside echoed words
+# (llm_text_guard's _TRIP_PUNCT_CHARS), and a run of characters with no width is never
+# speech. Built from tts_text's table, so a code point added to the fold is matched here
+# too.
+_MIN_ZERO_WIDTH_RUN = 3
+_DEGENERATE = re.compile(r"\.{%d,}|\u2026\s*\u2026|\*\*|(?:%s){%d,}"
+                         % (MIN_DOT_RUN, _ZERO_WIDTH.pattern, _MIN_ZERO_WIDTH_RUN))
 
 # Per-code-point counters. Explicit \uXXXX escapes, never the literal character: a
 # literal U+00A0 here is two indistinguishable-from-a-space bytes in the source, and

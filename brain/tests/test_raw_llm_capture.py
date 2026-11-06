@@ -23,7 +23,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from teaport_brain.raw_llm_capture import _repeated_sentence  # noqa: E402
+from teaport_brain.raw_llm_capture import _DEGENERATE, _repeated_sentence  # noqa: E402
 
 SENTENCE = ("If you're undecided, try Upper Crust for a classic buttery croissant; "
             "it's a reliable spot right on Burnet.")
@@ -85,12 +85,38 @@ def test_short_repeats_are_ordinary_speech():
     print("  PASS short repeats -> quiet")
 
 
+# \uXXXX escapes, never the literal characters: they are invisible.
+ZWSP, WJ, BOM, NBSP, NNBSP = "\u200b", "\u2060", "\ufeff", "\u00a0", "\u202f"
+
+
+def test_a_zero_width_run_is_captured():
+    """#70, live 2026-09-26: a healthy prefix, then 895 consecutive U+200B. Nothing in
+    _DEGENERATE matched it, so the one zero-width collapse on record left no raw bytes.
+    Any mix of the fold's zero-width code points counts toward the run."""
+    assert _DEGENERATE.search("To be, or not to be: that is the question" + ZWSP * 895)
+    for run in (ZWSP * 3, WJ * 3, BOM * 3, ZWSP + WJ + BOM):
+        assert _DEGENERATE.search(f"fine{run}"), repr(run)
+    print("  PASS zero-width run -> captured")
+
+
+def test_scattered_zero_width_stays_quiet():
+    """Healthy replies carry 1-4 single zero-width characters inside echoed words (and
+    no-break spaces in the same places); a capture on every one would bury the log."""
+    for text in (f"The voice{ZWSP}id is af{ZWSP}_heart{ZWSP} and the{BOM} rest.",
+                 f"two in a row{ZWSP}{WJ} is not a run",
+                 f"voice{NBSP}id, 18{NNBSP}degrees"):
+        assert not _DEGENERATE.search(text), repr(text)
+    print("  PASS scattered zero-width -> quiet")
+
+
 if __name__ == "__main__":
     for fn in [test_the_live_doubling_is_detected,
                test_a_separated_repeat_is_still_detected,
                test_the_live_near_duplicate_is_detected,
                test_similar_but_distinct_sentences_stay_quiet,
                test_an_ordinary_reply_does_not_trip,
-               test_short_repeats_are_ordinary_speech]:
+               test_short_repeats_are_ordinary_speech,
+               test_a_zero_width_run_is_captured,
+               test_scattered_zero_width_stays_quiet]:
         fn()
     print("ALL PASS")
