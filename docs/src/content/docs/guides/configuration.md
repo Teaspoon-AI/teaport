@@ -70,7 +70,7 @@ In the **AI account** step, **Connect your OpenRouter account** signs you in to 
 2. OpenRouter sends the phone to a Teaspoon page, which sends it on to the device's settings. The phone must be on the same network as the device.
 3. Tap **Finish**. The device gets a key for your account from OpenRouter, checks it, and saves it the way it saves a pasted key, so OpenClaw gets it too and the trial credit warnings stop. A new key can be refused for a few seconds after OpenRouter makes it, so the device keeps asking for up to 6 more seconds before it treats the key as refused. If your OpenRouter account has no credit yet, the device still saves the key and says to add credit on OpenRouter before it can answer.
 
-<!-- source: brain/teaport_brain/openrouter_connect.py:34-57#5068eb0d; brain/teaport_brain/ai_account.py:405-414#576c7858; brain/teaport_brain/ai_account.py:471-506#c7fe96e5 -->
+<!-- source: brain/teaport_brain/openrouter_connect.py:34-57#5068eb0d; brain/teaport_brain/ai_account.py:433-442#576c7858; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 The Teaspoon page is set by `TEAPORT_OPENROUTER_CONNECT_URL`. When that page does not answer, the sign-in works without it: OpenRouter shows a code at the end instead of sending the phone on. Copy the code, go back to the settings, and paste it into **Code from OpenRouter**. The Teaspoon page also shows the code when it cannot send the phone on. You can finish a sign-in one time, within 20 minutes of tapping the button, and OpenRouter's code expires 10 minutes after you approve. When anything fails, the page says why in plain words and the paste field stays. If the device gets a key but cannot save it, for example because OpenClaw does not take it, the settings offer **Save it again** for that key for 10 minutes.
 
@@ -170,7 +170,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:149-159#7532ad3d; brain/teaport_brain/config_ui.py:620-637#3511862a; brain/teaport_brain/ai_account.py:471-506#c7fe96e5 -->
+<!-- source: brain/teaport_brain/config_ui.py:43-48#bb168482; brain/teaport_brain/config_schema.toml:232-251#3812d0b5; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:620-637#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 ### In the configuration files
 
@@ -214,7 +214,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:225-231#1b6deadd; brain/teaport_brain/config_schema.toml:1794-1830#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:253-259#1b6deadd; brain/teaport_brain/config_schema.toml:1794-1830#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
@@ -236,7 +236,7 @@ Both take the key, or neither does, and one save runs at a time, even when the s
 
 When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:143-173#a609a6f5 -->
+<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:147-177#a609a6f5 -->
 
 ## What's next
 

@@ -365,6 +365,22 @@ msgstr "Lo siento, ahora mismo no puedo responder: la cuenta que uso para mis re
 msgid "I still can't answer until my account is sorted out."
 msgstr "Sigo sin poder responder hasta que se resuelva lo de mi cuenta."
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
+msgstr "Lo siento, no puedo responder: mi cuenta de IA se ha quedado sin saldo. Añade saldo en openrouter.ai, o di «abre los ajustes» si necesitas ayuda."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
+msgstr "Lo siento, no puedo responder: mi cuenta de IA se ha quedado sin saldo. Se puede añadir saldo en openrouter.ai."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Lo siento, no puedo responder: mi cuenta de IA se ha quedado sin saldo. Añádele saldo, o di «abre los ajustes» si necesitas ayuda."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Lo siento, no puedo responder: mi cuenta de IA se ha quedado sin saldo."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Sigo sin poder responder: mi cuenta de IA no tiene saldo."
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Lo siento, no pude obtener una respuesta en ese momento."
 
@@ -711,6 +727,10 @@ msgstr "Tu teléfono tiene que estar en el mismo wifi que Teaport. Si no sigue s
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "Tu cuenta de OpenRouter todavía no tiene saldo, así que Teaport no puede responder hasta que añadas saldo en openrouter.ai/settings/credits."
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "La última vez que Teaport intentó responder, tu cuenta de OpenRouter se había quedado sin saldo. Añade saldo en openrouter.ai/settings/credits y Teaport podrá responder de nuevo."
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Tu cuenta de IA está conectada, pero todavía no tiene saldo. Añade saldo en la web de OpenRouter y entonces podré responder."

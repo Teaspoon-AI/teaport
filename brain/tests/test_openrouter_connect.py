@@ -256,6 +256,46 @@ def test_without_the_page_the_code_openrouter_shows_is_pasted_into_settings():
     asyncio.run(run())
 
 
+def test_the_account_step_says_when_the_owners_account_ran_out_of_credit():
+    """Answers refused for credit on the owner's own key (not the trial credit): the step
+    shows that the account ran out, and where credit is added, as an error -- in the
+    reader's language -- until the provider accepts a request again. A refused key is
+    not "out of credit"."""
+    from pipecat.frames.frames import ErrorFrame
+    from pipecat.utils.errors import ErrorCategory
+    from teaport_brain import credit, llm_error_speaker
+    from test_llm_account_error import CREDIT_CASES, SPENT_KEY_403
+
+    async def run():
+        home, *_ = _setup()
+        with open(os.path.join(home, "llm_key"), "w") as f:
+            f.write("sk-or-v1-" + "3" * 64)            # the owner's: no starter marker
+        assert credit.MONITOR.state() == credit.OWN
+        real = llm_error_speaker.ANSWERS
+        health = llm_error_speaker.ANSWERS = llm_error_speaker.AnswerHealth()
+        try:
+            async with _client(cookie=_session()) as c:
+                assert (await c.get("/settings/api/account")).json()["credit"]["line"] is None
+                health.failed(ErrorFrame(error="x", exception=SPENT_KEY_403(),
+                                         category=ErrorCategory.AUTHORIZATION))
+                assert (await c.get("/settings/api/account")).json()["credit"]["line"] is None
+                health.failed(ErrorFrame(error="x", exception=CREDIT_CASES["402 in flight"](),
+                                         category=ErrorCategory.QUOTA))
+                shown = (await c.get("/settings/api/account")).json()["credit"]
+                assert shown["out"] is True, shown
+                assert shown["line"] == EN._(ai_account.RAN_OUT_OF_CREDIT), shown
+                assert "openrouter.ai/settings/credits" in shown["line"]
+                es = (await c.get("/settings/api/account",
+                                  headers={"Accept-Language": "es"})).json()["credit"]
+                assert es["line"] == i18n.get("es")._(ai_account.RAN_OUT_OF_CREDIT) != shown["line"]
+                health.succeeded()
+                shown = (await c.get("/settings/api/account")).json()["credit"]
+                assert shown["line"] is None and "out" not in shown, shown
+        finally:
+            llm_error_speaker.ANSWERS = real
+    asyncio.run(run())
+
+
 def test_where_a_key_from_the_sign_in_could_not_be_saved_it_is_not_offered():
     async def run():
         _home, _c, _cs, fetched, _ex = _setup()

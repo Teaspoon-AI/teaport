@@ -75,6 +75,7 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.processors.aggregators.llm_context import LLMContext
 
+from teaport_brain.ai_account import says_out_of_credit
 from teaport_brain.conversation_log import quoted
 from teaport_brain.common_words import COMMON
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
@@ -253,8 +254,9 @@ CANCELLED_NOTE = ("OpenClaw stopped this before it finished, so there is no resu
                   "start it again unless the user asks.")
 
 
-# A billing failure where open_settings is offered (the room, Talk): the owner can fix
-# it from their phone, so the model offers to open Settings, and calls the tool on a yes.
+# A billing failure -- out of credit, or a bare 402 -- where open_settings is offered
+# (the room, Talk): the owner can fix it from their phone, so the model offers to open
+# Settings, and calls the tool on a yes.
 BILLING_SETTINGS_HINT = (" The user can fix this on their phone: offer to open your "
                          "settings so they can check their AI account, and call "
                          "open_settings if they say yes.")
@@ -268,13 +270,19 @@ def failure_outcome(failure, detail="", settings: bool = False) -> tuple[str, st
     if failure == "empty":
         return "empty", "No answer: it finished but came back empty." + _ACTION_HEDGE
     if failure == "error":
-        # A whole-number 402, not the digits anywhere: the detail can be a CLI stderr
-        # tail or a relay error carrying ids and timestamps, and a false "billing
-        # problem" sends the caller off to fix the wrong thing.
+        hint = BILLING_SETTINGS_HINT if settings else ""
+        # The provider's own words for an account with nothing left (the 402 a box's
+        # OpenRouter account gives once its credit is spent): said as it is, as the
+        # spoken line for a failed answer says it (llm_error_speaker.CREDIT_TEXT).
+        if says_out_of_credit(detail):
+            return "error", ("No answer: it couldn't be done because the AI account has run "
+                             "out of credit." + _ACTION_HEDGE + hint)
+        # A whole-number 402 with no such words, not the digits anywhere: the detail can
+        # be a CLI stderr tail or a relay error carrying ids and timestamps, and a false
+        # "billing problem" sends the caller off to fix the wrong thing.
         if re.search(r"\b402\b", detail or ""):
             return "error", ("No answer: it couldn't be done because of a billing or credit "
-                             "problem with the AI service." + _ACTION_HEDGE
-                             + (BILLING_SETTINGS_HINT if settings else ""))
+                             "problem with the AI service." + _ACTION_HEDGE + hint)
         return "error", "No answer: it hit an error and couldn't be done." + _ACTION_HEDGE
     # "unknown", not "failed": a consult can die on teardown AFTER its action landed.
     return "unknown", ("No answer: it didn't report back, so it may or may not have been "

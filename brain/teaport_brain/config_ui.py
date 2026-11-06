@@ -747,8 +747,9 @@ def endpoint(brain_env: dict[str, str]) -> str | None:
 async def account(request: Request):
     """The owner's AI account step: whether it is offered here (the box's endpoint is
     OpenRouter's: OpenRouter keys only, #283), whether a key is set, how the trial
-    credit stands (credit.py, #280), whether OpenRouter's sign-in is offered (#282), and
-    the step's words. The key itself is never returned."""
+    credit stands (credit.py, #280) -- or, while answers are refused for it, that the
+    account ran out of credit (ai_account.RAN_OUT_OF_CREDIT) --, whether OpenRouter's
+    sign-in is offered (#282), and the step's words. The key itself is never returned."""
     from teaport_brain import openrouter_connect  # it builds on this module
     _authorize(request)
     credit.MONITOR.poke()  # the owner looks at the account: read the credit again, soon
@@ -757,6 +758,14 @@ async def account(request: Request):
     stored = await brain_env()
     base = endpoint(stored)
     state = credit.MONITOR.state()
+    line = credit.MONITOR.page_line(t)
+    # Answers refused for credit on an account of the owner's (not the trial credit, whose
+    # own line says so): the page says it too, as the voice does (llm_error_speaker).
+    # Imported here, as openrouter_connect is: that module is the brain's pipeline's.
+    from teaport_brain.llm_error_speaker import ANSWERS
+    out = state == credit.OWN and ANSWERS.out_of_credit()
+    if out:
+        line = t._(ai_account.RAN_OUT_OF_CREDIT)
     try:
         connect = await openrouter_connect.status(request, stored)
     except Exception as e:  # noqa: BLE001 -- the paste field never depends on the sign-in
@@ -765,8 +774,9 @@ async def account(request: Request):
     return {"offered": ai_account.is_openrouter(base),
             "key_set": _secret_is_set(rows["LLM_API_KEY"], stored),
             "connect": connect,
-            # The trial credit (#280): its state, and the page's line about it (None off it).
-            "credit": {"state": state, "line": credit.MONITOR.page_line(t)},
+            # The trial credit (#280): its state, and the page's line about it (None off
+            # it); or, with "out", the line that the account ran out of credit.
+            "credit": {"state": state, "line": line, **({"out": True} if out else {})},
             "trusted_cert": settings_access.pairing.TRUSTED_CERT,
             "lang": t.lang.replace("_", "-"), "dir": t.dir,
             "text": {k: t._(v) for k, v in ACCOUNT_TEXT.items()}}

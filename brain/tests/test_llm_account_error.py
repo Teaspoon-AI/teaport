@@ -8,6 +8,10 @@
 # The brain also records the run of failures (llm_error_speaker.ANSWERS), /health serves
 # it, and `teaport status` / `teaport doctor` print it until a request is accepted.
 #
+# An account out of credit -- a 402, or the provider's words for it -- is said as that:
+# "my AI account has run out of credit", with where to add it (openrouter.ai on
+# OpenRouter's endpoint) and the settings phrase where it is heard.
+#
 # The provider responses here are synthetic, shaped like an OpenAI-compatible gateway's
 # error bodies; the links and key ids in them are made up.
 #
@@ -45,9 +49,10 @@ from pipecat.utils.errors import ErrorCategory  # noqa: E402
 from teaport_brain import llm_error_speaker as les  # noqa: E402
 from teaport_brain import services  # noqa: E402
 from teaport_brain.llm_error_speaker import (  # noqa: E402
-    ACCOUNT_STILL_TEXT, ACCOUNT_TEXT, ERROR_TEXT, GLITCH_NO_RETRY_TEXT, AnswerHealth,
-    LLMErrorSpeaker,
-    failure_reason, redact)
+    ACCOUNT_SETTINGS_TEXT, ACCOUNT_STILL_TEXT, ACCOUNT_TEXT, CREDIT_OTHER_SETTINGS_TEXT,
+    CREDIT_OTHER_TEXT, CREDIT_SETTINGS_TEXT, CREDIT_STILL_TEXT, CREDIT_TEXT, ERROR_TEXT,
+    GLITCH_NO_RETRY_TEXT, AnswerHealth, LLMErrorSpeaker, failure_reason, is_out_of_credit,
+    redact)
 
 # Made-up secrets that must never surface in anything the new code says or serves.
 FAKE_KEY = "sk-test-0123456789abcdefABCDEF"
@@ -71,12 +76,20 @@ def _status_error(code: int, message: str):
 
 SPENT_KEY_403 = lambda: _status_error(  # noqa: E731 -- the gateway's spent-key shape
     403, f"Key limit exceeded (total limit). Manage it using {FAKE_LINK}")
-ACCOUNT_CASES = {
+KEY_CASES = {
     "401 bad key": lambda: _status_error(401, f"Invalid API key {FAKE_KEY}"),
-    "402 no credit": lambda: _status_error(402, "Insufficient credits. Add more at "
-                                           f"{FAKE_LINK}"),
     "403 spent key": SPENT_KEY_403,
 }
+# The account out of credit: OpenRouter's two 402 bodies.
+CREDIT_CASES = {
+    "402 no credit": lambda: _status_error(402, "Insufficient credits. Add more at "
+                                           f"{FAKE_LINK}"),
+    "402 in flight": lambda: _status_error(
+        402, "This request would exceed your available credits given your current "
+             "in-flight requests"),
+}
+ACCOUNT_CASES = {**KEY_CASES, **CREDIT_CASES}
+OPENROUTER = "https://openrouter.ai/api/v1"
 PASSING_CASES = {
     "429 rate limit": lambda: _status_error(429, "Rate limit exceeded, slow down."),
     "500 server": lambda: _status_error(500, "Internal error"),
@@ -125,14 +138,101 @@ def _no_secrets(text: str, where: str):
 
 
 async def test_account_failures_speak_the_account_line():
-    """401, 402 and 403 (the spent-key body included): the account line, once."""
+    """401 and 403 (the spent-key body included): the account line, once. A 402: that the
+    account is out of credit (on this endpoint, not OpenRouter's: no site named)."""
     services.ANSWERS = AnswerHealth()
     llm, pushed = _llm()
     for name, make in ACCOUNT_CASES.items():
         frame = await _raise_through(llm, pushed, make())
         assert frame.category in les.ACCOUNT_CATEGORIES, (name, frame.category)
         said = await _spoken(LLMErrorSpeaker(), frame)
-        assert said == [ACCOUNT_TEXT], (name, said)
+        want = CREDIT_OTHER_TEXT if name in CREDIT_CASES else ACCOUNT_TEXT
+        assert said == [want], (name, said)
+
+
+class _Endpoint:
+    """LLM_BASE_URL for the lines read while it lasts (setting() reads it per call)."""
+
+    def __init__(self, url):
+        self.url = url
+
+    def __enter__(self):
+        self.was = os.environ.get("LLM_BASE_URL")
+        os.environ["LLM_BASE_URL"] = self.url
+
+    def __exit__(self, *exc):
+        if self.was is None:
+            os.environ.pop("LLM_BASE_URL", None)
+        else:
+            os.environ["LLM_BASE_URL"] = self.was
+
+
+async def test_out_of_credit_says_so_and_where_credit_is_added():
+    """Each 402 body: "run out of credit". On OpenRouter's endpoint the line names
+    openrouter.ai; where "open my settings" is heard it names the phrase too; never
+    "needs attention", which sent the owner looking at the key."""
+    llm, pushed = _llm()
+    for name, make in CREDIT_CASES.items():
+        frame = await _raise_through(llm, pushed, make())
+        assert frame.category is ErrorCategory.QUOTA and is_out_of_credit(frame), name
+        for url, settings, want in ((OPENROUTER, True, CREDIT_SETTINGS_TEXT),
+                                    (OPENROUTER, False, CREDIT_TEXT),
+                                    ("http://127.0.0.1:9/v1", True, CREDIT_OTHER_SETTINGS_TEXT),
+                                    ("http://127.0.0.1:9/v1", False, CREDIT_OTHER_TEXT)):
+            with _Endpoint(url):
+                said = await _spoken(LLMErrorSpeaker(settings=settings), frame)
+            assert said == [want], (name, url, settings, said)
+    for text in (CREDIT_SETTINGS_TEXT, CREDIT_TEXT, CREDIT_OTHER_SETTINGS_TEXT,
+                 CREDIT_OTHER_TEXT, CREDIT_STILL_TEXT):
+        assert "out of credit" in text and "attention" not in text, text
+    assert "openrouter.ai" in CREDIT_SETTINGS_TEXT and "openrouter.ai" in CREDIT_TEXT
+    assert "openrouter" not in (CREDIT_OTHER_SETTINGS_TEXT + CREDIT_OTHER_TEXT).lower()
+    for text in (CREDIT_SETTINGS_TEXT, CREDIT_OTHER_SETTINGS_TEXT):
+        assert '"open my settings"' in text, text
+    for text in (CREDIT_TEXT, CREDIT_OTHER_TEXT, CREDIT_STILL_TEXT):
+        assert "settings" not in text, text      # a phone call does not open them
+
+
+async def test_out_of_credit_in_the_account_window_is_its_short_line():
+    """The account window, as for a refused key: the full line once, then the short one
+    of the failure's own kind -- out of credit, or a key to fix."""
+    llm, pushed = _llm()
+    speaker = LLMErrorSpeaker()
+    credit = await _raise_through(llm, pushed, CREDIT_CASES["402 in flight"]())
+    key = await _raise_through(llm, pushed, SPENT_KEY_403())
+    assert await _spoken(speaker, credit) == [CREDIT_OTHER_TEXT]
+    assert await _spoken(speaker, credit) == [CREDIT_STILL_TEXT]
+    assert await _spoken(speaker, key) == [ACCOUNT_STILL_TEXT]
+
+
+async def test_the_providers_credit_words_count_without_a_402():
+    """An error the stream itself carried has no HTTP status (pipecat's UNKNOWN): its body's
+    code 402, or the provider's words, make it out of credit. A free tier's rate limit
+    that suggests buying credit, a key's own limit, and an outage that names none, do
+    not."""
+    llm, pushed = _llm()
+    request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+    in_stream = openai.APIError("Insufficient credits", request,
+                                body={"message": "Insufficient credits", "code": 402})
+    words_only = openai.APIError("x", request, body={
+        "message": "This request would exceed your available credits given your current "
+                   "in-flight requests"})
+    for exc in (in_stream, words_only):
+        frame = await _raise_through(llm, pushed, exc)
+        assert frame.category is ErrorCategory.UNKNOWN, frame.category
+        assert is_out_of_credit(frame) and les.is_account_problem(frame), exc
+        assert await _spoken(LLMErrorSpeaker(settings=True), frame) == [CREDIT_OTHER_SETTINGS_TEXT]
+    free_tier = _status_error(429, "Rate limit exceeded: free-models-per-day. Add 10 "
+                                   "credits to unlock 1000 free model requests per day")
+    outage = openai.APIError("x", request, body={"message": "Upstream error", "code": 502})
+    for exc, want in ((free_tier, ERROR_TEXT), (outage, ERROR_TEXT),
+                      (SPENT_KEY_403(), ACCOUNT_TEXT)):
+        frame = await _raise_through(llm, pushed, exc)
+        assert not is_out_of_credit(frame), exc
+        assert await _spoken(LLMErrorSpeaker(), frame) == [want], exc
+    # Words alone, on an exception no provider request raises: not the provider's.
+    bug = ErrorFrame(error="x", processor=llm, exception=ValueError("insufficient credits"))
+    assert not is_out_of_credit(bug)
 
 
 async def test_where_the_phrase_is_heard_the_account_line_names_it():
@@ -200,7 +300,7 @@ async def test_the_notices_follow_the_voice_language():
     llm, _ = _llm()
     lang = ["es"]
     speaker = LLMErrorSpeaker(lang_fn=lambda: lang[0])
-    account = ErrorFrame(error="x", processor=llm, category=ErrorCategory.QUOTA)
+    account = ErrorFrame(error="x", processor=llm, category=ErrorCategory.AUTHORIZATION)
     es = i18n.for_espeak("es")
     full = await _spoken(speaker, account)
     assert full == [es._(ACCOUNT_TEXT)] and full != [ACCOUNT_TEXT], full
@@ -219,7 +319,9 @@ async def test_other_processors_errors_are_not_spoken():
 
 def test_spoken_lines_are_plain_words():
     assert "try again" not in GLITCH_NO_RETRY_TEXT
-    for text in (ACCOUNT_TEXT, ACCOUNT_STILL_TEXT, ERROR_TEXT, GLITCH_NO_RETRY_TEXT):
+    for text in (ACCOUNT_TEXT, ACCOUNT_STILL_TEXT, ERROR_TEXT, GLITCH_NO_RETRY_TEXT,
+                 CREDIT_TEXT, CREDIT_SETTINGS_TEXT, CREDIT_OTHER_TEXT,
+                 CREDIT_OTHER_SETTINGS_TEXT, CREDIT_STILL_TEXT):
         assert not re.search(r"\b(LLM|API|language model|speech engine|\d{3})\b", text,
                              re.IGNORECASE), text
 
@@ -283,6 +385,11 @@ async def test_status_records_the_failure_and_clears_on_success():
     await _raise_through(llm, pushed, SPENT_KEY_403())
     st = health.status()
     assert st["since"] == 1000.0 and st["last"] == 1060.0 and st["count"] == 2, st
+    assert "credit" not in st and not health.out_of_credit(), st     # a key to fix
+    await _raise_through(llm, pushed, CREDIT_CASES["402 in flight"]())
+    st = health.status()
+    assert st["state"] == "account" and st["credit"] is True and health.out_of_credit(), st
+    assert st["since"] == 1000.0 and st["count"] == 3, st              # the same run
 
     # A request the provider accepts: the stream opens.
     async def accepted(self, context):
@@ -294,6 +401,7 @@ async def test_status_records_the_failure_and_clears_on_success():
     finally:
         OpenAILLMService.get_chat_completions = original
     assert health.status() == {"state": "ok"}, health.status()
+    assert not health.out_of_credit()
 
     await _raise_through(llm, pushed, PASSING_CASES["500 server"]())
     assert health.status()["state"] == "failing", health.status()
@@ -371,6 +479,21 @@ def test_status_and_doctor_show_an_account_failure_until_a_success():
     served = {"ok": True, "answers": health.status()}
     assert _status_answers(served) == "working"
     assert _doctor_answers(served) == ["OK answers: working"]
+
+
+def test_status_and_doctor_say_out_of_credit():
+    """An account out of credit, through the CLI: the cause and where credit is added."""
+    health = AnswerHealth(clock=time.time)
+    health.failed(ErrorFrame(error="x", exception=CREDIT_CASES["402 no credit"](),
+                             category=ErrorCategory.QUOTA))
+    served = {"ok": True, "answers": health.status()}
+    shown = _status_answers(served)
+    assert shown.startswith("out of credit since "), shown
+    assert "openrouter.ai/settings/credits" in shown and "(Insufficient credits)" in shown, shown
+    doctor = _doctor_answers(served)
+    assert len(doctor) == 1 and doctor[0].startswith("FAIL answers: out of credit since"), doctor
+    for text in (shown, *doctor):
+        _no_secrets(text, "the CLI")
 
 
 def test_status_and_doctor_for_passing_failures_and_older_brains():
