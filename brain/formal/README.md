@@ -1063,15 +1063,20 @@ to the open turn (`_slice_delta`: a settled turn takes none), and the next commi
 preview, no longer trimmed by the settled turn (`_past_earlier` read only the turns
 waiting), asked them again.
 
-| EARLY | | `NoDoubleDeliver` |
+| EARLY | | `NoDoubleDeliver`, `NoDeliveredOpen` |
 |---|---|---|
 | `off` | no early settle: every other row here | — |
 | `shipped` | before A3 (`ss_early_shipped`) | ✗ |
-| `kept` | as shipped: the settled turn keeps its unspent vouched words -- a late one is its own, and the trim reads them -- until the bounds pass it, as its final would have waited (`_early`; `ss_early_kept`, ~4.8M states) | ✓ |
+| `kept` | as shipped (`_early`): the settled turn stops waiting but keeps its stretch -- a late word ending in it is its own whatever its spelling, one past it that its preview vouched for too, and the trim reads its vouching -- until the bounds pass it, as its final would have waited; its final then settles, its correction with it. A late word below a settled turn is a later turn's whose preview vouched for it (it delivered it). Not kept: a deferred turn, an empty provisional, or one the decoder's clock settled (no word of it is still to come). (`ss_early_kept`, ~4.8M states; `--full` `ss_early_kept_lossy`, lossy previews, ~20M) | ✓ |
 
-An early settle is incomplete by design (the backstop's accepted cost), so the `EARLY`
-rows check `NoWordTwice`, `RightTurn` and `NoDoubleDeliver`, not `FinalComplete` or
-`NoDropAtCut`.
+`NoDeliveredOpen`: no word a turn delivered sits in the open turn, which the next commit
+would deliver again. An early settle is incomplete by design (the backstop's accepted
+cost): a late word of a turn that delivered nothing of it still goes to the open turn and
+the next turn, once -- so the `EARLY` rows check `NoWordTwice`, `NoDoubleDeliver` and
+`NoDeliveredOpen`, not `FinalComplete`, `NoDropAtCut` or `RightTurn`. Not modelled: a late
+word spelled otherwise than its preview had it (the model's words are unique), which the
+kept turn takes by its stretch and its final corrects
+(`test_stt_turn_text.py::test_a_turn_settled_early_corrects_a_late_word_the_preview_spelled_otherwise`).
 
 Not checked here: **segment mode's** watch. There `_heard_through` is the report's
 `decoded_through_ms`, and the premise that no interim of the speech before it comes

@@ -921,6 +921,10 @@ class _Turn:
     holds: bool = False
     # When its commit went out (the wall clock its final's timeout counts from).
     sent_at: float = 0.0
+    # Settled early and kept (_early): where its stretch starts (the turn before it's
+    # position) and when it was kept.
+    lo_ms: int = 0
+    kept_at: float = 0.0
     # Its preview's place in THE EMPTY RATE's count (_note_segment), for its final to make
     # a miss good (_unmiss); None: not counted.
     noted: Optional[int] = None
@@ -1094,9 +1098,11 @@ class TeaportSTTService(WebsocketSTTService):
         self._final_through = 0
         # Turns settled before their final -- the backstop, the pause's cap -- whose
         # provisional went out with words their preview vouched for, not yet sent: those
-        # words were delivered, and arrive later. Until the bounds pass each (no word it
-        # vouched for can come), a late one is its, not the next turn's, and a later
-        # preview's front is trimmed of them (_early_taker, _past_earlier;
+        # words were delivered, and arrive later. Such a turn stopped waiting, but its
+        # words are still its own: until the bounds pass it, a late word of its stretch
+        # is its, not the open turn's nor the next's, a later preview's front is trimmed
+        # of what it vouched for, and then its final settles as any turn's does, its
+        # correction with it (_early_taker, _past_earlier, _prune_early;
         # formal/SttSlice.tla EARLY = "kept").
         self._early: list = []
         self._warned: set = set()
@@ -2564,14 +2570,17 @@ class TeaportSTTService(WebsocketSTTService):
             target = early
         elif end < self._final_through and not goes_on:
             # A word of a turn already settled: the engine's end_through_ms did not hold,
-            # or that turn's final timed out. Kept, not lost: the open turn has it --
-            # never a later turn, whose stretch it is not in (its correction would add it
-            # a second time).
-            self._warn_once("bound", f"a word ending at {end} ms arrived after the turn "
-                            f"through {self._final_through} ms was settled -- the engine's "
-                            "end_through_ms did not hold, or that turn's final timed out; "
-                            "the open turn takes it")
-            target = None
+            # or that turn's final timed out. A later turn whose preview vouched for it
+            # delivered it already: it is that turn's, spent (audit A3, a preview that
+            # missed it for its own turn). Otherwise kept, not lost: the open turn has
+            # it -- never a later turn, whose stretch it is not in (its correction would
+            # add it a second time).
+            target = next((t for t in self._turns if self._claim_expected(t, piece)), None)
+            if target is None:
+                self._warn_once("bound", f"a word ending at {end} ms arrived after the "
+                                f"turn through {self._final_through} ms was settled -- the "
+                                "engine's end_through_ms did not hold, or that turn's final "
+                                "timed out; the open turn takes it")
         else:
             target, had = self._file(w, self._last_piece, self._turns)
             if target is not None and not goes_on and not had:
@@ -2585,29 +2594,49 @@ class TeaportSTTService(WebsocketSTTService):
 
     def _early_taker(self, w: tuple, goes_on: bool) -> Optional[_Turn]:
         """The turn settled early (_early) main piece `w` is the late word of, if any: the
-        rest of a word one took, or a word one's preview vouched for -- ending before
-        its position, or past it by the margin's rule (_vouch) -- which that spends."""
+        rest of a word one took; or a word of its stretch -- ending before its position
+        and not before the turn before it's, whatever its text (its final corrects it,
+        _prune_early) -- or past it that its preview vouched for (_vouch)."""
         if goes_on:
             last = self._last_piece[2]
             return last if any(t is last for t in self._early) else None
         for turn in self._early:
-            if (w[1] < turn.at_ms and self._claim_expected(turn, w[0])) or self._vouch(turn, *w):
+            if turn.lo_ms <= w[1] < turn.at_ms:
+                self._claim_expected(turn, w[0])
+                return turn
+            if self._vouch(turn, *w):
                 return turn
         return None
 
-    def _keep_early(self, turn: _Turn):
-        """`turn` settled before its final: keep its unspent vouching if its provisional
-        delivered those words (_early)."""
-        if turn.expect and not turn.deferred and turn.pushed:
-            self._early.append(turn)
+    def _keep_early(self, turn: _Turn, lo: int) -> bool:
+        """`turn`, its stretch from `lo`, settles before its final: keep it (_early) if
+        its provisional delivered words its preview vouched for -- unless the decoder's
+        own clock settled it, by which no word of it is still to come."""
+        due = turn.at_ms + _FINAL_TIMEOUT_MS + (_VOUCH_MS if turn.expect else 0)
+        if (not turn.expect or turn.deferred or not turn.pushed
+                or self._decoded_ms >= due):
+            return False
+        turn.lo_ms, turn.kept_at = lo, time.monotonic()
+        self._early.append(turn)
+        return True
 
-    def _prune_early(self):
-        """Forget a turn settled early once no word it vouched for can come: the end bound
-        _VOUCH_MS past its position and the start bound at it -- what its final would
-        have waited for -- or every such word in."""
-        self._early = [t for t in self._early
-                       if t.expect and not (t.at_ms + _VOUCH_MS <= self._end_through
-                                            and t.at_ms <= self._audio_through)]
+    async def _prune_early(self):
+        """A turn settled early whose bounds have passed it -- what its final would have
+        waited for -- settles that final now: its correction, if the words differ from
+        what went on (a late word the preview spelled otherwise, or missed). One the
+        decoder has passed by the timeout, or kept a backstop's wait with no bound
+        moving, goes as it went: no word of it will come."""
+        kept = []
+        for turn in self._early:
+            final = (turn.at_ms <= self._end_through if not turn.expect
+                     else (turn.at_ms + _VOUCH_MS <= self._end_through
+                           and turn.at_ms <= self._audio_through))
+            if final:
+                await self._settle_turn(turn)
+            elif not (self._decoded_ms >= turn.at_ms + _FINAL_TIMEOUT_MS + _VOUCH_MS
+                      or time.monotonic() >= turn.kept_at + _FINAL_BACKSTOP_SECS):
+                kept.append(turn)
+        self._early = kept
 
     def _spend_later(self):
         """The word last filed to a turn whose preview did not have it, whole now (its
@@ -2778,7 +2807,7 @@ class TeaportSTTService(WebsocketSTTService):
         end_through_ms has passed -- no word of it can come any more -- or whose final
         has timed out (TURN TEXT); then time the oldest still waiting."""
         async with self._finals_lock:
-            self._prune_early()
+            await self._prune_early()
             while self._turns and self._turns[0].previewed:
                 turn = self._turns[0]
                 final = (turn.at_ms <= self._end_through if not turn.expect
@@ -2787,10 +2816,11 @@ class TeaportSTTService(WebsocketSTTService):
                 if not final and not self._final_overdue(turn):
                     break
                 self._turns.popleft()
+                # Kept before the settle's first await: a late word handled meanwhile
+                # finds it.
+                kept = not final and self._keep_early(turn, self._final_through)
                 self._final_through = turn.at_ms
-                await self._settle_turn(turn, timed_out=not final)
-                if not final:
-                    self._keep_early(turn)
+                await self._settle_turn(turn, timed_out=not final, kept=kept)
             await self._time_final()
 
     async def close_held(self) -> bool:
@@ -2842,7 +2872,7 @@ class TeaportSTTService(WebsocketSTTService):
             self._final_for = None
             await self._finalize_turns()
 
-    async def _settle_turn(self, turn: _Turn, timed_out: bool = False):
+    async def _settle_turn(self, turn: _Turn, timed_out: bool = False, kept: bool = False):
         """A turn's final is in: all its words. Compared with the provisional text it was
         pushed as, by words (case and punctuation aside, as measured); a difference goes
         downstream for turn_text.TurnTextCorrector to apply, and every outcome is one
@@ -2868,10 +2898,10 @@ class TeaportSTTService(WebsocketSTTService):
                     f"{len(turn.words) - turn.asked_n} word(s) since, "
                     f"{len(turn.expect)} its preview still vouches for; "
                     f"timeouts={self._final_timeouts})")
-            if turn.expect and not self._turns:
+            if turn.expect and not self._turns and not kept:
                 # Words the preview had are still to come: if the backstop commits the
                 # open words before another turn closes, that is counted
-                # (_commit_stranded).
+                # (_commit_stranded). Not a kept turn's: its words come to it (_early).
                 self._last_drop = (turn.stop_n, tuple(turn.expect), "final timed out without")
             if turn.deferred:
                 logger.warning(f"{head} -- closed on the {len(_words_of(final))} word(s) in "
@@ -2879,7 +2909,9 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._close_deferred(turn, final)
             else:
                 logger.warning(f"{head} -- settled as its provisional text"
-                               + ("; any correction its final would have made is lost"
+                               + ("; its late words stay its own, and its final, once "
+                                  "the bounds pass it, still corrects it" if kept else
+                                  "; any correction its final would have made is lost"
                                   if self._settle_through is not None else ""))
             return
         kind, added, dropped = compare_turn_text(turn.asked, final)
@@ -3170,6 +3202,7 @@ class TeaportSTTService(WebsocketSTTService):
             self._last_piece = None
             self._spending = None
             self._turns.clear()
+            self._early = []
             self._final_for = None
             await self._cancel_timer("_final_task")
             self._peek = None
