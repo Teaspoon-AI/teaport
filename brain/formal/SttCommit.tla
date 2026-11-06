@@ -13,7 +13,7 @@
 (*                                         owed close, its receipts, and    *)
 (*                                         the gate on                      *)
 (*                                         _maybe_trigger_user_turn_stopped *)
-(*   pipecat 1.8.1 llm_response_universal.py -- where the VAD runs, and how *)
+(*   pipecat 1.12.0 llm_response_universal.py -- where the VAD runs, how    *)
 (*                                         its edges reach both (THE ORDER) *)
 (*   the engine's voxtral_websocket.c   -- one worker, dones in order, a    *)
 (*                                         VAD close and a commit's answer  *)
@@ -374,6 +374,12 @@ CommitAt(n, speaking, mayCarry) ==
     /\ commits' = Append(commits, [n |-> IF Stamped THEN n ELSE 0,
                                    c |-> IF DESIGN = "clock" THEN stratStarts ELSE 0])
     /\ lastCommitN' = n
+    \* At every commit here. The code's count of the segment's interims
+    \* (_seg_interims) is reset only when the commit's done, or a sliced turn's
+    \* preview, is logged (_log_segment), and the tail rule reads it (_turn_edge at a
+    \* VAD stop: _closed_unasked and no interims). Until that done the code holds a
+    \* stop the model would close as a tail: the safer side, the hold's, which the
+    \* rows check anyway.
     /\ segSpeech' = FALSE
     /\ pending' = FALSE
     /\ hold' = FALSE
@@ -385,7 +391,11 @@ Commit == CommitAt(sttStops, userSpeaking, TRUE)
 \* The engine closes the segment on its own: its endpointer, on a silence shorter
 \* than the VAD's floor or a breath inside a sentence. The words go into a done the
 \* wire cannot tell from a commit's answer; a caller mid-word keeps feeding the next
-\* segment. The STT learns of it only when the done arrives (Done).
+\* segment. The STT learns of it only when the done arrives (Done). Not modelled: the
+\* engine's ~15 s buffer cut, which closes the segment and sends NO done at all (stt.py,
+\* the done handler's note on the commit a done answers): the STT never learns of it,
+\* and the cut's words are lost but for the interims already streamed. EngineClose
+\* always answers with a done.
 EngineClose ==
     /\ segAudio /= {} /\ closes < MaxCloses
     /\ closes' = closes + 1
@@ -975,8 +985,9 @@ Spec == Init /\ [][Next]_vars
 
 \* Words in the segment, the caller quiet, and nothing left that will close it: no
 \* timer that can fire, no frame in flight either way, no ceiling counting. That state
-\* is absorbing -- the words wait for the engine's 15 s auto-segment or the caller's
-\* NEXT utterance, and the turn they belong to is never answered. Checked with both
+\* is absorbing -- the words wait for the caller's NEXT utterance (the engine's 15 s
+\* buffer cut closes the segment but sends no done, so it answers nothing either), and
+\* the turn they belong to is never answered. Checked with both
 \* faults on, because the hold is what stands the backstop down.
 \*
 \* ENABLED, not the armed flags: a timer counts as a way out only if its action can
