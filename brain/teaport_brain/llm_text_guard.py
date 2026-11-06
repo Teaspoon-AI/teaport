@@ -297,11 +297,12 @@ RECOVERY_LINE = i18n.N_("Sorry, I lost my train of thought there. Could you say 
 def recovery_text(lang: str | None = None) -> str:
     """The recovery line for a session whose voice speaks `lang` (an espeak code, as
     EngineTTSService.espeak_language; None: the source language), leading space included:
-    the operator's TEAPORT_LLM_GUARD_RECOVERY as written, else the line in the session's
-    language -- read at each use, so a voice switch is followed. An empty completion
-    (#15) speaks it on ordinary turns, so a German room must not hear it in English."""
-    override = setting("TEAPORT_LLM_GUARD_RECOVERY")
-    return override if override else " " + i18n.for_espeak(lang)._(RECOVERY_LINE)
+    the operator's TEAPORT_LLM_GUARD_RECOVERY, else the line in the session's language --
+    read at each use, so a voice switch is followed. An empty completion (#15) speaks it
+    on ordinary turns, so a German room must not hear it in English. The space goes on
+    either way: the line can follow a healthy prefix already forwarded."""
+    line = setting("TEAPORT_LLM_GUARD_RECOVERY") or i18n.for_espeak(lang)._(RECOVERY_LINE)
+    return " " + line.strip()
 
 
 # The line in the source language: what a component built without a language speaks.

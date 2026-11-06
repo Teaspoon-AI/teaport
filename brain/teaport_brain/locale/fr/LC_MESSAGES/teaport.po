@@ -669,4 +669,4 @@ msgstr "Désolé, je ne peux pas répondre pour le moment : le compte que j’ut
 
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
-msgstr "Désolé, j'ai perdu le fil. Tu peux répéter ?"
+msgstr "Désolé, j'ai perdu le fil. Pouvez-vous répéter ?"
