@@ -353,7 +353,7 @@ cmd_doctor() {
   if env_file_check "$ETC/engine.env"; then
     fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
     if [ -z "$fpt" ]; then failc "KOKORO_RESERVE_FPT unset in $ETC/engine.env — the code default (50) OOMs an 8GB box"
-    elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 6 or 12)"
+    elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 8 or 12)"
     else ok "KOKORO_RESERVE_FPT=$fpt"; fi
   fi
   if env_file_check "$ETC/brain.env"; then
