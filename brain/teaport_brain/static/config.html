@@ -301,8 +301,9 @@
       ...opts, credentials: 'same-origin',
       headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(opts.headers || {}) },
     });
-    if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401 });
     const body = await res.json().catch(() => ({}));
+    // A 401 keeps its message for every caller and brings the brain's reason along (#271).
+    if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401, body });
     if (!res.ok && res.status !== 400) throw Object.assign(new Error(body.detail || res.statusText), { status: res.status, body });
     return { status: res.status, body };
   };
@@ -474,17 +475,24 @@
     dlg.showModal();
   });
 
-  // One switch, and what it came to in words: {text, reread}, reread when the box may be on
-  // another network now. Only a request with no answer is "lost": the fetch rejected, as it
-  // does when the box leaves the network this browser reaches it on. An answer is the
-  // box's, and a refusal -- a 409's "this box is already in setup mode", a 400's password
-  // length -- switched nothing: it is shown as the brain gave it, its `detail` (#271). A
-  // body with none (not JSON: Caddy's 502 while the brain restarts) names the status.
+  // One switch, and what it came to in words: {text, reread, expired}, reread when the box
+  // may be on another network now. Only a request with no answer is "lost": the fetch
+  // rejected, as it does when the box leaves the network this browser reaches it on, or
+  // timed out. An answer is the box's, and a refusal -- a 409's "this box is already in
+  // setup mode", a 400's password length -- switched nothing: it is shown as the brain gave
+  // it, its `detail` (#271). A body with none (not JSON: Caddy's 502 while the brain
+  // restarts) names the status. expired: the front door's Settings session ran out.
+  // The timeout is past the brain's slowest switch (wifi.switch, each step to its own
+  // limit: a rescan, two connects of 60 s with a rescan between, the connectivity check,
+  // the old network back in 60 s), so it only ends a request the box will never answer.
+  const SWITCH_TIMEOUT_MS = 300000;
   const switchWifi = async (ssid, password, hidden) => {
     const lost = { text: 'Lost the box while it switched networks. If it joined ' + ssid + ', find it there (teaport.local); if not, it went back to its old network.' };
     let status, body, why = '';
     try {
-      ({ status, body } = await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password, hidden }) }));
+      ({ status, body } = await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password, hidden }),
+        // AbortSignal.timeout is Safari 16+: an older Safari waits as it did.
+        ...(AbortSignal.timeout ? { signal: AbortSignal.timeout(SWITCH_TIMEOUT_MS) } : {}) }));
     } catch (err) {
       if (!err.status) return lost;
       // api()'s message is the detail when there is one, else the status text (none over
@@ -499,7 +507,8 @@
       return { reread: true, text: body.ok ? 'Connected to ' + ssid + '.' : 'Could not switch to ' + ssid + ': ' + body.error + '. The box went back to its previous network.' };
     }
     const detail = typeof body.detail === 'string' && body.detail.trim();
-    return { text: 'Could not switch to ' + ssid + ': ' + (detail || ('the box answered ' + status + (why ? ' ' + why : ''))) + '.' };
+    return { expired: status === 401 && !!BASE,
+      text: 'Could not switch to ' + ssid + ': ' + (detail || ('the box answered ' + status + (why ? ' ' + why : ''))) + '.' };
   };
 
   const renderWifi = async (msg) => {
@@ -546,6 +555,7 @@
       // As text, the brain's words included; a refusal keeps the form as it was, to fix.
       const r = await switchWifi(ssid, pw.value, !(picked && picked.value));
       if (r.reread) { pw.value = ''; renderWifi(r.text); } else out.textContent = r.text;
+      if (r.expired) location.href = '/settings';  // to the code page, as load() does
     };
     setupBtn.onclick = async () => {
       const sure = await confirmDialog('Put this box in setup mode?', [
