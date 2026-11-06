@@ -162,20 +162,21 @@ run() {  # run <module> <config> <expectation>
   fi
 }
 
-echo "Followup.tla — retiring a one-shot order at its read (ClientNotes' reaction; the consult follow-up's until #203)"
+echo "Followup.tla — retiring a one-shot order at the first text of the completion that read it (ClientNotes' reaction; the consult follow-up's until #203)"
 run Followup.tla fu_asWritten_loss    "(expected: FAILS NoSilentLoss)"
 run Followup.tla fu_asWritten_repeat  "(expected: FAILS NoRepeatRecital)"
 run Followup.tla fu_gateOnOwn_repeat  "(expected: FAILS NoRepeatRecital)"
-run Followup.tla fu_retireOnRead      "(expected: holds)"
+run Followup.tla fu_retireOnRead      "(expected: holds — AS SHIPPED: retired at the first text; an unanswered order goes only by expiry or a newer order)"
+run Followup.tla fu_retireOnStart_loss "(expected: FAILS NoSilentLoss — the mutant: retired at the response start frame, before the request carries it)"
 echo
 echo "Followup.tla — PR #13: releasing the LLM latch on a tool call (LATCH)"
 run Followup.tla fu_clearedOnToolCall_existing "(expected: holds — blind)"
 run Followup.tla fu_held_interject             "(expected: holds)"
 run Followup.tla fu_clearedOnToolCall_interject "(expected: FAILS NoInterjectMidTurn)"
-run Followup.tla fu_held_deadair               "(expected: FAILS NoDeadAirDuringTool)"
-run Followup.tla fu_clearedOnToolCall_deadair  "(expected: holds)"
-run Followup.tla fu_turnAware_interject        "(expected: holds)"
-run Followup.tla fu_turnAware_deadair          "(expected: holds)"
+run Followup.tla fu_held_deadair               "(expected: FAILS NoDeadAirDuringTool — historical: the narrator skips its line while a call is out since #230)"
+run Followup.tla fu_clearedOnToolCall_deadair  "(expected: holds — historical, as above)"
+run Followup.tla fu_turnAware_interject        "(expected: holds — a turn committed but not started shuts the window too (TurnCommitMark))"
+run Followup.tla fu_turnAware_deadair          "(expected: holds — historical, as above)"
 run Followup.tla fu_turnAware_all              "(expected: holds)"
 echo
 echo "Owed.tla — owed until heard (#203): the record, the note rendered per request, closed on evidence"

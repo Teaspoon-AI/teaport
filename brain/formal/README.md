@@ -63,17 +63,38 @@ live session:
 | `NoSilentLoss` | retired before any completion read it → the answer is never spoken |
 | `NoRepeatRecital` | still live after delivery → a later turn recites it again |
 
-Three designs, selected by the `MODE` constant:
+Three designs and a mutant, selected by the `MODE` constant:
 
 | MODE | what it models | `NoSilentLoss` | `NoRepeatRecital` |
 |---|---|---|---|
 | `asWritten` | `gate.wait_until_delivered()` — waits on `_busy`/`_idle` | ✗ | ✗ |
 | `gateOnOwn` | wait for *our* completion to start, then end | ✓ | ✗ |
-| `retireOnRead` | retire **at** the read | ✓ | ✓ |
+| `retireOnRead` | **as shipped**: retire at the **first text** of the completion whose request carried the order (`FollowupTrigger`); an order nobody answered goes only by `ClientNotes`' expiry or a newer order | ✓ (2.8k states) | ✓ |
+| `retireOnStart` | the mutant: retire at `LLMFullResponseStartFrame`, which pipecat pushes before the request is built | ✗ (3 steps) | ✓ |
 
 The as-written design violates **both**: the trigger can be retired before anything
 read it, *and* — on a different interleaving — stay live long enough for two
-completions to read it. The two live incidents it caused were one bug, not two.
+completions to answer from it. The two live incidents it caused were one bug, not two.
+
+`NoSilentLoss` says an order is retired with no completion having answered from it
+only by expiry (`FExpire`: `REACT_MAX_WAIT_S`, checked at the next request) or by a
+newer order posted over it (`FReplace`: `_post_order`'s "one live order at most").
+`NoRepeatRecital` says no order is answered from in text by two completions. Both are
+counted per order (`answered` resets at a post). Until the 2026-11-05 audit the model
+retired *at the read* (the request) and counted reads: the code retires at the first
+alphanumeric `LLMTextFrame` (`followup_gate.py`), so a completion that read the order
+and produced no text — a bare tool call, a barge-in before its first word, an empty
+reply — leaves it live for the same turn's answering completion, or the caller's next
+turn, to read again and answer once. Counting reads called that a repeat; counting
+answers is what the code promises. The old `NoSilentLoss` (`fpc = "done" ⇒ reads ≥ 1`)
+was implied by the injector's own wait under `retireOnRead`, whatever the retirement
+did; the new one is not: `retireOnStart` keeps every wait and fails it in three steps
+(`FWaitIdle`, `FQueue`, `RunStart` — the order withdrawn before the request carries
+it; `test_followup_trigger.py::test_the_response_start_alone_does_not_retire_it` is
+the same fact on the real processor). `FRequeue` ("barged away → try again") went in
+the same change: it was unreachable under `retireOnRead` (the user's turn re-queues a
+completion itself, and the order stays armed through the barge-in), and the code has
+no retry.
 
 Each failing row in `check.sh` **must name** the one property it is kept to demonstrate
 (a nameless `FAILS` is rejected), and the gate insists that named property is the one
@@ -93,7 +114,7 @@ UserStart    the user speaks; the interruption flushes the queued LLMRunFrame
 FWaitBusy    wait_until_delivered()'s _busy.wait() is satisfied by THE USER
 UserStop     the user stops
 FWaitIdle2   _idle.wait() is satisfied
-FNeutralize  the trigger is retired — reads = 0, nothing ever read it
+FNeutralize  the trigger is retired — answered = 0, nothing ever read it
 ```
 
 `_busy` is set by *any* activity, so it cannot distinguish "the turn I queued
@@ -101,7 +122,7 @@ happened" from "someone else spoke".
 
 The obvious fix (`gateOnOwn`) trades one bug for the other: a barge-in between the
 read and the retirement leaves the trigger live for the next turn to recite a second
-time. Only retiring **at** the read satisfies both.
+time. Only retiring at the first text of the completion that read it satisfies both.
 
 ### What was changed
 
@@ -141,18 +162,24 @@ completion, which is another read of the context):
 | `clearedOnToolCall` | PR #13: `FunctionCallInProgressFrame` clears it | ✓ | ✓ | ✗ | ✓ |
 | `turnAware` | the fix: `_llm` released as above, plus `_turn` for the injector alone | ✓ | ✓ | ✓ | ✓ |
 
-`NoDeadAirDuringTool` is the narrator's side of the trade — during a tool call with
-nobody speaking, the gate must read idle, because a synchronous consult runs *inside*
-its call for up to 45s and that silence is what a progress line fills. `held` fails it:
+`NoDeadAirDuringTool` was the narrator's side of the trade — during a tool call with
+nobody speaking, the gate must read idle, because a synchronous consult ran *inside*
+its call for up to 45s and that silence is what a progress line filled. `held` fails it:
 the pre-PR dead air, the reason the latch was released at all. The two properties pull
-in opposite directions on one flag, which is why the fix is two.
+in opposite directions on one flag, which is why the fix is two. **Historical since
+9861f45 (#230):** the narrator skips its line while a call is out
+(`FollowupGate.calls_out`), and the async consult runs no narrator, so nothing that
+acts on the plain-idle reading (`wait_until_idle()` without `turn_free`: the narrator's
+progress line, the greeting's wait in `gateway_server.py`) does so during a tool call
+any more. The code still releases `_llm` on `FunctionCallInProgressFrame`; the
+`*_deadair` rows stay as the record of why.
 
-The middle two columns are the point. A follow-up appended during a tool call is read
-exactly once — by the tool's own answering completion — so both read-count properties
-hold while the two turns collide. The existing invariants are blind to this class. It
-needs a third, which is the gate's own docstring ("don't step on … the assistant
-mid-answer about something else") written down: `NoInterjectMidTurn`, the trigger is
-never appended while a turn is in flight. TLC violates it in 7 steps:
+The middle two columns are the point. A follow-up appended during a tool call is
+answered exactly once — by the tool's own answering completion — so both order
+properties hold while the two turns collide. The existing invariants are blind to this
+class. It needs a third, which is the gate's own docstring ("don't step on … the
+assistant mid-answer about something else") written down: `NoInterjectMidTurn`, the
+trigger is never appended while a turn is in flight. TLC violates it in 7 steps:
 
 ```
 FWaitIdle    wait_until_idle() returns; the conversation is quiet
@@ -167,9 +194,11 @@ FQueue       the trigger is appended and an LLMRunFrame queued -- into a turn
 
 `FQueue` re-checks `Idle` at the append, which the code does not (there is no await
 between `wait_until_idle()` returning and the context write), so the model is stricter
-than the code and the violation holds a fortiori. `fu_clearedOnToolCall_existing` is
-kept as a row precisely because it *holds*: it is the record that the two original
-properties do not gate this.
+than the code and the violation holds a fortiori. Since `FReplace` (2026-11-05) TLC
+reports a 6-state variant of the same hole first — the order's own completion makes a
+bare tool call and a newer order is posted into the round — the trace above being the
+user's-turn shape. `fu_clearedOnToolCall_existing` is kept as a row precisely because
+it *holds*: it is the record that the two original properties do not gate this.
 
 ### What was changed
 
@@ -182,23 +211,34 @@ placeholder nothing answers from) once no other call is out, by a run that says 
 out by id (`_calls_out`; `Owed.tla`'s `endClearsTool` and `staleFlag` rows): a turn whose
 line ended with its call still out stays shut. `wait_until_idle(turn_free=True)` waits on idle *and* `~_turn`;
 `ClientNotes` passes it (the follow-up injector did), the narrator does not, and the
-run's door (`FollowupGate.ask`) waits on the same window. The gate sits before the
+run's door (`FollowupGate.ask`) waits on the same window. A turn committed but not yet
+started shuts it too: `TurnCommitMark` claims the window at the `LLMContextFrame` on
+its way to the LLM (`FollowupGate.turn_committed`), since the gate, after the output
+transport, cannot see that frame and would call the gap turn-free. The model's `Clear`
+counts it as `q = 0` under `turnAware` (2026-11-05 audit; the `interjected` monitor
+counts a queued turn too: 1.3k states, holds). The gate sits before the
 assistant aggregator, so it sees the result frame. `test_followup_gate.py` covers the
 synchronous shape (narrator idle, a turn-free wait held until the answering completion
 ends), the no-inference result, and the interruption.
 
 ### Known limits of this model
 
-- **Durations are out of scope.** `_QUIET_SECS` and the claim's expiry are timing
-  assumptions TLA+ cannot judge.
+- **Durations are out of scope.** `_QUIET_SECS`, the claim's expiry and the order's
+  `REACT_MAX_WAIT_S` are timing assumptions TLA+ cannot judge: `FExpire` may fire at
+  any request an unanswered order could be withdrawn before (the user's next turn's,
+  the tool's answering completion's), 20 s elapsed or not.
 - **One injector.** `ClientNotes`' reaction competes with `owed.py`'s run for the same
   claimed windows; the claim keeps the two apart, and `Owed.tla` models the run's side
   (`NoRunMidTurn`, `NoRunUnderSpeech`). A reaction stays armed through a barge-in on
-  purpose, so the caller's turn folds the reaction into its reply. Nothing checks or
-  retries a reaction, so the liveness question the follow-up had (`EventuallyDelivered`,
-  never established here) is not asked of it; the consult's is `Owed.tla`'s
-  `OwedResolves`.
-- **What the model says** is reduced to "reads the order or not".
+  purpose, so the caller's turn folds the reaction into its reply. Nothing retries a
+  reaction — an order nobody answered expires or is replaced (`FExpire`, `FReplace`;
+  both reachable under `turnAware`) — so the liveness question the follow-up had
+  (`EventuallyDelivered`, never established here) is not asked of it; the consult's is
+  `Owed.tla`'s `OwedResolves`. A host note folded into a user turn's request
+  (`_fold` → `_post_order` at the read) replaces an unread order the same way and is
+  not a separate action.
+- **What the model says** is reduced to "answered from the order in text or not": the
+  first alphanumeric `LLMTextFrame` of a completion whose request carried it.
 
 ## `Owed.tla` — owed until heard (#203)
 
