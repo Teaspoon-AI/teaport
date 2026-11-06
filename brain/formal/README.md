@@ -986,7 +986,7 @@ to the margin late, the margin's own reason -- comes after the answer. `UserTurn
 |---|---|---|
 | `off` | no watch: every other row here, at the state counts they had | — |
 | `shipped` | the lesser of the two bounds (`ss_heard`; witness `ss_heard_reach`) | ✓ |
-| `endOnly` | the end bound alone, as before 3a46b6c's F1 (`ss_heard_endOnly`) | ✗ |
+| `endOnly` | the end bound alone, as before 3a46b6c's F1 -- which also had the speculation's smaller margin (`_REPORT_MARGIN_MS`, 100 ms); the step granularity cannot show that half (`ss_heard_endOnly`) | ✗ |
 
 `endOnly`, 9 states: a word starts before the voice end and ends two steps later; the
 decoder reaches its end, the report puts `end_through_ms` there (no word that ends
@@ -2902,9 +2902,9 @@ The monitors:
 |---|---|---|---|---|
 | `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ | ✓ |
 | `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ | ✓ |
-| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275) | ✓ | ✓ | ✗ |
+| `quietWindow` | the shipped gate, with the pause resuming on its quiet window alone (before #275; and today in a session that asks for no progress report, the default configuration, audit A2) | ✓ | ✓ | ✗ |
 | `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again; a quiet resume waits for the STT to have heard the speech out | ✓ | ✓ | ✓ |
-| `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | |
+| `pauseCap` | `shipped`, with the pause cap (`PauseCap`, timed rows only): the ACCEPTED RESIDUAL | ✗ | ✓ | ✗ (not checked in the timed rows) |
 
 `shipped` holds every property the shipped pause holds:
 - `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 20k states. For
@@ -2953,7 +2953,9 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
   first written, "Stop." waited for the verdict on "Okay" and then for a judge of its own
   (the PR #232 review).
 - `NoUnjudgedWords`: **words said over a paused reply are the judge's to decide.**
-  `quietWindow`, 10 states:
+  `quietWindow`, 10 states (also the shipped gate in a session that asks for no progress
+  report, where `watch_heard` declines and the pauser resumes on its window: the default
+  configuration, audit A2, so this row is what the default loses):
 
   ```
   ... BotStart                 a reply plays
@@ -3017,7 +3019,22 @@ It is accepted (audit 2026-11-05, B1): it needs a hold still waiting when the ca
 seconds after the pause's start -- a caller talking over the paused reply for most of
 the cap, each request with its own 1.2 s wait (`_JUDGE_WAIT_S`) and asked again as their
 words grow -- and its cost is the reply playing on under them until those words start
-the turn. The code's alternative, words released by the cap judged as over the paused
+the turn.
+
+The cap breaks `NoUnjudgedWords` too, with no judging at all, and that is arguably the
+likelier live shape. A 9-state trace (the residual's same row, with that property):
+
+```
+... BotStart                 a reply plays
+VadStart                     the caller speaks over it: paused
+PauseCap                     the cap: the reply resumes, the speech not yet heard out
+Interject                    a word of that speech, returned now: it cuts the resumed
+                             reply, unjudged
+```
+
+The timed rows do not check `NoUnjudgedWords` (a report later than the heard-out bound
+resumes the pause as the window did), so no row names it; the cap is one more timer
+behind the same gap. The code's alternative to the first shape, words released by the cap judged as over the paused
 reply (`_past_pause`, added in 2c50b1b and taken out again in aa35e15), is on
 feat/judge-single-words. `ut_judge_pauseCap_rest` holds every other property
 `ut_judge_shipped_timed` checks with the cap in (187k states). `PauseCap` is enabled
@@ -3651,10 +3668,12 @@ the design and the wire:
 The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
 the VAD where pipecat runs it; the `receipts` rows are the repair, in the code since
 2026-10-15 (THE ORDER, What was changed). `sc_final_receipts_lost` (audit 2026-11-05,
-A5) is the default run's one final row with a verdict lost (`MaxLost = 1`, no engine
+A5) is the default run's one final holds row with a verdict lost (`MaxLost = 1`, no engine
 close): the hold's expiry answers that stop, and with the expiry disabled in a scratch
 copy it fails `NoStrandedTurn` where the rows without a loss still hold. Every other
-default row that checks these two runs `MaxLost = 0`, `MaxMissed = 0` and `CARRY = FALSE`.
+default holds row that checks these two runs `MaxLost = 0`, `MaxMissed = 0` and `CARRY =
+FALSE` (the rejected designs' FAILS rows `sc_final_clock`, `_clock_marked`, `sc_final_stop`,
+`_stop_marked` and `_stop_stranded` lose a verdict).
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -4055,7 +4074,7 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   the turn is deferred (a preview cut short, none of the caller's words over the bot, an
   earlier turn's words still owed), at its final or on the words in hand
   (`_push_turn`, `:2285-2300`); and a disconnect closes a deferred turn on the
-  words in hand before the reset (`_disconnect_websocket`, `:2930`). So nothing checks
+  words in hand before the reset (`_disconnect_websocket`, `:2937-2945`). So nothing checks
   `NoStaleTurnEnd`, `NoStrandedTurn` or `NoSplitOnIncomplete` for a sliced session's
   closes against the stop strategy's count and receipts; what each sliced turn holds is
   `SttSlice.tla`'s, and what its final delivers `TurnText.tla`'s.
