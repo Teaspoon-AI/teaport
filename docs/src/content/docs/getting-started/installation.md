@@ -119,7 +119,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:60,86,228-232,1998-2005,2758-2760#8861cd83 -->
+<!-- source: install.sh:60,86,228-232,1998-2005,2789-2791#8861cd83 -->
 
 For OpenRouter, the base URL is `https://openrouter.ai/api/v1`.
 
@@ -141,7 +141,7 @@ You can run the installer again at any time. A re-run repairs the existing insta
 does not create a second one. It keeps settings that you added to `/etc/teaport/brain.env`
 yourself.
 
-<!-- source: install.sh:5,82,2070,2095-2122#49c391aa -->
+<!-- source: install.sh:5,82,2077,2102-2129#49c391aa -->
 
 The installer does these tasks:
 
@@ -156,8 +156,8 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:81,297,1406,1924,1937,3228,3465,3471,2022,2510#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
-<!-- source: install.sh:2226-2237,2264-2309#0dba2a43 -->
+<!-- source: install.sh:81,297,1406,1924,1937,3259,3496,3502,2022,2522#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
+<!-- source: install.sh:2233-2244,2271-2316#0dba2a43 -->
 
 ## Optional components
 
@@ -173,7 +173,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:62,65,3201#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:62,65,3232#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -219,7 +219,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:3278-3279#561957fe -->
+<!-- source: install.sh:3309-3310#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -236,7 +236,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:3282-3284,1897-1905#8d3dea6b -->
+<!-- source: install.sh:3313-3315,1897-1905#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
@@ -282,8 +282,8 @@ installer was given your own certificate (see
 [Use your own certificate](/reference/installer/#use-your-own-certificate)), there is
 nothing to trust, and the page leaves the step out.
 
-<!-- source: install.sh:2476-2480#3c1e6011 -->
-<!-- source: install.sh:2264-2309#cd323bfa; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2 -->
+<!-- source: install.sh:2488-2492#3c1e6011 -->
+<!-- source: install.sh:2271-2316#cd323bfa; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2 -->
 
 ## What's next
 
