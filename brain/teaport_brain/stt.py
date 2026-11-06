@@ -2597,7 +2597,10 @@ class TeaportSTTService(WebsocketSTTService):
         """The turn settled early (_early) main piece `w` is the late word of, if any: the
         rest of a word one took; or a word of its stretch -- ending before its position
         and not before the turn before it's, whatever its text (its final corrects it,
-        _prune_early) -- or past it that its preview vouched for (_vouch)."""
+        _prune_early) -- or ending at or past it that its preview vouched for (_vouch).
+        One below a kept turn's stretch is not its: the late branch's front-word rule
+        decides it (_front_vouched), or the vouch check's prefix match would take it
+        for any of the turn's words ("a" for its "about")."""
         if goes_on:
             last = self._last_piece[2]
             return last if any(t is last for t in self._early) else None
@@ -2605,14 +2608,15 @@ class TeaportSTTService(WebsocketSTTService):
             if turn.lo_ms <= w[1] < turn.at_ms:
                 self._claim_expected(turn, w[0])
                 return turn
-            if self._vouch(turn, *w):
+            if w[1] >= turn.at_ms and self._vouch(turn, *w):
                 return turn
         return None
 
     def _front_vouched(self, piece: str) -> Optional[_Turn]:
-        """The first waiting turn with words its preview vouched for, if the first of them
-        is the word `piece` begins (its first piece: a prefix of it); spent."""
-        turn = next((t for t in self._turns if t.expect), None)
+        """The first turn -- kept (settled early) or waiting -- with words its preview
+        vouched for, if the first of them is the word `piece` begins (its first piece: a
+        prefix of it); spent."""
+        turn = next((t for t in (*self._early, *self._turns) if t.expect), None)
         key = _word_key(piece)
         if turn is None or not key or not turn.expect[0].startswith(key):
             return None

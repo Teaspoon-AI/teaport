@@ -986,6 +986,49 @@ async def test_a_late_word_claims_only_a_later_turn_s_front_vouched_word():
         s.corrections(), s._open_words)
 
 
+async def test_a_late_word_below_a_kept_turn_s_stretch_is_not_its_vouched_word():
+    # Review round 3: a late " a" below a kept turn's stretch is not that turn's
+    # "about" (vouched for past its position) by prefix. The front-word rule decides it:
+    # " so", not " a" -- the open turn has it; "about." stays vouched, and comes once.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)                        # nothing delivered: not kept
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " so about.")
+    await _settled_early(s)                        # kept: its stretch from 1000
+    assert len(s._early) == 1 and s._early[0].lo_ms == 1000
+    await delta(s, " a", 900, start=800)           # below its stretch
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await delta(s, " so", 1500, start=1300)
+    await delta(s, " about.", 2100, start=1900)    # past its position, vouched for
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._early, s.corrections()
+
+
+async def test_a_late_word_at_the_front_of_a_kept_turn_s_preview_is_that_turn_s():
+    # The genuine case of the front-word rule, for a kept turn: the settled turn's
+    # preview missed its word, the next turn's has it first and delivered it, then
+    # settled early too (kept). Late, below that turn's stretch, the word is its own --
+    # not the open turn's, which would deliver it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " hi Okay.")
+    await _settled_early(s)
+    assert len(s._early) == 1
+    await delta(s, " hi", 900, start=700)          # below its stretch, its front word
+    assert not s._open_words, s._open_words
+    await delta(s, " Okay.", 1800, start=1500)
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._early, s.corrections()
+
+
 async def test_a_kept_turn_whose_bounds_never_move_goes_after_the_backstop_s_wait():
     s = Service()
     await created(s)
