@@ -1255,6 +1255,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # sleep the tool's own way (goodbye.py), once the book has settled it. Only where that
     # tool is offered -- the room's bridge with wake words (client:sleep) -- and so never
     # on a phone call.
+    goodbye_sleep = None
     if (front_end == "room" and llm is not None
             and any(t.name == goodbye.TOOL for t in session_tools)):
         goodbye_sleep = goodbye.GoodbyeSleep(context=context, owed=owed, gate=followup_gate,
@@ -1542,6 +1543,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         wake_gate.start_with_notice = session.start_with_notice
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
+    session.goodbye_sleep = goodbye_sleep  # the room's goodbye backstop (goodbye.py), or None
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:
         prompt.session = session

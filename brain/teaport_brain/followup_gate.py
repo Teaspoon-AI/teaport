@@ -397,6 +397,27 @@ class FollowupGate(FrameProcessor):
         goodbye backstop's check, goodbye.py)."""
         return self._llm or self._turn
 
+    @property
+    def caller_speaking(self) -> bool:
+        """Caller speech is pending at the VAD level (_vad, _speech_pending): they are
+        talking, or stopped too short a while ago for their words to have come. No turn
+        need have opened: a turn starts on their words (the goodbye backstop's hold,
+        goodbye.py; the run's door holds on the same)."""
+        return self._vad or self._speech_pending
+
+    async def speech_over(self) -> bool:
+        """Wait until the caller's pending speech is over, as the run's door does (the #198
+        hold): True once it is -- their words started a turn, or none came within the
+        release window -- False at the hold's cap (answer_max_secs) with them still
+        talking."""
+        if not (self._vad or self._speech_pending):
+            return True
+        try:
+            await asyncio.wait_for(self._speech_clear.wait(), self._answer_max_secs)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
         snapshot for reporting, not a moment to act in (wait_until_idle(turn_free=True)

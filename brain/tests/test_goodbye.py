@@ -60,14 +60,12 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from teaport_brain import consult_bridge, goodbye, owed, tools  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
-from teaport_brain.goodbye import GoodbyeSleep, is_goodbye  # noqa: E402
+from teaport_brain.followup_gate import FollowupGate  # noqa: E402
+from teaport_brain.goodbye import BYE, SENT, SLEEP, GoodbyeSleep, asks, goodbye_kind, is_goodbye  # noqa: E402
 from test_post_tool_under_speech import ScriptedStop, TalkTransport, _segments  # noqa: E402
 
 STARTUP_TIMEOUT_S = 10.0
 STEP_TIMEOUT_S = 10.0
-# What must NOT happen has no event: this long after the reply's end has been settled,
-# many times the observer's and the push's turnaround, nothing more was sent.
-NOTHING_MORE_S = 0.5
 
 # The four turns, in the 2026-10-24 shape: the caller's words, the model's goodbye.
 TURNS = [("Okay, good night.", "Good night—take care!"),
@@ -90,8 +88,15 @@ GOODBYES = [t for _, t in TURNS] + [
     "It was nice talking with you. Good night!",
     "Good night! I'm here if you need me.",
     "Good night! Just say the wake word if you need me.",
-    "Good night, Sam!", "Sam, good night.",
+    "Good night, Sam!", "Good night, Mary Ann!", "Good night, my friend.",
     "Sorry about that! Going to sleep now.", "You're right, good night!",
+    # common sign-offs (review round 1)
+    "Thanks for chatting—good night!",
+    "Good night! If you need anything, just say my name.",
+    "Good night! I'm always here if you need me.",
+    "Good night! Feel free to call me anytime.",
+    "Good night! Sleep soundly.", "Good night! Wishing you sweet dreams.",
+    "Good night, and stay safe.",
 ]
 NOT_GOODBYES = [
     # a goodbye inside a longer answer, or before one
@@ -107,8 +112,15 @@ NOT_GOODBYES = [
     "\"Good night\" in Japanese is \"oyasumi\".",
     "Going to bed already?", "Good night?", "You should go to sleep.",
     "I'm not going to sleep.",
+    # a short clause beside a goodbye is no name (review round 1)
+    "Bye, reminder set!", "Good night, alarm set", "Good night, door locked.",
+    "Good night, and lock up.", "Have a nice day, and drink water", "Good night, kids!",
+    "Good night, Sam and Alex!", "Done, good night.",
+    # "later" alone defers, it does not take leave
+    "Not now, later.", "Sure, later.", "Later!",
     # the small talk around a goodbye, without one
-    "Okay.", "Thanks!", "I'm here if you need me.",
+    "Okay.", "Thanks!", "I'm here if you need me.", "I'm always here if you need me.",
+    "Feel free to call me anytime.",
     # another language: English clauses only
     "Bonne nuit !", "Buenas noches.",
     "", "   ",
@@ -125,6 +137,27 @@ def test_a_goodbye_inside_an_answer_quoted_or_asked_is_none():
     assert not taken, f"heard as a goodbye: {taken}"
 
 
+def test_a_goodbye_that_says_the_box_sleeps_is_told_apart():
+    for text in ("Going to sleep now. Good night.", "Okay, I'll stop listening now.",
+                 "Sorry about that! Going to sleep now.", "Okay, going to sleep. Good night!"):
+        assert goodbye_kind(text) == SLEEP, text
+    for text in ("Good night—take care!", "Goodbye!", "See you!", "Sleep well!"):
+        assert goodbye_kind(text) == BYE, text
+
+
+def test_what_counts_as_the_caller_asking():
+    for said in ("How do you say adiós in English?", "What's the opposite of hello?",
+                 "Can you do that later?", "Can you remind me in 5 minutes?",
+                 "can you remind me in five minutes", "Okay, what time is it",
+                 "Is that all for tonight"):
+        assert asks(said), said
+    for caller, _ in TURNS:                      # #221's four turns: none is a question
+        assert not asks(caller), caller
+    for said in ("Have a good night.", "Will do, good night.", "Thanks, that's all.",
+                 "Bye for now.", "Stop listening."):
+        assert not asks(said), said
+
+
 def test_a_goodbye_longer_than_a_line_is_an_answer():
     assert not is_goodbye(" ".join(["Good night!"] * (goodbye.MAX_WORDS // 2 + 1)))
 
@@ -138,11 +171,22 @@ def test_only_an_english_voice_counts():
 # ------------------------------------------------------------------ the backstop, on fakes
 
 class _Gate:
+    """FollowupGate's reads, set by the test. `speech`: an Event set when the caller's
+    speech is over (speech_over), `cap` whether the hold ran to its cap instead."""
+
     def __init__(self, **kw):
         self.consults_running = 0
         self.calls_out = self.held = False
         self.caller_request_pending = self.turn_in_flight = False
+        self.caller_speaking = False
+        self.speech = None
+        self.cap = False
         self.__dict__.update(kw)
+
+    async def speech_over(self):
+        if self.speech is not None:
+            await self.speech.wait()
+        return not self.cap
 
 
 class _Owed:
@@ -263,6 +307,8 @@ def test_what_keeps_the_room_awake():
         "a run of ours": dict(reply=_reply(owed.RUN)),
         "a re-offer": dict(reply=_reply(owed.REOFFER)),
         "nothing the caller said": dict(messages=[{"role": "user", "content": "(The user woke you.)"}]),
+        "a goodbye that answers a question": dict(
+            messages=_turn("What's the opposite of hello?"), text="Goodbye!"),
         "a French voice": dict(lang="fr-fr"),
         "a Spanish voice": dict(lang="es"),
     }
@@ -270,6 +316,85 @@ def test_what_keeps_the_room_awake():
         text = kw.pop("text", TURNS[0][1])
         sent, sleep = _sent(text, **kw)
         assert sent == [] and not sleep.sent, f"{why}: the room was sent to sleep"
+        assert sleep.decisions and sleep.decisions[-1] != SENT, (why, sleep.decisions)
+
+
+def test_a_goodbye_answering_a_question_is_no_leave_taking():
+    """Review round 1: the goodbye is the answer, not a leave-taking."""
+    for caller, said in (("How do you say adiós in English?", "Goodbye."),
+                         ("What's the opposite of hello?", "Goodbye!"),
+                         ("Can you remind me in 5 minutes?", "See you!")):
+        sent, sleep = _sent(said, messages=_turn(caller))
+        assert sent == [] and sleep.decisions[-1] == "it answers a question", (caller, said)
+
+
+def test_a_question_answered_with_going_to_sleep_still_sleeps():
+    """Saying it goes to sleep and listening on is #221's harm itself, asked or not."""
+    for caller, said in (("Can you go to sleep?", "Going to sleep now. Good night."),
+                         ("Could you stop listening?", "Okay, I'll stop listening now.")):
+        sent, sleep = _sent(said, messages=_turn(caller))
+        assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, said, sleep.decisions)
+
+
+def _held(gate, then, messages=None):
+    """A goodbye heard out while the caller is talking (`gate`): the sleep is held; `then`
+    (gate, messages) happens; the caller's speech is over. The messages sent, and the
+    backstop."""
+    async def run():
+        llm = _LLM()
+        msgs = messages or _turn(TURNS[0][0])
+        sleep = GoodbyeSleep(context=_Context(msgs), owed=_Owed(), gate=gate,
+                             lang_fn=lambda: "en-us", llm=llm)
+        gate.speech = asyncio.Event()
+        sleep.reply_end(_reply(), TURNS[0][1], cut=False, audio=True, text=TURNS[0][1])
+        assert sleep.holding and list(sleep.decisions) == ["held: the caller is talking"]
+        assert not llm.pushed, "the room was sent to sleep under the caller's speech"
+        await asyncio.sleep(0.01)
+        then(gate, msgs)
+        gate.speech.set()
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if not sleep.holding and (llm.pushed or sleep.decisions[-1] != SENT):
+                break
+        for f in llm.pushed:
+            consult_bridge.resolve(f.message["call_id"], {"ok": True})
+        await asyncio.gather(*llm.tasks)
+        return [f.message for f in llm.pushed], sleep
+    return asyncio.run(run())
+
+
+def test_the_caller_talking_over_the_goodbye_holds_the_sleep():
+    """Review round 1: "oh wait, one more thing" over the goodbye's end, no turn yet (its
+    words not transcribed): the sleep waits for their speech, then is decided again."""
+    def their_words_took_a_turn(gate, msgs):
+        gate.caller_speaking, gate.caller_request_pending = False, True
+
+    def their_words_were_committed(gate, msgs):
+        gate.caller_speaking = False
+        msgs.append({"role": "user", "content": "Oh wait, one more thing."})
+
+    def they_talk_on(gate, msgs):
+        gate.cap = True
+
+    def they_start_again(gate, msgs):
+        pass                                     # still caller_speaking after the clear
+
+    for then, why in ((their_words_took_a_turn, "the conversation went on"),
+                      (their_words_were_committed, "the conversation went on"),
+                      (they_talk_on, "the caller was still talking at the hold's cap"),
+                      (they_start_again, "the caller is talking again")):
+        sent, sleep = _held(_Gate(caller_speaking=True), then)
+        assert sent == [] and not sleep.sent, then.__name__
+        assert sleep.decisions[-1] == why, (then.__name__, list(sleep.decisions))
+
+
+def test_a_cough_over_the_goodbye_only_delays_the_sleep():
+    """No words came of it (or the room's own echo): once the speech is over, it sleeps."""
+    def no_words(gate, msgs):
+        gate.caller_speaking = False
+
+    sent, sleep = _held(_Gate(caller_speaking=True), no_words)
+    assert len(sent) == 1 and sent[0]["said"] is True and sleep.decisions[-1] == SENT
 
 
 # ------------------------------------------------------------------ the session
@@ -335,6 +460,7 @@ class Rig:
         self.procs = [p for p in procs[first:] if not type(p).__name__.startswith("Pipeline")]
         self.user = procs[first]
         self.assistant = next(p for p in self.procs if isinstance(p, LLMAssistantAggregator))
+        self.gate = next(p for p in self.procs if isinstance(p, FollowupGate))
         controller = self.user._user_turn_controller
         self.stop = ScriptedStop()
         controller._user_turn_strategies = UserTurnStrategies(
@@ -408,6 +534,14 @@ async def until(predicate, timeout=STEP_TIMEOUT_S):
         await asyncio.sleep(0.01)
 
 
+async def decided(rig, n=1):
+    """The backstop's decision on the n-th reply it was fed (made at each reply's end:
+    the ledger's settle feed), once it is final -- not a hold still waiting."""
+    sleep = rig.session.goodbye_sleep
+    await until(lambda: len(sleep.decisions) >= n and not sleep.holding)
+    return sleep.decisions[-1]
+
+
 async def test_221_the_first_goodbye_sends_the_room_to_sleep_once_it_has_played():
     """The caller's first "good night" and the model's goodbye without the tool: the
     brain calls end_conversation on the bridge, once the goodbye has played out."""
@@ -416,24 +550,24 @@ async def test_221_the_first_goodbye_sends_the_room_to_sleep_once_it_has_played(
         assert any(t["function"]["name"] == "end_conversation"
                    for t in (await _first_request(rig, caller)).get("tools") or ()), (
             "the room session was not offered end_conversation")
-        await rig.played_out(0)
+        assert await decided(rig) == SENT
         await until(lambda: rig.calls())
         (m, stops, played), = rig.calls()
         assert m["name"] == "end_conversation" and m["said"] is True and m["args"] == {}, m
         assert stops >= 1, "the call went out before the goodbye had played"
         assert " ".join(played) == said, f"the call went out before all of it played: {played}"
-        await asyncio.sleep(NOTHING_MORE_S)
-        assert len(rig.calls()) == 1
+        assert rig.session.goodbye_sleep.sent
 
 
 async def test_the_models_own_call_is_the_only_one():
     """The model did it right: end_conversation, then the goodbye. Its own call is the
-    one the bridge gets (no "said": the goodbye is still to come), and nothing more."""
+    one the bridge gets (no "said": the goodbye is still to come), and the backstop
+    stands down on the goodbye."""
     async with Rig([("call", "end_conversation"), "Good night!"]) as rig:
-        stops = await rig.say("Go to sleep.")
-        await until(lambda: len(rig.provider.requests) >= 2)   # the answer to its result
-        await rig.played_out(stops)
-        await asyncio.sleep(NOTHING_MORE_S)
+        await rig.say("Go to sleep.")
+        sleep = rig.session.goodbye_sleep
+        await until(lambda: "its turn called end_conversation" in sleep.decisions)
+        assert SENT not in sleep.decisions and not sleep.sent, list(sleep.decisions)
         calls = rig.calls()
         assert len(calls) == 1, calls
         assert calls[0][0]["name"] == "end_conversation" and "said" not in calls[0][0]
@@ -441,20 +575,68 @@ async def test_the_models_own_call_is_the_only_one():
 
 async def test_a_goodbye_inside_an_answer_keeps_the_room_awake():
     async with Rig(["Good night! Your alarm is set for seven."]) as rig:
-        stops = await rig.say("Set an alarm for seven, and good night.")
-        await rig.played_out(stops)
-        await asyncio.sleep(NOTHING_MORE_S)
-        assert rig.calls() == []
+        await rig.say("Set an alarm for seven, and good night.")
+        assert await decided(rig) == "not a goodbye"
+        assert not rig.session.goodbye_sleep.sent and rig.calls() == []
+
+
+async def test_a_goodbye_that_answers_a_question_keeps_the_room_awake():
+    async with Rig(["Goodbye!"]) as rig:
+        await rig.say("What's the opposite of hello?")
+        assert await decided(rig) == "it answers a question"
+        assert not rig.session.goodbye_sleep.sent and rig.calls() == []
+
+
+async def _talking_over_the_goodbye(rig):
+    """The caller's goodbye turn, and their speech starting over the model's goodbye
+    (its VAD start, no words yet). Returns once the backstop holds the sleep."""
+    caller, said = TURNS[0]
+    await rig.say(caller)
+    await until(lambda: rig.played)                  # the goodbye is playing
+    await rig.task.queue_frames([VADUserStartedSpeakingFrame()])
+    await until(lambda: rig.gate.caller_speaking)
+    sleep = rig.session.goodbye_sleep
+    await until(lambda: sleep.decisions)
+    assert list(sleep.decisions) == ["held: the caller is talking"], list(sleep.decisions)
+    assert sleep.holding and rig.calls() == [], "slept under the caller's speech"
+
+
+async def test_the_caller_talking_over_the_goodbye_keeps_the_room_awake():
+    """Review round 1: "oh wait, one more thing" over the goodbye's end. No turn has
+    opened at its end (the words are not transcribed yet), so a turn-level guard slept
+    under them. The sleep is held; their words take the turn; the room stays awake."""
+    async with Rig([TURNS[0][1], "Sure, what is it?"]) as rig:
+        await _talking_over_the_goodbye(rig)
+        f = TranscriptionFrame("Oh wait, one more thing.", "caller", "t")
+        f.finalized = True
+        await rig.task.queue_frames([f, VADUserStoppedSpeakingFrame()])
+        await until(lambda: rig.user._user_turn_controller._user_turn)
+        await rig.stop.commit()
+        sleep = rig.session.goodbye_sleep
+        await until(lambda: not sleep.holding)
+        assert sleep.decisions[-1] == "the conversation went on", list(sleep.decisions)
+        assert not sleep.sent and rig.calls() == []
+        await until(lambda: len(rig.provider.requests) >= 2)   # and their turn is answered
+
+
+async def test_a_sound_over_the_goodbye_with_no_words_only_delays_the_sleep():
+    """A cough, the room: speech the VAD heard, no words. Once the release window has
+    passed with none, the held sleep goes."""
+    async with Rig([TURNS[0][1]]) as rig:
+        await _talking_over_the_goodbye(rig)
+        await rig.task.queue_frames([VADUserStoppedSpeakingFrame()])
+        await until(lambda: rig.calls())
+        (m, _, _), = rig.calls()
+        assert m["said"] is True and rig.session.goodbye_sleep.decisions[-1] == SENT
 
 
 async def test_a_talk_session_or_a_room_without_wake_words_has_no_backstop():
     """Only where end_conversation is offered: the room's bridge with wake words."""
     for front_end, features in (("talk", ("sleep",)), ("room", ())):
-        async with Rig(["Good night!"], front_end=front_end, features=features) as rig:
-            stops = await rig.say("Good night.")
-            await rig.played_out(stops)
-            await asyncio.sleep(NOTHING_MORE_S)
-            assert rig.calls() == [], (front_end, features)
+        rig = Rig(["Good night!"], front_end=front_end, features=features)
+        assert rig.session.goodbye_sleep is None, (front_end, features)
+        assert rig.session.ledger.on_reply_end == rig.owed.settle, (front_end, features)
+    assert Rig(["Good night!"]).session.goodbye_sleep is not None
 
 
 async def _first_request(rig, caller):
