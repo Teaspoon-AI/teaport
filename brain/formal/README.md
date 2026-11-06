@@ -3317,7 +3317,14 @@ it back in its cut; the transport holds a frame whose audio (pts plus the lead) 
 stop until the start (`VoiceClock.wait_until`); a word released before the pause began
 has its audio after it all the same, so the room's echo guard dates each word by when
 its audio played, less the lead (`VoiceClock.when`; `test_echo_guard.py::
-test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard`). Nor the lag's
+test_a_word_released_just_before_a_pause_is_dated_by_when_it_was_heard`). Nor the
+ledger's guard against a schedule anchored before its reply's audio could play
+(`TranscriptLedger._pts_rebase`, #19: pipecat anchors Q at R's last word, and
+`engine_tts` moves it to R's audio end): it reads the words from where the layout says
+the reply started, on the voice clock, only when the first word is more than the lead
+and `_ANCHOR_TOL_SECS` ahead of it. The model's TTS places Q after what it emitted
+before, as `engine_tts` does, so the guard moves nothing here and no row depends on it;
+`test_ledger_playout.py`'s `test_j_` cases check it, with a pause ahead of Q. Nor the lag's
 measurement (`_heard_until`, tested); the frame of lead a resumed write
 keeps; a unit is one word and one tick. The premises — that MediaSender releases exactly
 the frames `playout_pause._UNTIMED` leaves out through the transport's own `push_frame`,

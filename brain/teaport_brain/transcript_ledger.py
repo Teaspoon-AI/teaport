@@ -117,6 +117,16 @@ _SECONDS_PER_WORD = 0.36
 # before comparing — otherwise every barge-in over-counts "heard" by the lead.
 _PTS_LEAD_SECS = CAPTION_LEAD_SECS
 
+# How far a reply's first word may be scheduled ahead of where the layout says the
+# reply's audio started and still be taken as anchored right (_pts_rebase), beyond the
+# lead itself: the layout dates a window by BotStarted, which reaches the ledger a little
+# after the TTS anchored the words on its first audio (1-30 ms across the suite's real
+# pipelines; once 140 ms, the first reply of a session on a loaded machine). A latency
+# past this moves the words by about as much as the audio really started late. A
+# schedule anchored at the previous reply's last word (#19) is early by the lead AND that
+# word's length.
+_ANCHOR_TOL_SECS = 0.05
+
 # Bounds. Every structure here is fed by a stream that may never present the frame
 # that would drain it (a stop frame lost to an interruption, a response the TTS
 # never opens a context for), so each evicts its OLDEST entry on overflow -- never
@@ -918,13 +928,15 @@ class TranscriptLedger(BaseObserver):
             self._win_t0 = t
 
     def _pts_heard(self, turn: dict, t: float):
-        """The words of `turn` played out by `t`, by their scheduled pts, and the cut
-        instant they were read at (ns on the schedule's clock)."""
+        """The words of `turn` played out by `t`, by their scheduled pts; the cut instant
+        they were read at (ns on the schedule's clock); and how much later than
+        scheduled they were read (ns, _pts_rebase)."""
         # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
         # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
         # The pts are on the output transport's voice clock (playout_pause.py), which
         # stands still while a pause keeps the voice still: the cut is read on it.
         cut_ns = self._voice_ns(t) - _PTS_LEAD_SECS * 1e9
+        shift = self._pts_rebase(turn)
         # Rejoin the matched words with the spacing the frames declare: a
         # frame set that includes its inter-frame spaces (a CJK voice's
         # character tokens) is concatenated; one that does not (the engine's
@@ -934,7 +946,43 @@ class TranscriptLedger(BaseObserver):
         return sep.join(
             (txt or "").strip()
             for txt, p in turn["spoken"]
-            if p is not None and p <= cut_ns and (txt or "").strip()), cut_ns
+            if p is not None and p + shift <= cut_ns and (txt or "").strip()), cut_ns, shift
+
+    def _pts_rebase(self, turn: dict) -> float:
+        """How much later than scheduled `turn`'s words play (ns): how far its first word
+        was scheduled ahead of where its audio started, when that is more than a right
+        schedule can be; else 0.
+
+        pipecat anchors a new context's words at the previous context's last word pts
+        when that is ahead of now (tts_service.start_word_timestamps), but a reply queued
+        behind another's audio plays only when that audio ends: the caption lead and the
+        last word's length later. Every word of it was early, and a cut credited a word
+        whose audio began after it (#19, live 2026-09-04: "Lima's population is" charted
+        for "Lima's popu--"). engine_tts now anchors such a reply at the previous audio's
+        end; this is the ledger's own guard, from where it knows the reply's audio
+        started (the layout its heard seconds are measured on).
+
+        Within the lead and _ANCHOR_TOL_SECS of that start nothing moves: the reply that
+        opens its window, one queued behind audio the engine anchored it after, and a
+        schedule whose first word is a lead early, as the cut reads every word. Past it
+        the words were anchored before the audio could play, and move by the whole gap:
+        the engine never schedules a context's first word before its anchor
+        (_place_words), so that is its error exactly. A schedule both a lead early and
+        anchored early moves a lead too far: the pts prefix loses a word the caller heard
+        (the chart keeps the fraction's estimate, _heard) rather than gain one they never
+        did, the error no record may be closed on (formal/Owed.tla, ow_ledgerMax).
+
+        The start is laid out on the pipeline clock and the pts are on the voice clock,
+        so it is read on the voice clock (_voice_ns), where it is never later than where
+        the audio really started: a start laid out before a pause held the reply back,
+        or while a pause holds the queue, reads early by the pause. So a pause neither
+        moves a right schedule nor adds to how far an early one moves."""
+        start = turn["audio_start"]
+        pts = [p for _, p in turn["spoken"] if p is not None]
+        if start is None or not pts:
+            return 0.0
+        early = self._voice_ns(start) - min(pts)
+        return early if early > (_PTS_LEAD_SECS + _ANCHOR_TOL_SECS) * 1e9 else 0.0
 
     def paused_reply(self) -> Optional[tuple]:
         """While playout is paused (barge_pause.py): the reply it paused, as (its text so
@@ -1030,11 +1078,13 @@ class TranscriptLedger(BaseObserver):
         est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
         pts_heard = None
         if any(p is not None for _, p in spoken):
-            pts_heard, cut_ns = self._pts_heard(turn, t)
+            pts_heard, cut_ns, rebase_ns = self._pts_heard(turn, t)
             # Prefer exact word-timing, but never report LESS than the played-audio
             # fraction implies — guards against a misaligned pts baseline (which
             # would silently drop words the user did hear). Compared by characters,
-            # not words, so a voice whose tokens are characters compares too.
+            # not words, so a voice whose tokens are characters compares too. (A
+            # baseline anchored before the audio could start, which would add words
+            # nobody heard, is read from the audio's start: _pts_rebase.)
             heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
             if _TRACE and trace:
                 logger.info(
@@ -1042,7 +1092,7 @@ class TranscriptLedger(BaseObserver):
                     f"heard={heard:.2f} pushed={audio_dur:.2f} played_before={turn['played']:.2f} "
                     f"text_dur={text_dur:.2f} synth_done={turn['synth_done']} "
                     f"full_dur={full_dur:.2f} frac={frac:.2f} "
-                    f"cut={cut_ns / 1e9:.2f} spoken={len(spoken)} "
+                    f"cut={cut_ns / 1e9:.2f} rebase={rebase_ns / 1e9:.2f} spoken={len(spoken)} "
                     f"pts={[p / 1e9 if p is not None else None for _, p in spoken]} "
                     f"pts_heard={len(pts_heard.split())} est={len(est.split())} "
                     f"-> {len(heard_text.split())} words"
