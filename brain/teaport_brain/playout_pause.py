@@ -396,3 +396,4 @@ class PausablePlayout:
     async def cancel(self, frame: CancelFrame):
         self._drop_pause()
         await super().cancel(frame)
+

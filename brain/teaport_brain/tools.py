@@ -1825,10 +1825,13 @@ if AGENT_FIRST and not TOOLS_BY_NAME["openclaw_agent_consult"].enabled:
 # "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py);
 # and "typing": the client types along to the thinking sound, so it is sent the typing's
 # start, end and key presses (thinking_sound.py); "relay": the client hands
-# openclaw_agent_consult's calls to a relay that runs them (ToolContext.relay, #78).
+# openclaw_agent_consult's calls to a relay that runs them (ToolContext.relay, #78);
+# "pause": the client is told when a barge-in pause stops the voice and when it goes on
+# (talk_transport.TalkOutputTransport.pause_notice), so it does not take the silence for
+# the reply's end.
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
                             if n.startswith("client:")) | {"phonemes", "mood", "typing",
-                                                           "relay"}
+                                                           "relay", "pause"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:
