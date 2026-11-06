@@ -1363,7 +1363,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "setup"
-help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
+help = "Agent-first routing: install the strict router directive and drop the acknowledgement spoken before each consult."
 
 [[settings]]
 name = "TEAPORT_RECALL_TIMEOUT"

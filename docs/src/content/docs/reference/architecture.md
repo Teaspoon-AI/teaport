@@ -89,21 +89,21 @@ Because every front end shares one process, a hard crash in native code takes a 
 
 ## What the voice is told
 
-On Talk, the plugin sends what OpenClaw handed it, the instructions and the tools, as one `session_config` frame before any audio. The brain starts the system prompt with those instructions as sent, follows them with its own voice rules, and gives the model OpenClaw's consult tool schemas.
+On Talk, the plugin sends what OpenClaw handed it, the instructions and the tools, as one `session_config` frame before any audio. The brain starts the system prompt with those instructions as sent, follows them with its own voice rules, and gives the model OpenClaw's consult tool schemas. The brain adds one field of its own to the consult: a few words for the listener about the task, which the brain says while the consult runs. The agent never receives that field.
 
-<!-- source: brain/teaport_brain/host_context.py:13-16,19-24#e5dd3ee5; plugin/README.md:62-66#40485acd -->
+<!-- source: brain/teaport_brain/host_context.py:13-16,19-24#986767db; plugin/README.md:62-66#40485acd; brain/teaport_brain/tools.py:212-215,221-223#d43043e5 -->
 
 The room microphone, the phone, and any client without a `session_config` take the longer path: the brain asks the gateway's teaport plugin for voice context at the start of the session, and the plugin answers with the agent paragraph and the IDENTITY, USER, and SOUL profile, at most 6,000 characters, plus the consult tool. The brain's voice rules follow the host text. The brain never reads the OpenClaw workspace itself.
 
-<!-- source: brain/teaport_brain/host_context.py:25-34#b40aee14; plugin/voice-context.js:3-22#bb5f6d8d; brain/teaport_brain/persona.py:433-438#702d05bf -->
+<!-- source: brain/teaport_brain/host_context.py:25-34#04e5f90f; plugin/voice-context.js:3-22#bb5f6d8d; brain/teaport_brain/persona.py:433-438#702d05bf -->
 
 With `TEAPORT_AGENT=none`, or a gateway that cannot answer, the session uses `TEAPORT_PERSONA_FILE`, or a built-in persona, plus the brain's own copy of the consult schema, and the journal records a warning. The brain's voice rules then add the tool names, a consult paragraph shaped to the surface, and the delivery text, and they tell the model to answer from the conversation before it consults again and never to describe the agent's other sessions.
 
-<!-- source: brain/teaport_brain/persona.py:13-16,24-31,218-223#dd416842; brain/teaport_brain/host_context.py:31-34#72c9dae8 -->
+<!-- source: brain/teaport_brain/persona.py:13-16,24-31,218-223#dd416842; brain/teaport_brain/host_context.py:31-34#d70c98ab -->
 
 Only Talk can stop or steer a request in flight, through the relay's spoken run control and the `openclaw_agent_control` tool. The room microphone and the phone say in their prompt that a request in progress cannot be stopped or changed.
 
-<!-- source: brain/teaport_brain/tools.py:42-46,216-219,1231-1243#eea93d14; brain/teaport_brain/run_control.py:4-11#e7dc27ec; brain/teaport_brain/persona.py:213-216#312dcc92 -->
+<!-- source: brain/teaport_brain/tools.py:42-46,241-244,1376-1388#eea93d14; brain/teaport_brain/run_control.py:4-11#e7dc27ec; brain/teaport_brain/persona.py:213-216#312dcc92 -->
 
 ## Tools in agent mode and in voice-only mode
 
@@ -113,15 +113,15 @@ Every tool is one record: a schema for the model, a handler, an on and off switc
 
 The full set is `get_host_status`, `get_current_time`, `web_search`, `web_fetch`, `search_memory`, `remember`, `openclaw_agent_consult`, `openclaw_agent_control`, `list_voices`, `switch_voice`, `set_volume`, `restart_session`, `end_conversation`, `answer_phone_call`, `pair_device`, `open_settings`, and `wifi_setup`.
 
-<!-- source: brain/teaport_brain/tools.py:105-352#056035b3; brain/teaport_brain/tools.py:363-375#1143271d -->
+<!-- source: brain/teaport_brain/tools.py:105-377#62c4e78f; brain/teaport_brain/tools.py:388-400#1143271d -->
 
 In agent mode (`TEAPORT_AGENT=openclaw`), the brain calls the co-resident OpenClaw gateway over loopback, so the voice agent shares the agent's web search, web fetch, and long-term memory. The relay runs `openclaw_agent_consult` itself on Talk; the gateway's agent lane runs it on every other front end.
 
-<!-- source: brain/teaport_brain/tools.py:4-8#dcdda3e4; brain/teaport_brain/tools.py:42-44,534-535#0927ccf8; plugin/voice-context.js:23-25#5e69ee5b -->
+<!-- source: brain/teaport_brain/tools.py:4-8#dcdda3e4; brain/teaport_brain/tools.py:42-44,559-560#0927ccf8; plugin/voice-context.js:23-25#5e69ee5b -->
 
 A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway, a configured front door, and a room or Talk conversation behind `pair_device`, which is never offered on a phone call or through the Discord bridge; and the settings site and a room or Talk conversation behind `open_settings`, under the same rule. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
 
-<!-- source: brain/teaport_brain/tools.py:19-25,1612-1636,1649-1660,1661-1663,1666-1667,1673-1677,1678-1683#6cf4ebb0; brain/teaport_brain/wifi_voice.py:242-244#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
+<!-- source: brain/teaport_brain/tools.py:19-25,1757-1781,1794-1805,1806-1808,1811-1812,1818-1822,1823-1828#6cf4ebb0; brain/teaport_brain/wifi_voice.py:242-244#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces client-tool features; the phone and Discord announce none and never see these tools.
 
@@ -129,7 +129,7 @@ Client tools run on the client, not in the brain: the client announces its featu
 
 Only the plugin's Talk session has a relay for `openclaw_agent_consult`. The plugin announces `relay` in its features when OpenClaw gives the session a tool-call handler. The brain also counts the run-control protocol, which only the plugin speaks, so a brain updated without its plugin keeps the relay. A consult on any other session goes straight to the agent: the brain sends no call to the client and does not wait for the relay to acknowledge one.
 
-<!-- source: brain/teaport_brain/tools.py:1408-1422#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:339-340#62541491 -->
+<!-- source: brain/teaport_brain/tools.py:1553-1567#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:339-340#62541491 -->
 
 ## Network ports
 

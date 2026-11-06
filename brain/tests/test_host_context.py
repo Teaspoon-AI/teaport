@@ -116,6 +116,47 @@ def test_the_host_schemas_replace_the_brains_copies_and_control_is_talks_only():
                if a.name != "openclaw_agent_consult")
 
 
+def test_the_offered_consult_asks_for_the_brains_status_phrase():
+    """#120: the model writes a few words for the listener in the same call, which the
+    brain's acknowledgement and progress lines say. The field is the brain's, added to
+    whichever consult schema is offered -- the host's or the brain's copy, both left as
+    they are -- and optional, and not offered in agent-first, where nothing says it."""
+    if not HAS_AGENT:
+        pytest.skip("no consult without a gateway")
+    name, field = "openclaw_agent_consult", tools.CONSULT_STATUS
+    host = tools.host_tool_schemas([HOST_CONSULT])
+    for ctx in (tools.ToolContext(has_tts=True),
+                tools.ToolContext(has_tts=True, host_schemas=host)):
+        consult = {s.name: s for s in tools.build_tools_schema(ctx).standard_tools}[name]
+        assert consult.properties[field]["type"] == "string"
+        assert "listener" in consult.properties[field]["description"]
+        assert "-ing" in consult.properties[field]["description"]
+        assert field not in consult.required
+        assert consult.required == ["question"]
+    assert field not in tools.OPENCLAW_AGENT_CONSULT.properties
+    assert field not in host[0].properties
+    assert field not in HOST_CONSULT["parameters"]["properties"]
+    # A host that one day has a field of that name keeps its own.
+    theirs = {"type": "string", "description": "THEIRS"}
+    own = tools.host_tool_schemas([dict(HOST_CONSULT, parameters=dict(
+        HOST_CONSULT["parameters"],
+        properties=dict(HOST_CONSULT["parameters"]["properties"], **{field: theirs})))])
+    consult = {s.name: s for s in tools.build_tools_schema(
+        tools.ToolContext(has_tts=True, host_schemas=own)).standard_tools}[name]
+    assert consult.properties[field] == theirs
+    saved = tools.AGENT_FIRST
+    tools.AGENT_FIRST = True
+    try:
+        consult = {s.name: s for s in tools.build_tools_schema(
+            tools.ToolContext(has_tts=True)).standard_tools}[name]
+        assert consult is tools.OPENCLAW_AGENT_CONSULT
+    finally:
+        tools.AGENT_FIRST = saved
+    # The relay and the CLI lane are sent OpenClaw's arguments only.
+    call = {"question": "q", field: "looking up q"}
+    assert tools._consult_args(call) == {"question": "q"}
+
+
 def test_the_fallback_consult_is_openclaws_tool():
     """The copy for a session the host gave no tools: OpenClaw 2026.9.7's
     REALTIME_VOICE_AGENT_CONSULT_TOOL, by name and parameters (confirmationId included)."""
@@ -758,10 +799,11 @@ def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):
         assert asks == [("room", host_context.WAKE_TIMEOUT_S)], asks
         assert session.context.get_messages()[0] is system
         assert system["content"].startswith(ROOM_HOST.instructions), system["content"][:80]
-        # ...and the model is offered the host's consult schema (set_tools).
+        # ...and the model is offered the host's consult schema (set_tools), with the
+        # brain's status phrase (#120).
         if HAS_AGENT:
             assert consult().description == HOST_CONSULT["description"]
-            assert set(consult().properties) == {"question", "context"}
+            assert set(consult().properties) == {"question", "context", tools.CONSULT_STATUS}
         # Once: a second wake phrase in the conversation asks nothing.
         await gate.final("hey teaport, again", push)
         assert len(asks) == 1
