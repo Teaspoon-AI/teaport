@@ -893,10 +893,13 @@ async def test_a_turn_settled_early_corrects_a_late_word_the_preview_spelled_oth
     await preview(s, 2000, " further? Okay.")      # the trim reads its vouching yet
     assert s.finals() == [("further?", 1), ("Okay.", 2)], s.finals()
     await delta(s, " Okay.", 1800, start=1500)
+    counted = s._turn_same + s._turn_differs
     await progress(s, 2000 + stt_mod._VOUCH_MS)
     fixes = [(c.stop_n, c.final) for c in s.corrections()]
     assert fixes == [(1, "farther?")], fixes
     assert not s._early and not s._turns
+    # Counted once, at its timeout: its late final is no second turn (review round 2).
+    assert s._turn_same + s._turn_differs == counted + 1, "the second turn alone"
 
 
 async def test_a_turn_the_decoder_s_clock_settled_is_not_kept():
@@ -960,6 +963,27 @@ async def test_a_kept_turn_takes_only_its_own_stretch_and_a_word_s_pieces():
     s._websocket = None                            # the session drops
     await s._disconnect_websocket()
     assert not s._early, "a new session's clock is not the kept turn's"
+
+
+async def test_a_late_word_claims_only_a_later_turn_s_front_vouched_word():
+    # Review round 2: below a settled turn, a late " a" is no later preview's "about":
+    # only the first vouched word of the first turn that has any is claimed, whole. Taken,
+    # "about." -- vouched for past that turn's position -- would come unvouched and be
+    # delivered again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " so about.")
+    await delta(s, " a", 900, start=800)           # late, below the settled turn
+    assert [w for w, *_ in s._open_words] == [" a"], s._open_words
+    await delta(s, " so", 1500, start=1300)
+    await delta(s, " about.", 2100, start=1900)    # past the cut, vouched for
+    await progress(s, 2000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and [w for w, *_ in s._open_words] == [" a"], (
+        s.corrections(), s._open_words)
 
 
 async def test_a_kept_turn_whose_bounds_never_move_goes_after_the_backstop_s_wait():
