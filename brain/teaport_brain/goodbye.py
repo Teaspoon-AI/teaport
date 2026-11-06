@@ -34,10 +34,12 @@
 #     its own call has armed the bridge);
 #   * not the answer to a question: "What's the opposite of hello?" -- "Goodbye!" (the
 #     caller's words end in "?", start with a wh-word or an auxiliary and a subject, or
-#     ask for a word: "Translate adiós into English." -- asks()). A question that asks
-#     the box to go, though, is answered by a goodbye ("Can you go to sleep?" -- "Good
-#     night—take care!", #221's own shape: _ASKS_TO_GO). And a reply that says the box
-#     goes to sleep sleeps whatever was asked: saying so and listening on is #221's harm;
+#     ask for a word: "Translate adiós into English.", "What's another word for
+#     goodbye?" -- asks()). A question that asks the box to go, though, is answered by
+#     a goodbye ("Can you go to sleep?" -- "Good night—take care!", #221's own shape:
+#     _ASKS_TO_GO), as is a turn that is itself only a goodbye ("Okay, good night?").
+#     And a reply that says the box goes to sleep sleeps whatever was asked: saying so
+#     and listening on is #221's harm;
 #   * nothing owed: no consult running, no answer owed (owed.py), no tool call out, not
 #     on hold for a phone call -- the room does not sleep on an answer still coming (nor
 #     does the bridge's keep-alive, on a consult running) or one not heard yet (the
@@ -229,16 +231,21 @@ _ASKS = re.compile(
 
 # ...or for a word, in any form: "Translate adiós into English.", "Tell me the opposite
 # of hello." -- a goodbye is then the answer, whatever else they said.
+# Not a bare "to say": "I just wanted to say good night." is a sign-off.
 _ASKS_FOR_A_WORD = re.compile(
-    r"\btranslat\w*|\bin english\b|\bthe word for\b|\bopposite of\b|\bmeaning of\b"
-    r"|\bhow (?:do|would) you say\b|\bwhat (?:does|did|do) .{1,40}\bmean\b", re.I)
-# ...unless the question asks the box to go: to sleep, to stop listening, or says
-# goodbye ("Can you go to sleep?", "Why are you still awake?", "Could you stop
-# listening?"). A goodbye is its answer.
+    r"\btranslat\w*|\bin english\b|\bword for\b|\bsynonym\w*|\bopposite of\b"
+    r"|\bmeaning of\b|\bway to say\b|\bspell\w*"
+    r"|\bhow (?:do|would|should|can|could) (?:you|i|we) say\b"
+    r"|\bwhat (?:does|did|do) .{1,40}\bmean\b"
+    r"|\b(?:is it|which is(?: right| correct)?|should i (?:say|write))\b[^.!?]*\bor\b", re.I)
+# ...unless the question asks the box itself to go: to sleep, to stop listening, to be
+# quiet ("Can you go to sleep?", "Why are you still awake?", "Could you stop
+# listening?"). A goodbye is its answer. Not a goodbye word anywhere in it: "What's
+# another word for goodbye?" is about the word (a turn that is only a goodbye is
+# asks()'s own case).
 _ASKS_TO_GO = re.compile(
     r"\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up"
-    r"|listening)|good ?-?night|g'night|(?:good ?-?)?bye|that's (?:all|it)|that is (?:all|it)"
-    r"|be quiet|shut up)\b", re.I)
+    r"|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\b", re.I)
 
 
 def asks(said: str) -> bool:
@@ -247,8 +254,8 @@ def asks(said: str) -> bool:
     said = (said or "").replace("’", "'")
     if _ASKS_FOR_A_WORD.search(said):
         return True
-    if _ASKS_TO_GO.search(said):
-        return False
+    if _ASKS_TO_GO.search(said) or goodbye_kind(re.sub(r"[?？¿]", ".", said)):
+        return False                       # the box asked to go, or a goodbye of theirs
     return bool(_ASKS.search(said))
 
 

@@ -137,6 +137,15 @@ def test_a_goodbye_inside_an_answer_quoted_or_asked_is_none():
     assert not taken, f"heard as a goodbye: {taken}"
 
 
+# Questions about goodbye words, answered with one (review round 3): no leave-taking.
+ABOUT_GOODBYE_WORDS = [("What's another word for goodbye?", "Farewell!"),
+                       ("What's a synonym for goodbye?", "Farewell."),
+                       ("What's a more formal goodbye?", "Farewell."),
+                       ("What's a nicer way to say goodbye?", "Take care!"),
+                       ("How should I say good night to my kids?", "Sweet dreams!"),
+                       ("Is it goodnight or good night?", "Good night."),
+                       ("How do you spell goodbye?", "Goodbye.")]
+
 # The box asked to go, as a question, and a plain goodbye back: #221's own shape.
 ASKED_TO_GO = [("Can you go to sleep?", "Good night—take care!"),
                ("Could you go to sleep now?", "Good night!"),
@@ -162,8 +171,15 @@ def test_what_counts_as_the_caller_asking():
                  "What's the word for adiós", "What does goodbye mean?",
                  "How do you say good night in French?"):
         assert asks(said), said
-    # a question that asks the box to go is answered by a goodbye (review round 2)
+    # questions ABOUT goodbye words ask for a word (review round 3)
+    for said, _ in ABOUT_GOODBYE_WORDS:
+        assert asks(said), said
+    # a question that asks the box to go is answered by a goodbye (review round 2), and
+    # so is a turn that is only a goodbye, "?" or not (review round 3)
     for said, _ in ASKED_TO_GO:
+        assert not asks(said), said
+    for said in ("Okay, good night?", "Good night?", "Bye?",
+                 "I just wanted to say good night."):
         assert not asks(said), said
     for caller, _ in TURNS:                      # #221's four turns: none is a question
         assert not asks(caller), caller
@@ -340,7 +356,8 @@ def test_a_goodbye_answering_a_question_is_no_leave_taking():
                          ("What's the opposite of hello?", "Goodbye!"),
                          ("Can you remind me in 5 minutes?", "See you!"),
                          ("Translate adiós into English.", "Goodbye."),
-                         ("Tell me the opposite of hello.", "Goodbye!")):
+                         ("Tell me the opposite of hello.", "Goodbye!"),
+                         *ABOUT_GOODBYE_WORDS):
         sent, sleep = _sent(said, messages=_turn(caller))
         assert sent == [] and sleep.decisions[-1] == "it answers a question", (caller, said)
 
