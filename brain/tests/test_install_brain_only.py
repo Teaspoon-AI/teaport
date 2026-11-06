@@ -474,6 +474,12 @@ def test_a_unit_is_written_through_write_root_and_reads_back_as_anyone():
         assert oct(unit.stat().st_mode & 0o777) == "0o644", u
         text = unit.read_text()
         assert "User=op\n" in text and "@USER@" not in text and "ExecStart=" in text, text
+    # A unit left 0600 by an earlier run is put right by the next: install replaces the file
+    # and sets its mode (tee into it kept the 0600).
+    unit = pathlib.Path(tmp, "root/etc/systemd/system/teaport-brain.service")
+    unit.chmod(0o600)
+    rc, out = _render(tmp)
+    assert rc == 0 and oct(unit.stat().st_mode & 0o777) == "0o644", out
 
 
 def test_a_dry_run_names_each_unit_once_and_writes_none():

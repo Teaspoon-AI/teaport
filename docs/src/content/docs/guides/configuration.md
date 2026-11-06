@@ -120,7 +120,7 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:2140,2316#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1525-1527,1614-1615,1630-1632#d7455a4b -->
+<!-- source: install.sh:2140,2323#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1525-1527,1614-1615,1630-1632#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 

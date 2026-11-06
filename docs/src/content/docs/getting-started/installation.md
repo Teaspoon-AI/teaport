@@ -119,7 +119,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:41,67,209-213,1621-1628,2335-2337#8861cd83 -->
+<!-- source: install.sh:41,67,209-213,1621-1628,2342-2344#8861cd83 -->
 
 For OpenRouter, the base URL is `https://openrouter.ai/api/v1`.
 
@@ -156,7 +156,7 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:62,269,1029,1547,1560,2805,2981,2987,1645,2075#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
+<!-- source: install.sh:62,269,1029,1547,1560,2812,2988,2994,1645,2075#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
 <!-- source: install.sh:1786-1797,1824-1869#0dba2a43 -->
 
 ## Optional components
@@ -173,7 +173,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:43,46,2778#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:43,46,2785#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -219,7 +219,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:2855-2856#561957fe -->
+<!-- source: install.sh:2862-2863#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -236,7 +236,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:2859-2861,1520-1528#8d3dea6b -->
+<!-- source: install.sh:2866-2868,1520-1528#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.

@@ -36,12 +36,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 sudo() { "$@"; }
 # SUDO install writes as install does, the -m mode set whatever the umask, and is kept in
-# $T/installs; tee is left to the umask, as sudo's tee is.
+# $T/installs (one whose destination is $INSTALL_FAILS fails); tee is left to the umask,
+# as sudo's tee is.
 SUDO() {
   case "$1" in
     tee) command tee "$2" >/dev/null ;;
     install)
       printf '%s\n' "$*" >> "$T/installs"
+      if [ "${@: -1}" = "${INSTALL_FAILS:-}" ]; then return 1; fi
       local src="${@: -2:1}" dest="${@: -1}" mode="" prev="" a
       for a in "$@"; do if [ "$prev" = -m ]; then mode="$a"; fi; prev="$a"; done
       mkdir -p "$(dirname "$dest")"; cat "$src" > "$dest"; chmod "$mode" "$dest" ;;
@@ -339,6 +341,11 @@ def test_the_caddyfile_is_roots_and_0644_whatever_the_umask():
     caddyfile = pathlib.Path(t, "Caddyfile")
     assert oct(caddyfile.stat().st_mode & 0o777) == "0o644" and "reverse_proxy" in caddyfile.read_text()
     assert pathlib.Path(t, "installs").read_text() == f"{INSTALL_0644} /dev/stdin {caddyfile}\n"
+    # One left 0600 by an earlier run is put right by the next: install replaces the file
+    # and sets its mode (tee into it kept the 0600).
+    caddyfile.chmod(0o600)
+    rc, out = _run(t, 'umask 077; write_caddyfile "$T/Caddyfile"\n')
+    assert rc == 0 and oct(caddyfile.stat().st_mode & 0o777) == "0o644", out
     # A dry run says what it would write in a line of its own (none from write_root), and
     # writes nothing.
     t = tempdir()
@@ -348,13 +355,17 @@ def test_the_caddyfile_is_roots_and_0644_whatever_the_umask():
 
 
 # install_caddy_apt with the network and apt stubbed: curl serves an armored key and a
-# list naming it (KEY_FAILS=1: the key's fetch fails), gpg --dearmor turns ARMORED into
-# BINARY, and the key and list go under $T.
+# list naming it, each fetch kept in $T/fetched (KEY_FAILS=1: the key's fetch fails);
+# gpg --dearmor turns ARMORED into BINARY; chown is kept in $T/owners (a test cannot give
+# files to root). The key and the list go under $T, temps under $T/tmp.
 CADDY_APT = r'''
 CADDY_KEYRING="$T/keyrings/caddy.gpg" CADDY_APT_LIST="$T/sources.list.d/caddy.list"; umask 077
+export TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"
 apt-get() { :; }; caddy() { :; }
+chown() { printf '%s\n' "$*" >> "$T/owners"; }
 gpg() { [ "$1" = --dearmor ] && sed s/ARMORED/BINARY/; }
 curl() {
+  printf '%s\n' "${*: -1}" >> "$T/fetched"
   case "${*: -1}" in
     *gpg.key) [ "${KEY_FAILS:-0}" = 0 ] && echo ARMORED ;;
     *.deb.txt) printf 'deb [signed-by=%s] https://repo any-version main\n' "$CADDY_KEYRING" ;;
@@ -364,26 +375,68 @@ install_caddy_apt
 '''
 
 
+def _caddy_apt(t, env=None):
+    rc, out = _run(t, CADDY_APT, env)
+    files = {n: pathlib.Path(t, n) for n in ("installs", "owners", "fetched")}
+    return rc, out, {n: p.read_text().splitlines() if p.exists() else [] for n, p in files.items()}
+
+
+def _mode(path):
+    return oct(path.stat().st_mode & 0o777)
+
+
 def test_the_caddy_repo_key_and_list_are_roots_and_0644_whatever_the_umask():
     # apt checks the repo's signature as its _apt user, and apt run by anyone but root reads
     # the list itself: under umask 077, gpg -o and tee made both 0600 (#199).
     t = tempdir()
     key, lst = pathlib.Path(t, "keyrings", "caddy.gpg"), pathlib.Path(t, "sources.list.d", "caddy.list")
-    rc, out = _run(t, CADDY_APT)
+    rc, out, calls = _caddy_apt(t)
     assert rc == 0, out
     assert key.read_text() == "BINARY\n" and f"signed-by={key}" in lst.read_text()
-    assert oct(key.stat().st_mode & 0o777) == "0o644" and oct(lst.stat().st_mode & 0o777) == "0o644"
-    installs = pathlib.Path(t, "installs").read_text().splitlines()
+    assert _mode(key) == "0o644" and _mode(lst) == "0o644"
+    installs = calls["installs"]
     assert len(installs) == 2 and installs[1] == f"{INSTALL_0644} /dev/stdin {lst}", installs
     # The key is dearmored into a temp first, and the temp is gone after.
     src = installs[0].removeprefix(INSTALL_0644 + " ").removesuffix(f" {key}")
     assert installs[0] == f"{INSTALL_0644} {src} {key}" and not pathlib.Path(src).exists(), installs
-    # A key that could not be fetched is not left behind, empty, for the next run to take
-    # as there.
+    assert calls["owners"] == [f"root:root {key} {lst}"], calls
+    # A dry run names the modes in its one line, and touches nothing.
     t = tempdir()
-    rc, out = _run(t, CADDY_APT, {"KEY_FAILS": "1"})
+    rc, out = _run(t, "DRY_RUN=1\n" + CADDY_APT)
+    assert rc == 0 and out.count("[dry-run]") == 1 and "root:root 0644" in out, out
+    assert sorted(os.listdir(t)) == ["tmp"], os.listdir(t)
+
+
+def test_a_rerun_puts_right_a_caddy_repo_key_and_list_an_earlier_run_left_0600():
+    # A box that ran the installer before #199 under umask 077 has both at 0600, and its
+    # apt-get update fails. The re-run that is meant to repair it finds both there and
+    # fetches neither again, so it sets their owner and mode itself.
+    t = tempdir()
+    key, lst = pathlib.Path(t, "keyrings", "caddy.gpg"), pathlib.Path(t, "sources.list.d", "caddy.list")
+    for f in (key, lst):
+        f.parent.mkdir()
+        f.write_text("OLD\n")
+        f.chmod(0o600)
+    rc, out, calls = _caddy_apt(t)
+    assert rc == 0, out
+    assert _mode(key) == "0o644" and _mode(lst) == "0o644", out
+    assert key.read_text() == "OLD\n" and lst.read_text() == "OLD\n"
+    assert calls["owners"] == [f"root:root {key} {lst}"] and calls["fetched"] == [] and calls["installs"] == [], calls
+
+
+def test_a_caddy_repo_key_that_failed_is_not_left_behind():
+    # Neither a fetch nor an install that failed leaves a key for the next run to take as
+    # there, nor the temp it was dearmored into; each stops the run with what failed.
+    t = tempdir()
+    key = pathlib.Path(t, "keyrings", "caddy.gpg")
+    rc, out, calls = _caddy_apt(t, {"KEY_FAILS": "1"})
     assert rc == 1 and "DIE cannot fetch the Caddy repo key" in out, out
-    assert not pathlib.Path(t, "keyrings", "caddy.gpg").exists() and not pathlib.Path(t, "installs").exists()
+    assert not key.exists() and calls["installs"] == [] and os.listdir(pathlib.Path(t, "tmp")) == []
+    t = tempdir()
+    key = pathlib.Path(t, "keyrings", "caddy.gpg")
+    rc, out, calls = _caddy_apt(t, {"INSTALL_FAILS": str(key)})
+    assert rc == 1 and "DIE cannot install the Caddy repo key" in out, out
+    assert not key.exists() and len(calls["installs"]) == 1 and os.listdir(pathlib.Path(t, "tmp")) == []
 
 
 def test_a_short_lived_intermediate_is_reissued_once_and_the_root_kept():

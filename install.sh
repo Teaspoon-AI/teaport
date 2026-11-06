@@ -2224,7 +2224,7 @@ CADDY_KEYRING=/usr/share/keyrings/caddy-stable-archive-keyring.gpg   # the list'
 CADDY_APT_LIST=/etc/apt/sources.list.d/caddy-stable.list
 install_caddy_apt() {
   local tmp repo
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] add Caddy apt repo + apt-get install -y caddy\n'; return; fi
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] add Caddy apt repo (key and list root:root 0644) + apt-get install -y caddy\n'; return; fi
   SUDO apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
   if [ ! -f "$CADDY_KEYRING" ]; then
     # Dearmored into a temp and installed from there (it is binary: no write_root), so the
@@ -2233,12 +2233,19 @@ install_caddy_apt() {
     if ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor > "$tmp"; then
       rm -f "$tmp"; die "cannot fetch the Caddy repo key"
     fi
-    SUDO install -D -m 0644 -o root -g root "$tmp" "$CADDY_KEYRING"; rm -f "$tmp"
+    SUDO install -D -m 0644 -o root -g root "$tmp" "$CADDY_KEYRING" || { rm -f "$tmp"; die "cannot install the Caddy repo key"; }
+    rm -f "$tmp"
   fi
   if [ ! -f "$CADDY_APT_LIST" ]; then
     repo="$(curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt')" || die "cannot fetch the Caddy repo list"
-    write_root "$CADDY_APT_LIST" "$repo"
+    write_root "$CADDY_APT_LIST" "$repo" || die "cannot write the Caddy repo list"
   fi
+  # The modes are set again on every run, not only when the files are written: a run before
+  # #199 under umask 077 left both 0600, and the -f checks above skip them on the re-run
+  # that is meant to repair the box. (The units and the Caddyfile need no such step:
+  # write_root's install replaces the file and sets its mode each time.)
+  { SUDO chown root:root "$CADDY_KEYRING" "$CADDY_APT_LIST" && SUDO chmod 0644 "$CADDY_KEYRING" "$CADDY_APT_LIST"; } \
+    || die "cannot set $CADDY_KEYRING and $CADDY_APT_LIST to root:root 0644"
   SUDO apt-get update -qq
   SUDO apt-get install -y caddy
   command -v caddy >/dev/null || die "caddy not installed after apt"
