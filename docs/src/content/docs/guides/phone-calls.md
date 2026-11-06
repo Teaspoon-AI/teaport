@@ -222,26 +222,26 @@ The question has three outcomes:
   call is taken by default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep
   ringing.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,599-613#f6a0b0f1; brain/teaport_brain/config_schema.toml:1938-1960#e70d77f4 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,602-616#f6a0b0f1; brain/teaport_brain/config_schema.toml:1938-1960#e70d77f4 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1730-1737#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,550-553#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1730-1737#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,553-556#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
 when the brain restarted. The brain takes the call and holds the conversation.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:359-364#6c992cf1; brain/teaport_brain/sip_server.py:39-43,45-49#510dd7f2 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:362-367#6c992cf1; brain/teaport_brain/sip_server.py:39-43,45-49#510dd7f2 -->
 
 While a call is live, the brain refuses a Talk client with
 *"Sorry, I'm on a phone call right now…"*, and the gateway turns away a
 second call with `486 Busy Here`; the caller's phone handles that, as voicemail
 or a busy tone.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:32-34,502-506#f32279bb; brain/tests/fake_sip_gateway.py:19-20#704657fc -->
+<!-- source: brain/teaport_brain/session_arbiter.py:32-34,505-509#f32279bb; brain/tests/fake_sip_gateway.py:19-20#704657fc -->
 
 To dedicate a device to the phone, turn off the other front-ends, not the
 brain, which is what answers calls: the local audio bridge, the Discord bridge,
