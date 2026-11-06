@@ -58,7 +58,7 @@ def _services(agent_mode: str, engine_env: str | None = None, sandbox: str = "")
     (tmp / "secrets").mkdir()
     if engine_env is not None:
         (tmp / "etc" / "engine.env").write_text(engine_env)
-    body = (STUBS + "".join(_fn(f) for f in ("read_env_file", "write_env", "phase_services"))
+    body = (STUBS + "".join(_fn(f) for f in ("read_env_file", "write_env", "engine_env_lines", "phase_services"))
             + f'AGENT_MODE="{agent_mode}"\nphase_services\n')
     env = {**os.environ, "T": str(tmp), "SANDBOX": sandbox}
     p = subprocess.run(["bash", "-c", body], capture_output=True, text=True, env=env)
