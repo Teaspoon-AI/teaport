@@ -857,8 +857,11 @@ async def wifi_connect(request: Request):
     ssid = str(body.get("ssid") or "").strip()
     password = str(body.get("password") or "")
     hidden = bool(body.get("hidden"))
-    if not ssid or len(ssid.encode()) > 32:
-        raise HTTPException(status_code=400, detail="a network name of 1 to 32 bytes")
+    # Shown after "Could not switch to <name>: " on the settings page (config.html).
+    if not ssid:
+        raise HTTPException(status_code=400, detail="enter the network's name")
+    if len(ssid.encode()) > 32:
+        raise HTTPException(status_code=400, detail="that network name is too long for Wi-Fi")
     if password and not 8 <= len(password) <= 63:
         raise HTTPException(status_code=400, detail="Wi-Fi passwords are 8 to 63 characters")
     if _wifi_lock.locked():
