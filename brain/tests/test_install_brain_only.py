@@ -624,7 +624,7 @@ mkdir -p "$BRAIN_VENVS" "$T/bin"
 build() { mkdir -p "$BRAIN_VENVS/$1"; SRC_DIR="$T/$2/brain"; brain_stage_tools "$BRAIN_VENVS/$1"; }
 '''
 TOOLS_FNS = ["tools_id", "brain_stage_tools", "tools_point_at", "tools_adopt", "tools_link", "tools_has",
-             "brain_point_at", "brain_prune"]
+             "brain_point_at", "brain_prune", "sudo_ready"]
 
 
 def _tools_box(*sources):

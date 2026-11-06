@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2198-2207#38d9c1ca; install.sh:2108#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2209-2218#38d9c1ca; install.sh:2697#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2173-2183#39346419; brain/teaport_brain/static/config.html:285-295#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:285-295#2b63b6f7 -->
 
 To change a setting there:
 
@@ -38,7 +38,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:922-926#abcad8a7; brain/teaport_brain/settings_access.py:419-431#f0cd5e74 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:933-937#abcad8a7; brain/teaport_brain/settings_access.py:419-431#f0cd5e74 -->
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
@@ -92,7 +92,7 @@ The [Settings reference](/reference/settings/) names the file that holds each se
 
 The env files are root-owned, so edit them with sudo. Keep one `KEY=value` line per setting; comments and blank lines are fine. A boolean reads `0`, `false`, `no`, or `off` as off, and `1`, `true`, `yes`, or `on` as on. An empty value means the setting is unset, and the default applies; space around the value is not part of it. A flag that is off says so in the journal at startup. A few settings treat an empty value as a value in its own right, off for example; the Settings reference marks them.
 
-<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:1783#f2ca1efb -->
+<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2288#f2ca1efb -->
 
 To change a setting this way:
 
@@ -120,11 +120,11 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:2153,2336#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1525-1527,1614-1615,1630-1632#d7455a4b -->
+<!-- source: install.sh:2734,2917#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:2030-2032,2119-2120,2135-2137#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 
-<!-- source: install.sh:2162-2175#7403c329 -->
+<!-- source: install.sh:2743-2756#7403c329 -->
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 
@@ -146,7 +146,7 @@ Restart the service that reads the file you changed. The table lists each config
 | `/etc/teaport/bridge.env` | `sudo systemctl restart teaport-discord-bridge` | Restarts the bridge. |
 | `/etc/teaport/local-audio.env` | `sudo systemctl restart teaport-local-audio` | Ends the local audio session, and the bridge dials the brain again at once. |
 
-<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:891#38ebb95b -->
+<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1398#38ebb95b -->
 
 A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request.
 
@@ -195,7 +195,7 @@ Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an Ope
 
    The mode keeps the file readable only by you, as the installer writes it.
 
-   <!-- source: install.sh:1630-1632#37da8b7d -->
+   <!-- source: install.sh:2135-2137#37da8b7d -->
 
 4. If `brain.env` also sets `LLM_API_KEY`, remove that line or empty its value; the environment wins over the file.
 5. Restart the brain as [Apply the change](/guides/configuration/#apply-the-change) describes.
@@ -214,7 +214,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:225-231#1b6deadd; brain/teaport_brain/config_schema.toml:1783-1819#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:225-231#1b6deadd; brain/teaport_brain/config_schema.toml:1794-1830#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
@@ -222,7 +222,7 @@ The first two are said one time, at the start of a conversation in the room or i
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1006-1010#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1384-1388#1508a36d -->
 
 ## One key for OpenClaw too
 

@@ -548,8 +548,9 @@ async def test_a_session_held_for_a_phone_call_types_unheard():
 
 @_with(grace=0.0)
 async def test_a_half_duplex_phone_line_drops_the_caller_while_the_typing_is_heard():
-    """In agent-first a phone call is typed through: no bot speech, but echo all the
-    same, so the half-duplex gate (SIP_HALF_DUPLEX) mutes the caller through it."""
+    """A half-duplex phone call typed through (agent-first alone: SIP_THINKING_SOUND
+    types no such call, #242) hears no bot speech, but echo all the same, so the
+    half-duplex gate (SIP_HALF_DUPLEX) mutes the caller through it."""
     from pipecat.frames.frames import InputAudioRawFrame
     from teaport_brain.sip_server import HalfDuplexInputGate
     bed, out = _bed(keys=False)
@@ -572,6 +573,29 @@ async def test_a_half_duplex_phone_line_drops_the_caller_while_the_typing_is_hea
     await _send(bed, _working("c1", done=True))
     await asyncio.sleep(0.2)                                 # its tail is over
     assert await mic() == 2
+
+
+@_with(grace=0.3)
+async def test_a_caller_who_talks_on_through_a_background_consult_is_not_typed_over():
+    """On a call with SIP_THINKING_SOUND on (#242) a consult runs in the background: the
+    turn ends at once and the caller may talk on. The typing never starts under them,
+    waits out the grace after they stop, and stops the moment they start again."""
+    bed, out = _bed(keys=False)                              # (a call types for no face)
+    await _send(bed, VADUserStartedSpeakingFrame())          # still talking as it starts
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(1.0)                                 # well past the grace
+    assert not _audio(out)
+    await _send(bed, VADUserStoppedSpeakingFrame())
+    stopped = ts._now()
+    assert await _soon(lambda: _audio(out))
+    assert _audio(out)[0] >= stopped + 0.3 - 1e-6           # the grace after them
+    await asyncio.sleep(0.2)
+    await _send(bed, VADUserStartedSpeakingFrame())          # they start again
+    heard = len(_audio(out))
+    await asyncio.sleep(0.6)
+    assert len(_audio(out)) == heard                         # not one chunk more
+    await _send(bed, VADUserStoppedSpeakingFrame())
+    await _send(bed, _working("c1", done=True))
 
 
 def _counting_chunk():

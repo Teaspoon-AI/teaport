@@ -9,6 +9,8 @@
 #   ./install.sh                   install / repair the whole appliance
 #   ./install.sh --only brain      update just the brain from brain/uv.lock (see below)
 #   ./install.sh --rollback brain  put the previous brain venv back
+#   ./install.sh --only engine     update just the engine from the manifest (see below)
+#   ./install.sh --rollback engine put the previous engine back
 #   ./install.sh --dry-run         print what would happen; touch nothing
 #   ./install.sh --help
 #
@@ -31,6 +33,24 @@
 # there, since a full run changes far more than the brain (`--rollback brain` still works).
 # Every run builds a new release; the newest three are kept, plus the live one and the
 # rollback target.
+#
+# --only engine does the same for an engine release (#158): `./install.sh --only engine`,
+# from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
+# THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# from the manifest's beside the live ones, and checks them as a full run does (ldd, and
+# cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
+# rollback (with any model it replaces), moves the new files in, renders
+# teaport-engine.service from this checkout and restarts the engine (the brain goes down
+# and comes back with it, and reconnects), and checks it listens and stays up with its G2P
+# dict loaded, putting the previous engine back on its own if it does not.
+# engine.env only gains the keys it lacks: a value already there stays as it is (a full
+# run still rewrites them; who owns them is #264). The EULA gate runs (silent when this
+# license version is accepted already); no brain build, no system packages, no other unit.
+# A run that changes nothing restarts nothing.
+# `--rollback engine` puts the previous engine back, its unit with it, and keeps the one
+# it replaces, so a second run undoes it. Two are kept, in $PREFIX/engine.rollback/; a full
+# run that changes the engine keeps one there too. Every run that changes anything holds
+# $STATE/install.lock, so a second one started meanwhile stops at once (installer_lock).
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -73,6 +93,7 @@ ALLOW_STALE_SOURCE="${TEAPORT_ALLOW_STALE_SOURCE:-0}"
 DRY_RUN=0
 ONLY=""       # --only <component>: "" = the whole appliance
 ROLLBACK=""   # --rollback <component>
+ARGS=("$@")   # as given: installer_lock runs this script again with them
 # Where this script lives — lets a checkout install its own brain/plugin/systemd.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -82,18 +103,18 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --accept-eula) ACCEPT_EULA=1 ;;
     --only|--rollback)
-      [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a component (brain)"
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a component (brain or engine)"
       if [ "$1" = --only ]; then ONLY="$2"; else ROLLBACK="$2"; fi; shift ;;
-    --only=*) ONLY="${1#*=}"; [ -n "$ONLY" ] || usage_err "--only needs a component (brain)" ;;
-    --rollback=*) ROLLBACK="${1#*=}"; [ -n "$ROLLBACK" ] || usage_err "--rollback needs a component (brain)" ;;
+    --only=*) ONLY="${1#*=}"; [ -n "$ONLY" ] || usage_err "--only needs a component (brain or engine)" ;;
+    --rollback=*) ROLLBACK="${1#*=}"; [ -n "$ROLLBACK" ] || usage_err "--rollback needs a component (brain or engine)" ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) usage_err "unknown arg: $1" ;;
   esac
   shift
 done
-# brain is the one component with an incremental path so far; name the rest when they get one.
-case "$ONLY" in ''|brain) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain)" ;; esac
-case "$ROLLBACK" in ''|brain) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain)" ;; esac
+# brain and engine are the components with an incremental path so far; name the rest when they get one.
+case "$ONLY" in ''|brain|engine) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain, engine)" ;; esac
+case "$ROLLBACK" in ''|brain|engine) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain, engine)" ;; esac
 [ -z "$ONLY" ] || [ -z "$ROLLBACK" ] || usage_err "--only and --rollback are separate runs"
 
 # --- output helpers ----------------------------------------------------------
@@ -122,6 +143,32 @@ read_env_file() {
   if [ -r "$1" ]; then cat "$1"
   elif [ "${2:-}" = --lenient ]; then sudo cat "$1" 2>/dev/null || true
   else sudo cat "$1"; fi
+}
+
+# --- one run at a time ---------------------------------------------------------
+# Two runs at once trample each other: a full run's phase_engine stages and swaps the same
+# engine files an --only engine run has staged (#158), and either can be half way through
+# the brain's link. So a run holds an exclusive lock on $INSTALL_LOCK from main's first
+# step to its last, and a second run stops at once and says so. flock(1) holds it, and runs
+# this script again as its child with the lock's descriptor closed (-o): a process the run
+# starts and leaves running (a gateway, say) inherits nothing, so the lock ends with the
+# run. The lock file is root's (0644), which every user can open to lock. A dry run takes
+# no lock; it says when a real run would stop.
+INSTALL_LOCK="$STATE/install.lock"
+installer_lock() {
+  local me="$HERE/${BASH_SOURCE[0]##*/}" rc=0
+  [ -z "${TEAPORT_INSTALL_LOCKED:-}" ] || return 0   # the child: flock(1) holds it for us
+  if ! have flock; then warn "flock is missing: nothing stops a second install.sh from running beside this one"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -e "$INSTALL_LOCK" ]; then flock -n -E 75 "$INSTALL_LOCK" true 2>/dev/null || rc=$?; fi
+    if [ "$rc" = 75 ]; then warn "another install.sh is running on this box now ($INSTALL_LOCK) — a real run stops here"; fi
+    return 0
+  fi
+  if [ ! -f "$me" ]; then warn "not run from a file, so not locked: nothing stops a second install.sh from running beside this one"; return 0; fi
+  if [ ! -e "$INSTALL_LOCK" ]; then SUDO mkdir -p "$STATE"; SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
+  TEAPORT_INSTALL_LOCKED=1 flock -n -o -E 75 "$INSTALL_LOCK" bash "$me" ${ARGS[@]+"${ARGS[@]}"} || rc=$?
+  if [ "$rc" = 75 ]; then die "another install.sh is running on this box (it holds $INSTALL_LOCK) — let it finish, then run this again"; fi
+  exit "$rc"
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -157,7 +204,9 @@ download() {
   log "download $(basename "$dest")"
   run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
   if [ "$DRY_RUN" != 1 ]; then
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || die "sha256 mismatch: $dest"; }
+    # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
+    # stage is kept across runs, #158), and fail the same way each time.
+    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
     mv "$dest.part" "$dest"
   fi
 }
@@ -231,8 +280,10 @@ ASSET_KEY="l4t38-cu13"   # JetPack 7.2 / CUDA 13 — L4T R38 or R39
 NV_TEGRA_RELEASE=/etc/nv_tegra_release   # there on a Jetson only (also install_arp_multihome)
 L4T_RELEASE=""           # R-number from $NV_TEGRA_RELEASE; empty off-Jetson (dev/dry-run)
 
-phase_preflight() {
-  log "preflight"
+# l4t_gate [--plan] — the Jetson/L4T gate; sets L4T_RELEASE. --plan (--only engine): a dry
+# run off a Jetson warns and goes on, so `--only engine --dry-run` shows its plan anywhere,
+# as --only brain's does. The full run's dry run still asks for TEAPORT_ALLOW_NON_JETSON.
+l4t_gate() {
   if [ -f "$NV_TEGRA_RELEASE" ]; then
     local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' "$NV_TEGRA_RELEASE" | head -1)"
     L4T_RELEASE="$l4t"
@@ -242,9 +293,16 @@ phase_preflight() {
     esac
   elif [ "$ALLOW_NON_JETSON" = 1 ]; then
     warn "not a Jetson — continuing because TEAPORT_ALLOW_NON_JETSON=1 (dev/dry-run only)"
+  elif [ "${1:-}" = --plan ] && [ "$DRY_RUN" = 1 ]; then
+    warn "not an NVIDIA Jetson ($NV_TEGRA_RELEASE missing) — showing the plan; a real run stops here"
   else
     die "not an NVIDIA Jetson ($NV_TEGRA_RELEASE missing)"
   fi
+}
+
+phase_preflight() {
+  log "preflight"
+  l4t_gate
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
   check_brain_source
@@ -277,16 +335,22 @@ phase_sysdeps() {
   # BSP does not; NVIDIA's Jetson apt repo, which L4T configures, carries it.
   SUDO apt-get update -qq
   SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv logrotate
-  if [ "$DRY_RUN" != 1 ]; then
-    have espeak-ng || die "espeak-ng not installed"
-    contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
-    contains 'libcudnn.so.9' "$(ldconfig -p 2>/dev/null || true)" || die "libcudnn.so.9 not installed"
-  fi
+  if [ "$DRY_RUN" != 1 ]; then engine_libs_check ""; fi
   setup_logs
   # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
   # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
   # last. Idempotent — phase_brain's own ensure_uv call becomes a no-op.
   ensure_uv
+}
+# engine_libs_check <hint> — what the engine needs from the system at run time (see
+# phase_sysdeps): espeak-ng, libopenblas.so.0, and libcudnn.so.9 (engine 1.5 on). The one
+# copy: phase_sysdeps checks that its packages took, --only engine (which installs none)
+# that the release it is about to start will find them. <hint> ends each message.
+engine_libs_check() {
+  local libs; libs="$(ldconfig -p 2>/dev/null || true)"
+  have espeak-ng || die "espeak-ng not installed$1"
+  contains 'libopenblas.so.0' "$libs" || die "libopenblas.so.0 not installed$1"
+  contains 'libcudnn.so.9' "$libs" || die "libcudnn.so.9 not installed$1"
 }
 
 # --- logs: one store, capped -----------------------------------------------------------
@@ -413,6 +477,294 @@ setup_logs() {
   esac
 }
 
+# --- engine: staged, swapped in whole, one rollback away ---------------------------------
+# The engine is a binary and three files of its own release (the manifest's g2p_dict note:
+# "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
+# from <exe_dir>/g2p/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# models go with it here too: a release that changes one changes what the binary loads.
+# phase_engine used to download each over the live one in turn, so a run that failed half
+# way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
+# releases, and nothing kept the one before: every rollback copy on the box was made by
+# hand (#158). Now:
+#
+#   $PREFIX/engine.staged/<file>    the downloads: only the files whose sha256 differs
+#                                   from the live one's. Kept across runs, each beside a
+#                                   <file>.sha256 naming the file it is a download of, so
+#                                   an interrupted download resumes (models are GBs) and
+#                                   one of another release is never resumed into this one.
+#                                   Gone once they are live.
+#   $PREFIX/engine.rollback/<n>-<when>-<release>/
+#                                   the engine as it was before a run changed it: its
+#                                   files, the models the run replaced, the unit it ran
+#                                   under (teaport-engine.service) and its manifest entry
+#                                   (engine.json). <n> counts up, so the newest is the one
+#                                   with the highest <n> whatever the clock says (a box
+#                                   with no RTC can boot in another year; <when> is UTC,
+#                                   for people). The newest $ENGINE_KEEP are kept.
+#   $PREFIX/engine.swapping         there only while the staged files are moved in
+#                                   (engine_swap_recover).
+#
+# A staged file goes live by rename (engine_swap_in): an engine that is running keeps the
+# file it has open, and each path names a whole file throughout. --rollback engine renames
+# a kept engine back in (engine_restore) after keeping the live one the same way, so a
+# second rollback undoes the first. A file the run is about to replace is kept by a hard
+# link, free even for a model: the rename that follows leaves the copy the only name of
+# the old file. Every other engine file is copied, never linked: a hand deploy that cp's a
+# binary over bin/voxtral writes into its inode, and would rewrite a linked copy with it.
+# A model the run does not replace is not kept (it is the same in both). So a copy made by
+# a run that changed a model holds the old model (the Voxtral one is ~4.4 GB) until it is
+# pruned. The models' tekken.json/params.json have no sha256 in the manifest; they are
+# fetched in place on every run, as before, and are not kept.
+# Swapping a release directory behind one symlink would make the swap one rename; it would
+# move the engine out of bin/ (which uv shares) and THIRD_PARTY_NOTICES.txt out of
+# $PREFIX, where the unit, doctor and the docs name them: a follow-up, not this.
+ENGINE_STAGE="$PREFIX/engine.staged"
+ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
+ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
+ENGINE_KEEP=2
+ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
+ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
+ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
+ENGINE_KEPT=""      # the rollback copy this run made (engine_keep_live)
+
+# engine_fetch <url> <file> <sha256> — one engine file (a path under $PREFIX): left alone
+# when the live one already matches <sha256>, else downloaded into $ENGINE_STAGE and
+# added to ENGINE_CHANGED. download() resumes a partial one and skips a whole one.
+engine_fetch() {
+  local url="$1" rel="$2" sha="$3" dest="$ENGINE_STAGE/$2"
+  if [ -f "$PREFIX/$rel" ] && echo "$sha  $PREFIX/$rel" | sha256sum -c --status 2>/dev/null; then
+    log "have ${rel##*/} (sha ok)"
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part" "$dest.sha256"; fi
+    return 0
+  fi
+  run mkdir -p "$(dirname "$dest")"
+  if [ "$(cat "$dest.sha256" 2>/dev/null || true)" != "$sha" ]; then
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part"; fi
+    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" > "$dest.sha256"; fi
+  fi
+  download "$url" "$dest" "$sha"
+  ENGINE_CHANGED="$ENGINE_CHANGED $rel"
+}
+
+# engine_describe <binary> — what the installed manifest says <binary> is. Sets
+# ENGINE_RELEASE, its release ("unknown" when the manifest names another binary: a hand
+# deploy's, say), and ENGINE_ENTRY, the manifest's engine entry for it as JSON, kept with a
+# rollback copy so that `teaport update` names the right release after a rollback.
+ENGINE_RELEASE="" ENGINE_ENTRY=""
+engine_entry_py() { python3 - "$@" <<'PY'
+import json, sys
+try:
+    e = json.load(open(sys.argv[1])).get("engine") or {}
+except (OSError, ValueError, AttributeError):
+    e = {}
+if not sys.argv[3] or (e.get("assets") or {}).get(sys.argv[2], {}).get("sha256") != sys.argv[3]:
+    e = {"release": "unknown"}
+print("%s\t%s" % (e.get("release") or "unknown", json.dumps({"engine": e})))
+PY
+}
+engine_describe() {
+  local sha out
+  sha="$(sha256sum "$1" 2>/dev/null | cut -d' ' -f1)" || sha=""
+  out="$(engine_entry_py "$PREFIX/manifest.json" "$ASSET_KEY" "$sha" 2>/dev/null)" || out=""
+  ENGINE_RELEASE="${out%%$'\t'*}" ENGINE_ENTRY="${out#*$'\t'}"
+  # one plain path component: it names the rollback copy's directory
+  case "$ENGINE_RELEASE" in ''|*[!A-Za-z0-9._-]*) ENGINE_RELEASE=unknown ;; esac
+  case "$out" in *$'\t'*) ;; *) ENGINE_ENTRY='{"engine": {"release": "unknown"}}' ;; esac
+}
+
+# engine_copies — the rollback copies, newest first, NUL-separated: the directories whose
+# name starts with the six-digit count engine_keep_live gives them. Anything else in there
+# is not this installer's, and is neither a target nor pruned.
+engine_copies() {
+  local d
+  while IFS= read -r -d '' d; do
+    case "${d##*/}" in [0-9][0-9][0-9][0-9][0-9][0-9]-*) printf '%s\0' "$d" ;; esac
+  done < <(find "$ENGINE_ROLLBACKS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz)
+}
+
+# engine_keep_live <files> — keep the live engine (ENGINE_FILES, the models among <files>,
+# the unit it runs under, its manifest entry) as a new rollback copy, and set ENGINE_KEPT.
+# <files> are the ones about to be replaced: linked, not copied (see above). Built under a
+# .partial name and renamed once complete, so an interrupted copy is never taken for a
+# rollback target. A copy that fails (a full disk) stops the run before anything moved.
+engine_keep_live() {
+  local replacing=" ${1:-} " rel snap fail d n=0
+  ENGINE_KEPT=""
+  if [ ! -f "$PREFIX/bin/voxtral" ]; then log "no live engine — nothing to keep for --rollback engine"; return 0; fi
+  engine_describe "$PREFIX/bin/voxtral"
+  while IFS= read -r -d '' d; do d="${d##*/}"; d="${d%%-*}"; if [ "$((10#$d))" -gt "$n" ]; then n="$((10#$d))"; fi; done < <(engine_copies)
+  snap="$ENGINE_ROLLBACKS/$(printf '%06d' $((n + 1)))-$(date -u +%Y%m%dT%H%M%SZ)-$ENGINE_RELEASE"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] keep the live engine (%s) for --rollback engine: %s\n' "$ENGINE_RELEASE" "$snap"; return 0
+  fi
+  fail="could not keep the live engine for a rollback in $snap (disk full?) — nothing was swapped"
+  log "keeping the live engine ($ENGINE_RELEASE) for --rollback engine: $snap"
+  rm -rf "$snap.partial"
+  mkdir -p "$snap.partial" || die "$fail"
+  for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
+    [ -f "$PREFIX/$rel" ] || continue
+    mkdir -p "$(dirname "$snap.partial/$rel")" || { rm -rf "$snap.partial"; die "$fail"; }
+    if contains " $rel " "$replacing"; then
+      ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
+        || { rm -rf "$snap.partial"; die "$fail"; }
+    elif contains " $rel " " ${ENGINE_FILES[*]} "; then
+      cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { rm -rf "$snap.partial"; die "$fail"; }
+    fi
+  done
+  if [ -f "$ENGINE_UNIT" ]; then
+    cp "$ENGINE_UNIT" "$snap.partial/teaport-engine.service" || { rm -rf "$snap.partial"; die "$fail"; }
+  fi
+  printf '%s\n' "$ENGINE_ENTRY" > "$snap.partial/engine.json" || { rm -rf "$snap.partial"; die "$fail"; }
+  mv "$snap.partial" "$snap"
+  ENGINE_KEPT="$snap"
+}
+
+# engine_swap_in — make the staged files live: keep the live engine first (engine_keep_live),
+# then rename each staged file over its live one. Nothing staged: nothing changes.
+# The renames are one per file, so the engine is whole only before and after them. A rename
+# that fails, or a run stopped in between (Ctrl-C, a kill), puts the kept engine back at
+# once (engine_swap_abort); for what nothing can catch (SIGKILL, a power cut), the marker
+# stays, and the next run puts the kept engine back first (engine_swap_recover).
+engine_swap_in() {
+  local rel
+  if [ -z "$ENGINE_CHANGED" ]; then
+    log "engine files: the live ones are the manifest's"
+    if [ -e "$ENGINE_STAGE" ]; then run rm -rf "$ENGINE_STAGE"; fi
+    return 0
+  fi
+  engine_keep_live "$ENGINE_CHANGED"
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] move the new%s into %s\n' "$ENGINE_CHANGED" "$PREFIX"; return 0; fi
+  printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK" || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
+  trap 'engine_swap_abort "the run was stopped while it moved the engine files in"' INT TERM HUP
+  for rel in $ENGINE_CHANGED; do
+    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
+      || engine_swap_abort "could not move $rel into place"
+  done
+  trap - INT TERM HUP
+  rm -f "$ENGINE_SWAP_MARK"
+  rm -rf "$ENGINE_STAGE"
+  log "engine files live:$ENGINE_CHANGED"
+  engine_prune
+}
+
+# engine_swap_abort <why> — a swap stopped half way: put the kept engine back, whole, and
+# stop. With nothing kept (no engine before this run), say what to do instead.
+engine_swap_abort() {
+  trap - INT TERM HUP
+  if [ -n "$ENGINE_KEPT" ] && [ -f "$ENGINE_KEPT/bin/voxtral" ]; then
+    warn "$1 — putting the engine before this run back (${ENGINE_KEPT##*/})"
+    engine_restore "$ENGINE_KEPT"
+    rm -f "$ENGINE_SWAP_MARK"
+    die "$1; the engine is back as it was before this run — run this again"
+  fi
+  die "$1; the engine files may be a mix of two releases — run this again to finish"
+}
+
+# engine_swap_recover — the marker of a swap that something uncatchable stopped (SIGKILL, a
+# power cut): the live engine may be two releases at once, and starts that way. Put the
+# engine kept before that swap back, whole, before this run looks at what is live; the
+# run then stages and swaps as usual. Called by phase_engine and --rollback engine.
+engine_swap_recover() {
+  local kept
+  [ -f "$ENGINE_SWAP_MARK" ] || return 0
+  kept="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"
+  case "$kept" in "$ENGINE_ROLLBACKS"/*) ;; *) kept="" ;; esac   # only ever one of ours
+  if [ "$DRY_RUN" = 1 ]; then
+    warn "an engine swap was stopped half way ($ENGINE_SWAP_MARK): a real run puts ${kept:+${kept##*/}, }the engine before it, back first"
+    return 0
+  fi
+  if [ -n "$kept" ] && [ -f "$kept/bin/voxtral" ]; then
+    warn "an engine swap was stopped half way — putting the engine before it back first (${kept##*/})"
+    engine_restore "$kept"
+  else
+    warn "an engine swap was stopped half way, and nothing was kept from before it: this run replaces what is live"
+  fi
+  rm -f "$ENGINE_SWAP_MARK"
+}
+
+# engine_restore <copy> — rename a rollback copy's files back over the live ones (its models
+# too, when it kept any), put its unit back (systemd reads it at the caller's daemon-reload)
+# and its manifest entry, and remove the copy: it is the live engine now. A file the copy
+# lacks (one its release did not have, or a model it did not replace) stays as it is.
+# A copy without its binary is no engine: refused, loudly, before anything moves.
+engine_restore() {
+  local snap="$1" rel models=""
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] move the engine in %s back into %s, with its unit and manifest entry\n' "$snap" "$PREFIX"; return 0
+  fi
+  [ -f "$snap/bin/voxtral" ] || die "cannot put the engine in $snap back: it is gone or has no bin/voxtral — the live engine files were left as they are"
+  for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
+    [ -f "$snap/$rel" ] || continue
+    # The copy keeps a file as a hard link (engine_keep_live): one a stopped swap never
+    # replaced is still the live file, and GNU mv refuses to move a file onto itself.
+    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then rm -f "$snap/$rel"; continue; fi
+    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$snap/$rel" "$PREFIX/$rel"; } \
+      || die "could not move $rel back from $snap — the engine files may be a mix of two releases (what is left to move back is in $snap)"
+    if contains " $rel " " ${ENGINE_MODELS[*]} "; then models="$models ${rel##*/}"; fi
+  done
+  if [ -f "$snap/teaport-engine.service" ]; then write_root "$ENGINE_UNIT" "$(cat "$snap/teaport-engine.service")"; fi
+  if [ -f "$snap/engine.json" ]; then manifest_take "$snap/engine.json" engine; fi
+  rm -rf "$snap"
+  log "engine files back from ${snap##*/}${models:+, with the model(s)$models}"
+}
+
+# engine_rollback_target — print the newest complete rollback copy; fail when there is none.
+engine_rollback_target() {
+  local d
+  while IFS= read -r -d '' d; do
+    case "$d" in *.partial) continue ;; esac
+    if [ -f "$d/bin/voxtral" ]; then printf '%s\n' "$d"; return 0; fi
+  done < <(engine_copies)
+  return 1
+}
+
+# engine_prune — keep the newest $ENGINE_KEEP rollback copies and remove the rest, and any
+# copy left incomplete (.partial, or without a binary). The live engine is not in there, so
+# a count is all it takes; the copy this run made is never removed, whatever its place.
+# Never fails the run. The hand-made bin/voxtral.rollback-* copies on some boxes are not
+# this installer's, and stay.
+engine_prune() {
+  local d n=0
+  while IFS= read -r -d '' d; do
+    if [ -n "$ENGINE_KEPT" ] && [ "$d" -ef "$ENGINE_KEPT" ]; then n=$((n + 1)); continue; fi
+    case "$d" in
+      *.partial) ;;
+      *) if [ -f "$d/bin/voxtral" ] && [ "$n" -lt "$ENGINE_KEEP" ]; then n=$((n + 1)); continue; fi ;;
+    esac
+    log "removing old engine rollback copy $d"
+    run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
+  done < <(engine_copies)
+}
+
+# manifest_take <from.json> <key...> — set those top-level keys of the installed manifest
+# ($PREFIX/manifest.json, what `teaport update` compares) to <from.json>'s, and leave the
+# rest as it is: --only engine installs the engine and checks the models, not the brain or
+# the plugin a new manifest may also name; a rollback puts back one engine entry.
+manifest_take_py() { python3 - "$@" <<'PY'
+import json, os, sys
+dest, src, keys = sys.argv[1], sys.argv[2], sys.argv[3:]
+try:
+    d = json.load(open(dest))
+except (OSError, ValueError):
+    d = {}
+s = json.load(open(src))
+for k in keys:
+    if k in s:
+        d[k] = s[k]
+with open(dest + ".tmp", "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+os.replace(dest + ".tmp", dest)
+PY
+}
+manifest_take() {
+  local from="$1"; shift
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] record the new "%s" in %s, and leave the rest of it\n' "$*" "$PREFIX/manifest.json"; return 0; fi
+  manifest_take_py "$PREFIX/manifest.json" "$from" "$@" \
+    || warn "could not record $* in $PREFIX/manifest.json — teaport update may name the wrong release"
+}
+
 # Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
 # REQUIRED, which the publish workflow checks before a manifest goes up: add one there
 # when adding one here. models.voxtral.aux is optional (a missing aux file is skipped).
@@ -420,18 +772,28 @@ phase_engine() {
   log "engine + models -> $PREFIX"
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
   SUDO chown -R "$RUN_USER" "$PREFIX"
-  download "$(mget engine.assets.$ASSET_KEY.url)"  "$PREFIX/bin/voxtral"                         "$(mget engine.assets.$ASSET_KEY.sha256)"
-  run chmod +x "$PREFIX/bin/voxtral"
+  # The engine's own files and its models are staged, not downloaded over the live ones
+  # (engine_fetch), and go live together once all of them have verified (engine_swap_in,
+  # below). A swap a power cut stopped is put right first (engine_swap_recover).
+  engine_swap_recover
+  ENGINE_CHANGED=""
+  engine_fetch "$(mget engine.assets.$ASSET_KEY.url)" bin/voxtral "$(mget engine.assets.$ASSET_KEY.sha256)"
+  # The binary that will run: the staged one when it is new, the live one when it matched.
+  local bin="$PREFIX/bin/voxtral" kept=""
+  if contains " bin/voxtral " "$ENGINE_CHANGED "; then
+    bin="$ENGINE_STAGE/bin/voxtral"; kept="; nothing was swapped: the live engine is untouched"
+  fi
+  run chmod +x "$bin"
   # The preflight gate accepts R38 *and* R39 on the claim that this CUDA-13 binary resolves its
   # deps on both (see ASSET_KEY). Check the claim instead of trusting the label: an unresolved
   # .so is a crisp message here rather than a crash-looping unit after the ~15GB of models
   # below. phase_sysdeps already installed libopenblas0, so a miss now is a real ABI gap.
   if [ "$DRY_RUN" != 1 ]; then
-    local unresolved; unresolved="$(ldd "$PREFIX/bin/voxtral" 2>/dev/null | grep 'not found' || true)"
+    local unresolved; unresolved="$(ldd "$bin" 2>/dev/null | grep 'not found' || true)"
     if [ -n "$unresolved" ]; then
       die "engine binary has unresolved libraries on this L4T (R${L4T_RELEASE:-?}):
 $unresolved
-the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the lines above"
+the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the lines above$kept"
     fi
   fi
   # The en-us G2P dict MUST land at bin/g2p/ — the engine probes
@@ -454,7 +816,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     local g2p_msg="manifest has no engine.g2p_dict (url+sha256) — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$g2p_msg"; else die "$g2p_msg"; fi
   else
-    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.v2.dict" "$g2p_sha"
+    engine_fetch "$g2p_url" bin/g2p/kokoro_g2p.v2.dict "$g2p_sha"
   fi
   # The part-of-speech tagger beside the dict (kokoro_pos.bin, distilled from spaCy
   # en_core_web_sm tags; sources/licenses in the engine's NOTICE). The engine probes
@@ -468,7 +830,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     local pos_msg="manifest has no engine.pos_model (url+sha256) — a box installed without the POS tagger reads every homograph in its default form; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$pos_msg"; else die "$pos_msg"; fi
   else
-    download "$pos_url" "$PREFIX/bin/g2p/kokoro_pos.bin" "$pos_sha"
+    engine_fetch "$pos_url" bin/g2p/kokoro_pos.bin "$pos_sha"
   fi
   # THIRD_PARTY_NOTICES.txt — the MIT/BSD/Apache-2.0 attributions (misaki, Marlin, Voxtral,
   # Kokoro, civetweb, fvad, ggml, …) for the engine binary and the dict above, per the engine
@@ -483,16 +845,154 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     local notices_msg="manifest has no engine.notices (url+sha256) — a box installed without THIRD_PARTY_NOTICES.txt has no attribution text for its third-party components; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$notices_msg"; else die "$notices_msg"; fi
   else
-    download "$notices_url" "$PREFIX/THIRD_PARTY_NOTICES.txt" "$notices_sha"
+    engine_fetch "$notices_url" THIRD_PARTY_NOTICES.txt "$notices_sha"
   fi
-  download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
-  download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
+  engine_fetch "$(mget models.voxtral.url)" models/voxtral/consolidated.safetensors "$(mget models.voxtral.sha256)"
+  engine_fetch "$(mget models.kokoro.url)"  models/kokoro/Kokoro_espeak_F16.gguf     "$(mget models.kokoro.sha256)"
+  # A full run makes them live now (its restart is phase_services'). --only engine does it
+  # itself, right before its restart, so that it can check the result and put the previous
+  # engine back, models included (engine_swap).
+  if [ "$ONLY" != engine ]; then engine_swap_in; fi
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
   for aux in tekken.json params.json; do
     local u; u="$(python3 -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
     [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" ""
   done
-  run cp "$MF" "$PREFIX/manifest.json" 2>/dev/null || SUDO cp "$MF" "$PREFIX/manifest.json"
+  # --only engine records what it installed once the engine has come up on it (main_engine_only).
+  if [ "$ONLY" != engine ]; then
+    run cp "$MF" "$PREFIX/manifest.json" 2>/dev/null || SUDO cp "$MF" "$PREFIX/manifest.json"
+  fi
+}
+
+# sudo_ready <what> — sudo usable now, before anything moves: a password prompt in the
+# middle of a swap would leave it half done for as long as it waits, or for good on
+# Ctrl-C. (Why `sudo -n true` before `sudo -v`: see brain_swap.)
+sudo_ready() {
+  if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
+    sudo -v || die "sudo is needed to $1 — nothing was swapped"
+  fi
+}
+
+# engine_verify — did the engine come up, and STAY up? It must listen on its port (ENGINE_PORT
+# in engine.env, read privileged when the plain read fails, as brain_verify reads brain.env):
+# the signal phase_verify and `teaport doctor` go by, since the engine binds it once its
+# models are loaded, about a minute after it starts. It must do so in the invocation it
+# started in: a new InvocationID, or a unit that is no longer active, is a crash its
+# Restart= would otherwise hide. Then it must stay up through a settle window. Last, this
+# start's own journal must not say the G2P dict failed to load (phase_verify's check, here
+# scoped to the one invocation): that engine speaks robotic en-us (2026-08-05). A missing
+# POS tagger only reads homographs in their default form; it is said, and does not fail.
+# Not a live turn: the engine serves one session at a time, and a real one may hold it.
+engine_verify() {
+  local port envtxt id now st i up=0 line sel
+  envtxt="$(read_env_file "$ETC/engine.env" --lenient)"
+  port="$(sed -n 's/^ENGINE_PORT=//p' <<<"$envtxt" | tail -1)"; port="${port//[\"\']/}"; port="${port:-$ENGINE_PORT}"
+  id="$(systemctl show -p InvocationID --value teaport-engine.service 2>/dev/null || true)"
+  # Up to three minutes: the load takes about one, longer from a cold page cache, and
+  # rolling back an engine that was only slow would cost another load.
+  for i in $(seq 1 60); do
+    st="$(systemctl is-active teaport-engine.service 2>/dev/null || true)"
+    now="$(systemctl show -p InvocationID --value teaport-engine.service 2>/dev/null || true)"
+    if [ "$st" != active ]; then warn "teaport-engine is ${st:-not active} while it loads"; return 1; fi
+    if [ "$now" != "$id" ]; then warn "teaport-engine restarted while it loaded (crash-looping)"; return 1; fi
+    if contains ":$port " "$(ss -ltn 2>/dev/null || true)"; then up=1; break; fi
+    sleep 3
+  done
+  [ "$up" = 1 ] || { warn "teaport-engine did not listen on :$port within 3 minutes"; return 1; }
+  for i in $(seq 1 15); do
+    sleep 1
+    st="$(systemctl is-active teaport-engine.service 2>/dev/null || true)"
+    now="$(systemctl show -p InvocationID --value teaport-engine.service 2>/dev/null || true)"
+    if [ "$st" != active ]; then warn "teaport-engine is ${st:-not active} after it came up"; return 1; fi
+    if [ "$now" != "$id" ]; then warn "teaport-engine restarted after it came up (crash-looping)"; return 1; fi
+  done
+  sel=(-u teaport-engine.service --since '-10 min')
+  if [ -n "$id" ]; then sel=("_SYSTEMD_INVOCATION_ID=$id"); fi
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  if contains "dict G2P unavailable" "$line"; then
+    warn "the engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $line"; return 1
+  fi
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  if contains "POS tagger unavailable" "$line"; then
+    warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
+  fi
+  log "teaport-engine is listening on :$port and stayed up"
+}
+
+# engine_restart — restart the engine on what is in place now and verify it. Only the engine
+# is asked; the brain goes down and comes back with it (its Requires= on the engine, the
+# engine's Upholds= on it) and reconnects. A restart that FAILS is a failed verify,
+# returned, not a `set -e` exit that would skip engine_swap's rollback (see brain_restart).
+engine_restart() {
+  log "restarting teaport-engine (no speech for the minute its models take to load: a Talk session or a phone call in progress loses the engine, and the brain reconnects)"
+  if ! SUDO systemctl restart teaport-engine.service; then warn "systemctl restart teaport-engine failed"; return 1; fi
+  engine_verify || return 1
+  # The brain is not judged (this path deploys the engine, and putting the engine back is
+  # no fix for a brain), but a run that ends with the brain down must say so.
+  if systemctl is-enabled --quiet teaport-brain.service 2>/dev/null && ! systemctl is-active --quiet teaport-brain.service 2>/dev/null; then
+    warn "teaport-brain is $(systemctl is-active teaport-brain.service 2>/dev/null || true) after the engine restart — see: journalctl -u teaport-brain -n 50"
+  fi
+}
+
+# engine_dropins_note — a drop-in changes the unit just rendered, and the engine runs with
+# it: say so. A hand deploy can leave one in /run (shipping engine 1.5 by hand meant
+# removing one, #158), and an ExecStart= in it runs another binary than the one this run
+# installed, which the check after the restart would then vouch for. Not removed: it is
+# not this installer's, and it may be there on purpose.
+engine_dropins_note() {
+  local d; d="$(systemctl show -p DropInPaths --value teaport-engine.service 2>/dev/null || true)"
+  if [ -n "$d" ]; then
+    warn "teaport-engine.service has drop-ins, which change the unit just rendered: $d — remove any a hand deploy left (then sudo systemctl daemon-reload)"
+  fi
+}
+
+# engine_swap — --only engine's way live, once phase_engine has staged what differs from the
+# manifest and env_add_missing has filled in engine.env: keep the live engine and move the
+# staged files in (engine_swap_in), render the unit from this checkout, restart the engine
+# and verify it (engine_restart). An engine that does not come back gets what ran before
+# put back, its files and its unit, and the run fails. When nothing changed and the engine
+# is running, it is checked but not restarted: a restart costs a minute without speech.
+engine_swap() {
+  local before after why="" journal="journalctl -u teaport-engine -n 100"
+  if [ "$DRY_RUN" = 1 ]; then
+    engine_swap_in
+    render_unit teaport-engine.service.in teaport-engine.service
+    printf '  [dry-run] systemctl daemon-reload; restart teaport-engine.service if any of the above changed it (or it is not running), verify it listens on :%s and stays up, and put the previous engine back if it does not\n' "$ENGINE_PORT"
+    return 0
+  fi
+  sudo_ready "update and restart the engine"
+  before="$(cat "$ENGINE_UNIT" 2>/dev/null || true)"
+  engine_swap_in
+  render_unit teaport-engine.service.in teaport-engine.service
+  after="$(cat "$ENGINE_UNIT" 2>/dev/null || true)"
+  SUDO systemctl daemon-reload
+  engine_dropins_note
+  if [ -n "$ENGINE_CHANGED" ]; then why="new engine files"; fi
+  if [ "$before" != "$after" ]; then why="${why:+$why, }a new unit"; fi
+  if [ "$ENV_ADDED" != 0 ]; then why="${why:+$why, }new engine.env keys"; fi
+  if [ -z "$why" ] && systemctl is-active --quiet teaport-engine.service; then
+    log "the engine's files, unit and engine.env have not changed — checking it, not restarting it"
+    engine_verify || die "the engine is not healthy, and this run changed nothing it could put back — see: $journal"
+    return 0
+  fi
+  log "teaport-engine: ${why:-it is not running}"
+  if engine_restart; then return 0; fi
+  # Put back all this run changed: the engine's files and models with its unit (the kept
+  # copy), or the unit alone; and the keys it added to engine.env.
+  local back=""
+  if [ -n "$ENGINE_KEPT" ]; then
+    engine_restore "$ENGINE_KEPT"; back="the engine files, models and unit (${ENGINE_KEPT##*/})"
+  elif [ -n "$before" ] && [ "$before" != "$after" ]; then
+    write_root "$ENGINE_UNIT" "$before"; back="the unit"
+  fi
+  if [ "$ENV_ADDED" != 0 ]; then env_put_back; back="${back:+$back, and }engine.env"; fi
+  [ -n "$back" ] || die "the engine did not come back, and this run changed nothing it could put back — see: $journal"
+  warn "the engine did not come back — put back as they were before this run: $back"
+  SUDO systemctl daemon-reload
+  if engine_restart; then
+    die "rolled back: the engine is running on what it had before this run. The failed start is in: $journal"
+  fi
+  die "rolled back, but the engine is not healthy there either — see: $journal"
 }
 
 # uv — fast, reproducible installs from brain/uv.lock. Pinned + sha256-verified like every
@@ -598,6 +1098,10 @@ SRC_DIR=""
 # touches install.sh for the engine or SIP alone also asks for a git pull first.
 # Keep in step with those functions (test_install_brain_only.py checks the paths).
 BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 packaging/resolved install.sh)
+# The same for --only engine: the engine's unit template (render_unit) and install.sh, which
+# holds how the engine is installed and the engine.env keys it adds. The engine itself
+# comes from the manifest, not the checkout. (test_install_engine_only.py checks the paths.)
+ENGINE_ONLY_PATHS=(systemd/teaport-engine.service.in install.sh)
 # brain_src_fetch — fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command —
@@ -612,7 +1116,8 @@ brain_src_fetch() {
 check_brain_source() {
   SRC_DIR="$BRAIN_SRC"
   if [ -z "$SRC_DIR" ] && [ -d "$HERE/brain" ]; then SRC_DIR="$HERE/brain"; fi
-  if [ -n "$SRC_DIR" ] && [ ! -f "$SRC_DIR/uv.lock" ]; then
+  # (--only engine installs no brain, so it does not ask for one.)
+  if [ "$ONLY" != engine ] && [ -n "$SRC_DIR" ] && [ ! -f "$SRC_DIR/uv.lock" ]; then
     die "no uv.lock in $SRC_DIR — this installer only installs brain sources that ship one (a pre-uv source needs its own install.sh)"
   fi
   [ -z "$BRAIN_SRC" ] && [ -n "$SRC_DIR" ] && have git || return 0
@@ -631,10 +1136,12 @@ check_brain_source() {
     warn "cannot fetch $up — checking this checkout against the last fetch instead"
   fi
   # A full install consumes the whole checkout, so any upstream commit counts. --only brain
-  # consumes only BRAIN_ONLY_PATHS, so upstream commits that touch none of them (the
-  # engine's, the plugin's, docs) do not make it stale and are not refused.
-  local scope=() what=""
-  if [ "$ONLY" = brain ]; then scope=(-- "${BRAIN_ONLY_PATHS[@]}"); what=" in what --only brain installs (${BRAIN_ONLY_PATHS[*]})"; fi
+  # consumes only BRAIN_ONLY_PATHS (--only engine, ENGINE_ONLY_PATHS), so upstream commits
+  # that touch none of them (the engine's, the plugin's, docs) do not make it stale and are
+  # not refused.
+  local scope=() what="" paths=("${BRAIN_ONLY_PATHS[@]}")
+  if [ "$ONLY" = engine ]; then paths=("${ENGINE_ONLY_PATHS[@]}"); fi
+  if [ -n "$ONLY" ]; then scope=(-- "${paths[@]}"); what=" in what --only $ONLY installs (${paths[*]})"; fi
   behind="$(git -C "$HERE" rev-list --count "HEAD..$up" "${scope[@]}" 2>/dev/null)" || behind=0
   if [ "$behind" -gt 0 ]; then
     local msg="this checkout ($HERE) is $behind commit(s) behind $up$what — it would install older code than $up holds. git pull first"
@@ -643,7 +1150,7 @@ check_brain_source() {
     else die "$msg, or set TEAPORT_ALLOW_STALE_SOURCE=1 to install it anyway"; fi
   fi
   local p dirty="" mark=""
-  for p in "${BRAIN_ONLY_PATHS[@]}"; do
+  for p in "${paths[@]}"; do
     if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- "$p" 2>/dev/null)" ]; then dirty="$dirty $p"; fi
   done
   # Only brain/ goes into the release's revision label (brain_release_id).
@@ -925,9 +1432,7 @@ brain_swap() {
   # verifypw default), so on a box with a NOPASSWD rule beside a password one — the
   # appliance's own — it would prompt although the restart itself never would.
   # Needed with no unit to restart too: the operator tools flip with the link.
-  if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
-    sudo -v || die "sudo is needed to swap the brain's operator tools${1:+ and restart $*} — nothing was swapped"
-  fi
+  sudo_ready "swap the brain's operator tools${1:+ and restart $*}"
   brain_point_at "$target"
   log "brain venv: $BRAIN_LINK -> $target"
   if [ $# = 0 ]; then return 0; fi   # no brain unit to restart: the operator starts it
@@ -1783,6 +2288,105 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
 }
 
+# env_add_missing <path> <KEY=value...> — add to <path> the keys it does not have yet, with
+# the values given, and leave everything already in it as it is: each key with its value,
+# the comments, the order. --only engine's engine.env (#158), where write_env would not do:
+# write_env rewrites every plain key it is given, so what is only an engine update would
+# put an operator's KOKORO_RESERVE_FPT back to the installer's 8 or 12. Whether
+# a full run should keep rewriting those values, and so who owns them, is #264; this path
+# only fills gaps, so that a key a new engine release needs reaches a box without it.
+# Read as write_env reads (privileged when the plain read fails; a file that cannot be read
+# is not rewritten) and written as it writes (root:$RUN_USER 0640). Nothing to add: the
+# file is not written. Sets ENV_ADDED to the number of keys added, and keeps the file as it
+# was for env_put_back (engine_swap's rollback takes the keys back out).
+ENV_ADDED=0 ENV_FILE="" ENV_BEFORE="" ENV_EXISTED=0
+env_add_missing() {
+  local path="$1"; shift
+  local existing="" have=" " line key add=() kept=()
+  ENV_ADDED=0
+  if [ -e "$path" ] && [ ! -r "$path" ] && [ "$DRY_RUN" = 1 ]; then
+    warn "$path is not readable by $(id -un) — a real run reads it with sudo to see which keys it has"
+  elif [ -e "$path" ]; then
+    existing="$(read_env_file "$path")" || die "cannot read $path — refusing to rewrite it blind and lose operator settings"
+  fi
+  # The keys the file sets, as systemd reads them: blank lines and #/; comments skipped,
+  # whitespace around a key ignored. A key missed here would be appended again, and the
+  # last assignment wins, so a miss would override the operator's value: the one failure
+  # this function exists to rule out. `|| [ -n "$line" ]`: a last line without a newline.
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in
+      ''|'#'*|';'*) ;;
+      *=*) key="${line%%=*}"; key="${key%"${key##*[![:space:]]}"}"; have="$have$key " ;;
+    esac
+  done <<< "$existing"
+  for line in "$@"; do
+    case "$have" in *" ${line%%=*} "*) kept+=("${line%%=*}") ;; *) add+=("$line") ;; esac
+  done
+  if [ ${#add[@]} = 0 ]; then log "$path has every key already — left as it is"; return 0; fi
+  ENV_ADDED=${#add[@]}
+  if [ "$DRY_RUN" = 1 ]; then
+    # By name only for a secret-bearing key, as write_env's dry run shows them.
+    printf '  [dry-run] add to %s the keys it lacks:\n' "$path"
+    for line in "${add[@]}"; do
+      case "${line%%=*}" in
+        *TOKEN|*KEY|*SECRET|*PASSWORD) printf '    %s=<redacted>\n' "${line%%=*}" ;;
+        *) printf '    %s\n' "$line" ;;
+      esac
+    done
+    if [ ${#kept[@]} -gt 0 ]; then printf '    %s=…   (kept as it is)\n' "${kept[@]}"; fi
+    return 0
+  fi
+  log "adding ${#add[@]} key(s) $path lacks: ${add[*]%%=*}"
+  ENV_FILE="$path" ENV_BEFORE="$existing" ENV_EXISTED=0
+  if [ -e "$path" ]; then ENV_EXISTED=1; fi
+  { if [ -n "$existing" ]; then printf '%s\n' "$existing"; fi
+    printf '%s\n' "${add[@]}"
+  } | SUDO tee "$path" >/dev/null
+  SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
+}
+
+# env_put_back — undo env_add_missing's last write: the file as it was, or no file.
+env_put_back() {
+  [ "$ENV_ADDED" != 0 ] && [ -n "$ENV_FILE" ] || return 0
+  if [ "$ENV_EXISTED" = 1 ]; then
+    { if [ -n "$ENV_BEFORE" ]; then printf '%s\n' "$ENV_BEFORE"; fi; } | SUDO tee "$ENV_FILE" >/dev/null
+  else
+    SUDO rm -f "$ENV_FILE"
+  fi
+  ENV_ADDED=0
+}
+
+# engine_env_lines — the installer's engine.env keys and values, as ENGINE_ENV: what
+# phase_services writes on every run, and what --only engine adds when engine.env lacks one.
+ENGINE_ENV=()
+engine_env_lines() {
+  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
+  # default (50) OOMs an 8GB box — the installer must always set it.
+  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
+  # so reserving the voice-only amount alongside it is the direction that OOMs.
+  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
+  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
+  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
+  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
+  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
+  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
+  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
+  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
+  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
+  # sandbox is an agent too and gets 8 the same way.
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
+  # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
+  # rather than silently fall back to espeak-only prosody (see phase_engine).
+  # Engine 1.3 ignores it; from 1.5 it turns a degraded box into a loud restart
+  # loop that `teaport doctor` / journalctl names.
+  # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
+  # validated at (its batched decode is bit-identical to the unbatched one only there;
+  # at 240 it scored a point worse, and --reprime's measurements are all at 480).
+  ENGINE_ENV=("KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192"
+              "VOX_REQUIRE_DICT_G2P=1")
+}
+
 # box_id — four hex digits that tell boxes apart: the end of the Wi-Fi MAC, the same digits
 # Wi-Fi setup names its network by (teaport-ab12, wifi_setup.setup_ssid), so a box goes by
 # one name on its screen, on the network and in a phone's certificate list. A box with no
@@ -2090,35 +2694,12 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
-  # default (50) OOMs an 8GB box — the installer must always set it.
-  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
-  # so reserving the voice-only amount alongside it is the direction that OOMs.
-  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
-  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
-  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
-  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
-  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
-  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
-  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
-  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
-  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
-  # sandbox is an agent too and gets 8 the same way.
-  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
 
-  # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
-  # rather than silently fall back to espeak-only prosody (see phase_engine).
-  # Engine 1.3 ignores it; from 1.5 it turns a degraded box into a loud restart
-  # loop that `teaport doctor` / journalctl names.
-  # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
-  # validated at (its batched decode is bit-identical to the unbatched one only there;
-  # at 240 it scored a point worse, and --reprime's measurements are all at 480).
-  write_env "$ETC/engine.env" \
-    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192" \
-    "VOX_REQUIRE_DICT_G2P=1"
+  engine_env_lines
+  write_env "$ETC/engine.env" "${ENGINE_ENV[@]}"
   # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
   # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and takes
   # OpenClaw's voice context (identity and profile); voice-only it advertises the local
@@ -2972,9 +3553,98 @@ main_rollback_brain() {
   log "done — brain rolled back to $prev (run --rollback brain again to undo)"
 }
 
+# --only engine: the engine's files from the manifest and its unit from this checkout, and
+# nothing else (see the header). An engine must already be installed: this updates one.
+main_engine_only() {
+  log "teaport installer — engine only  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  if [ ! -f "$PREFIX/bin/voxtral" ] || ! systemctl cat teaport-engine.service >/dev/null 2>&1; then
+    local msg="no installed engine here ($PREFIX/bin/voxtral, teaport-engine.service) — --only engine updates one; run install.sh without --only first"
+    if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
+  fi
+  # A masked unit stays masked (render_unit, #199), so the restart and check that decide the
+  # swap could not run: say so before anything is downloaded.
+  if [ "$(readlink "$ENGINE_UNIT" 2>/dev/null || true)" = /dev/null ]; then
+    local masked="teaport-engine.service is masked on this machine — --only engine would install an engine nothing starts; systemctl unmask teaport-engine.service first"
+    if [ "$DRY_RUN" = 1 ]; then warn "$masked"; else die "$masked"; fi
+  fi
+  # Before anything is downloaded: render_unit would only find it missing after the swap.
+  [ -f "$HERE/systemd/teaport-engine.service.in" ] || die "missing unit template: $HERE/systemd/teaport-engine.service.in"
+  check_brain_source   # this checkout's freshness, in what --only engine installs (ENGINE_ONLY_PATHS)
+  fetch_manifest
+  eula_gate
+  l4t_gate --plan
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] check espeak-ng, libopenblas.so.0 and libcudnn.so.9 are installed (--only engine installs no packages)\n'
+  else
+    engine_libs_check " — --only engine installs no system packages; run install.sh without --only, which does"
+  fi
+  # A changed model stages beside the live one (Voxtral is ~4.4GB) and a kept copy can
+  # hold the old one: warned before anything is fetched, as the full run warns at 15GB.
+  local freegb; freegb="$(df -Pk "$PREFIX" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
+  [ -n "$freegb" ] && [ "$freegb" -lt 10 ] && warn "only ${freegb}GB free at $PREFIX (a new model stages beside the live one, ~4.4GB for Voxtral; an old copy in $ENGINE_ROLLBACKS can go to make room)"
+  phase_engine
+  # engine.env before the swap: a key added now changes nothing for the engine that is
+  # running (it read its environment when it started), and a file that cannot be read stops
+  # the run before anything has moved. The value for a missing KOKORO_RESERVE_FPT depends
+  # on the agent, as in phase_services.
+  detect_agent
+  engine_env_lines
+  log "engine.env: only the keys it lacks are added; a value already there stays"
+  env_add_missing "$ETC/engine.env" "${ENGINE_ENV[@]}"
+  engine_swap
+  manifest_take "$MF" engine models
+  log "done — engine $(mget engine.release 2>/dev/null || echo '?') from $MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
+  if [ -n "$ENGINE_KEPT" ] || [ "$DRY_RUN" = 1 ]; then printf '  undo:    install.sh --rollback engine\n'; fi
+  printf '  check:   teaport doctor\n'
+}
+
+# --rollback engine: the newest engine kept in $ENGINE_ROLLBACKS goes live again, with the
+# unit it ran under. The one it replaces is kept the same way first, so the next
+# --rollback engine undoes this one. No automatic rollback of the rollback (as with the
+# brain): a failure is said, and the next --rollback is how to go back.
+main_rollback_engine() {
+  log "teaport installer — engine rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  local target="" rel replacing=""
+  # A swap that was stopped half way: putting back the engine before it IS the rollback.
+  if [ -f "$ENGINE_SWAP_MARK" ]; then
+    target="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"; target="${target:-the engine before an interrupted swap}"
+  else
+    target="$(engine_rollback_target)" || die "no previous engine to roll back to (nothing kept in $ENGINE_ROLLBACKS)"
+  fi
+  log "rolling the engine back to ${target##*/}"
+  if [ "$DRY_RUN" != 1 ]; then sudo_ready "roll the engine back"; fi
+  # Renames into bin/, models/ and $PREFIX: theirs to own, as phase_engine leaves them.
+  SUDO chown "$RUN_USER" "$PREFIX"; SUDO chown -R "$RUN_USER" "$PREFIX/bin" "$PREFIX/models" "$ENGINE_ROLLBACKS"
+  if [ -f "$ENGINE_SWAP_MARK" ]; then
+    engine_swap_recover
+  else
+    # Keep what the rollback replaces (a model the kept engine has, too), so that a second
+    # --rollback engine undoes this one whole.
+    for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do [ ! -f "$target/$rel" ] || replacing="$replacing $rel"; done
+    engine_keep_live "$replacing"
+    # The renames back are one per file, as in a swap: marked the same way, so a run stopped
+    # among them is put back whole (to the engine kept just now) by the next one.
+    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK"; fi
+    engine_restore "$target"
+    if [ "$DRY_RUN" != 1 ]; then rm -f "$ENGINE_SWAP_MARK"; fi
+  fi
+  SUDO systemctl daemon-reload
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] restart teaport-engine.service, verify it listens on :%s and stays up\n' "$ENGINE_PORT"
+  else
+    engine_dropins_note
+    engine_restart || die "the engine did not come back on ${target##*/} — see: journalctl -u teaport-engine -n 100 (run --rollback engine again to undo)"
+  fi
+  engine_prune
+  log "done — engine rolled back to ${target##*/} (run --rollback engine again to undo)"
+}
+
 main() {
+  installer_lock
   if [ "$ROLLBACK" = brain ]; then main_rollback_brain; return; fi
+  if [ "$ROLLBACK" = engine ]; then main_rollback_engine; return; fi
   if [ "$ONLY" = brain ]; then main_brain_only; return; fi
+  if [ "$ONLY" = engine ]; then main_engine_only; return; fi
   log "teaport installer  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
   # The manifest pins the license version/text, so fetch it first; the gate
   # still runs before any phase touches the system.
