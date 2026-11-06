@@ -1185,6 +1185,15 @@ def test_status_shows_the_source_filter_the_gateway_runs():
     assert out.endswith(" rc=2\n") and "confirms it" not in out, out
     assert ("gateway not confirmed (cannot tell whether it runs the conf as it is now: its start time is later than "
             "this box's clock (started while the clock ran ahead, since set back?) — teaport sip restart)") in out, out
+    # A start on a clock not yet set (no network at boot, no NTP: the 1970 clock), the conf
+    # untouched since: once the clock is set the conf dates from after the start, but no
+    # edit was made, so no "changed since" and no ✓ (#166 review).
+    ch = _write_conf(conf, CONF + enforce1, t0)
+    rc, out = _run(d, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{_systemd_time(30)}'; "
+                      f'sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+    assert out.endswith(" rc=2\n") and "changed since" not in out, out
+    assert ("gateway not confirmed (cannot tell whether it runs the conf as it is now: it started before this "
+            "box's clock was set (no network at boot?) — teaport sip restart)") in out, out
     # Doctor's line: ✓ / ✗ / ! by the same answer.
     for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@AFTER@'", "✓"),
                       (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@BEFORE@'", "!"),

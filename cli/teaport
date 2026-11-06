@@ -708,6 +708,9 @@ sip_conf_check() {
   return 3
 }
 
+# A start time before this (2025-01-01 UTC) was read off a clock not yet set (sip_filter_state).
+SIP_CLOCK_SET_FLOOR=1735689600
+
 # sip_allow_count <conf> — how many sip_source_allow entries it lists (a line may hold
 # several, comma- or space-separated).
 sip_allow_count() { confvals "$1" sip_source_allow | tr ',[:blank:]' '\n' | grep -c . || true; }
@@ -789,6 +792,10 @@ sip_filter_state() {
       why="cannot tell whether it runs the conf as it is now: the conf's time is later than this box's clock (set back, or a copy that kept a time from a host ahead?) — touch the conf, then teaport sip restart"
     elif [ "$started" -gt "$now" ]; then
       why="cannot tell whether it runs the conf as it is now: its start time is later than this box's clock (started while the clock ran ahead, since set back?) — teaport sip restart"
+    elif [ "$started" -lt "$SIP_CLOCK_SET_FLOOR" ]; then
+      # A box that boots with no network has no NTP: the gateway starts on the 1970
+      # clock, and once the clock is set every conf dates from after that start.
+      why="cannot tell whether it runs the conf as it is now: it started before this box's clock was set (no network at boot?) — teaport sip restart"
     elif [ "$changed" -le "$started" ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0
     else printf 'the conf says %s; conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply' "$desc"; return 2
     fi
