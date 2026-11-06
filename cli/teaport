@@ -91,6 +91,10 @@ elif st == "unconfigured":
             " it on the setup page; otherwise set LLM_BASE_URL in %s/brain.env (then"
             " restart the brain) and write the key to ~/.config/teaport/llm_key, or set"
             " both on the configuration page at :7861/config" % (why, phone, sys.argv[1]))
+elif st == "account" and a.get("credit") is True:
+    text = ("out of credit %s: the AI account behind the answers has run out of credit,"
+            " and it will not pass by itself — add credit to it (an OpenRouter account:"
+            " openrouter.ai/settings/credits); this clears on the next answered request" % when)
 elif st == "account":
     text = ("refused %s: the account behind the answers needs attention, and it will"
             " not pass by itself — check the key and its account on the settings page;"

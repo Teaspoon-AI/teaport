@@ -228,6 +228,33 @@ def test_a_billing_failure_offers_settings_where_the_tool_is():
     assert "open_settings" not in other            # only a billing failure
 
 
+# A consult refused for credit, as the error OpenClaw hands back carries it (synthetic).
+CREDIT_402 = ('LLM request failed: 402 {"error": {"message": "This request would exceed '
+              'your available credits given your current in-flight requests", "code": 402}}')
+
+
+def test_a_failure_for_credit_says_the_account_ran_out():
+    """The provider's words for an account with nothing left (a 402 body, or "Insufficient
+    credits" alone): the outcome says the account has run out of credit -- the plain
+    cause the spoken line for a failed answer gives -- with the settings hint where the
+    tool is. A bare 402 keeps the billing statement; neither is "billing" by chance."""
+    for detail in (CREDIT_402, "Insufficient credits"):
+        _, plain = owed.failure_outcome("error", detail)
+        _, hint = owed.failure_outcome("error", detail, settings=True)
+        assert "run out of credit" in plain and "billing" not in plain, plain
+        assert hint == plain + owed.BILLING_SETTINGS_HINT, hint
+    _, bare = owed.failure_outcome("error", "HTTP 402 Payment Required")
+    assert "billing" in bare and "run out of credit" not in bare
+    _, limited = owed.failure_outcome("error", "403 Key limit exceeded (total limit)")
+    assert "credit" not in limited and "billing" not in limited, limited
+    status, outcome = owed.failure_outcome("error", CREDIT_402, settings=True)
+    rec = Record.make("k", CAL_REQ, outcome, failure=status)
+    assert rec.terms == {"credit"}, rec.terms
+    told = "I couldn't check that: your AI account has run out of credit."
+    assert rec.about(told) and rec.tells(told)
+    assert not rec.about("Want me to open your settings?")
+
+
 def test_a_failure_is_about_what_it_was_asked_for():
     """A failure's terms are its statement's own (Owed.tla OUTCOME = "failure"): a reply
     about it shares the request or them; an unrelated one nothing. The hedge rides along

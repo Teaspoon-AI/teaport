@@ -74,6 +74,12 @@ NO_CREDIT = N_("this account has no credit left")
 # all the same -- it is the owner's account -- with this said beside "saved".
 NO_ACCOUNT_CREDIT = N_("Your OpenRouter account has no credit yet, so Teaport can't answer "
                        "until you add some at openrouter.ai/settings/credits.")
+# The Settings page's line while answers are refused for credit (says_out_of_credit;
+# config_ui.account): the provider's last word, so "when ... last tried" -- a top-up shows
+# only on the next answer the provider accepts.
+RAN_OUT_OF_CREDIT = N_("When Teaport last tried to answer, your OpenRouter account had run "
+                       "out of credit. Add some at openrouter.ai/settings/credits, and "
+                       "Teaport can answer again.")
 SET_ELSEWHERE = N_("this box's key is set by its installer, so it can't be changed here")
 # A save the agent (OpenClaw) did not take: nothing changed (save_key).
 NOT_SHARED = N_("Teaport couldn't switch everything over to this key, so it kept the one "
@@ -133,6 +139,28 @@ def clean_reason(text: str) -> str:
     if len(text) > REASON_MAX:
         text = text[:REASON_MAX - 1].rstrip() + "…"
     return text
+
+
+# ------------------------------------------------------------------ out of credit
+# A provider's words for an account with nothing left to pay for answers: OpenRouter's
+# 402s ("Insufficient credits", "This request would exceed your available credits given
+# your current in-flight requests", "This request requires more credits, or fewer
+# max_tokens"), and the like elsewhere ("your credit balance is too low"). Within one
+# sentence: a free tier's rate limit says "Rate limit exceeded: ... . Add 10 credits to
+# ...", which is no shortage of credit. A key's own limit (#205: "Key limit exceeded")
+# names no credit, and stays the account's other kind: a key to change.
+_OUT_OF_CREDIT = re.compile(
+    r"\b(?:insufficient|not\s+enough|no|out\s+of|more|exceeds?|exceeded)"
+    r"(?:[^\w.]+\w+){0,4}?[^\w.]+credits?\b"
+    r"|\bcredits?(?:[^\w.]+\w+){0,3}?[^\w.]+(?:too\s+low|exhausted|depleted|used\s+up|"
+    r"run\s+out|ran\s+out)\b", re.IGNORECASE)
+
+
+def says_out_of_credit(text: str | None) -> bool:
+    """Whether a provider's message says the account is out of credit (_OUT_OF_CREDIT).
+    One test for every place that tells it: a failed answer (llm_error_speaker), a failed
+    consult (owed.failure_outcome)."""
+    return bool(text) and _OUT_OF_CREDIT.search(text) is not None
 
 
 # ------------------------------------------------------------------ the check

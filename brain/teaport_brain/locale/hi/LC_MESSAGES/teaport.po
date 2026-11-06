@@ -370,6 +370,22 @@ msgstr "माफ़ कीजिए, मैं अभी जवाब नही
 msgid "I still can't answer until my account is sorted out."
 msgstr "जब तक मेरा खाता ठीक नहीं होता, मैं अब भी जवाब नहीं दे सकता।"
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। OpenRouter की वेबसाइट पर क्रेडिट जोड़िए, या मदद के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। क्रेडिट OpenRouter की वेबसाइट पर जोड़ा जा सकता है।"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। उसमें क्रेडिट जोड़िए, या मदद के लिए “सेटिंग्स खोलो” बोलिए।"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है।"
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "मैं अब भी जवाब नहीं दे सकता: मेरे AI खाते में क्रेडिट नहीं है।"
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "माफ़ कीजिए, अभी मुझे जवाब नहीं मिल पाया।"
 
@@ -825,6 +841,10 @@ msgstr "आपका फ़ोन उसी Wi-Fi पर होना चाह�
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "आपके OpenRouter खाते में अभी कोई क्रेडिट नहीं है, इसलिए जब तक आप openrouter.ai/settings/credits पर क्रेडिट नहीं जोड़ते, Teaport जवाब नहीं दे सकता।"
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "जब Teaport ने पिछली बार जवाब देने की कोशिश की, तब आपके OpenRouter खाते का क्रेडिट ख़त्म हो चुका था। openrouter.ai/settings/credits पर क्रेडिट जोड़िए, फिर Teaport दोबारा जवाब दे पाएगा।"
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "आपका AI खाता जुड़ गया है, लेकिन उसमें अभी कोई क्रेडिट नहीं है। OpenRouter की वेबसाइट पर क्रेडिट जोड़िए, फिर मैं जवाब दे पाऊँगा।"

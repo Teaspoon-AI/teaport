@@ -378,6 +378,22 @@ msgstr "Извините, я сейчас не могу ответить: акк
 msgid "I still can't answer until my account is sorted out."
 msgstr "Я всё ещё не могу отвечать, пока с моим аккаунтом не разберутся."
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Пополните баланс на сайте OpenRouter или скажите «открой настройки», если нужна помощь."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Баланс можно пополнить на сайте OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Пополните его баланс или скажите «открой настройки», если нужна помощь."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Я всё ещё не могу отвечать: на моём аккаунте ИИ нет средств."
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Извините, сейчас не получилось получить ответ."
 
@@ -728,6 +744,10 @@ msgstr "Телефон должен быть в той же сети Wi-Fi, чт
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "На вашем аккаунте OpenRouter пока нет средств, поэтому Teaport не сможет отвечать, пока вы не пополните баланс на openrouter.ai/settings/credits."
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Когда Teaport в последний раз пытался ответить, на вашем аккаунте OpenRouter закончились средства. Пополните баланс на openrouter.ai/settings/credits, и Teaport снова сможет отвечать."
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Ваш аккаунт ИИ подключён, но на нём пока нет средств. Пополните баланс на сайте OpenRouter, и тогда я смогу отвечать."

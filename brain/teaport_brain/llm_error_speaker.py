@@ -53,6 +53,16 @@
 # own clock: after "trying again won't help" that advice contradicts itself, but
 # silence would be dead air (the owner may have topped up the account meanwhile).
 #
+# OUT OF CREDIT, NOT "NEEDS ATTENTION". The account class has two kinds the owner fixes
+# in different places: a key refused, revoked or at its own limit (a key to change:
+# Settings), and an account with nothing left to pay for answers (credit to add: the
+# provider's site). The second is said as it is: is_out_of_credit -- a 402 (QUOTA), or
+# the provider's own words (ai_account.says_out_of_credit), from a refusal or from an
+# error the stream itself carried (no HTTP status: pipecat's UNKNOWN, which the words, or
+# its body's code 402, make the account class). Its lines (_credit_text) name
+# OpenRouter's website only where the endpoint is OpenRouter's, and "open my settings" only
+# where it is heard, as the account lines do.
+#
 # Every line is said in the session's voice language (i18n.py catalogs).
 #
 # RECORDED, NOT ONLY SPOKEN (#205). ANSWERS keeps the current run of provider failures
@@ -105,9 +115,10 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
-from pipecat.utils.errors import ErrorCategory, classify_http_exception
+from pipecat.utils.errors import (ErrorCategory, classify_http_exception,
+                                  classify_http_status_code)
 
-from teaport_brain import credit, i18n
+from teaport_brain import ai_account, credit, i18n
 from teaport_brain.ai_account import clean_reason, redact  # noqa: F401 (redact: services)
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting
@@ -141,6 +152,23 @@ ACCOUNT_SETTINGS_TEXT = N_("Sorry, I can't answer right now: the account I use f
 # The same, on every later failed turn inside the account window: short, because the
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
+# The account is out of credit (is_out_of_credit; the module note): the cause, and where
+# credit is added. On OpenRouter its website, by name: a spoken line, so not the bare
+# address, which the voice reads badly (as wifi_voice.ACCOUNT_NO_CREDIT_TEXT; the page
+# and the CLI show openrouter.ai/settings/credits). Where "open my settings" is heard,
+# that phrase too (the quoted words, in each catalog, one its "settings" pattern hears:
+# tests/test_i18n.py).
+CREDIT_SETTINGS_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. Add "
+                          "credit on OpenRouter's website, or say \"open my settings\" for "
+                          "help.")
+CREDIT_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. Credit can be "
+                 "added on OpenRouter's website.")
+# Another provider: its site is not ours to name.
+CREDIT_OTHER_SETTINGS_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. "
+                                "Add credit to it, or say \"open my settings\" for help.")
+CREDIT_OTHER_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit.")
+# Its ACCOUNT_STILL_TEXT.
+CREDIT_STILL_TEXT = N_("I still can't answer: my AI account is out of credit.")
 
 # No model at all (#277; the module note). The account, as the account line names it.
 NO_MODEL_TEXT = N_("I can't answer questions yet, because the account I use for my "
@@ -194,24 +222,59 @@ def category_of(frame: ErrorFrame) -> ErrorCategory:
     return ErrorCategory.UNKNOWN
 
 
-def is_account_problem(frame: ErrorFrame) -> bool:
-    """A key the provider refused, or an account with nothing left (401/402/403)."""
-    return category_of(frame) in ACCOUNT_CATEGORIES
-
-
-def failure_reason(exception: BaseException | None) -> str:
-    """The provider's own first line about a failure, safe to show: the message from its
-    response body when there is one (the OpenAI SDK parses it into .body), cleaned as a
-    key check's reason is (ai_account.clean_reason: redacted, every sentence that carried
-    a link dropped, keys removed, no status code). The exception's type name when nothing
-    readable is left; "" for no exception."""
-    if exception is None:
-        return ""
+def _provider_message(exception: BaseException) -> str:
+    """The provider's message about a failure, raw: from its response body when there is
+    one (the OpenAI SDK parses it into .body -- for an error the stream carried, the
+    error object itself), else the exception's own text."""
     body = getattr(exception, "body", None)
     text = body.get("message") if isinstance(body, dict) else body
     if not isinstance(text, str) or not text.strip():
         text = str(exception)
-    return clean_reason(text) or type(exception).__name__
+    return text
+
+
+def is_out_of_credit(frame: ErrorFrame) -> bool:
+    """The account has nothing left to pay for answers (the module note): a 402, or the
+    provider saying so -- in its words, or a 402 in its error body -- on a refusal or an
+    error with no HTTP status. Never a failure of the kind that passes (a rate limit, an
+    outage: their words can suggest buying credit), nor one no provider request raises."""
+    category = category_of(frame)
+    if category is ErrorCategory.QUOTA:
+        return True
+    if not (category in ACCOUNT_CATEGORIES or category is ErrorCategory.UNKNOWN):
+        return False
+    exception = frame.exception
+    if not isinstance(exception, PROVIDER_EXCEPTIONS):
+        return False
+    body = getattr(exception, "body", None)
+    code = body.get("code") if isinstance(body, dict) else None
+    if code in (402, "402"):
+        return True
+    # Another status in the body of an error the stream carried: its own kind decides. A
+    # 500 or 503 that says "credits" (an upstream's, say) passes like any outage.
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code)
+    if (isinstance(code, int) and not isinstance(code, bool)
+            and classify_http_status_code(code) not in (ACCOUNT_CATEGORIES
+                                                        | {ErrorCategory.UNKNOWN})):
+        return False
+    return ai_account.says_out_of_credit(_provider_message(exception))
+
+
+def is_account_problem(frame: ErrorFrame) -> bool:
+    """A key the provider refused, or an account with nothing left (401/402/403, or out
+    of credit by the provider's words: is_out_of_credit)."""
+    return category_of(frame) in ACCOUNT_CATEGORIES or is_out_of_credit(frame)
+
+
+def failure_reason(exception: BaseException | None) -> str:
+    """The provider's own first line about a failure, safe to show: _provider_message,
+    cleaned as a key check's reason is (ai_account.clean_reason: redacted, every sentence
+    that carried a link dropped, keys removed, no status code). The exception's type name
+    when nothing readable is left; "" for no exception."""
+    if exception is None:
+        return ""
+    return clean_reason(_provider_message(exception)) or type(exception).__name__
 
 
 class AnswerHealth:
@@ -225,6 +288,9 @@ class AnswerHealth:
         self._count = 0
         self._category = None
         self._reason = ""
+        self._account = False   # the latest is the account class (is_account_problem)
+        self._credit = False    # ... and out of credit (is_out_of_credit)
+        self._credit_key = None  # the key it was out of credit on (credit.key_hash)
         self._ok_at = None      # the last accepted request
 
     def failed(self, frame: ErrorFrame) -> None:
@@ -237,39 +303,54 @@ class AnswerHealth:
                 or not isinstance(frame.exception, PROVIDER_EXCEPTIONS)):
             return
         now = self._clock()
-        was_account = self._category in ACCOUNT_CATEGORIES
+        was_account = self._account
         if self._since is None:
             self._since = now
         self._last, self._count = now, self._count + 1
         self._category, self._reason = category, failure_reason(frame.exception)
-        if category in ACCOUNT_CATEGORIES:
+        self._account, self._credit = is_account_problem(frame), is_out_of_credit(frame)
+        key = ai_account.current_key()
+        self._credit_key = credit.key_hash(key) if self._credit and key else None
+        if self._account:
             # On the trial credit this is most likely the credit running out: read it
             # again now, not at the next poll (credit.py, #280).
             credit.MONITOR.poke()
-        if category in ACCOUNT_CATEGORIES and not was_account:
-            logger.error(f"answers: the provider refused this account ({category.value}): "
-                         f"{self._reason} -- every request will fail until the key or "
-                         "the account is fixed")
+        if self._account and not was_account:
+            logger.error(f"answers: the provider refused this account ({category.value}"
+                         f"{', out of credit' if self._credit else ''}): {self._reason} "
+                         "-- every request will fail until the key or the account is fixed")
 
     def succeeded(self) -> None:
         if self._since is not None:
             logger.info(f"answers: the provider accepts requests again, after "
                         f"{self._count} failure(s)")
         self._since = self._last = self._category = None
+        self._account = self._credit = False
+        self._credit_key = None
         self._count, self._reason, self._ok_at = 0, "", self._clock()
 
     def status(self) -> dict:
         """state: "ok" (the last request was accepted), "untried" (none since the brain
         started), "failing" (failures of the kind that pass) or "account" (a refused key
-        or a spent account). since / last: wall-clock seconds of the run's first and
-        latest failure; reason: failure_reason of the latest. A failing state stays until
-        the next accepted request: nothing else can tell that the key was fixed."""
+        or a spent account; with "credit": true when it is out of credit,
+        is_out_of_credit). since / last: wall-clock seconds of the run's first and latest
+        failure; reason: failure_reason of the latest. A failing state stays until the next
+        accepted request: nothing else can tell that the key was fixed."""
         if self._since is None:
             return {"state": "ok" if self._ok_at is not None else "untried"}
-        account = self._category in ACCOUNT_CATEGORIES
-        return {"state": "account" if account else "failing",
+        return {"state": "account" if self._account else "failing",
                 "category": self._category.value, "since": self._since,
-                "last": self._last, "count": self._count, "reason": self._reason}
+                "last": self._last, "count": self._count, "reason": self._reason,
+                **({"credit": True} if self._credit else {})}
+
+    def out_of_credit(self) -> bool:
+        """The latest failure says the account is out of credit, no request has been
+        accepted since, and the key is still the one it was refused on (the Settings
+        page's line: config_ui.account). A key saved since is another account, or one
+        topped up: its first request tells, and the page no longer says it ran out."""
+        key = ai_account.current_key()
+        return (self._credit and self._credit_key is not None and bool(key)
+                and credit.key_hash(key) == self._credit_key)
 
 
 ANSWERS = AnswerHealth()
@@ -326,17 +407,20 @@ class LLMErrorSpeaker(FrameProcessor):
         account_window = _DEBOUNCE_SECS * ACCOUNT_DEBOUNCE_FACTOR
         in_account_window = now - self._said_account < account_window
         if is_account_problem(frame):
+            out_of_credit = is_out_of_credit(frame)
             if in_account_window:
-                return ACCOUNT_STILL_TEXT
+                return CREDIT_STILL_TEXT if out_of_credit else ACCOUNT_STILL_TEXT
             self._said_account = now
             # On the owner's surface, a refusal that is the trial credit running out -- the
-            # provider said so (402, QUOTA), or nothing is left -- says so (#280). A
+            # provider said so (out of credit), or nothing is left -- says so (#280). A
             # revoked key or a policy 403 with credit left is the usual account line.
             state = credit.MONITOR.state()
             if self._owner and state not in (credit.NONE, credit.OWN) and (
-                    category_of(frame) is ErrorCategory.QUOTA or state == credit.EMPTY):
+                    out_of_credit or state == credit.EMPTY):
                 self._end_after = True
                 return self._spent_text()
+            if out_of_credit:
+                return self._credit_text()
             return ACCOUNT_SETTINGS_TEXT if self._settings else ACCOUNT_TEXT
         if now - self._said < _DEBOUNCE_SECS:
             return None
@@ -345,6 +429,13 @@ class LLMErrorSpeaker(FrameProcessor):
         # may have been topped up meanwhile, with the clock still running), but not
         # "try again", which would contradict the account line.
         return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
+
+    def _credit_text(self) -> str:
+        """The account is out of credit: where it is added (OpenRouter's website on its
+        endpoint, read as the failure comes), and "open my settings" where it is heard."""
+        if ai_account.is_openrouter(setting("LLM_BASE_URL")):
+            return CREDIT_SETTINGS_TEXT if self._settings else CREDIT_TEXT
+        return CREDIT_OTHER_SETTINGS_TEXT if self._settings else CREDIT_OTHER_TEXT
 
     def _spent_text(self) -> str:
         """The trial credit is spent (#280): with "open my settings" where it is heard."""

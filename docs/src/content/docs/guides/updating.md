@@ -5,14 +5,14 @@ description: Check an installed device against its release manifest, update the 
 
 The installer applies every update. The `teaport update` command compares the device with the release manifest and names the parts that differ; it changes nothing. The brain and the engine also have narrower paths: `install.sh --only brain` rebuilds the brain alone, and `install.sh --only engine` updates the engine alone. `install.sh --rollback brain` and `install.sh --rollback engine` put the previous one back.
 
-<!-- source: cli/teaport:449-477#310f2dec; install.sh:9-13#e917cb0e -->
+<!-- source: cli/teaport:453-481#310f2dec; install.sh:9-13#e917cb0e -->
 
 ## Before you begin
 
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: cli/teaport:17,451-452#81a89efd; install.sh:863,3595#841be564 -->
+<!-- source: cli/teaport:17,455-456#81a89efd; install.sh:863,3595#841be564 -->
 
 ## Check for updates
 
@@ -27,7 +27,7 @@ To see which parts of the installation differ from the release manifest:
 
    The command fetches a fresh copy of the release manifest, compares it with the stored one, and prints a line for the version and for each tracked part: the engine release, the brain tag, and the plugin version. `->` marks a part that differs; `==` marks one that matches. The check ends with `up to date.` when nothing differs, or with a `changed:` list. It changes nothing on the device.
 
-<!-- source: cli/teaport:449-472#c24b4811 -->
+<!-- source: cli/teaport:453-476#c24b4811 -->
 
 ## Apply an update
 
@@ -39,7 +39,7 @@ teaport update
 
 The command prints the same comparison and, when a part differs, names the run to make: `install.sh --only brain` for the brain, `install.sh --only engine` for an engine release, and a full `install.sh` run for the rest. The installer does the update; the command does not.
 
-<!-- source: cli/teaport:471,473-477#4f708e2f -->
+<!-- source: cli/teaport:475,477-481#4f708e2f -->
 
 ### Update only the brain
 
@@ -131,7 +131,7 @@ Run the installer with no component flag:
 
 The full run repeats the installation and downloads only the artifacts that differ. It builds the brain the way the brain-only run does, and after every unit and env file is written, it points the `venv` link at the new release, restarts the engine and the brain in one step, and checks that they come back. A full run has no automatic rollback; roll the brain or the engine back by hand afterward.
 
-<!-- source: install.sh:5,29-33#a295df7b; install.sh:50-52#c6d99e84; cli/teaport:477#8d9b9f6b -->
+<!-- source: install.sh:5,29-33#a295df7b; install.sh:50-52#c6d99e84; cli/teaport:481#8d9b9f6b -->
 
 ## Roll back the brain
 
@@ -185,11 +185,11 @@ Both the installer and `teaport update` read the URL or local path in `TEAPORT_M
 TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 ```
 
-<!-- source: install.sh:56,81#0f9477e2; cli/teaport:20,195#d418858c -->
+<!-- source: install.sh:56,81#0f9477e2; cli/teaport:20,199#d418858c -->
 
 No command takes a channel option: the installer parses `--dry-run`, `--accept-eula`, `--only`, `--rollback`, and `--help`, and `teaport update` parses `--check`. The variable is how you choose.
 
-<!-- source: install.sh:101-111#ef93f814; cli/teaport:449-450#07b8ea70 -->
+<!-- source: install.sh:101-111#ef93f814; cli/teaport:453-454#07b8ea70 -->
 
 ## Retained releases
 

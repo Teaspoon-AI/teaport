@@ -370,6 +370,22 @@ msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorde
 msgid "I still can't answer until my account is sorted out."
 msgstr "Ik kan nog steeds niet antwoorden tot mijn account in orde is."
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe op de website van OpenRouter, of zeg ‘open de instellingen’ als je hulp wilt."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Tegoed kan worden toegevoegd op de website van OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe, of zeg ‘open de instellingen’ als je hulp wilt."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Ik kan nog steeds niet antwoorden: het tegoed van mijn AI-account is op."
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Sorry, ik kreeg net geen antwoord."
 
@@ -720,6 +736,10 @@ msgstr "Je telefoon moet op dezelfde wifi zitten als Teaport. Gaat het niet vanz
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "Je OpenRouter-account heeft nog geen tegoed, dus Teaport kan pas antwoorden als je tegoed toevoegt op openrouter.ai/settings/credits."
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Toen Teaport het laatst probeerde te antwoorden, was het tegoed van je OpenRouter-account op. Voeg tegoed toe op openrouter.ai/settings/credits, dan kan Teaport weer antwoorden."
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Je AI-account is gekoppeld, maar heeft nog geen tegoed. Voeg tegoed toe op de website van OpenRouter, dan kan ik antwoorden."

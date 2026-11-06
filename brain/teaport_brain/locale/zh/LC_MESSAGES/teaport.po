@@ -370,6 +370,22 @@ msgstr "抱歉，我现在无法回答：我用来回答问题的账户需要处
 msgid "I still can't answer until my account is sorted out."
 msgstr "在我的账户问题解决之前，我仍然无法回答。"
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。请到 OpenRouter 网站充值，或者说“打开设置”获取帮助。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。可以到 OpenRouter 网站充值。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。请为它充值，或者说“打开设置”获取帮助。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。"
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "我仍然无法回答：我的 AI 账户没有余额了。"
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "抱歉，刚才没能得到回答。"
 
@@ -720,6 +736,10 @@ msgstr "你的手机需要和 Teaport 连在同一个 Wi-Fi 上。如果没有�
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "你的 OpenRouter 账户还没有余额，所以在你到 openrouter.ai/settings/credits 充值之前，Teaport 无法回答。"
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Teaport 上次尝试回答时，你的 OpenRouter 账户余额已经用完了。到 openrouter.ai/settings/credits 充值后，Teaport 就能再次回答。"
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "你的 AI 账户已连接，但还没有余额。到 OpenRouter 网站充值后，我就能回答了。"

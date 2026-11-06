@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:337-446#debb199d -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:341-450#debb199d -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -148,7 +148,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:337-446#debb199d -->
+<!-- source: cli/teaport:341-450#debb199d -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -398,7 +398,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:337-446#debb199d -->
+<!-- source: cli/teaport:341-450#debb199d -->
 
 **Fix**
 
@@ -536,7 +536,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 - A phone caller hears a short line that teaport can't take calls now, and then the
   call ends. A caller never hears setup instructions.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:145-158#aeaad70d -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:173-186#aeaad70d -->
 
 **Fix**
 
@@ -557,8 +557,10 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 
 ## teaport says the account it uses for answers needs attention
 
-**Cause** The model provider refused the key, or the account behind the key has
-no credit or allowance left. For example, a key that reached its spending limit.
+**Cause** The model provider refused the key, or the key has no allowance left.
+For example, a key that reached its spending limit. When the account itself has
+run out of credit, teaport says that instead: see
+[teaport says its AI account has run out of credit](#teaport-says-its-ai-account-has-run-out-of-credit).
 Every request fails until you change the key or the account, so asking again
 does not help. teaport says this once, and on later failed turns it says that
 it still can't answer. In the room and in Talk, on a device whose settings site is
@@ -567,7 +569,7 @@ its configuration page. For other failures, such as a provider that is busy or s
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:120-140#6767a7cb -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:131-151#6767a7cb -->
 
 **Fix**
 
@@ -583,7 +585,38 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:59-108#8ab13fe7 -->
+<!-- source: cli/teaport:59-112#0ca3ecaa -->
+
+## teaport says its AI account has run out of credit
+
+**Cause** The model provider refused the request because the account behind the
+key has no credit left. OpenRouter answers with HTTP 402, for example "Insufficient
+credits" or "This request would exceed your available credits". Every request
+fails until credit is added, so asking again does not help. The first time,
+teaport says "Sorry, I can't answer: my AI account has run out of credit." When the account is on
+OpenRouter, it adds that credit can be added on OpenRouter's website. In the room and in Talk,
+on a device whose settings site is set up, it also tells you to say "open my
+settings" for help. On later failed turns it says that it still can't answer because
+the account is out of credit. A request OpenClaw runs for teaport fails the same way,
+and teaport tells you that the AI account has run out of credit.
+
+On the device's included trial credit, teaport says instead that its trial credit has
+run out, and asks you to connect your own account.
+
+<!-- source: brain/teaport_brain/llm_error_speaker.py:155-171#83953e0c; brain/teaport_brain/llm_error_speaker.py:433-438#6694ea6f; brain/teaport_brain/owed.py:273-279#d2fd4910 -->
+
+**Fix**
+
+1. Run `teaport status`. The `answers (brain)` line reads `out of credit since
+   ...`, with the provider's reason. `teaport doctor` reports the same line as a
+   failure. The AI account step on the configuration page shows that the account ran out of
+   credit.
+2. Add credit to the account. On OpenRouter, that is
+   [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits).
+3. Ask teaport something. The `answers (brain)` line reads `working`, and the
+   note on the configuration page goes away, after the provider accepts a request.
+
+<!-- source: cli/teaport:94-97#5e2e8c16; brain/teaport_brain/config_ui.py:762-768#b2285852 -->
 
 ## teaport does not remember anything
 

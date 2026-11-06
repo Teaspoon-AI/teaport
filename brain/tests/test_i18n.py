@@ -50,6 +50,7 @@ DYNAMIC = {
         "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
         "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
         "_reader(request)._(check.note)",    # ai_account.NO_ACCOUNT_CREDIT: N_() there (#282)
+        "t._(ai_account.RAN_OUT_OF_CREDIT)",  # N_() there
     },
     "goodbye.py": {
         "voice.t._(SLEEP_TEXT)",             # N_() there: the sleep phrase's line
@@ -60,7 +61,7 @@ DYNAMIC = {
         "t._(CONNECT_SPOKEN_TEXT if connect else SPOKEN_TEXT)",
     },
     "llm_error_speaker.py": {
-        "t._(text)",                         # its four notices: N_() there
+        "t._(text)",                         # its notices: N_() there
     },
     "sip_server.py": {
         "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
@@ -549,13 +550,16 @@ def _quoting_lines():
             "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
             "account": ("settings", llm_error_speaker.ACCOUNT_SETTINGS_TEXT),
+            "out of credit": ("settings", llm_error_speaker.CREDIT_SETTINGS_TEXT),
+            "out of credit, other": ("settings", llm_error_speaker.CREDIT_OTHER_SETTINGS_TEXT),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
             "credit empty": ("settings", credit.EMPTY_TEXT),
             "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
             "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
 
 
-@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "account", "key not saved",
+@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "account",
+                                   "out of credit", "out of credit, other", "key not saved",
                                    "new code", "credit half", "credit low", "credit empty",
                                    "sign-in session", "sign in later"])
 @pytest.mark.parametrize("lang", i18n.catalogs())

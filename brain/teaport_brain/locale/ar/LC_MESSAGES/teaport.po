@@ -381,6 +381,22 @@ msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب ا�
 msgid "I still can't answer until my account is sorted out."
 msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية مشكلة حسابي."
 
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. أضف رصيدًا على موقع OpenRouter، أو قل «افتح الإعدادات» للمساعدة."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. يمكن إضافة رصيد على موقع OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. أضف إليه رصيدًا، أو قل «افتح الإعدادات» للمساعدة."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "ما زلتُ لا أستطيع الإجابة: لا يوجد رصيد في حساب الذكاء الاصطناعي الخاص بي."
+
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن."
 
@@ -731,6 +747,10 @@ msgstr "يجب أن يكون هاتفك على شبكة Wi-Fi نفسها الت�
 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "لا يوجد رصيد في حسابك على OpenRouter بعد، لذلك لا يستطيع Teaport الإجابة حتى تضيف رصيدًا على openrouter.ai/settings/credits."
+
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "في آخر مرة حاول فيها Teaport الإجابة، كان رصيد حسابك على OpenRouter قد نفد. أضف رصيدًا على openrouter.ai/settings/credits، وسيتمكن Teaport من الإجابة مجددًا."
 
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك، لكن لا يوجد فيه رصيد بعد. أضف رصيدًا على موقع OpenRouter، وبعدها أستطيع الإجابة."
