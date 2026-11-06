@@ -12,7 +12,7 @@ The installer applies every update. The `teaport update` command compares the de
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: cli/teaport:17,451-452#81a89efd; install.sh:735,3407#841be564 -->
+<!-- source: cli/teaport:17,451-452#81a89efd; install.sh:735,3447#841be564 -->
 
 ## Check for updates
 
@@ -107,11 +107,11 @@ The engine takes about a minute to load its models after a restart, and a Talk s
 
 `/etc/teaport/engine.env` gains only the keys it lacks. A value that is already in the file stays, so a `KOKORO_RESERVE_FPT` that you tuned survives the update. A full run writes the installer's values over it.
 
-<!-- source: install.sh:46-47,2190,2204,2541-2543#b176008a -->
+<!-- source: install.sh:46-47,2197,2211,2562-2564#b176008a -->
 
 The run asks you to accept the engine license only when its version differs from the one you accepted. It installs no system packages: it checks that `espeak-ng`, `libopenblas.so.0`, and `libcudnn.so.9` are present, and stops when one is missing. Nothing else changes: no brain build and no other unit.
 
-<!-- source: install.sh:47-48,3390-3396#d2f3ce52 -->
+<!-- source: install.sh:47-48,3430-3436#d2f3ce52 -->
 
 If a drop-in changes the engine's unit, for example one that a manual deployment left in `/run`, the run names it and leaves it in place. Remove it if you don't need it, and then run `sudo systemctl daemon-reload`.
 
@@ -163,11 +163,11 @@ To put the previous engine back, run the rollback on its own:
 
 The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
 
-<!-- source: install.sh:13,50-51,572-584,3413-3434#f653150b -->
+<!-- source: install.sh:13,50-51,572-584,3453-3474#f653150b -->
 
 The engine-only update rolls back on its own when the engine fails its check. A rollback doesn't: if the engine doesn't come back, the run stops and says so. A full run doesn't roll back either; use the rollback by hand there.
 
-<!-- source: install.sh:45,51-52,725,3415-3416,3431#cfa8e5ec -->
+<!-- source: install.sh:45,51-52,725,3455-3456,3471#cfa8e5ec -->
 
 ## Choose a release channel
 
