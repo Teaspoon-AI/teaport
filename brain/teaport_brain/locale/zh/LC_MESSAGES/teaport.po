@@ -366,11 +366,11 @@ msgid "I still can't answer until my account is sorted out."
 msgstr "在我的账户问题解决之前，我仍然无法回答。"
 
 # Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
-msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
-msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。请到 openrouter.ai 充值，或者说“打开设置”获取帮助。"
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。请到 OpenRouter 网站充值，或者说“打开设置”获取帮助。"
 
-msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
-msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。可以到 openrouter.ai 充值。"
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。可以到 OpenRouter 网站充值。"
 
 msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
 msgstr "抱歉，我无法回答：我的 AI 账户余额已经用完了。请为它充值，或者说“打开设置”获取帮助。"

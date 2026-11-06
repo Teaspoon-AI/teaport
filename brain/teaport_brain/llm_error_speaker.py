@@ -60,7 +60,7 @@
 # the provider's own words (ai_account.says_out_of_credit), from a refusal or from an
 # error the stream itself carried (no HTTP status: pipecat's UNKNOWN, which the words, or
 # its body's code 402, make the account class). Its lines (_credit_text) name
-# openrouter.ai only where the endpoint is OpenRouter's, and "open my settings" only
+# OpenRouter's website only where the endpoint is OpenRouter's, and "open my settings" only
 # where it is heard, as the account lines do.
 #
 # Every line is said in the session's voice language (i18n.py catalogs).
@@ -115,7 +115,8 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
-from pipecat.utils.errors import ErrorCategory, classify_http_exception
+from pipecat.utils.errors import (ErrorCategory, classify_http_exception,
+                                  classify_http_status_code)
 
 from teaport_brain import ai_account, credit, i18n
 from teaport_brain.ai_account import clean_reason, redact  # noqa: F401 (redact: services)
@@ -152,13 +153,16 @@ ACCOUNT_SETTINGS_TEXT = N_("Sorry, I can't answer right now: the account I use f
 # full line was said minutes ago, but not nothing.
 ACCOUNT_STILL_TEXT = N_("I still can't answer until my account is sorted out.")
 # The account is out of credit (is_out_of_credit; the module note): the cause, and where
-# credit is added. On OpenRouter its site, by the name its own page gives it
-# (ai_account.NO_ACCOUNT_CREDIT); where "open my settings" is heard, that phrase too (the
-# quoted words, in each catalog, one its "settings" pattern hears: tests/test_i18n.py).
+# credit is added. On OpenRouter its website, by name: a spoken line, so not the bare
+# address, which the voice reads badly (as wifi_voice.ACCOUNT_NO_CREDIT_TEXT; the page
+# and the CLI show openrouter.ai/settings/credits). Where "open my settings" is heard,
+# that phrase too (the quoted words, in each catalog, one its "settings" pattern hears:
+# tests/test_i18n.py).
 CREDIT_SETTINGS_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. Add "
-                          "credit at openrouter.ai, or say \"open my settings\" for help.")
+                          "credit on OpenRouter's website, or say \"open my settings\" for "
+                          "help.")
 CREDIT_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. Credit can be "
-                 "added at openrouter.ai.")
+                 "added on OpenRouter's website.")
 # Another provider: its site is not ours to name.
 CREDIT_OTHER_SETTINGS_TEXT = N_("Sorry, I can't answer: my AI account has run out of credit. "
                                 "Add credit to it, or say \"open my settings\" for help.")
@@ -243,8 +247,17 @@ def is_out_of_credit(frame: ErrorFrame) -> bool:
     if not isinstance(exception, PROVIDER_EXCEPTIONS):
         return False
     body = getattr(exception, "body", None)
-    if isinstance(body, dict) and body.get("code") in (402, "402"):
+    code = body.get("code") if isinstance(body, dict) else None
+    if code in (402, "402"):
         return True
+    # Another status in the body of an error the stream carried: its own kind decides. A
+    # 500 or 503 that says "credits" (an upstream's, say) passes like any outage.
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code)
+    if (isinstance(code, int) and not isinstance(code, bool)
+            and classify_http_status_code(code) not in (ACCOUNT_CATEGORIES
+                                                        | {ErrorCategory.UNKNOWN})):
+        return False
     return ai_account.says_out_of_credit(_provider_message(exception))
 
 
@@ -277,6 +290,7 @@ class AnswerHealth:
         self._reason = ""
         self._account = False   # the latest is the account class (is_account_problem)
         self._credit = False    # ... and out of credit (is_out_of_credit)
+        self._credit_key = None  # the key it was out of credit on (credit.key_hash)
         self._ok_at = None      # the last accepted request
 
     def failed(self, frame: ErrorFrame) -> None:
@@ -295,6 +309,8 @@ class AnswerHealth:
         self._last, self._count = now, self._count + 1
         self._category, self._reason = category, failure_reason(frame.exception)
         self._account, self._credit = is_account_problem(frame), is_out_of_credit(frame)
+        key = ai_account.current_key()
+        self._credit_key = credit.key_hash(key) if self._credit and key else None
         if self._account:
             # On the trial credit this is most likely the credit running out: read it
             # again now, not at the next poll (credit.py, #280).
@@ -310,6 +326,7 @@ class AnswerHealth:
                         f"{self._count} failure(s)")
         self._since = self._last = self._category = None
         self._account = self._credit = False
+        self._credit_key = None
         self._count, self._reason, self._ok_at = 0, "", self._clock()
 
     def status(self) -> dict:
@@ -327,9 +344,13 @@ class AnswerHealth:
                 **({"credit": True} if self._credit else {})}
 
     def out_of_credit(self) -> bool:
-        """The latest failure says the account is out of credit, and no request has been
-        accepted since (the Settings page's line: config_ui.account)."""
-        return self._credit
+        """The latest failure says the account is out of credit, no request has been
+        accepted since, and the key is still the one it was refused on (the Settings
+        page's line: config_ui.account). A key saved since is another account, or one
+        topped up: its first request tells, and the page no longer says it ran out."""
+        key = ai_account.current_key()
+        return (self._credit and self._credit_key is not None and bool(key)
+                and credit.key_hash(key) == self._credit_key)
 
 
 ANSWERS = AnswerHealth()
@@ -410,7 +431,7 @@ class LLMErrorSpeaker(FrameProcessor):
         return GLITCH_NO_RETRY_TEXT if in_account_window else ERROR_TEXT
 
     def _credit_text(self) -> str:
-        """The account is out of credit: where it is added (openrouter.ai on OpenRouter's
+        """The account is out of credit: where it is added (OpenRouter's website on its
         endpoint, read as the failure comes), and "open my settings" where it is heard."""
         if ai_account.is_openrouter(setting("LLM_BASE_URL")):
             return CREDIT_SETTINGS_TEXT if self._settings else CREDIT_TEXT

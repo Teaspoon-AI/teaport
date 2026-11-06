@@ -374,11 +374,11 @@ msgid "I still can't answer until my account is sorted out."
 msgstr "Non posso ancora rispondere finché il mio account non viene sistemato."
 
 # Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
-msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
-msgstr "Scusa, non posso rispondere: il mio account IA ha esaurito il credito. Aggiungi credito su openrouter.ai, oppure di’ «apri le impostazioni» se ti serve aiuto."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Scusa, non posso rispondere: il mio account IA ha esaurito il credito. Aggiungi credito sul sito di OpenRouter, oppure di’ «apri le impostazioni» se ti serve aiuto."
 
-msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
-msgstr "Scusa, non posso rispondere: il mio account IA ha esaurito il credito. Si può aggiungere credito su openrouter.ai."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Scusa, non posso rispondere: il mio account IA ha esaurito il credito. Si può aggiungere credito sul sito di OpenRouter."
 
 msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
 msgstr "Scusa, non posso rispondere: il mio account IA ha esaurito il credito. Aggiungi credito, oppure di’ «apri le impostazioni» se ti serve aiuto."

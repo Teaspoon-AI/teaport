@@ -366,11 +366,11 @@ msgid "I still can't answer until my account is sorted out."
 msgstr "जब तक मेरा खाता ठीक नहीं होता, मैं अब भी जवाब नहीं दे सकता।"
 
 # Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
-msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
-msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। openrouter.ai पर क्रेडिट जोड़िए, या मदद के लिए “सेटिंग्स खोलो” बोलिए।"
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। OpenRouter की वेबसाइट पर क्रेडिट जोड़िए, या मदद के लिए “सेटिंग्स खोलो” बोलिए।"
 
-msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
-msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। क्रेडिट openrouter.ai पर जोड़ा जा सकता है।"
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। क्रेडिट OpenRouter की वेबसाइट पर जोड़ा जा सकता है।"
 
 msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
 msgstr "माफ़ कीजिए, मैं जवाब नहीं दे सकता: मेरे AI खाते का क्रेडिट ख़त्म हो गया है। उसमें क्रेडिट जोड़िए, या मदद के लिए “सेटिंग्स खोलो” बोलिए।"

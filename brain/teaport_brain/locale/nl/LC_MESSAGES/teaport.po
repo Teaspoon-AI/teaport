@@ -366,11 +366,11 @@ msgid "I still can't answer until my account is sorted out."
 msgstr "Ik kan nog steeds niet antwoorden tot mijn account in orde is."
 
 # Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
-msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
-msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe op openrouter.ai, of zeg ‘open de instellingen’ als je hulp wilt."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe op de website van OpenRouter, of zeg ‘open de instellingen’ als je hulp wilt."
 
-msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
-msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Tegoed kan worden toegevoegd op openrouter.ai."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Tegoed kan worden toegevoegd op de website van OpenRouter."
 
 msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
 msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe, of zeg ‘open de instellingen’ als je hulp wilt."

@@ -366,11 +366,11 @@ msgid "I still can't answer until my account is sorted out."
 msgstr "Ainda não consigo responder até que a minha conta seja resolvida."
 
 # Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
-msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit at openrouter.ai, or say \"open my settings\" for help."
-msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Adicione créditos em openrouter.ai, ou diga “abrir as configurações” para ter ajuda."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Adicione créditos no site do OpenRouter, ou diga “abrir as configurações” para ter ajuda."
 
-msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added at openrouter.ai."
-msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Dá para adicionar créditos em openrouter.ai."
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Dá para adicionar créditos no site do OpenRouter."
 
 msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
 msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Adicione créditos a ela, ou diga “abrir as configurações” para ter ajuda."

@@ -259,8 +259,8 @@ def test_without_the_page_the_code_openrouter_shows_is_pasted_into_settings():
 def test_the_account_step_says_when_the_owners_account_ran_out_of_credit():
     """Answers refused for credit on the owner's own key (not the trial credit): the step
     shows that the account ran out, and where credit is added, as an error -- in the
-    reader's language -- until the provider accepts a request again. A refused key is
-    not "out of credit"."""
+    reader's language -- until the provider accepts a request again or another key is
+    saved. A refused key is not "out of credit"."""
     from pipecat.frames.frames import ErrorFrame
     from pipecat.utils.errors import ErrorCategory
     from teaport_brain import credit, llm_error_speaker
@@ -288,6 +288,15 @@ def test_the_account_step_says_when_the_owners_account_ran_out_of_credit():
                 es = (await c.get("/settings/api/account",
                                   headers={"Accept-Language": "es"})).json()["credit"]
                 assert es["line"] == i18n.get("es")._(ai_account.RAN_OUT_OF_CREDIT) != shown["line"]
+                # The owner saves another key: the page no longer says it ran out (its
+                # first request will tell), though no request has been accepted yet.
+                with open(os.path.join(home, "llm_key"), "w") as f:
+                    f.write("sk-or-v1-" + "4" * 64)
+                shown = (await c.get("/settings/api/account")).json()["credit"]
+                assert shown["line"] is None and "out" not in shown, shown
+                with open(os.path.join(home, "llm_key"), "w") as f:
+                    f.write("sk-or-v1-" + "3" * 64)            # the refused one again
+                assert (await c.get("/settings/api/account")).json()["credit"]["out"] is True
                 health.succeeded()
                 shown = (await c.get("/settings/api/account")).json()["credit"]
                 assert shown["line"] is None and "out" not in shown, shown

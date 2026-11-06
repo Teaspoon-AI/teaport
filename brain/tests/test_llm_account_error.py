@@ -9,8 +9,8 @@
 # it, and `teaport status` / `teaport doctor` print it until a request is accepted.
 #
 # An account out of credit -- a 402, or the provider's words for it -- is said as that:
-# "my AI account has run out of credit", with where to add it (openrouter.ai on
-# OpenRouter's endpoint) and the settings phrase where it is heard.
+# "my AI account has run out of credit", with where to add it (OpenRouter's website on
+# its endpoint) and the settings phrase where it is heard.
 #
 # The provider responses here are synthetic, shaped like an OpenAI-compatible gateway's
 # error bodies; the links and key ids in them are made up.
@@ -169,7 +169,8 @@ class _Endpoint:
 
 async def test_out_of_credit_says_so_and_where_credit_is_added():
     """Each 402 body: "run out of credit". On OpenRouter's endpoint the line names
-    openrouter.ai; where "open my settings" is heard it names the phrase too; never
+    OpenRouter's website -- by name, never the bare address, which the voice reads badly;
+    where "open my settings" is heard it names the phrase too; never
     "needs attention", which sent the owner looking at the key."""
     llm, pushed = _llm()
     for name, make in CREDIT_CASES.items():
@@ -185,7 +186,13 @@ async def test_out_of_credit_says_so_and_where_credit_is_added():
     for text in (CREDIT_SETTINGS_TEXT, CREDIT_TEXT, CREDIT_OTHER_SETTINGS_TEXT,
                  CREDIT_OTHER_TEXT, CREDIT_STILL_TEXT):
         assert "out of credit" in text and "attention" not in text, text
-    assert "openrouter.ai" in CREDIT_SETTINGS_TEXT and "openrouter.ai" in CREDIT_TEXT
+    assert "OpenRouter's website" in CREDIT_SETTINGS_TEXT and "OpenRouter's website" in CREDIT_TEXT
+    from teaport_brain import i18n
+    for lang in i18n.catalogs():
+        t = i18n.get(lang)
+        for text in (CREDIT_SETTINGS_TEXT, CREDIT_TEXT, CREDIT_OTHER_SETTINGS_TEXT,
+                     CREDIT_OTHER_TEXT, CREDIT_STILL_TEXT):
+            assert "openrouter.ai" not in t._(text).lower(), (lang, t._(text))
     assert "openrouter" not in (CREDIT_OTHER_SETTINGS_TEXT + CREDIT_OTHER_TEXT).lower()
     for text in (CREDIT_SETTINGS_TEXT, CREDIT_OTHER_SETTINGS_TEXT):
         assert '"open my settings"' in text, text
@@ -230,6 +237,19 @@ async def test_the_providers_credit_words_count_without_a_402():
         frame = await _raise_through(llm, pushed, exc)
         assert not is_out_of_credit(frame), exc
         assert await _spoken(LLMErrorSpeaker(), frame) == [want], exc
+    # An in-stream error whose body carries another status: that status's kind decides,
+    # whatever its words (an upstream's outage that names credits passes).
+    for code in (500, 503, "503"):
+        upstream = openai.APIError("x", request, body={
+            "message": "Insufficient credits on upstream provider", "code": code})
+        frame = await _raise_through(llm, pushed, upstream)
+        assert frame.category is ErrorCategory.UNKNOWN and not is_out_of_credit(frame), code
+        assert not les.is_account_problem(frame), code
+        assert await _spoken(LLMErrorSpeaker(), frame) == [ERROR_TEXT], code
+    for code in (401, 403):   # a refusal's code with credit words: out of credit
+        refused = openai.APIError("x", request, body={"message": "Insufficient credits",
+                                                      "code": code})
+        assert is_out_of_credit(await _raise_through(llm, pushed, refused)), code
     # Words alone, on an exception no provider request raises: not the provider's.
     bug = ErrorFrame(error="x", processor=llm, exception=ValueError("insufficient credits"))
     assert not is_out_of_credit(bug)
@@ -390,6 +410,14 @@ async def test_status_records_the_failure_and_clears_on_success():
     st = health.status()
     assert st["state"] == "account" and st["credit"] is True and health.out_of_credit(), st
     assert st["since"] == 1000.0 and st["count"] == 3, st              # the same run
+    # Another key saved since: the run stays on record, but it is not this key's credit.
+    was = os.environ["LLM_API_KEY"]
+    os.environ["LLM_API_KEY"] = "another-not-real-key"
+    try:
+        assert health.status()["credit"] is True and not health.out_of_credit()
+    finally:
+        os.environ["LLM_API_KEY"] = was
+    assert health.out_of_credit()
 
     # A request the provider accepts: the stream opens.
     async def accepted(self, context):

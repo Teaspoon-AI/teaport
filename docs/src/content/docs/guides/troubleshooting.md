@@ -536,7 +536,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
 - A phone caller hears a short line that teaport can't take calls now, and then the
   call ends. A caller never hears setup instructions.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:169-182#aeaad70d -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:173-186#aeaad70d -->
 
 **Fix**
 
@@ -569,7 +569,7 @@ its configuration page. For other failures, such as a provider that is busy or s
 teaport says "Sorry, I couldn't get an answer just then" instead, and those
 failures usually pass.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:130-150#6767a7cb -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:131-151#6767a7cb -->
 
 **Fix**
 
@@ -594,7 +594,7 @@ key has no credit left. OpenRouter answers with HTTP 402, for example "Insuffici
 credits" or "This request would exceed your available credits". Every request
 fails until credit is added, so asking again does not help. The first time,
 teaport says "Sorry, I can't answer: my AI account has run out of credit." When the account is on
-OpenRouter, it adds where to buy more credit: openrouter.ai. In the room and in Talk,
+OpenRouter, it adds that credit can be added on OpenRouter's website. In the room and in Talk,
 on a device whose settings site is set up, it also tells you to say "open my
 settings" for help. On later failed turns it says that it still can't answer because
 the account is out of credit. A request OpenClaw runs for teaport fails the same way,
@@ -603,7 +603,7 @@ and teaport tells you that the AI account has run out of credit.
 On the device's included trial credit, teaport says instead that its trial credit has
 run out, and asks you to connect your own account.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:154-167#c28e5149; brain/teaport_brain/llm_error_speaker.py:412-417#843e8431; brain/teaport_brain/owed.py:273-279#d2fd4910 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:155-171#83953e0c; brain/teaport_brain/llm_error_speaker.py:433-438#6694ea6f; brain/teaport_brain/owed.py:273-279#d2fd4910 -->
 
 **Fix**
 
