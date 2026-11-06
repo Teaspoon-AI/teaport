@@ -1379,7 +1379,7 @@ goodbye). The model abstracts the telling as "not silent", so `sa_roomAwake` hol
   `HOLD_WAIT_SECS` (muted, the gate held, possibly the STT let go); `_acquire` then ends
   the conversation — but if the call's acquire was cancelled meanwhile (the caller hung
   up), nothing does, and the conversation stays the holder, muted. Not modelled;
-  `session_arbiter.py:410-416` / `AgentSession.hold` (`agent_session.py:589`).
+  `session_arbiter.py:413-419` / `AgentSession.hold` (`agent_session.py:589`).
 - Engine refusals are immediate: `stt.py`'s retry budget (`SttSlot.tla`) is what the
   SETTLE sleeps lean on, and is not modelled here.
 - END_WAIT_SECS' timeout (a holder that never lets go) is not a step: past it the arbiter

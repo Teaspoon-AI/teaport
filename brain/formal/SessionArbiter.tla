@@ -39,8 +39,8 @@
 (*                       removes the overlap, and REPLACED never ends a     *)
 (*                       call any other way                                 *)
 (*       "awake"      -- the room is awake and stays so (RoomFlip off), so  *)
-(*                       the wake race cannot happen: what is left of a    *)
-(*                       silent end is a failed hold (sa_roomAwake)        *)
+(*                       the wake race cannot happen; a failed hold is     *)
+(*                       then the only way left to end it (sa_roomAwake)   *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -99,7 +99,7 @@ Init ==
     /\ clobber = FALSE /\ engineRefused = FALSE /\ silentEnd = FALSE
 
 (***************************************************************************)
-(* decide() (session_arbiter.py:175). Claim.gone (REAPED) is left out: no  *)
+(* decide() (session_arbiter.py:176). Claim.gone (REAPED) is left out: no  *)
 (* client vanishes silently here (a session's end is its release).         *)
 (***************************************************************************)
 Why(h, n) ==
@@ -117,7 +117,7 @@ Why(h, n) ==
 Busy(h) == h # None /\ (epc[h] # "none" \/ hpc[h] # "none" \/ rpc[h] # "none")
 
 (***************************************************************************)
-(* release() (session_arbiter.py:477) and _resume_held (:456), as records  *)
+(* release() (session_arbiter.py:480) and _resume_held (:459), as records  *)
 (* of the arbiter's next values; `res` is the conversation whose resume    *)
 (* task starts (None: none).                                               *)
 (***************************************************************************)
@@ -231,7 +231,7 @@ RoomFlip ==
                    rel, epc, ewhy, hpc, hfor, hres, rpc, clobber, engineRefused, silentEnd>>
 
 (***************************************************************************)
-(* acquire() (session_arbiter.py:283/298).                                 *)
+(* acquire() (session_arbiter.py:284/299).                                 *)
 (***************************************************************************)
 Unchanged_Sess == UNCHANGED <<stt, heldF, conn, asleep, ans>>
 
@@ -303,7 +303,7 @@ Decide(s) ==
                                 rpc, clobber, silentEnd>>
     /\ Unchanged_Sess /\ UNCHANGED engineRefused
 
-\* _ask (session_arbiter.py:358): the user's answer (or the prompt's default),
+\* _ask (session_arbiter.py:361): the user's answer (or the prompt's default),
 \* or the question withdrawn (the holder left, or the call got answered).
 Ask(s) ==
     /\ apc[s] = "ask"

@@ -598,10 +598,10 @@ class AgentSession:
         if self.wake_gate is not None:
             self.wake_gate.cancel_start()
         if line:
-            await self.say_last_line(line, max_secs, append_to_context=True)
-            # Said (to the end, or as far as max_secs let it): a hold that fails after this
-            # has already told the user, and its end adds no second goodbye.
-            self.hold_line_said = True
+            # Played: a hold that fails after this has already told the user, and its end
+            # adds no second goodbye. (Not played to the end: the end tells them.)
+            self.hold_line_said = await self.say_last_line(line, max_secs,
+                                                           append_to_context=True)
         elif self.input_mute is not None:
             self.input_mute.muted = True
         self.followup_gate.set_held(True)

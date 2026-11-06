@@ -621,16 +621,20 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
         logger.info("phone call — closing the asleep mic session to free the speech engine")
         _close_with(websocket, YIELD_CLOSE_CODE, YIELD_CLOSE_REASON)
     elif why == arb.HOLD_FAILED:
-        # It said yes to the call and could not be put on hold. Nothing was asked of a room
-        # that is asleep, so that one closes silently. A live one is told, unless the hold's
-        # own "back in a moment" already played: no second goodbye.
+        # It said yes to the call and could not be put on hold. A room that has gone back to
+        # sleep since it was asked closes silently. A live one is told, unless the hold's
+        # own "back in a moment" already played: no second goodbye. The close and the
+        # cancel below happen even if the telling fails (the pipeline may be what broke).
         if asleep:
             logger.info("phone call — the asleep mic session could not be held, closing it")
         elif session is not None and not getattr(session, "hold_line_said", False):
             logger.info("phone call — the session could not be put on hold, telling it, "
                         "then ending it")
-            await session.say_last_line(arb.call_line(
-                getattr(session.tts, "espeak_language", None)), CALL_LINE_MAX_SECS)
+            try:
+                await session.say_last_line(arb.call_line(
+                    getattr(session.tts, "espeak_language", None)), CALL_LINE_MAX_SECS)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"could not tell the session it is being ended: {e!r}")
         else:
             logger.info("phone call — the session could not be put on hold after it said "
                         "so, ending it")
