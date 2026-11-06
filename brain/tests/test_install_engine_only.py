@@ -314,7 +314,7 @@ def test_the_keys_it_adds_are_the_keys_phase_services_writes():
     fpt = [ln.strip() for ln in "\n".join(services).splitlines() if ln.strip().startswith("local fpt=")]
     assert fpt and fpt[0] in ours, (fpt, ours)
     # ... and what it computes, with and without an agent.
-    for agent, want in (("", "KOKORO_RESERVE_FPT=12"), ("openclaw", "KOKORO_RESERVE_FPT=6")):
+    for agent, want in (("", "KOKORO_RESERVE_FPT=12"), ("openclaw", "KOKORO_RESERVE_FPT=8")):
         rc, out = _run(tempdir("teaport-eng-env-"), f'AGENT_MODE={agent}; engine_env_lines; printf "%s\\n" "${{ENGINE_ENV[@]}}"',
                        ["engine_env_lines"])
         assert rc == 0 and out.splitlines()[0] == want and "ENGINE_PORT=8000" in out, out

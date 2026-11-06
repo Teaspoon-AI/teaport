@@ -2291,7 +2291,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # the values given, and leave everything already in it as it is: each key with its value,
 # the comments, the order. --only engine's engine.env (#158), where write_env would not do:
 # write_env rewrites every plain key it is given, so what is only an engine update would
-# put an operator's KOKORO_RESERVE_FPT (.105 runs 8 by choice) back to 6 or 12. Whether
+# put an operator's KOKORO_RESERVE_FPT back to the installer's 8 or 12. Whether
 # a full run should keep rewriting those values, and so who owns them, is #264; this path
 # only fills gaps, so that a key a new engine release needs reaches a box without it.
 # Read as write_env reads (privileged when the plain read fails; a file that cannot be read
@@ -2359,10 +2359,10 @@ env_put_back() {
 # engine_env_lines — the keys phase_services writes to engine.env, with the values it writes
 # them with, as ENGINE_ENV: what --only engine adds when engine.env lacks one. Copied rather
 # than shared, for now; keep in step with phase_services (test_install_engine_only.py
-# compares the two).
+# compares the two). KOKORO_RESERVE_FPT with an agent is 8 since #264.
 ENGINE_ENV=()
 engine_env_lines() {
-  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=6
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   ENGINE_ENV=("KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192"
               "VOX_REQUIRE_DICT_G2P=1")
 }
@@ -2674,12 +2674,21 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 6 when an agent coexists (RAM shared), 12 voice-only. The code
+  # KOKORO_RESERVE_FPT: 8 when an agent coexists (RAM shared), 12 voice-only. The code
   # default (50) OOMs an 8GB box — the installer must always set it.
   # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
-  # so reserving the voice-only amount alongside it is the direction that OOMs. 6 is the
-  # measured-safe sandbox figure and is conservative for the (lighter) host gateway.
-  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=6
+  # so reserving the voice-only amount alongside it is the direction that OOMs.
+  # 8 is what the appliance (8 GB Orin Nano, host OpenClaw gateway resident) runs, by the
+  # owner's choice (#158). The installer wrote 6 here before, the first release's sandbox
+  # figure, so each full install put the box back on 6 and it was restored to 8 by hand
+  # (2026-10-15, 10-31, 11-01; #264). #167's survey of the box's RAM (2026-10-14, while
+  # it ran 8 per #158) found nothing leaking: the engine holds ~4.3 GB of GPU buffers that
+  # never swap, leaving ~3.2 GB for everything else, kernel included. #167 also capped the
+  # gateway's JS heap at 1536 MiB (cap_openclaw_heap; it used ~380 MB, ~1 GB RSS) instead
+  # of OpenClaw's half of RAM (3773 MiB), and put the voice path last for the OOM killer
+  # (OOMScoreAdjust=-500 in its units). The heap cap is the host gateway's; a NemoClaw
+  # sandbox is an agent too and gets 8 the same way.
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=8
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token

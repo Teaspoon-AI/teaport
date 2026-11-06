@@ -119,7 +119,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:61,87,258-262,2125-2132,2930-2932#8861cd83 -->
+<!-- source: install.sh:61,87,258-262,2125-2132,2939-2941#8861cd83 -->
 
 For OpenRouter, the base URL is `https://openrouter.ai/api/v1`.
 
@@ -156,7 +156,7 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:82,327,1533,2051,2064,3400,3661,3667,2149,2663#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
+<!-- source: install.sh:82,327,1533,2051,2064,3409,3670,3676,2149,2663#3d53f4d3; manifest/stable.json:5-21#db7e6194 -->
 <!-- source: install.sh:2374-2385,2412-2457#0dba2a43 -->
 
 ## Optional components
@@ -173,7 +173,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:63,66,3373#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:63,66,3382#2f2e05c5; cli/teaport:395#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -185,7 +185,7 @@ teaport has three optional components. The installer sets up none of them by def
 
    All three services show `active`, with the engine and brain ports and the memory use.
 
-   <!-- source: cli/teaport:5,206,1555#678e2a72 -->
+   <!-- source: cli/teaport:5,206,1632#678e2a72 -->
 
 2. Run the health check:
 
@@ -197,7 +197,7 @@ teaport has three optional components. The installer sets up none of them by def
    configuration, the services, and the ports. Every check prints `ok`, or a warning that
    says what to fix.
 
-   <!-- source: cli/teaport:6,344-378#d967300a -->
+   <!-- source: cli/teaport:6,344-378#edf9111d -->
 
 3. Optional: to confirm that speech recognition uses the fast path, read the engine's first
    messages:
@@ -219,7 +219,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:3450-3451#561957fe -->
+<!-- source: install.sh:3459-3460#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -236,7 +236,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:3454-3456,2024-2032#8d3dea6b -->
+<!-- source: install.sh:3463-3465,2024-2032#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
