@@ -779,12 +779,16 @@ sip_filter_state() {
     # are dropped while the mode still matches. So the ✓ is for a conf no newer than the
     # run, to the second: a configure's install and start within one second keep it (so
     # would an edit in the second after a start, which no hand edit is quick enough for).
-    # A conf time past the clock is no answer: a restart would not get past it.
+    # A time past the clock is no answer either way: a conf's would outlast any restart,
+    # and a start on a clock that ran ahead (an RTC in local time east of UTC, until NTP
+    # set it back) would date every edit since as older than the run.
     started="$(sip_started_at)"; changed="$(sip_conf_changed_at "$f")"; printf -v now '%(%s)T' -1
     if [ -z "$started" ]; then why="cannot tell when the gateway started, so not whether it runs the conf as it is now"
     elif [ -z "$changed" ]; then why="cannot tell when the conf last changed, so not whether the gateway runs it as it is now"
     elif [ "$changed" -gt "$now" ]; then
       why="cannot tell whether it runs the conf as it is now: the conf's time is later than this box's clock (set back, or a copy that kept a time from a host ahead?) — touch the conf, then teaport sip restart"
+    elif [ "$started" -gt "$now" ]; then
+      why="cannot tell whether it runs the conf as it is now: its start time is later than this box's clock (started while the clock ran ahead, since set back?) — teaport sip restart"
     elif [ "$changed" -le "$started" ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0
     else printf 'the conf says %s; conf changed since the gateway started (it runs the conf as it was then) — teaport sip restart to apply' "$desc"; return 2
     fi

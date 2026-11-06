@@ -1105,13 +1105,15 @@ def test_status_shows_the_source_filter_the_gateway_runs():
     stubs = STATUS_STUBS
     enforce1 = ENFORCE1
     # Each conf claims to be an hour old (mtime t0) and is written now (its ctime, ch). By
-    # default the gateway started a second after that write; the cases' @AFTER@, @BEFORE@
-    # (ten minutes before the write), @SAME@ (in its second) and @COPIED@ (ten minutes
-    # after the hour-old edit, before the write) are filled in once ch is known.
+    # default (@AFTER@) the gateway started in the second of that write: the latest start
+    # that is not past the clock when the case runs (a later one is no answer, below).
+    # @BEFORE@ is ten minutes before the write, @SAME@ its second (configure's install,
+    # then its start), @COPIED@ ten minutes after the hour-old edit and before the write;
+    # all are filled in once ch is known.
     t0 = int(time.time()) - 3600
 
     def at(env, ch):
-        for k, t in (("@AFTER@", ch + 1), ("@BEFORE@", ch - 600), ("@SAME@", ch), ("@COPIED@", t0 + 600)):
+        for k, t in (("@AFTER@", ch), ("@BEFORE@", ch - 600), ("@SAME@", ch), ("@COPIED@", t0 + 600)):
             env = env.replace(k, _systemd_time(t))
         return env
     changed = ("the conf says enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry; "
@@ -1174,6 +1176,15 @@ def test_status_shows_the_source_filter_the_gateway_runs():
         assert ("gateway not confirmed (cannot tell whether it runs the conf as it is now: the conf's time is later "
                 "than this box's clock (set back, or a copy that kept a time from a host ahead?) — touch the conf, "
                 "then teaport sip restart)") in out, (started, out)
+    # A start time past the clock (the gateway started while the clock ran ahead, an RTC in
+    # local time east of UTC, until NTP set it back): every edit since would date from
+    # before the run, so no ✓ (#166 review).
+    ch = _write_conf(conf, CONF + enforce1, t0)
+    rc, out = _run(d, f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='{_systemd_time(ch + 3600)}'; "
+                      f'sip_filter_state {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+    assert out.endswith(" rc=2\n") and "confirms it" not in out, out
+    assert ("gateway not confirmed (cannot tell whether it runs the conf as it is now: its start time is later than "
+            "this box's clock (started while the clock ran ahead, since set back?) — teaport sip restart)") in out, out
     # Doctor's line: ✓ / ✗ / ! by the same answer.
     for env, mark in ((f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@AFTER@'", "✓"),
                       (f"SIP_GATEWAY={gw} ACL='[acl] source filter ENFORCE: x' STARTED='@BEFORE@'", "!"),

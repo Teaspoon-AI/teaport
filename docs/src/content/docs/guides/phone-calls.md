@@ -49,13 +49,13 @@ To configure the line, follow these steps:
    password, and enables the service. If the registration fails, the wizard
    writes nothing and telephony stays off.
 
-<!-- source: cli/teaport:498-506#27174433; cli/teaport:19,27#80224d4c; cli/teaport:1401-1410#938e530e; cli/teaport:1601-1602#fed8b523 -->
+<!-- source: cli/teaport:498-506#27174433; cli/teaport:19,27#80224d4c; cli/teaport:1405-1414#938e530e; cli/teaport:1605-1606#fed8b523 -->
 
 Run the wizard as the user the services run as. As root, add `sudo -E`: a plain
 `sudo` resets `HOME`, so the wizard writes a configuration the gateway never
 reads, and it refuses to.
 
-<!-- source: cli/teaport:918-924,939#f979126a -->
+<!-- source: cli/teaport:922-928,943#f979126a -->
 
 ### Turn it on without prompts
 
@@ -73,7 +73,7 @@ Replace the following:
 - `SIP_USER`: the username the trunk assigns you.
 - `SIP_PASSWORD`: the trunk password.
 
-<!-- source: cli/teaport:1358-1365#3a2472e8 -->
+<!-- source: cli/teaport:1362-1369#3a2472e8 -->
 
 ### Use an existing gateway configuration
 
@@ -92,7 +92,7 @@ the brain answers the call, after a couple of rings. If a gateway or SIP
 front-end launched by hand is still running, the command refuses and names it:
 the service it is about to enable needs port 5060 and the socket.
 
-<!-- source: cli/teaport:1227-1230#bafef1f1; cli/teaport:1436-1446#f6ff2e6c; cli/teaport:1468-1471#e22022c1 -->
+<!-- source: cli/teaport:1231-1234#bafef1f1; cli/teaport:1440-1450#f6ff2e6c; cli/teaport:1472-1475#e22022c1 -->
 
 ### Change the trunk later
 
@@ -117,7 +117,7 @@ in it, and the registration from this run:
 teaport sip status
 ```
 
-<!-- source: cli/teaport:1548-1575#e661c53b; cli/teaport:748-756#9fceb4c7 -->
+<!-- source: cli/teaport:1552-1579#e661c53b; cli/teaport:748-756#9fceb4c7 -->
 
 To follow the gateway's journal:
 
@@ -149,7 +149,7 @@ teaport sip restart
 
 The command waits for the trunk's `200 OK`; the brain reconnects on its own.
 
-<!-- source: cli/teaport:1513-1519,1609#a48b0483 -->
+<!-- source: cli/teaport:1517-1523,1613#a48b0483 -->
 
 The gateway cancels echo for the caller. `teaport sip aec` prints the current
 acoustic echo cancellation (AEC) setting:
@@ -166,7 +166,7 @@ teaport sip aec off
 teaport sip aec on
 ```
 
-<!-- source: cli/teaport:1521-1536,1544-1545,1608#6acaab27 -->
+<!-- source: cli/teaport:1525-1540,1548-1549,1612#6acaab27 -->
 
 To turn telephony off:
 
@@ -178,7 +178,7 @@ The command stops and disables the gateway. The configuration stays at
 `~/.config/teaport/teaport-sip.conf`; add `--purge` to remove it too. Run the
 wizard again to turn telephony back on.
 
-<!-- source: cli/teaport:1578-1585,1610#4454f6b2 -->
+<!-- source: cli/teaport:1582-1589,1614#4454f6b2 -->
 
 The configuration is the gateway's own `key=value` format: `registrar_uri`,
 `id_uri`, `username`, `password`, `uds_path`, `aec`, `auto_answer`, and more.
@@ -188,7 +188,7 @@ confirmed, because the gateway still runs the configuration it started with.
 Nothing about the line lives in `/tmp`: the configuration is in
 `~/.config/teaport`, the socket in `/run/teaport`, and the logs in journald.
 
-<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:563-582#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:515-518#c26fec26; cli/teaport:783-789#01102eef -->
+<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:563-582#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:515-518#c26fec26; cli/teaport:785-793#7abecfd9 -->
 
 ## A call during a conversation
 
@@ -203,7 +203,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1925-1935#a986d676; cli/teaport:1442-1444#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1925-1935#a986d676; cli/teaport:1446-1448#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — +1 346 234 8500. Should I
