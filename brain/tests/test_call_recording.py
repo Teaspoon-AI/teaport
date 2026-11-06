@@ -352,6 +352,8 @@ def _session(plays=True, recording=None):
     deliveries = []
 
     class _Gate:
+        interruptions = 0        # own_line's interruption reaches it as it is queued
+
         def watch_delivery(self):
             deliveries.append(Delivery())
             return deliveries[-1]
@@ -361,6 +363,8 @@ def _session(plays=True, recording=None):
 
     def on_queue(frames):
         s.muted_while_queued.append(s.input_mute.muted)
+        if any(isinstance(f, InterruptionWorkerFrame) for f in frames):
+            s.followup_gate.interruptions += 1
         if plays and deliveries and any(isinstance(f, TTSSpeakFrame) for f in frames):
             deliveries.pop()._settle(interrupted=False)
     s.followup_gate = _Gate()

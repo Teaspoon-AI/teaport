@@ -2239,11 +2239,12 @@ name = "KOKORO_RESERVE_FPT"
 store = "engine_env"
 group = "engine_service"
 type = "enum"
-values = ["6", "12"]
+values = ["6", "8", "12"]
+default_by = { TEAPORT_AGENT = { openclaw = "8", none = "12" } }
 read = "startup"
 tier = "installer"
-help = "The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device."
-note = "The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident."
+help = "The engine memory reserve. 8 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. 6 is what the installer wrote with an agent before 8, and is still a valid value."
+note = "The default is what the installer writes, from the same check that sets TEAPORT_AGENT: whether an agent is present. Unset, the engine's own default (50) OOMs an 8 GB device. The installer rewrites it on every run, a hand edit in engine.env included, so it is not editable here: re-run install.sh to change what is resident."
 source = ["install.sh", "cli/teaport"]
 
 [[settings]]

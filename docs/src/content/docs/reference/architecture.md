@@ -33,7 +33,7 @@ The heard-grounding ledger records what you actually heard, the endpointing poli
 
 One process serves every front end: the `/talk` WebSocket and the phone line live in `teaport-brain`. Each session still gets a pipeline of its own, so one session's failure ends that session only.
 
-<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:827-830#50aa8078 -->
+<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:848-851#50aa8078 -->
 
 ## The plugin
 
