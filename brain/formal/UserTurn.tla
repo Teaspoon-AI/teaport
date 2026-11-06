@@ -180,12 +180,32 @@
 (* JUDGE = "quietWindow" -- the shipped gate with the resume on a timer of  *)
 (*                       quiet alone (before #275): a word the engine       *)
 (*                       returns after it lands on the resumed reply,       *)
-(*                       which no gate holds, and cuts it unjudged.         *)
+(*                       which no gate holds, and cuts it unjudged. Also    *)
+(*                       what the shipped gate does today in a session      *)
+(*                       that asks for no progress report (watch_heard      *)
+(*                       declines): the default configuration (audit A2).   *)
 (* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
 (*                       resume (0.8 s of quiet) can come first.            *)
 (* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
 (*                       rest, and a CONTINUE drops all that is held,       *)
 (*                       however much came after the words it was asked on. *)
+(* JUDGE = "pauseCap" -- "shipped" with the pause cap modelled (PauseCap,   *)
+(*                       a timer: WORDS_IN_TIME FALSE only).                *)
+(*                       TEAPORT_BARGE_PAUSE_MAX_S ends the pause whatever  *)
+(*                       holds it, the judge's wait and a caller still      *)
+(*                       talking included, and the gate lets the held       *)
+(*                       words on at that resume (fails NoResumeOverWords:  *)
+(*                       the ACCEPTED RESIDUAL, a verdict slower than the   *)
+(*                       cap; the code's alternative, _past_pause, is on    *)
+(*                       feat/judge-single-words).                          *)
+(*                                                                          *)
+(* The pause and judge rows run MODE = "retryOnQuiet", SPEC = "off" and     *)
+(* EARLY_FINAL = FALSE, the environment the pause rows were first written   *)
+(* in: there no commit ever finds the reply gate armed, so retryOnQuiet and *)
+(* the shipped retryMerges are one machine (see VadStop), and the rows stay *)
+(* small enough to tell each pause and judge design apart. The judge under  *)
+(* the shipped commit machinery -- retryMerges, the speculation, early      *)
+(* finals -- is ut_shipped_judge_all.                                       *)
 (*                                                                          *)
 (* The cut and the commit (endpointing.CutReplyFence, 2026-10-13). A turn   *)
 (* start and its interruption are two events: the controller opens the turn *)
@@ -647,6 +667,11 @@ JudgeWindow == botSpeaking /\ pausedP /\ ~(tailKnown /\ wouldEnd)
 Judged == JUDGE /= "off" /\ JudgeWindow
 \* The pauser waits for the STT to have heard the caller's speech out before a quiet
 \* resume (#275): as shipped, and in the shipped gate's rejected variants.
+\* An over-approximation: the wait is the pauser's own (barge_pause.py HEARD OUT), not
+\* the judge's, so the code waits with TEAPORT_BARGE_JUDGE off too, and only where the
+\* STT will answer (stt.watch_heard: a session that asked for the engine's report, or
+\* a sliced one). Without a judge no property here reads `unheard`, so tying the wait
+\* to JUDGE loses nothing a row checks.
 HeardOutWait == JUDGE \notin {"off", "quietWindow"}
 
 \* The gate lets what it holds on: the words start the turn as they would have.
@@ -773,6 +798,31 @@ ResumeP ==
     \* #275: nor while the STT has not heard the speech out -- under WORDS_IN_TIME, its
     \* report comes before the pauser's bound on waiting for it.
     /\ ~(unheard /\ HeardOutWait /\ WORDS_IN_TIME)
+    /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
+    /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
+    /\ resumedUnder' = (resumedUnder \/ judging)
+    /\ UNCHANGED <<judging, grown, stopHeld, resumeOverWords, unheard, unjudged>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<left, synthDone, answerLost>>
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
+
+\* The pause cap (BargeInPauser._cap, TEAPORT_BARGE_PAUSE_MAX_S from the pause's start,
+\* at most 7.75 s): it ends the pause whatever holds it -- the judge's wait
+\* (hold_resume), the heard-out wait, a caller still talking -- through the same resume.
+\* That resume (PlayoutPauseFrame(paused=False)) reaches BargeInJudgeGate, which lets
+\* what it holds on ("the pause is over"): `JudgeLetOn`, or the next words, after the
+\* reply has resumed. A timer, so only where the timers are as they are; and only under
+\* JUDGE = "pauseCap", the row that shows its cost (every other timed row leaves it
+\* out). The STT's close of a barge-in still held there (before_cap, stt.close_held)
+\* is not modelled here.
+PauseCap ==
+    /\ ~endQueued
+    /\ JUDGE = "pauseCap" /\ ~WORDS_IN_TIME
+    /\ pausedP
     /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
     /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
     /\ resumedUnder' = (resumedUnder \/ judging)
@@ -1725,7 +1775,7 @@ Next ==
     \/ VadStop \/ Inference \/ InferenceUnderSpeech \/ Finalize \/ BotStart \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange \/ Retext \/ Release \/ Cap \/ Hangup
     \/ ToolCall \/ CallLands \/ LateLands
-    \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP
+    \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ PauseCap
     \/ JudgeContinue \/ JudgeLetOn \/ HeardOut
 
 Spec == Init /\ [][Next]_vars
@@ -1869,7 +1919,7 @@ TypeOK ==
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
-    /\ JUDGE \in {"off", "shipped", "noHold", "noReask", "quietWindow"}
+    /\ JUDGE \in {"off", "shipped", "noHold", "noReask", "quietWindow", "pauseCap"}
     /\ judging \in BOOLEAN /\ grown \in BOOLEAN /\ stopHeld \in BOOLEAN
     /\ resumedUnder \in BOOLEAN /\ resumeOverWords \in BOOLEAN
     /\ unheard \in BOOLEAN /\ unjudged \in BOOLEAN
