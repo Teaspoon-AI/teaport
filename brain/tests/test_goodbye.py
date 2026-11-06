@@ -120,7 +120,7 @@ NOT_GOODBYES = [
     "Not now, later.", "Sure, later.", "Later!",
     # the small talk around a goodbye, without one
     "Okay.", "Thanks!", "I'm here if you need me.", "I'm always here if you need me.",
-    "Feel free to call me anytime.",
+    "Feel free to call me anytime.", "Stay safe!",
     # another language: English clauses only
     "Bonne nuit !", "Buenas noches.",
     "", "   ",
@@ -137,6 +137,13 @@ def test_a_goodbye_inside_an_answer_quoted_or_asked_is_none():
     assert not taken, f"heard as a goodbye: {taken}"
 
 
+# The box asked to go, as a question, and a plain goodbye back: #221's own shape.
+ASKED_TO_GO = [("Can you go to sleep?", "Good night—take care!"),
+               ("Could you go to sleep now?", "Good night!"),
+               ("Why are you still awake?", "Sorry about that! Good night."),
+               ("Can you stop listening?", "Okay. Goodbye!")]
+
+
 def test_a_goodbye_that_says_the_box_sleeps_is_told_apart():
     for text in ("Going to sleep now. Good night.", "Okay, I'll stop listening now.",
                  "Sorry about that! Going to sleep now.", "Okay, going to sleep. Good night!"):
@@ -149,8 +156,15 @@ def test_what_counts_as_the_caller_asking():
     for said in ("How do you say adiós in English?", "What's the opposite of hello?",
                  "Can you do that later?", "Can you remind me in 5 minutes?",
                  "can you remind me in five minutes", "Okay, what time is it",
-                 "Is that all for tonight"):
+                 "Is that all for tonight",
+                 # a word asked for, in any form (review round 2)
+                 "Translate adiós into English.", "Tell me the opposite of hello.",
+                 "What's the word for adiós", "What does goodbye mean?",
+                 "How do you say good night in French?"):
         assert asks(said), said
+    # a question that asks the box to go is answered by a goodbye (review round 2)
+    for said, _ in ASKED_TO_GO:
+        assert not asks(said), said
     for caller, _ in TURNS:                      # #221's four turns: none is a question
         assert not asks(caller), caller
     for said in ("Have a good night.", "Will do, good night.", "Thanks, that's all.",
@@ -181,12 +195,13 @@ class _Gate:
         self.caller_speaking = False
         self.speech = None
         self.cap = False
+        self.ended = False
         self.__dict__.update(kw)
 
     async def speech_over(self):
         if self.speech is not None:
             await self.speech.wait()
-        return not self.cap
+        return not (self.cap or self.ended)
 
 
 class _Owed:
@@ -320,12 +335,22 @@ def test_what_keeps_the_room_awake():
 
 
 def test_a_goodbye_answering_a_question_is_no_leave_taking():
-    """Review round 1: the goodbye is the answer, not a leave-taking."""
+    """Review rounds 1 and 2: the goodbye is the answer, not a leave-taking."""
     for caller, said in (("How do you say adiós in English?", "Goodbye."),
                          ("What's the opposite of hello?", "Goodbye!"),
-                         ("Can you remind me in 5 minutes?", "See you!")):
+                         ("Can you remind me in 5 minutes?", "See you!"),
+                         ("Translate adiós into English.", "Goodbye."),
+                         ("Tell me the opposite of hello.", "Goodbye!")):
         sent, sleep = _sent(said, messages=_turn(caller))
         assert sent == [] and sleep.decisions[-1] == "it answers a question", (caller, said)
+
+
+def test_a_question_that_asks_the_box_to_go_sleeps_on_a_plain_goodbye():
+    """Review round 2: "Can you go to sleep?" -- "Good night—take care!" is #221's own
+    reply shape; the question asks for the goodbye, it does not ask for a word."""
+    for caller, said in ASKED_TO_GO:
+        sent, sleep = _sent(said, messages=_turn(caller))
+        assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, said, sleep.decisions)
 
 
 def test_a_question_answered_with_going_to_sleep_still_sleeps():
@@ -379,10 +404,14 @@ def test_the_caller_talking_over_the_goodbye_holds_the_sleep():
     def they_start_again(gate, msgs):
         pass                                     # still caller_speaking after the clear
 
+    def the_session_ends(gate, msgs):
+        gate.ended = True
+
     for then, why in ((their_words_took_a_turn, "the conversation went on"),
                       (their_words_were_committed, "the conversation went on"),
                       (they_talk_on, "the caller was still talking at the hold's cap"),
-                      (they_start_again, "the caller is talking again")):
+                      (they_start_again, "the caller is talking again"),
+                      (the_session_ends, "the session ended")):
         sent, sleep = _held(_Gate(caller_speaking=True), then)
         assert sent == [] and not sleep.sent, then.__name__
         assert sleep.decisions[-1] == why, (then.__name__, list(sleep.decisions))
@@ -628,6 +657,42 @@ async def test_a_sound_over_the_goodbye_with_no_words_only_delays_the_sleep():
         await until(lambda: rig.calls())
         (m, _, _), = rig.calls()
         assert m["said"] is True and rig.session.goodbye_sleep.decisions[-1] == SENT
+
+
+async def test_a_hold_ends_with_the_session_and_sends_nothing():
+    """Review round 2: the session torn down while the sleep is held. The hold's wait ends
+    with it (FollowupGate.speech_over), not at its cap after it: no dangling task, and
+    nothing sent."""
+    from loguru import logger
+    seen: list = []
+    sink = logger.add(lambda m: seen.append(str(m)), level="DEBUG")
+    try:
+        rig = Rig([TURNS[0][1]])
+        async with rig:
+            await _talking_over_the_goodbye(rig)
+            started = time.monotonic()
+        sleep = rig.session.goodbye_sleep
+        await until(lambda: not sleep.holding, timeout=2.0)
+        assert time.monotonic() - started < rig.gate._answer_max_secs, "held to its cap"
+        assert sleep.decisions[-1] == "the session ended", list(sleep.decisions)
+        assert not sleep.sent and rig.calls() == []
+    finally:
+        logger.remove(sink)
+    dangling = [m for m in seen if "dangling" in m and "goodbye" in m]
+    assert not dangling, dangling
+
+
+async def test_the_gates_speech_wait_ends_with_the_session():
+    gate = FollowupGate(answer_max_secs=30.0)
+    gate._vad = gate._speech_pending = True
+    gate._speech_changed()
+    assert gate.caller_speaking and not gate.ended
+    wait = asyncio.create_task(gate.speech_over())
+    await asyncio.sleep(0.05)
+    assert not wait.done()
+    gate._ended.set()                            # what End, Stop, Cancel and cleanup do
+    assert await asyncio.wait_for(wait, 1.0) is False and gate.ended
+    assert await gate.speech_over() is False     # and after it, at once
 
 
 async def test_a_talk_session_or_a_room_without_wake_words_has_no_backstop():

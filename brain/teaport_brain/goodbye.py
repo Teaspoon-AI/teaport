@@ -33,9 +33,11 @@
 #     no tool itself, in a turn with no end_conversation call (the model did it right:
 #     its own call has armed the bridge);
 #   * not the answer to a question: "What's the opposite of hello?" -- "Goodbye!" (the
-#     caller's words end in "?", or start with a wh-word or an auxiliary and a subject:
-#     _ASKS). Unless the reply says the box goes to sleep ("Can you go to sleep?" --
-#     "Going to sleep now."): saying so and listening on is #221's harm itself;
+#     caller's words end in "?", start with a wh-word or an auxiliary and a subject, or
+#     ask for a word: "Translate adiós into English." -- asks()). A question that asks
+#     the box to go, though, is answered by a goodbye ("Can you go to sleep?" -- "Good
+#     night—take care!", #221's own shape: _ASKS_TO_GO). And a reply that says the box
+#     goes to sleep sleeps whatever was asked: saying so and listening on is #221's harm;
 #   * nothing owed: no consult running, no answer owed (owed.py), no tool call out, not
 #     on hold for a phone call -- the room does not sleep on an answer still coming (nor
 #     does the bridge's keep-alive, on a consult running) or one not heard yet (the
@@ -119,7 +121,7 @@ _BYE = _any(
     # Not a bare "later": "Can you do that later?" -- "Sure, later."
     r"(?:talk|speak) (?:to you |with you )?(?:later|soon|tomorrow|again)" + _THEN
     + r"|until (?:next time|tomorrow|later|then)|till (?:next time|tomorrow|then)",
-    r"take care(?: of yourself)?" + _THEN + r"|stay safe",
+    r"take care(?: of yourself)?" + _THEN,
 )
 # The box says it goes to sleep, or stops listening.
 _SLEEP = _any(
@@ -141,6 +143,8 @@ _AROUND = _any(
     r"(?: for (?:the|our|this|a) (?:\w+ )?(?:chat|talk|conversation|evening)"
     r"| for (?:chatting|talking)(?: with me)?)?",
     r"you too|and you|same to you|likewise|you're welcome|anytime|any time|my pleasure",
+    # Only beside a goodbye: alone, it answers a storm warning.
+    r"stay safe",
     r"(?:oh )?(?:sorry|oops|my apologies|apologies)(?: about that| for that)?|my bad"
     r"|you're right",
     r"(?:i'm )?(?:glad|happy) (?:i could|to|i was able to) help"
@@ -223,9 +227,29 @@ _ASKS = re.compile(
     r"|shouldn't)\s+(?:i|you|we|they|he|she|it|that|this|there|your|my|the)\b)", re.I)
 
 
+# ...or for a word, in any form: "Translate adiós into English.", "Tell me the opposite
+# of hello." -- a goodbye is then the answer, whatever else they said.
+_ASKS_FOR_A_WORD = re.compile(
+    r"\btranslat\w*|\bin english\b|\bthe word for\b|\bopposite of\b|\bmeaning of\b"
+    r"|\bhow (?:do|would) you say\b|\bwhat (?:does|did|do) .{1,40}\bmean\b", re.I)
+# ...unless the question asks the box to go: to sleep, to stop listening, or says
+# goodbye ("Can you go to sleep?", "Why are you still awake?", "Could you stop
+# listening?"). A goodbye is its answer.
+_ASKS_TO_GO = re.compile(
+    r"\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up"
+    r"|listening)|good ?-?night|g'night|(?:good ?-?)?bye|that's (?:all|it)|that is (?:all|it)"
+    r"|be quiet|shut up)\b", re.I)
+
+
 def asks(said: str) -> bool:
-    """Did the caller ask a question in `said` (their words, as committed)? English."""
-    return bool(_ASKS.search((said or "").replace("’", "'")))
+    """Did the caller ask a question in `said` (their words, as committed) that a goodbye
+    would answer as a word, not as a leave-taking? English."""
+    said = (said or "").replace("’", "'")
+    if _ASKS_FOR_A_WORD.search(said):
+        return True
+    if _ASKS_TO_GO.search(said):
+        return False
+    return bool(_ASKS.search(said))
 
 
 def english(code) -> bool:
@@ -298,7 +322,8 @@ class GoodbyeSleep:
         finally:
             self.holding = False
         if not over:
-            why = "the caller was still talking at the hold's cap"
+            why = ("the session ended" if self._gate.ended else
+                   "the caller was still talking at the hold's cap")
         elif _callers(self._context.get_messages()) != callers:
             why = "the conversation went on"       # their words were committed meanwhile
         elif self._gate.caller_speaking:

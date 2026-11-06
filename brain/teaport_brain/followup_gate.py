@@ -343,6 +343,9 @@ class FollowupGate(FrameProcessor):
         # run waits for.
         self._speech_clear = asyncio.Event()
         self._speech_clear.set()
+        # Set at the session's end (End/Stop/Cancel, cleanup): a wait on the caller's
+        # speech (speech_over) ends with it, not at its cap after the session.
+        self._ended = asyncio.Event()
         # The run's slot (module header, THE RUN): (keys, purpose, context, task), or
         # None. Its own, beside the post-tool answer's _held_answer: HoldNoLoss.
         self._run = None
@@ -405,18 +408,29 @@ class FollowupGate(FrameProcessor):
         goodbye.py; the run's door holds on the same)."""
         return self._vad or self._speech_pending
 
+    @property
+    def ended(self) -> bool:
+        """The session is ending or over (its End, Stop or Cancel reached the gate)."""
+        return self._ended.is_set()
+
     async def speech_over(self) -> bool:
         """Wait until the caller's pending speech is over, as the run's door does (the #198
         hold): True once it is -- their words started a turn, or none came within the
         release window -- False at the hold's cap (answer_max_secs) with them still
-        talking."""
+        talking, or at once when the session ends (ended): a wait does not outlive it."""
+        if self._ended.is_set():
+            return False
         if not (self._vad or self._speech_pending):
             return True
+        clear = asyncio.ensure_future(self._speech_clear.wait())
+        ended = asyncio.ensure_future(self._ended.wait())
         try:
-            await asyncio.wait_for(self._speech_clear.wait(), self._answer_max_secs)
-        except asyncio.TimeoutError:
-            return False
-        return True
+            done, _ = await asyncio.wait({clear, ended}, timeout=self._answer_max_secs,
+                                         return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            clear.cancel()
+            ended.cancel()
+        return clear in done and not self._ended.is_set()
 
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
@@ -565,6 +579,7 @@ class FollowupGate(FrameProcessor):
             self._drop_run(None)
             self._cancel(self._speech_timer)
             self._speech_timer = None
+            self._ended.set()
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user = True
             self.user_heard = True
@@ -743,6 +758,7 @@ class FollowupGate(FrameProcessor):
         self._drop_answer(None)
         self._drop_run(None)
         self._cancel(self._speech_timer)
+        self._ended.set()
         if self.on_session_end is not None:
             # The session is over: a consult still running cannot report back to it.
             self.on_session_end()
