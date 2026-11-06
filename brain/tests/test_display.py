@@ -146,6 +146,52 @@ def test_names_fold_to_printable_ascii(name, shown):
     assert all(" " <= c <= "~" for c in display.fold_ascii(name))
 
 
+class _Words:
+    """i18n.T's p(), in a language whose every word is its own."""
+
+    def p(self, context, msgid):
+        return f"«{context}:{msgid}»"
+
+
+@pytest.mark.parametrize("name", ["Кухня", "東京-box", "Café ☕", "منزلي", "घर", "우리집"])
+def test_one_rule_for_screen_text_unicode_or_fold(name):
+    """#207: as it is to an avatar that says "unicode", else folded -- names and the
+    screen's own words alike, the words in English rather than folded."""
+    assert display.screen_text(name, 1) == name
+    assert display.screen_text(name, None) == display.fold_ascii(name, "")
+    words = display.ScreenText(True, _Words())
+    assert words.text(name) == name and words.p("screen", "Network") == "«screen:Network»"
+    plain = display.ScreenText(False, _Words())
+    assert plain.text(name, "your network") == display.fold_ascii(name)
+    assert plain.p("screen", "Network") == "Network"      # English, not a folded translation
+    assert display.ScreenText(True).p("screen", "Network") == "Network"   # no reader: English
+
+
+@pytest.mark.parametrize("features, caller, want", [
+    ({"call": 1}, "Zoë Ñúñez", "Zoe Nunez"),
+    ({"call": 1, "unicode": 1}, "Zoë Ñúñez", "Zoë Ñúñez"),
+    ({"call": 1, "unicode": 1}, "東京", "東京"),
+    ({"call": 1}, "東京", None),                      # nothing left: the handset alone
+])
+def test_the_caller_id_takes_the_same_rule(features, caller, want):
+    sent = []
+    face = display.CallFace(send=lambda ev, path: sent.append(ev), features=lambda p: features)
+    face.ringing("A", caller)
+    face.end("A")
+    assert sent[0]["call"].get("caller") == want and sent[-1] == {"call": {"state": "none"}}
+
+
+@pytest.mark.parametrize("text, cols", [
+    ("Network  teaport-ab12", 21), ("Пароль", 6), ("パスワード", 10), ("비밀번호", 8),
+    ("密码", 4), ("（QRコード）", 12),
+    ("पासवर्ड", 5),        # the vowel sign and the virama sit on their letters
+    ("تعذّر", 4),          # the shadda too
+    ("Café", 4), ("a‍b", 2),
+])
+def test_columns_count_wide_letters_twice_and_marks_not_at_all(text, cols):
+    assert display.columns(text) == cols
+
+
 def test_a_qr_code_goes_with_the_screen_and_draws_asks_the_avatar():
     sent = []
     screen = display.Screen("t", send=lambda ev, path: sent.append(ev["screen"]) or True,

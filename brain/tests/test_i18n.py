@@ -12,7 +12,7 @@ import urllib.request
 
 import pytest
 
-from teaport_brain import i18n, wifi_setup, wifi_voice
+from teaport_brain import display, i18n, wifi_setup, wifi_voice
 
 PKG = os.path.dirname(os.path.abspath(i18n.__file__))
 
@@ -204,6 +204,36 @@ def test_no_broken_characters(lang):
 
 def test_english_needs_only_its_digit_words():
     assert set(_catalog("en")) == {"digit\x04" + str(d) for d in range(10)}
+
+
+# The box's screen (#207): its own words, context "screen", each with a length budget in
+# columns (display.columns) that its line leaves it (wifi_setup.SCREEN_WORD_COLUMNS).
+SCREEN = wifi_setup.SCREEN_WORD_COLUMNS
+_BUDGET = re.compile(r'#\. Translators: [^\n]*\bat most (\d+) columns\.\n'
+                     r'msgctxt "screen"\nmsgid "((?:[^"\\]|\\.)*)"\n')
+
+
+def test_the_screens_words_each_have_a_budget_the_english_keeps():
+    used = {k.split("\x04", 1)[1] for k in _used() if k.startswith("screen\x04")}
+    assert used == set(SCREEN), "a screen word without a budget, or a budget for none"
+    for msgid, budget in SCREEN.items():
+        # English is what an avatar without "unicode" shows: ASCII, and inside its budget.
+        assert msgid.isascii() and display.columns(msgid) <= budget, msgid
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_every_catalog_has_the_screens_words_within_their_budgets(lang):
+    """The words a translator sees with their budget, in the comment above each (the
+    same as the code's), and every translation inside it: a word that does not fit
+    pushes its line past the panel's width, and the line scrolls sideways."""
+    with open(i18n._po_path(lang), encoding="utf-8") as f:
+        stated = {msgid: int(n) for n, msgid in _BUDGET.findall(f.read())}
+    assert stated == SCREEN, f"{lang}: translator comments' budgets {stated}"
+    catalog = _catalog(lang)
+    for msgid, budget in SCREEN.items():
+        word = catalog["screen\x04" + msgid]
+        assert display.columns(word) <= budget, (lang, msgid, word, display.columns(word))
+        assert word == word.strip() and "\n" not in word, (lang, msgid)
 
 
 @pytest.mark.parametrize("lang", LANGS)

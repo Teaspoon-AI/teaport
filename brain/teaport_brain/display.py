@@ -28,10 +28,16 @@
 # nothing shows and nothing else changes. No Pipecat import: wifi_setup.py runs alone
 # on a box short of memory.
 #
-# The avatar draws with Pillow's built-in font unless it was given one (--font), and
-# that font is Latin only: text for it is kept to ASCII — names, digits, and a word or
-# two of English; fold_ascii() folds a network name into it. The voice and the phone page
-# speak the user's language.
+# Text in the user's script only where the avatar draws it (#207). The avatar's own font
+# (Pillow's built-in one, Aileron, unless it was given one with --font) is ASCII only;
+# where the box has fallback fonts (DejaVu Sans, Noto Sans and its Arabic, Devanagari and
+# CJK families, ...) it draws every other character with them, and its features file
+# says "unicode". One rule for every text the brain puts on a screen, screen_text(): as it
+# is to an avatar that says "unicode", else folded into ASCII (fold_ascii). A screen's own
+# words (a title, "Network") go through ScreenText: in the reader's language where the
+# avatar says "unicode", else in English -- folded, a translation would be nothing
+# ("Пароль") or wrong. A box without those fonts gets ASCII English screens, as before.
+# The voice and the phone page speak the user's language whatever the screen draws.
 #
 import json
 import os
@@ -90,6 +96,41 @@ def fold_ascii(text: str, fallback: str = "your network") -> str:
                    for c in unicodedata.normalize("NFKD", text)
                    if c.isspace() or " " <= c <= "~")
     return " ".join(kept.split()) or fallback
+
+
+def screen_text(text: str, unicode, fallback: str = "") -> str:
+    """`text` (a network's name, a caller id) as it goes on a screen: as it is when the
+    avatar says "unicode" (`unicode`: its features' value, or whether it draws "unicode"),
+    else folded into ASCII (fold_ascii, `fallback` when nothing is left). The one rule
+    for text on the avatar (#207): every sender asks it, so no two can disagree."""
+    return text if unicode else fold_ascii(text, fallback)
+
+
+class ScreenText:
+    """One screen's text for the avatar as it is when the screen is made: names through
+    screen_text(), and the screen's own words through p(), as i18n.T.p() -- in `t`'s
+    language (an i18n.T) to an avatar that says "unicode", else in English, the msgid
+    itself. Made once per screen, so its words and its names agree."""
+
+    def __init__(self, unicode, t=None):
+        self.unicode, self._t = bool(unicode), t
+
+    def text(self, text: str, fallback: str = "") -> str:
+        return screen_text(text, self.unicode, fallback)
+
+    def p(self, context: str, msgid: str) -> str:
+        return self._t.p(context, msgid) if self.unicode and self._t else msgid
+
+
+def columns(text: str) -> int:
+    """About how much of a line `text` takes, in columns of the avatar's 10 px font (an
+    average Latin letter): a CJK character or Hangul syllable (East Asian wide or
+    fullwidth) two, a combining mark (an accent, a vowel sign, a virama) or an invisible
+    joiner none, anything else one. An estimate, for the length budgets of the screens'
+    own words (wifi_setup.SCREEN_WORD_COLUMNS): the panel's own check is the avatar's."""
+    return sum(0 if unicodedata.category(c) in ("Mn", "Mc", "Me", "Cf")
+               else 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+               for c in text)
 
 
 def send(event: dict, path: str = SOCK) -> bool:
@@ -272,11 +313,10 @@ class CallFace:
     def _event(self) -> dict:
         call = {"state": self.state, "ttl": CALL_TTL_SECS}
         if self.state == RINGING and self._caller:
-            # Sent with every ringing re-send (the avatar reads it only with ringing). An
-            # avatar without fallback fonts draws ASCII only: a name all in other scripts
-            # folds to nothing, and the handset is shown alone.
-            caller = (self._caller if self._features(self._path).get("unicode")
-                      else fold_ascii(self._caller, fallback=""))
+            # Sent with every ringing re-send (the avatar reads it only with ringing), and
+            # asked of the avatar each time (screen_text): to one without fallback fonts,
+            # a name all in other scripts folds to nothing, and the handset is shown alone.
+            caller = screen_text(self._caller, self._features(self._path).get("unicode"))
             if caller:
                 call["caller"] = caller[:CALLER_MAX_CHARS]
         return {"call": call}
