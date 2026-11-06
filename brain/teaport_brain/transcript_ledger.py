@@ -118,13 +118,20 @@ _SECONDS_PER_WORD = 0.36
 _PTS_LEAD_SECS = CAPTION_LEAD_SECS
 
 # How far a reply's first word may be scheduled ahead of where the layout says the
-# reply's audio started and still be taken as anchored right (_pts_rebase), beyond the
-# lead itself: the layout dates a window by BotStarted, which reaches the ledger a little
-# after the TTS anchored the words on its first audio (1-30 ms across the suite's real
-# pipelines; once 140 ms, the first reply of a session on a loaded machine). A latency
-# past this moves the words by about as much as the audio really started late. A
-# schedule anchored at the previous reply's last word (#19) is early by the lead AND that
-# word's length.
+# reply's audio started and still be taken as anchored right (_pts_rebase): the larger
+# of the lead and _ANCHOR_LATENCY_SECS, plus _ANCHOR_TOL_SECS. Two things put it ahead
+# on a right schedule. The layout dates a window by BotStarted, which reaches the ledger
+# a little after the TTS anchored the words on its first audio (1-30 ms across the
+# suite's real pipelines; once 140 ms, the first reply of a session on a loaded
+# machine). And a schedule may stamp its first word a lead early, as the cut reads every
+# word (the Talk barge-pause rig does; the engine never does: _place_words). The engine's
+# first word is at its anchor, so for it the whole slack is latency margin, which must
+# not shrink with the lead: TTS_CAPTION_LEAD_SECS is tunable down to 0. A rig's first
+# word keeps _ANCHOR_TOL_SECS of it. A latency past the slack moves the words by about
+# as much as the audio really started late. A schedule anchored at the previous reply's
+# last word (#19) is early by the lead and that word's length: past the slack at the
+# default lead (0.2 s).
+_ANCHOR_LATENCY_SECS = 0.2
 _ANCHOR_TOL_SECS = 0.05
 
 # Bounds. Every structure here is fed by a stream that may never present the frame
@@ -920,12 +927,24 @@ class TranscriptLedger(BaseObserver):
     def _resume(self, t: float):
         """Writing again: everything still queued plays from now. (Its words need no
         moving: their pts are on the voice clock, which stood still through the pause --
-        _pts_heard.)"""
+        _pts_heard.)
+
+        A turn that had not started when the voice stopped starts where its first chunk
+        now plays, not where it was laid out to before the pause: its playout start is
+        what its words are read from (_pts_rebase, #19 review) and what dates its
+        utterance. Its first chunk is still queued: _credit credited none of it."""
         if self._paused_at is None:
             return
-        self._paused_at = None
+        paused_at, self._paused_at = self._paused_at, None
         if self._win_t0 is not None:
             self._win_t0 = t
+            later = {id(turn) for turn in self._turns
+                     if turn["audio_start"] is not None and turn["audio_start"] >= paused_at}
+            for item, start, _end in self._layout():
+                turn = self._turn_for_item(item)
+                if turn is not None and id(turn) in later:
+                    later.discard(id(turn))
+                    turn["audio_start"] = start
 
     def _pts_heard(self, turn: dict, t: float):
         """The words of `turn` played out by `t`, by their scheduled pts; the cut instant
@@ -962,9 +981,9 @@ class TranscriptLedger(BaseObserver):
         end; this is the ledger's own guard, from where it knows the reply's audio
         started (the layout its heard seconds are measured on).
 
-        Within the lead and _ANCHOR_TOL_SECS of that start nothing moves: the reply that
-        opens its window, one queued behind audio the engine anchored it after, and a
-        schedule whose first word is a lead early, as the cut reads every word. Past it
+        Within the slack of that start (see _ANCHOR_LATENCY_SECS) nothing moves: the
+        reply that opens its window, one queued behind audio the engine anchored it after,
+        and a schedule whose first word is a lead early, as the cut reads every word. Past it
         the words were anchored before the audio could play, and move by the whole gap:
         the engine never schedules a context's first word before its anchor
         (_place_words), so that is its error exactly. A schedule both a lead early and
@@ -973,16 +992,18 @@ class TranscriptLedger(BaseObserver):
         did, the error no record may be closed on (formal/Owed.tla, ow_ledgerMax).
 
         The start is laid out on the pipeline clock and the pts are on the voice clock,
-        so it is read on the voice clock (_voice_ns), where it is never later than where
-        the audio really started: a start laid out before a pause held the reply back,
-        or while a pause holds the queue, reads early by the pause. So a pause neither
-        moves a right schedule nor adds to how far an early one moves."""
+        so it is read on the voice clock (_voice_ns). A pause re-lays out a turn that had
+        not started (_resume), so its start is where it really plays and reads on the
+        voice clock as its words do: a pause neither moves a right schedule nor hides an
+        early one. Read while a pause still holds it, a start not yet re-laid out reads
+        early (no later than the stop), so the move can only be smaller."""
         start = turn["audio_start"]
         pts = [p for _, p in turn["spoken"] if p is not None]
         if start is None or not pts:
             return 0.0
         early = self._voice_ns(start) - min(pts)
-        return early if early > (_PTS_LEAD_SECS + _ANCHOR_TOL_SECS) * 1e9 else 0.0
+        slack = max(_PTS_LEAD_SECS, _ANCHOR_LATENCY_SECS) + _ANCHOR_TOL_SECS
+        return early if early > slack * 1e9 else 0.0
 
     def paused_reply(self) -> Optional[tuple]:
         """While playout is paused (barge_pause.py): the reply it paused, as (its text so

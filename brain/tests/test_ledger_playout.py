@@ -546,12 +546,12 @@ LIMA_PTS = [18.62, 18.89, 19.89, 20.04, 20.41, 20.76, 21.09]           # as trac
 RIGHT_PTS = [round(p + 19.41 - LIMA_PTS[0], 2) for p in LIMA_PTS]
 
 
-def lima(pts, *, stood=0.0, cut=20.23):
+def lima(pts, *, stood=0.0, pause_at=16.7, cut=20.23):
     """Seq 3 and seq 4 in one window, seq 4's words at `pts`, the caller cutting seq 4 at
-    `cut` (20.23: 0.82 s into its 3.23 s). With `stood`, a pause that long from 16.7 holds
-    seq 3, and everything after it plays that much later on the pipeline clock; on the
-    voice clock, where the words are, nothing moves. The settle feed's heard texts, by
-    reply, are in L.settled."""
+    `cut` (20.23: 0.82 s into its 3.23 s). With `stood`, a pause that long from `pause_at`
+    holds seq 3, and everything after it plays that much later on the pipeline clock; on
+    the voice clock, where the words are, nothing moves. The settle feed's heard texts,
+    by reply, are in L.settled."""
     f3, end3 = response(LIMA_BEFORE, 15.9)
     f4, end4 = response(LIMA, 17.8)
     for frames, name in ((f3, "seq3"), (f4, "seq4")):
@@ -559,9 +559,9 @@ def lima(pts, *, stood=0.0, cut=20.23):
     L = ledger()
     L.settled = {}
     L.on_reply_end = lambda reply, heard, **kw: L.settled.setdefault(reply.name, heard)
-    pause = [(PlayoutPauseFrame(paused=True), 16.7, OUT),
-             (PlayoutPauseFrame(paused=False), 16.7 + stood, OUT)] if stood else []
-    return L, f3 + [
+    pause = [(PlayoutPauseFrame(paused=True), pause_at, OUT),
+             (PlayoutPauseFrame(paused=False), pause_at + stood, OUT)] if stood else []
+    return L, sorted(f3 + [                         # the pause in its place in time
         (started("s3"), 16.1, BELOW), at(audio(3.08, "s3"), 16.2), drained(end3, 16.25),
         *[(word(w, p, "s3"), 16.25, BELOW)
           for w, p in zip(LIMA_BEFORE.split(), LIMA_BEFORE_PTS)],
@@ -573,7 +573,7 @@ def lima(pts, *, stood=0.0, cut=20.23):
         drained(end4, 18.05),
         (copy(3.08), 19.41 + stood, AFTER),
         (InterruptionFrame(), cut + stood),
-    ]
+    ], key=lambda frame: frame[1])
 
 
 async def test_j_a_queued_reply_is_heard_by_its_own_playout_not_where_its_words_were_anchored():
@@ -632,6 +632,24 @@ async def test_j_a_pause_ahead_of_a_queued_reply_moves_none_of_its_words():
     assert L.settled["seq4"] == "Lima's population", L.settled
 
 
+async def test_j_a_pause_after_a_queued_reply_is_laid_out_moves_its_start_with_it():
+    """Review round 1: seq 4 is laid out to start at 19.41 when its audio arrives (17.99);
+    then a pause holds seq 3's tail, 18.5-19.5, and seq 4 really starts at 20.41. Its
+    start kept the layout's pre-pause 19.41, which on the voice clock reads 18.41, early
+    by the pause: the guard's 0.79 s shrank to 0 and the cut charted "is" again. At the
+    resume a turn that had not started is laid out again (_resume): it starts at 20.41,
+    19.41 on the voice clock, and the words move by their own 0.79 s -- for a short
+    pause as for a long one, and not at all for a right schedule."""
+    for pts, stood in ((LIMA_PTS, 1.0), (LIMA_PTS, 0.3), (RIGHT_PTS, 1.0)):
+        L, seq = lima(pts, stood=stood, pause_at=18.5)
+        await feed(L, seq)
+        cut = bot(L)[1]
+        assert abs(cut.t_start - (19.41 + stood)) < 0.01, (stood, cut.t_start)
+        assert cut.interrupted and 0.2 < cut.heard_fraction < 0.3, (stood, cut.heard_fraction)
+        assert cut.heard_text == "Lima's population", (pts[0], stood, cut.heard_text)
+        assert L.settled["seq4"] == "Lima's population", (pts[0], stood, L.settled)
+
+
 async def test_j_a_reply_that_opens_its_window_is_cut_on_its_own_schedule():
     """#19's guard moves nothing in the one-reply-at-a-time flow. BotStarted reaches the
     ledger a little after the TTS anchored the words on the reply's first audio (17 ms
@@ -656,6 +674,34 @@ async def test_j_a_reply_that_opens_its_window_is_cut_on_its_own_schedule():
         assert cut.interrupted and cut.heard_text == "The forecast for tomorrow is", (
             first, cut.heard_text)
         assert settled == {"r1": "The forecast for tomorrow is"}, (first, settled)
+
+
+async def test_j_with_no_caption_lead_a_late_bot_started_moves_nothing():
+    """Review round 1: the slack must not shrink with the caption lead, which is tunable
+    down to 0 (TTS_CAPTION_LEAD_SECS). The engine stamps a reply's first word at its
+    anchor, so the whole slack is its margin for BotStarted's latency: at lead 0 a
+    BotStarted 140 ms late (the most the suite has shown) moved every word 0.14 s when the
+    slack was the lead plus 0.05 s, and the cut lost "is". Twelve words 0.3 s apart from
+    0.6, BotStarted at 0.74, cut at 1.85: five words were heard."""
+    import teaport_brain.transcript_ledger as tl
+    lead, tl._PTS_LEAD_SECS = tl._PTS_LEAD_SECS, 0.0
+    try:
+        f1, end1 = response(R1, 0.0)
+        f1[0][0].owed_reply = SimpleNamespace(name="r1")
+        L = ledger()
+        settled = {}
+        L.on_reply_end = lambda reply, heard, **kw: settled.setdefault(reply.name, heard)
+        await feed(L, f1 + [
+            (started("R1"), 0.5, BELOW), at(audio(4.0, "R1"), 0.5), drained(end1, 0.55),
+            *[(word(w, 0.6 + 0.3 * k, "R1"), 0.55, BELOW) for k, w in enumerate(R1.split())],
+            *siblings(BotStartedSpeakingFrame, 0.74),
+            (InterruptionFrame(), 1.85),
+        ])
+    finally:
+        tl._PTS_LEAD_SECS = lead
+    cut = bot(L)[0]
+    assert cut.interrupted and cut.heard_text == "The forecast for tomorrow is", cut.heard_text
+    assert settled == {"r1": "The forecast for tomorrow is"}, settled
 
 
 async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas():
