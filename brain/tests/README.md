@@ -47,8 +47,9 @@ you to do depends on whose venv it is, because a sync into the wrong one does da
 - **brain/.venv, or another venv of this project's:** the `uv sync` that puts it
   right, with `UV_PROJECT_ENVIRONMENT=<venv>` for the other, and `--no-editable` when
   its teaport-brain was installed that way (CI's install, and install.sh's).
-- **An installed brain** (a `teaport-build.json` beside it, or under `/opt/teaport`):
-  `teaport doctor`, never a sync. One would make teaport-brain editable against your
+- **An installed brain** (a `teaport-build.json` beside it, or the install prefix's
+  own `brain/`, `venv` or `venvs/<release>`, under `/opt/teaport` or
+  `$TEAPORT_PREFIX`): `teaport doctor`, never a sync. One would make teaport-brain editable against your
   checkout and add the dev group to the box's venv.
 - **Anyone else's** (pipx's pytest, another project's): run the suite in the
   project's own, `uv run --locked --project brain python -m pytest brain/tests/test_suite.py`.
@@ -56,7 +57,8 @@ you to do depends on whose venv it is, because a sync into the wrong one does da
 A package the lock does not have (a debugger you added, say) does not stop the run.
 It is named on a `WARNING:` line, and `uv sync` would remove it. Under
 `uv run --with X`, the venv checked is the one the temporary overlay extends, and what
-the overlay adds is the run's own choice. A passing check is a line in pytest's
+the overlay adds is the run's own choice. Nothing else is an overlay: a locked package
+the venv lacks is missing even when PYTHONPATH or the system's site-packages has one. A passing check is a line in pytest's
 header (`brain venv: brain/.venv matches brain/uv.lock (68 packages)`, shown unless
 `-q`), so a CI log shows it ran. It costs a fraction of a second, covers any pytest
 run under `brain/tests` (a direct `pytest brain/tests/test_x.py` too), and passes on

@@ -75,21 +75,28 @@ def _records(site, *records):
     return site
 
 
-def _venv(*records, at=None, cfg="", build_record=False, editable=None):
+def _venv(*records, at=None, cfg="include-system-site-packages = false\n", build_record=False,
+          editable=None, record=None, pth=None):
     """A venv: its pyvenv.cfg, <records> in its site-packages, and as asked, an install's
-    build record and teaport-brain's PEP 610 record."""
+    build record and teaport-brain's PEP 610 record (<editable>, or <record>'s raw text)
+    and editable .pth (<pth>, which defaults to what <editable> says)."""
     venv = at or tempdir("teaport-locked-venv-")
     site = locked_venv.site_dirs(venv)[0]
     os.makedirs(site, exist_ok=True)
     with open(os.path.join(venv, "pyvenv.cfg"), "w") as f:
-        f.write("include-system-site-packages = false\n" + cfg)
+        f.write(cfg)
     _records(site, *records)
     if build_record:
         with open(os.path.join(venv, "teaport-build.json"), "w") as f:
             f.write("{}")
     if editable is not None:
+        record = json.dumps({"url": "file:///src/brain", "dir_info": {"editable": editable}})
+    if record is not None:
         with open(os.path.join(site, "teaport_brain-0.0.0.dist-info", "direct_url.json"), "w") as f:
-            json.dump({"url": "file:///src/brain", "dir_info": {"editable": editable}}, f)
+            f.write(record)
+    if pth or (pth is None and editable):
+        with open(os.path.join(site, "__editable__.teaport_brain-0.0.0.pth"), "w") as f:
+            f.write("import __editable___teaport_brain_0_0_0_finder\n")
     return venv
 
 
@@ -98,7 +105,7 @@ WHOLE = (("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("numpy", "2.1.0"), ("pyte
          ("vaderSentiment", "3.3.2"))
 # #220's venv: two locked packages lost, and one at another version.
 STALE = (("teaport_brain", "0.0.0"), ("numpy", "1.26.4"), ("pytest", "9.1.1"))
-PROJECT_CFG = "prompt = teaport-brain\n"
+PROJECT_CFG = "include-system-site-packages = false\nprompt = teaport-brain\n"
 
 
 def _checkout():
@@ -148,14 +155,14 @@ def test_the_projects_own_venv_off_the_lock_is_told_to_sync():
     _venv(*WHOLE, at=own, cfg=PROJECT_CFG)
     assert _line(brain, own) is None
     shutil.rmtree(own)
-    _venv(*STALE, at=own, cfg=PROJECT_CFG)
+    _venv(*STALE, at=own, cfg=PROJECT_CFG, editable=True)
     shown = locked_venv._shown
     assert _line(brain, own) == (
         f"{shown(own)} is out of sync with {shown(os.path.join(brain, 'uv.lock'))} "
         f"(numpy 2.1.0 -> 1.26.4, -h2 4.4.1, -vadersentiment 3.3.2): "
         f"run `uv sync --locked --project {shown(brain)}`")
     # Another venv of this project's (UV_PROJECT_ENVIRONMENT) has to be named to uv.
-    other = _venv(*STALE, cfg=PROJECT_CFG)
+    other = _venv(*STALE, cfg=PROJECT_CFG, editable=True)
     line = _line(brain, other)
     assert line.startswith(f"{other} is out of sync"), line
     assert f"run `UV_PROJECT_ENVIRONMENT={other} uv sync --locked --project" in line, line
@@ -224,7 +231,7 @@ def test_an_overlay_is_judged_by_the_venv_it_extends():
     # be read as a venv missing every locked package, with a sync into the overlay.
     brain = _checkout()
     base = _venv(*WHOLE, cfg=PROJECT_CFG)
-    for real in (base, _venv(*STALE, cfg=PROJECT_CFG)):
+    for real in (base, _venv(*STALE, cfg=PROJECT_CFG, editable=True)):
         overlay = _venv(cfg=f"extends-environment = {real}\n")
         added = _records(os.path.join(tempdir("teaport-locked-with-"), "site-packages"),
                          ("pytest_timeout", "2.4.0"), ("pytest", "8.3.0"))
@@ -238,6 +245,98 @@ def test_an_overlay_is_judged_by_the_venv_it_extends():
         else:
             line = _line(brain, overlay, path)
             assert f"run `UV_PROJECT_ENVIRONMENT={real} uv sync" in line and overlay not in line, line
+
+
+def test_an_unreadable_editable_record_does_not_drop_no_editable():
+    # Without teaport-brain's PEP 610 record, or with one that is not an object, the .pth
+    # an editable install leaves decides: none means it was built --no-editable, and the
+    # advice must keep the flag rather than make the venv editable. Never a crash.
+    brain = _checkout()
+    for record, pth, flag in ((None, True, False), (None, False, True),
+                              ("[]", False, True), ("[]", True, False), ('"x"', False, True),
+                              ('{"dir_info": []}', False, True), ("not json", True, False)):
+        line = _line(brain, _venv(*STALE, cfg=PROJECT_CFG, record=record, pth=pth))
+        assert ("uv sync --locked --no-editable --project" in line) is flag, (record, pth, line)
+
+
+class _Env:
+    """os.environ with <values> set (None: unset) for the length of a with block."""
+
+    def __init__(self, **values):
+        self.values, self.saved = values, {}
+
+    def __enter__(self):
+        for k, v in self.values.items():
+            self.saved[k] = os.environ.get(k)
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_without_an_overlay_nothing_stands_in_for_a_locked_package():
+    # h2 gone from the venv, and an older h2 on PYTHONPATH or in the system's
+    # site-packages (include-system-site-packages = true): the run would import that h2,
+    # so the locked one is still missing. Neither is an overlay, with one or without.
+    brain = _checkout()
+    no_h2 = tuple(r for r in WHOLE if r[0] != "h2")
+    elsewhere = _records(os.path.join(tempdir("teaport-locked-pp-"), "site-packages"), ("h2", "4.1.0"))
+    plain = _venv(*no_h2, cfg=PROJECT_CFG, editable=True)
+    system = _venv(*no_h2, cfg="include-system-site-packages = true\nprompt = teaport-brain\n",
+                   editable=True)
+    overlay = _venv(cfg=f"extends-environment = {plain}\n")
+    with _Env(PYTHONPATH=elsewhere):
+        cases = [_check(brain, plain, [elsewhere, locked_venv.site_dirs(plain)[0]]),
+                 _check(brain, overlay, [locked_venv.site_dirs(overlay)[0], elsewhere,
+                                         locked_venv.site_dirs(plain)[0]])]
+    with _Env(PYTHONPATH=None):
+        cases.append(_check(brain, system, [locked_venv.site_dirs(system)[0], elsewhere]))
+    for c in cases:
+        assert c.problems == ["-h2 4.4.1"] and c.overlay == 0, c
+
+
+def test_an_installed_brain_is_the_install_prefixs_own_venv_not_anything_under_it():
+    brain = _checkout()
+    box = (("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("pytest", "8.0.0"))
+    opt, other, home = (tempdir("teaport-locked-opt-"), tempdir("teaport-locked-prefix-"),
+                        tempdir("teaport-locked-home-"))
+    saved, locked_venv.INSTALL_PREFIX = locked_venv.INSTALL_PREFIX, opt
+    cwd = os.getcwd()
+    try:
+        deb = _venv(*box, at=os.path.join(opt, "brain"))   # the .deb's: no build record
+        old = _venv(*box, at=os.path.join(opt, "venvs", "20261001-000000-aaaa"))
+        new = _venv(*box, at=os.path.join(opt, "venvs", "20261101-000000-bbbb"))
+        os.symlink(new, os.path.join(opt, "venv"))   # install.sh's link to the live release
+        ours = _venv(*box, at=os.path.join(other, "venvs", "20261101-000000-cccc"))
+        dev = _venv(*box, at=os.path.join(home, "src", "teaport", "brain", ".venv"))
+        os.chdir(home)
+        cwd_brain = _venv(*box, at=os.path.join(home, "brain"))
+        for prefix in (None, ""):   # unset and empty are the default, as for install.sh
+            with _Env(TEAPORT_PREFIX=prefix):
+                assert [locked_venv._installed(v) for v in (deb, old, os.path.join(opt, "venv"))] == \
+                    [True] * 3
+                assert not locked_venv._installed(cwd_brain) and not locked_venv._installed(ours)
+        with _Env(TEAPORT_PREFIX=other):
+            # Another prefix's own releases, and still the .deb's tree.
+            assert locked_venv._installed(ours) and locked_venv._installed(deb)
+        with _Env(TEAPORT_PREFIX=home):
+            # A prefix above a developer's checkout does not make its venv an install.
+            assert not locked_venv._installed(dev)
+            line = _line(brain, dev)
+            assert "uv sync" in line and "teaport doctor" not in line, line
+        with _Env(TEAPORT_PREFIX=other):
+            line = _line(brain, deb)
+            assert "`teaport doctor`" in line and "uv sync" not in line, line
+    finally:
+        os.chdir(cwd)
+        locked_venv.INSTALL_PREFIX = saved
 
 
 def test_a_tests_dir_away_from_its_checkout_is_not_checked():

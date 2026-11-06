@@ -22,11 +22,14 @@
 # the line suggests gets run:
 #   - `uv run --with X` runs in a temporary overlay venv that extends the real one
 #     (pyvenv.cfg's extends-environment). The real one is checked, and what the overlay
-#     adds, at whatever version, is the run's own choice.
-#   - An installed brain (a teaport-build.json beside it, or under /opt/teaport) is never
-#     synced into: `teaport doctor` checks it against its own build record, and a sync
-#     would make teaport-brain editable against this checkout and add the dev group, the
-#     failure install.sh's --no-editable exists to prevent.
+#     adds, at whatever version, is the run's own choice. Only an overlay adds: with none,
+#     a PYTHONPATH entry or the system's site-packages never stands in for a locked
+#     package the venv lacks.
+#   - An installed brain (a teaport-build.json beside it, or the install prefix's own
+#     brain/, venv or venvs/<release>) is never synced into: `teaport doctor` checks it
+#     against its own build record, and a sync would make teaport-brain editable against
+#     this checkout and add the dev group, the failure install.sh's --no-editable exists
+#     to prevent.
 #   - A venv of this project's keeps how its teaport-brain was installed (--no-editable).
 #   - Any other venv (pipx's pytest, another project's) is not this suite's to change:
 #     the line says to run the suite in the project's own, through `uv run`.
@@ -36,6 +39,7 @@ import importlib.util
 import json
 import os
 import re
+import site
 import sys
 import sysconfig
 import tomllib
@@ -49,6 +53,8 @@ LOCK = os.path.join(BRAIN, "uv.lock")
 PYPROJECT = os.path.join(BRAIN, "pyproject.toml")
 LOCKCHECK = os.path.join(BRAIN, "teaport_brain", "lockcheck.py")
 SUITE = os.path.join(BRAIN, "tests", "test_suite.py")
+# Where install.sh and the .deb put the brain: ${TEAPORT_PREFIX:-/opt/teaport} in both.
+INSTALL_PREFIX = "/opt/teaport"
 
 
 def _lockcheck():
@@ -126,16 +132,35 @@ def site_dirs(venv: str) -> list[str]:
 
 
 def _editable(dirs: list[str]) -> bool | None:
-    """Whether teaport-brain in <dirs> was installed editable (its PEP 610 record), or None
-    when that cannot be told."""
+    """Whether teaport-brain in <dirs> was installed editable, or None when it is not there.
+    Its PEP 610 record says; one that is missing or unreadable (not JSON, or not an object)
+    falls back to the .pth an editable install leaves, so the advice never drops a
+    --no-editable the venv was built with (review round 2)."""
     for d in dirs:
         for info in glob.glob(os.path.join(d, "teaport_brain-*.dist-info")):
             try:
                 with open(os.path.join(info, "direct_url.json"), encoding="utf-8") as f:
                     return bool(json.load(f).get("dir_info", {}).get("editable"))
-            except (OSError, ValueError):
-                return None
+            except (OSError, ValueError, AttributeError, TypeError):
+                return bool(glob.glob(os.path.join(d, "__editable__.teaport_brain*.pth")))
     return None
+
+
+def _installed(venv: str) -> bool:
+    """Whether <venv> is an installed brain's: one with a build record (install.sh's), or
+    the install prefix's own brain/ (the .deb's), venv (install.sh's link) or a release in
+    its venvs/. Not anything under the prefix: a developer's checkout can be. Empty
+    TEAPORT_PREFIX is the default, as for install.sh, and /opt/teaport counts whatever
+    TEAPORT_PREFIX says, since the .deb always installs there (review round 2)."""
+    if os.path.isfile(os.path.join(venv, "teaport-build.json")):
+        return True
+    real = os.path.realpath(venv)
+    for prefix in {os.environ.get("TEAPORT_PREFIX") or INSTALL_PREFIX, INSTALL_PREFIX}:
+        if real in (os.path.realpath(os.path.join(prefix, "brain")),
+                    os.path.realpath(os.path.join(prefix, "venv"))) or \
+                os.path.dirname(real) == os.path.realpath(os.path.join(prefix, "venvs")):
+            return True
+    return False
 
 
 @dataclass
@@ -162,10 +187,18 @@ def check(prefix: str | None = None, path: list[str] | None = None) -> Check | N
     venv = base_venv(sys.prefix if prefix is None else prefix)
     base = site_dirs(venv)
     real = {os.path.realpath(d) for d in base}
-    # What an overlay puts in front of the venv: every other site-packages on the path.
-    added = [p for p in (sys.path if path is None else path)
-             if os.path.basename(os.path.normpath(p)) in ("site-packages", "dist-packages")
-             and os.path.realpath(p) not in real]
+    # What an overlay puts in front of the venv: the other site-packages on the path, and
+    # only when there is an overlay (round 2). A PYTHONPATH entry, or the system's
+    # site-packages under include-system-site-packages, is not one: a locked package
+    # missing from the venv and found there is still missing.
+    added = []
+    if venv != (sys.prefix if prefix is None else prefix):
+        python_path = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        system = site.getsitepackages([sys.base_prefix])
+        real |= {os.path.realpath(p) for p in python_path + system if p}
+        added = [p for p in (sys.path if path is None else path)
+                 if os.path.basename(os.path.normpath(p)) in ("site-packages", "dist-packages")
+                 and os.path.realpath(p) not in real]
     lockcheck = _lockcheck()
     over = lockcheck.installed(added) if added else {}
     want = locked(lock, pyproject)
@@ -176,9 +209,7 @@ def check(prefix: str | None = None, path: list[str] | None = None) -> Check | N
             problems.append(d)
         elif name not in over:   # one the overlay shadows is not the run's
             extras.append(d)
-    installs = os.path.realpath(os.environ.get("TEAPORT_PREFIX", "/opt/teaport")) + os.sep
-    if os.path.isfile(os.path.join(venv, "teaport-build.json")) or \
-            os.path.realpath(venv).startswith(installs):
+    if _installed(venv):
         kind = "installed"
     elif (_own(venv) or _cfg(venv).get("prompt") == project
           or f"-{project} {want.get(project)}" not in problems):
