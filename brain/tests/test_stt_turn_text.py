@@ -496,6 +496,55 @@ async def test_an_empty_peek_then_complete_asks_on_the_final_and_loses_nothing()
     assert s.finals() == [("yes", NO_STOP)], "asked on the final, as words of their own"
 
 
+async def test_a_peek_the_caller_talks_past_is_not_counted_by_the_empty_rate():
+    # #29 (THE EMPTY RATE): a peek is no turn until it is adopted, and an empty one the
+    # caller resumes past ("um..." then the sentence) is no miss -- as a segment held
+    # over a resume is not counted in segment mode. Its preview may land before the
+    # resume or after it; neither counts. Counted, three of these warned "dropping
+    # speech" over a call in which every word arrived.
+    from loguru import logger
+
+    lines = []
+    logger.remove()
+    logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+    try:
+        s = Service(peeks=True)
+        await created(s)
+        for i in range(4):
+            await vad_start(s)
+            await audio(s, 1000)
+            await vad_stop(s)                  # peek 1, over the filler
+            if i % 2:
+                await preview(s, s._peek.at_ms, "")    # answered before the resume
+            at = s._peek.at_ms
+            await verdict(s, complete=False)
+            await vad_start(s)                 # they go on: peek 1 is no one's
+            if not i % 2:
+                await preview(s, at, "")       # answered after it
+            await audio(s, 1000)
+            end = s._sent_samples * 1000 // 16000
+            await delta(s, " I was thinking", end - 100)
+            await vad_stop(s)                  # peek 2, adopted
+            await preview(s, s._peek.at_ms, "")
+            await verdict(s)
+            await progress(s, end)
+        assert [t for t, _ in s.finals()] == ["I was thinking"] * 4
+        assert list(s._seg_window) == [""] * 4, list(s._seg_window)
+        assert not [m for m in lines if "caller was heard in" in m], lines
+        # An adopted peek does count, on what its preview said (the line's call).
+        s = Service(peeks=True)
+        await created(s)
+        await vad_start(s)
+        await audio(s, 1000)
+        await vad_stop(s)
+        await preview(s, 1000, "")
+        assert list(s._seg_window) == [], "not yet a turn"
+        await verdict(s)
+        assert list(s._seg_window) == ["vad"], list(s._seg_window)
+    finally:
+        logger.remove()
+
+
 async def test_one_commit_in_flight_a_flapping_stop_waits_for_the_answer():
     s = Service(peeks=True)
     await created(s)

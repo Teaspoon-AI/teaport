@@ -111,26 +111,28 @@ _EMPTY_FINAL_RUN = 5
 # back empty -- 29% of the call, ~43 s of speech -- in ones and twos between healthy
 # segments, so the run reset every time and nothing said so. So the service also keeps
 # the last _EMPTY_RATE_WINDOW segments the caller was heard in (_note_segment) and warns,
-# once per episode, when _EMPTY_RATE_WARN of them came back with no words; the episode
-# ends, with one line, when the share falls to _EMPTY_RATE_CLEAR. Log only: whether the
-# caller should HEAR about it is an owner's decision (#29), not this detector's. The run
-# stays the fast path for the case it was written for, and a window of nothing but
-# empties is left to it: that is a run, and the run names what it most likely is.
+# once per episode, when at least _EMPTY_RATE_MISSES and _EMPTY_RATE_WARN of them came
+# back with no words; the episode ends, with one line, when the share falls to
+# _EMPTY_RATE_CLEAR. Log only: whether the caller should HEAR about it is an owner's
+# decision (#29), not this detector's. It is judged only on a segment that came back
+# WITH words -- intermittent is misses with words between them -- so a run of misses is
+# the run's alone: a mic that dies mid-call is named as a mic, not first as the engine.
 #
 #   window 12  a minute or two of conversation: one cough or door is a small share of
 #              it, and an episode that is over ages out of it in a dozen segments.
-#   min 4      a single early empty on a quiet call is at most 1 of 4 (25%), and
-#              nothing smaller is judged. The 2026-09-10 call opened EMPTY, words,
-#              EMPTY, words, EMPTY: 2 of 4 at its fourth segment.
-#   warn 40%   2 of the first 4 or 5, 5 of a full window: well clear of an isolated
-#              miss, and under what an intermittent failure reaches where it clusters
-#              (that call's opening was 3 of 5). Its 29% overall is under the line too:
-#              a loss spread evenly at that rate (4 of a dozen) never trips it, and a
-#              line low enough to would trip on 2 misses in a call's first 6 segments.
+#   misses 3   two can be a cough and a breath over the bot, which barge_pause.py
+#              resumes on as routine; so a quiet call's single early empty never trips
+#              it, and nothing under 4 segments (3 misses and the words that judge
+#              them) is judged at all.
+#   warn 40%   3 misses within the last 7 segments, 5 of a full window. The 2026-09-10
+#              call opened EMPTY, words, EMPTY, words, EMPTY, words: 3 of 6 at its sixth
+#              segment. Its 29% overall is under the line: a loss spread evenly at that
+#              rate (4 of a dozen) never trips it, and a line low enough to (a third)
+#              would trip on 3 coughs in a call's first 9 segments.
 #   clear 20%  half the warn line, so a share hovering at 40% is one episode and one
 #              recovery line, not a pair every few segments; 2 of a full window.
 _EMPTY_RATE_WINDOW = 12
-_EMPTY_RATE_MIN = 4
+_EMPTY_RATE_MISSES = 3
 _EMPTY_RATE_WARN = 0.4
 _EMPTY_RATE_CLEAR = 0.2
 
@@ -875,6 +877,9 @@ class _Peek:
     # text may hold them: the turn that adopts it waits on its own final (_owed_before).
     owed: bool = False
     dropped: bool = False      # the caller resumed: it is no one's
+    # Its preview's miss ("" for words) for THE EMPTY RATE, held until it is adopted;
+    # None: not counted (no preview yet, or one that is evidence of nothing).
+    tally: Optional[str] = None
     turn: Optional["_Turn"] = None    # the turn that adopted it
 
 
@@ -2000,9 +2005,15 @@ class TeaportSTTService(WebsocketSTTService):
         # THE EMPTY RATE counts the two misses above against the segments that came back
         # with words. An empty this logs at debug -- a tail, the engine's own close of
         # room noise, a sliver under 0.3 s -- is evidence of nothing, and is not counted
-        # either way.
+        # either way. A peek is no turn until it is adopted, and none at all if the
+        # caller resumes (THE PEEK): it is counted at its adoption (_adopt_peek), as a
+        # segment held over a resume is not counted until it closes.
         if engine_text or missed:
-            self._note_segment(missed)
+            peek = commit.peek if commit is not None else None
+            if peek is not None and peek.turn is None:
+                peek.tally = missed
+            else:
+                self._note_segment(missed)
         self._seg_bytes = 0
         self._seg_interims = 0
 
@@ -2023,10 +2034,12 @@ class TeaportSTTService(WebsocketSTTService):
         test's marks (speech_onset.VoiceMarks) could say it only with per-segment
         bookkeeping this does not keep.
 
-        Not while a wake gate is asleep, as the run is not (#116): the room's quiet is all
-        it should hear, and the window counts from the wake. In slice mode the miss is
-        the preview's, which the turn's final can still make good (_settle_turn): the
-        rate counts what the line called it."""
+        Words are the engine's, before the echo guard: a segment of the bot's own voice
+        heard back counts as words, as it resets the run. Not while a wake gate is
+        asleep, as the run is not (#116): the room's quiet is all it should hear, and the
+        window counts from the wake. In slice mode the miss is the preview's, which the
+        turn's final can still make good (_settle_turn): the rate counts what the line
+        called it."""
         if self.wake_gate is not None and self.wake_gate.asleep:
             self._reset_empty_rate()
             return
@@ -2043,11 +2056,11 @@ class TeaportSTTService(WebsocketSTTService):
                             f"of the last {n} empty, {e} of {t} over the episode")
                 self._rate_episode = None
             return
-        # The run reports what it counts: a window of nothing but empties, and the
-        # segment that takes the run to its warning or comes while it stands (counting
-        # this one, as _close is about to).
-        if (n < _EMPTY_RATE_MIN or empty / n < _EMPTY_RATE_WARN or empty == n
-                or self._empty_finals + bool(missed) >= _EMPTY_FINAL_RUN):
+        # Judged on words only (the note above _EMPTY_RATE_WINDOW): a miss may be the
+        # start of a run, which the run reports. Nor on the words that end a run it
+        # reported, whose empties _close then clears from the window.
+        if (missed or empty < _EMPTY_RATE_MISSES or empty / n < _EMPTY_RATE_WARN
+                or self._empty_finals >= _EMPTY_FINAL_RUN):
             return
         vad = sum(1 for m in w if m == "vad")
         logger.warning(
@@ -2344,6 +2357,9 @@ class TeaportSTTService(WebsocketSTTService):
         late = {id(w) for w in self._open_words[peek.seen:]} if peek.previewed else set()
         peek.turn = self._turn_at(peek.at_ms, peek.n, peek.commit.at)
         peek.commit.why = f"peek+{why}"
+        if peek.tally is not None:
+            # A turn now: its preview counts (THE EMPTY RATE; _log_segment).
+            self._note_segment(peek.tally)
         logger.debug(f"{self}: VAD stop {peek.n}'s peek adopted ({why}), "
                      f"{'its preview in hand' if peek.previewed else 'its preview to come'}")
         if peek.previewed:

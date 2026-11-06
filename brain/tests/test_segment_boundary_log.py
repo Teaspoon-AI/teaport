@@ -192,10 +192,10 @@ async def test_the_intermittent_call_that_said_nothing_now_warns_once():
     _, lines = await _drive(CALL_0910)
     warned = _lines(lines, RATE)
     assert len(warned) == 1, lines
-    # At its fourth segment, the smallest window judged: the warning is not waiting for
-    # a window to fill.
-    assert "2 of the last 4" in warned[0], warned[0]
-    assert "2 VAD said speech, STT said nothing" in warned[0], warned[0]
+    # At its sixth segment, the first words after its third miss: the warning is not
+    # waiting for a window to fill.
+    assert "3 of the last 6" in warned[0], warned[0]
+    assert "3 VAD said speech, STT said nothing" in warned[0], warned[0]
     assert "0 interims streamed, final EMPTY" in warned[0], warned[0]
     assert [lvl for lvl, m in lines if RATE in m] == ["WARNING"]
     # The run it slipped past is still blind to it -- which is the point.
@@ -205,18 +205,19 @@ async def test_the_intermittent_call_that_said_nothing_now_warns_once():
 async def test_the_two_shapes_are_kept_apart():
     # They point at different owners: the engine that had words and returned none, and
     # the engine that produced nothing for audio the VAD called speech.
-    _, lines = await _drive("SWEW")
+    _, lines = await _drive("SWEWSW")
     warned = _lines(lines, RATE)
     assert len(warned) == 1, lines
     assert "1 VAD said speech, STT said nothing (audio in, no interims, no final)" \
         in warned[0], warned[0]
-    assert "1 interims streamed, final EMPTY" in warned[0], warned[0]
+    assert "2 interims streamed, final EMPTY" in warned[0], warned[0]
 
 
-async def test_a_quiet_call_with_one_empty_does_not_warn():
-    # One early miss is ordinary -- a cough, a door -- and nothing under four segments
-    # is judged at all.
-    for pattern in ("E", "EW", "EWW", "EWWW", "EWWWWWWWWWWWWW", "WEWWW", "WWWWE"):
+async def test_a_quiet_call_with_one_empty_or_two_does_not_warn():
+    # One early miss is ordinary -- a cough, a door -- and so are two: a cough and a
+    # breath over the bot are wordless closes barge_pause.py resumes on as routine.
+    for pattern in ("E", "EW", "EWW", "EWWW", "EWWWWWWWWWWWWW", "WEWWW", "WWWWE",
+                    "EWEW", "WEWWEW", "WWWEEW", "EWWWEW", "EEW", "SWSW"):
         _, lines = await _drive(pattern)
         assert not _lines(lines, RATE), (pattern, lines)
 
@@ -233,10 +234,14 @@ async def test_ordinary_empties_are_not_counted():
 async def test_a_dead_microphone_still_trips_the_run_and_only_the_run():
     # VAD stops on room noise into a muted mic: every segment a miss. The run reports
     # it at its fifth, as before, and the rate does not say it a segment sooner as
-    # something else -- a window of nothing but empties is the run's.
-    _, lines = await _drive("E" * 8)
-    assert len(_lines(lines, RUN)) == 1, lines
-    assert not _lines(lines, RATE), lines
+    # the engine's -- not at a call's start, and not mid-call, where the window still
+    # holds the healthy segments before it (or an earlier miss) and the run's first
+    # misses alone would make the share.
+    for pattern in ("E" * 8, "WWWWW" + "E" * 8, "WWWWWW" + "E" * 8, "WEEEEEW",
+                    "WEWWWWWWWWWW" + "E" * 8 + "WWW", "WEWEW" + "E" * 6):
+        _, lines = await _drive(pattern)
+        assert len(_lines(lines, RUN)) == 1, (pattern, lines)
+        assert not _lines(lines, RATE), (pattern, lines)
     # A dead mic in a quiet room never reaches the rate at all: the VAD heard nothing.
     _, lines = await _drive("D" * 8)
     assert len(_lines(lines, RUN)) == 1 and not _lines(lines, RATE), lines
@@ -264,7 +269,7 @@ async def test_recovery_logs_once_and_the_next_episode_warns_again():
     assert "2 of the last 12 empty, 3 of 13 over the episode" in recovered[0], recovered[0]
     assert [lvl for lvl, m in lines if RECOVERED in m] == ["INFO"]
     # Latched no longer: a later episode on the same service is its own warning.
-    _, more = await _drive("EWEWEWEWE", s)
+    _, more = await _drive("EWEWEWEWEW", s)
     assert len(_lines(more, RATE)) == 1 and "5 of the last 12" in _lines(more, RATE)[0], more
 
 
@@ -290,8 +295,29 @@ async def test_an_asleep_room_is_not_counted():
     _, lines = await _drive("EEEEEEEE", s)
     assert not _lines(lines, RATE) and not _lines(lines, RUN), lines
     s.wake_gate.asleep = False
-    _, lines = await _drive("WEWE", s)
-    assert len(_lines(lines, RATE)) == 1 and "2 of the last 4" in _lines(lines, RATE)[0], lines
+    _, lines = await _drive("EWEWEW", s)
+    assert len(_lines(lines, RATE)) == 1 and "3 of the last 6" in _lines(lines, RATE)[0], lines
+
+
+async def test_a_reconnect_starts_the_rate_over():
+    # A new engine session is not the old one's decoder, as the run is reset for it:
+    # the window and the episode go with the session (_disconnect_websocket).
+    async def reconnect(s):
+        s._websocket = None                    # nothing to close: only the reset runs
+        await s._disconnect_websocket()
+        s._websocket = WireRecorder()
+
+    s, lines = await _drive("EWEWE")           # three misses, judged at the next words
+    await reconnect(s)
+    _, lines = await _drive("W", s)
+    assert not _lines(lines, RATE), "the old session's misses do not count in the new one"
+    assert list(s._seg_window) == [""], list(s._seg_window)
+    # An episode open at the reconnect is closed with it: the next one is its own.
+    s, lines = await _drive("EWEWEW")
+    assert len(_lines(lines, RATE)) == 1, lines
+    await reconnect(s)
+    _, lines = await _drive("EWEWEW", s)
+    assert len(_lines(lines, RATE)) == 1, lines
 
 
 def main():
