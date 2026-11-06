@@ -15,8 +15,17 @@ import json
 import os
 import shutil
 
+import sys
+
 import locked_venv
 from tempdirs import tempdir
+
+# A tests/ copied away from its checkout has no uv.lock and no teaport_brain/lockcheck.py
+# beside it: nothing here can run, and the conftest checks nothing (#220 review).
+AWAY = locked_venv.check() is None
+if AWAY and "pytest" in sys.modules:
+    import pytest
+    pytest.skip("tests/ away from its checkout: no lock to check against", allow_module_level=True)
 
 PROJECT = {"project": {"name": "teaport_brain"}}
 NOWHERE = "sys_platform == 'no-such-platform'"
@@ -166,6 +175,20 @@ def test_the_projects_own_venv_off_the_lock_is_told_to_sync():
     line = _line(brain, other)
     assert line.startswith(f"{other} is out of sync"), line
     assert f"run `UV_PROJECT_ENVIRONMENT={other} uv sync --locked --project" in line, line
+
+
+def test_another_checkouts_venv_is_not_re_pointed_here():
+    # A worktree's tests run with the main checkout's venv: a sync from here would make
+    # that venv's editable teaport-brain this worktree's, which may be removed later
+    # (#220 review). The line names the venv's own checkout instead.
+    brain, theirs = _checkout(), _checkout()
+    other = _venv(*STALE, cfg=PROJECT_CFG,
+                  record=json.dumps({"url": "file://" + theirs, "dir_info": {"editable": True}}))
+    line = _line(brain, other)
+    shown = locked_venv._shown
+    assert line.startswith(f"{other} is the venv of the checkout at {shown(theirs)}"), line
+    assert f"`uv sync --locked --project {shown(theirs)}`" in line, line
+    assert "UV_PROJECT_ENVIRONMENT" not in line, line
 
 
 def test_a_no_editable_venv_is_synced_no_editable():
@@ -346,12 +369,16 @@ def test_a_tests_dir_away_from_its_checkout_is_not_checked():
 
 
 def test_this_venv_holds_the_locks_set():
-    # What the suite's conftest checks, here for a run of this script on its own.
+    # What the suite's conftest checks, here for a run of this script on its own -- none
+    # for a tests/ copied away from its checkout, which has no lock to hold (#220 review).
     c = locked_venv.check()
-    assert c.problems == [], locked_venv.problem(c)
+    assert c is None or c.problems == [], locked_venv.problem(c)
 
 
 def main():
+    if AWAY:
+        print("  skipped: tests/ away from its checkout")
+        return
     fns = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()

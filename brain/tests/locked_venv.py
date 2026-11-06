@@ -43,6 +43,7 @@ import site
 import sys
 import sysconfig
 import tomllib
+import urllib.parse
 from dataclasses import dataclass
 from functools import cache
 
@@ -146,6 +147,20 @@ def _editable(dirs: list[str]) -> bool | None:
     return None
 
 
+def _source(dirs: list[str]) -> str | None:
+    """The local directory teaport-brain in <dirs> was installed from (its PEP 610 url), or
+    None: not there, not a file: url, or a record that cannot be read."""
+    for d in dirs:
+        for info in glob.glob(os.path.join(d, "teaport_brain-*.dist-info")):
+            try:
+                with open(os.path.join(info, "direct_url.json"), encoding="utf-8") as f:
+                    url = urllib.parse.urlparse(json.load(f).get("url") or "")
+            except (OSError, ValueError, AttributeError, TypeError):
+                return None
+            return urllib.parse.unquote(url.path) if url.scheme == "file" else None
+    return None
+
+
 def _installed(venv: str) -> bool:
     """Whether <venv> is an installed brain's: one with a build record (install.sh's), or
     the install prefix's own brain/ (the .deb's), venv (install.sh's link) or a release in
@@ -172,6 +187,7 @@ class Check:
     extras: list[str]      # in the venv but not in the lock: reported only
     overlay: int           # packages a `uv run --with` overlay adds
     editable: bool | None  # how the venv's teaport-brain was installed
+    source: str | None = None   # the directory it was installed from (_source)
 
 
 def check(prefix: str | None = None, path: list[str] | None = None) -> Check | None:
@@ -216,7 +232,8 @@ def check(prefix: str | None = None, path: list[str] | None = None) -> Check | N
         kind = "project"   # brain/.venv, a uv venv of this project's, or one holding it
     else:
         kind = "foreign"
-    return Check(venv, kind, len(want), problems, extras, len(over), _editable(base))
+    return Check(venv, kind, len(want), problems, extras, len(over), _editable(base),
+                 _source(base))
 
 
 def _own(venv: str) -> bool:
@@ -246,8 +263,16 @@ def problem(c: Check) -> str | None:
     if c.kind == "foreign":
         return (f"{venv} is not this project's venv and does not hold what {lock} installs "
                 f"({what}): run the suite in the project's own, with {run}")
-    env = "" if _own(c.venv) else f"UV_PROJECT_ENVIRONMENT={os.path.abspath(c.venv)} "
     flag = " --no-editable" if c.editable is False else ""   # as it was installed
+    if (not _own(c.venv) and c.source and os.path.isfile(os.path.join(c.source, "uv.lock"))
+            and os.path.realpath(c.source) != os.path.realpath(BRAIN)):
+        # Another checkout's venv (a worktree borrowing the main one's): a sync from here
+        # would re-point its editable install at this checkout, which may be gone later.
+        return (f"{venv} is the venv of the checkout at {_shown(c.source)} and does not hold "
+                f"what {lock} installs ({what}): run this checkout's suite with {run}, or "
+                f"sync that one in its own checkout, `uv sync --locked{flag} --project "
+                f"{_shown(c.source)}`")
+    env = "" if _own(c.venv) else f"UV_PROJECT_ENVIRONMENT={os.path.abspath(c.venv)} "
     return (f"{venv} is out of sync with {lock} ({what}): "
             f"run `{env}uv sync --locked{flag} --project {_shown(BRAIN)}`")
 
