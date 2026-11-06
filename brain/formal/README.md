@@ -71,8 +71,9 @@ Three designs and a mutant, selected by the `MODE` constant:
 |---|---|---|---|
 | `asWritten` | `gate.wait_until_delivered()` — waits on `_busy`/`_idle` | ✗ | ✗ |
 | `gateOnOwn` | wait for *our* completion to start, then end | ✓ | ✗ |
-| `retireOnRead` | **as shipped**: retire at the **first text** of the completion whose request carried the order (`FollowupTrigger`); an order nobody answered goes only by `ClientNotes`' expiry or a newer order | ✓ (2.8k states) | ✓ |
-| `retireOnStart` | the mutant: retire at `LLMFullResponseStartFrame`, which pipecat pushes before the request is built | ✗ (3 steps) | ✓ (vacuously: nothing ever answers) |
+| `retireOnRead` | **as shipped**: retire at the **first text** after the post — the first alphanumeric `LLMTextFrame` of *any* completion (`FollowupTrigger` fires every armed shot on it); the window is what makes that the completion whose request carried the order. An order nobody answered goes only by `ClientNotes`' expiry or a newer order | ✓ (3.2k states) | ✓ |
+| `retireOnStart` | a mutant of the retirement point: retire at `LLMFullResponseStartFrame`, which pipecat pushes before the request is built | ✗ (4 states) | ✓ (vacuously: nothing ever answers) |
+| `retireOnRead`, `WINDOW = "speech"` | a mutant of the window: the injector waits only for nobody speaking, the LLM not consulted (`fu_speechWindow_loss`) | ✗ (6 states) | ✓ |
 
 The as-written design violates **both**: the trigger can be retired before anything
 read it, *and* — on a different interleaving — stay live long enough for two
@@ -90,13 +91,22 @@ reply — leaves it live for the same turn's answering completion, or the caller
 turn, to read again and answer once. Counting reads called that a repeat; counting
 answers is what the code promises. The old `NoSilentLoss` (`fpc = "done" ⇒ reads ≥ 1`)
 was implied by the injector's own wait under `retireOnRead`, whatever the retirement
-did; the new one is not: `retireOnStart` keeps every wait and fails it in three steps
-(`FWaitIdle`, `FQueue`, `RunStart` — the order withdrawn before the request carries
-it; `test_followup_trigger.py::test_the_response_start_alone_does_not_retire_it` is
-the same fact on the real processor). `FRequeue` ("barged away → try again") went in
-the same change: it was unreachable under `retireOnRead` (the user's turn re-queues a
-completion itself, and the order stays armed through the barge-in), and the code has
-no retry.
+did. The new one watches the retirement, and two mutants show it. `retireOnStart`
+keeps every wait and moves the retirement point: a 4-state trace (`FWaitIdle`,
+`FQueue`, `RunStart` — the order withdrawn before the request carries it;
+`test_followup_trigger.py::test_the_response_start_alone_does_not_retire_it` is the
+same fact on the real processor). `WINDOW = "speech"` keeps the shipped retirement and
+weakens the window the order is posted in to "nobody speaking" (`~user ∧ ~bot`, the
+commit claim kept): `FollowupTrigger` fires every armed shot at the first alphanumeric
+text of *whichever* completion produces it (`followup_gate.py`, `process_frame`), so an
+older completion's text spends the newer order — a 6-state trace (`FWaitIdle`,
+`FQueue`, `RunStart`, `FReplace`, `FirstText`). That is how the shipped path fails
+without its window: the gate's `~llm` (and `q = 0`, the commit claim) is what makes
+"the completion whose request carried the order" true, not the trigger. Under the
+shipped window that state is unreachable for every `LATCH`. `FRequeue` ("barged away →
+try again") went in the same change: it was unreachable under `retireOnRead` (the
+user's turn re-queues a completion itself, and the order stays armed through the
+barge-in), and the code has no retry.
 
 Each failing row in `check.sh` **must name** the one property it is kept to demonstrate
 (a nameless `FAILS` is rejected), and the gate insists that named property is the one
@@ -147,7 +157,7 @@ two facts are `brain/tests/test_followup_trigger.py`
 
 ### PR #13: the latch across a tool call
 
-`followup_gate.py:159` (PR #13) clears `_llm` on `FunctionCallInProgressFrame`. The reason
+`followup_gate.py:628` (PR #13) clears `_llm` on `FunctionCallInProgressFrame`. The reason
 is real: for a bare tool call the TTS service holds `LLMFullResponseEndFrame` (empty text
 never creates an audio context), so the latch stayed set forever — every narrator line
 skipped, the injector burning its full `max_wait` in genuine silence.
@@ -160,9 +170,19 @@ completion, which is another read of the context):
 
 | LATCH | | `NoSilentLoss` | `NoRepeatRecital` | `NoInterjectMidTurn` | `NoDeadAirDuringTool` |
 |---|---|---|---|---|---|
-| `held` | pre-PR: `_llm` latched until the answering completion ends | ✓ | ✓ | ✓ | ✗ |
-| `clearedOnToolCall` | PR #13: `FunctionCallInProgressFrame` clears it | ✓ | ✓ | ✗ | ✓ |
-| `turnAware` | the fix: `_llm` released as above, plus `_turn` for the injector alone | ✓ | ✓ | ✓ | ✓ |
+| `held` | pre-PR: `_llm` latched until the answering completion ends | ✓ | ✓ | ✗ (the commit-claim race, below) | ✗ |
+| `clearedOnToolCall` | PR #13: `FunctionCallInProgressFrame` clears it | ✓ | ✓ | ✗ (that race, and the tool round's) | ✓ |
+| `turnAware` | the fix: `_llm` released as above, plus `_turn` for the injector alone, and the commit claim (#203) | ✓ | ✓ | ✓ | ✓ |
+
+**The commit-claim race** (2026-11-05 audit; `fu_held_interject` FAILS in 4 states:
+`FWaitIdle`, `FQueue`, `FReplace`). A turn committed but not yet started — the user's
+words on their way to the LLM, or the injector's own queued `LLMRunFrame` — reads as
+quiet to a window that checks only the gate's three flags, so a second order is posted
+behind it and the two completions collide. Every design before #203 had this gap; it
+is the one `TurnCommitMark` closes (`client_notes.py`'s `_foreign_tail` comment is its
+remaining sliver: the commit reaches the mark a few queues after the words reach the
+context). Until this audit the monitor counted a queued turn only under `turnAware`, so
+`held` and `clearedOnToolCall` were credited with a property they never had.
 
 `NoDeadAirDuringTool` was the narrator's side of the trade — during a tool call with
 nobody speaking, the gate must read idle, because a synchronous consult ran *inside*
@@ -189,18 +209,23 @@ UserStart    the user asks something
 UserStop     the turn is queued
 RunStart     the completion starts -- LLMFullResponseStartFrame, _llm = True
 ToolCall     it is a BARE tool call: FunctionCallInProgressFrame clears _llm
-             (followup_gate.py:159); _bot is already False. The gate reads IDLE
+             (followup_gate.py:628); _bot is already False. The gate reads IDLE
 FQueue       the trigger is appended and an LLMRunFrame queued -- into a turn
              whose answering completion has not started yet
 ```
 
 `FQueue` re-checks `Idle` at the append, which the code does not (there is no await
 between `wait_until_idle()` returning and the context write), so the model is stricter
-than the code and the violation holds a fortiori. Since `FReplace` (2026-11-05) TLC
-reports a 6-state variant of the same hole first — the order's own completion makes a
-bare tool call and a newer order is posted into the round — the trace above being the
-user's-turn shape. `fu_clearedOnToolCall_existing` is kept as a row precisely because
-it *holds*: it is the record that the two original properties do not gate this.
+than the code and the violation holds a fortiori. The trace above is the tool round's
+hole in its user's-turn shape, which the row is kept for; since the 2026-11-05 audit
+the monitor counts a committed, unstarted turn, so the shortest counterexample TLC
+prints for this cfg is the 4-state commit-claim race (`FWaitIdle`, `FQueue`,
+`FReplace`) that `held` shows too; the tool round's own traces — the one above, and a
+6-state variant through a newer order (`FWaitIdle`, `FQueue`, `RunStart`, `ToolCall`,
+`FReplace`) — are counterexamples of the same cfg, and which of several TLC reports
+may vary with the worker count. `fu_clearedOnToolCall_existing` is kept
+as a row precisely because it *holds*: it is the record that the two original
+properties do not gate this.
 
 ### What was changed
 
@@ -218,7 +243,7 @@ started shuts it too: `TurnCommitMark` claims the window at the `LLMContextFrame
 its way to the LLM (`FollowupGate.turn_committed`), since the gate, after the output
 transport, cannot see that frame and would call the gap turn-free. The model's `Clear`
 counts it as `q = 0` under `turnAware` (2026-11-05 audit; the `interjected` monitor
-counts a queued turn too: 1.3k states, holds). The gate sits before the
+counts a queued turn under every `LATCH`: 1.2k states, holds). The gate sits before the
 assistant aggregator, so it sees the result frame. `test_followup_gate.py` covers the
 synchronous shape (narrator idle, a turn-free wait held until the answering completion
 ends), the no-inference result, and the interruption.
@@ -228,7 +253,10 @@ ends), the no-inference result, and the interruption.
 - **Durations are out of scope.** `_QUIET_SECS`, the claim's expiry and the order's
   `REACT_MAX_WAIT_S` are timing assumptions TLA+ cannot judge: `FExpire` may fire at
   any request an unanswered order could be withdrawn before (the user's next turn's,
-  the tool's answering completion's), 20 s elapsed or not.
+  an `LLMRunFrame`'s: an `LLMContextFrame` coming down to the LLM past `ClientNotes`),
+  20 s elapsed or not. Not at a tool's answering request: that frame goes up from the
+  assistant aggregator straight to the LLM (`agent_session.py`), so an order a bare
+  tool call's completion read is still there for the answering completion.
 - **One injector.** `ClientNotes`' reaction competes with `owed.py`'s run for the same
   claimed windows; the claim keeps the two apart, and `Owed.tla` models the run's side
   (`NoRunMidTurn`, `NoRunUnderSpeech`). A reaction stays armed through a barge-in on

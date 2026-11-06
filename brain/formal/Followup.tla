@@ -24,29 +24,53 @@
 (*   "gateOnOwn"     -- wait for OUR completion to start, then end.         *)
 (*                      Violates NoRepeatRecital.                           *)
 (*   "retireOnRead"  -- FollowupTrigger, as shipped: retire at the FIRST    *)
-(*                      TEXT of a completion whose request carried the      *)
-(*                      order (followup_gate.py, the first alphanumeric     *)
-(*                      LLMTextFrame). Satisfies both. A completion that    *)
-(*                      read the order and produced no text -- a bare tool  *)
-(*                      call, a barge-in before its first word, an empty    *)
-(*                      reply -- leaves it live: the same turn's answering  *)
-(*                      completion, or the caller's next turn, reads it    *)
-(*                      again and answers it once. ClientNotes withdraws    *)
-(*                      an order nobody answered (FExpire: REACT_MAX_WAIT_S,*)
-(*                      or a newer order posted over it).                   *)
-(*   "retireOnStart" -- the MUTANT the shipped placement rules out: retire  *)
-(*                      at LLMFullResponseStartFrame. pipecat pushes that   *)
+(*                      TEXT after the post -- the first alphanumeric       *)
+(*                      LLMTextFrame of ANY completion (followup_gate.py:   *)
+(*                      every armed shot fires on it). That this is the     *)
+(*                      completion whose request carried the order is the   *)
+(*                      WINDOW's doing, not the trigger's: the order is     *)
+(*                      posted only when the gate reads idle (~llm: no      *)
+(*                      completion in flight) and, under turnAware, no turn *)
+(*                      is committed and unstarted (q = 0), so the next     *)
+(*                      text is the order's own completion's. Satisfies     *)
+(*                      both. A completion that read the order and produced *)
+(*                      no text -- a bare tool call, a barge-in before its  *)
+(*                      first word, an empty reply -- leaves it live: the   *)
+(*                      same turn's answering completion, or the caller's   *)
+(*                      next turn, reads it again and answers it once.      *)
+(*                      ClientNotes withdraws an order nobody answered      *)
+(*                      (FExpire: REACT_MAX_WAIT_S, or a newer order posted *)
+(*                      over it).                                           *)
+(*   "retireOnStart" -- a MUTANT of the retirement point: retire at         *)
+(*                      LLMFullResponseStartFrame. pipecat pushes that      *)
 (*                      frame BEFORE it serializes the context into the     *)
 (*                      request, so the order is withdrawn before the model *)
-(*                      sees it. Violates NoSilentLoss -- the proof that    *)
-(*                      the property is not vacuous under retireOnRead.     *)
+(*                      sees it. Violates NoSilentLoss (4 states).          *)
+(*                                                                          *)
+(* WINDOW selects what the injector's wait reads:                           *)
+(*   "gate"   -- as shipped: wait_until_idle(turn_free=True), the gate's    *)
+(*               _user/_bot/_llm (and _turn, the commit claim: turnAware).  *)
+(*   "speech" -- a MUTANT of the window: nobody speaking (~user /\ ~bot),   *)
+(*               the LLM not consulted (q = 0 still kept under turnAware).  *)
+(*               The shipped trigger then spends a newer order on an older  *)
+(*               completion's first text: NoSilentLoss falls in 6 states    *)
+(*               (FWaitIdle, FQueue, RunStart, FReplace, FirstText). This   *)
+(*               is the proof that NoSilentLoss watches the shipped         *)
+(*               retirement -- the trigger's any-completion firing -- and   *)
+(*               not only the injector's waits.                             *)
 (*                                                                          *)
 (* LATCH selects how the gate's _llm flag behaves across a TOOL CALL -- a   *)
 (* turn that is two completions with the tool between them:                 *)
-(*   "held"              -- pre-PR-#13: _llm latched until the answering     *)
-(*                          completion ends. Violates NoDeadAirDuringTool.   *)
-(*   "clearedOnToolCall" -- PR #13: FunctionCallInProgressFrame clears _llm. *)
-(*                          Violates NoInterjectMidTurn -- and ONLY that.    *)
+(*   "held"              -- pre-PR-#13: _llm latched until the answering    *)
+(*                          completion ends. Violates NoDeadAirDuringTool,  *)
+(*                          and NoInterjectMidTurn through the commit-claim *)
+(*                          race (an order posted behind a turn committed   *)
+(*                          but not started: pre-#203, every design had it).*)
+(*   "clearedOnToolCall" -- PR #13: FunctionCallInProgressFrame clears _llm.*)
+(*                          Violates NoInterjectMidTurn -- the commit-claim *)
+(*                          race, and the tool round's (the hole PR #13     *)
+(*                          opened: an order posted between a bare tool call*)
+(*                          and its answering completion); nothing else.    *)
 (*   "turnAware"         -- the fix: _llm released as above, plus _turn for  *)
 (*                          the turn-free waiters alone (ClientNotes, and    *)
 (*                          owed.py's run door: Owed.tla's NoRunMidTurn),    *)
@@ -61,10 +85,11 @@ EXTENDS Naturals
 
 CONSTANTS MaxTurns, MaxRuns,
           MaxOrders,    \* orders the injector may post (a newer one replaces a live one)
-          MODE, LATCH
+          MODE, LATCH, WINDOW
 
 ASSUME MODE \in {"asWritten", "gateOnOwn", "retireOnRead", "retireOnStart"}
 ASSUME LATCH \in {"held", "clearedOnToolCall", "turnAware"}
+ASSUME WINDOW \in {"gate", "speech"}
 ASSUME MaxOrders >= 1
 
 \* ClientNotes' order (its expiry and its replacement are its own; the consult
@@ -92,9 +117,11 @@ vars == <<user, bot, llm, tool, run, q, started, turns, fpc, trigger, orders, sa
 Idle  == (~user) /\ (~bot) /\ (~llm)                      \* what the narrator waits for
 \* What a turn-free waiter waits for: wait_until_idle(turn_free=True). Under turnAware
 \* a turn in flight (_turn) and a turn committed but not yet started (the commit's
-\* claim, TurnCommitMark; q > 0 here) both shut the window.
-Clear == /\ Idle
-         /\ (LATCH # "turnAware" \/ (run = "none" /\ q = 0))
+\* claim, TurnCommitMark; q > 0 here) both shut the window. WINDOW = "speech" is the
+\* mutant that reads only the speakers (the commit claim kept).
+Clear == /\ IF WINDOW = "gate" THEN Idle ELSE (~user) /\ (~bot)
+         /\ (LATCH # "turnAware" \/ q = 0)
+         /\ (LATCH # "turnAware" \/ WINDOW # "gate" \/ run = "none")
 
 Init ==
     /\ user = FALSE /\ bot = FALSE /\ llm = FALSE /\ tool = FALSE
@@ -112,14 +139,14 @@ FWaitIdle ==                                   \* await gate.wait_until_idle(tur
                    lost,interjected>>
 
 \* Post the order and queue its LLMRunFrame (ClientNotes._post_order + queue_frames).
-\* Did the gate's "quiet" reading hide a turn that is still in flight -- or, under
-\* turnAware, one committed and not yet started?
+\* Did the window's "quiet" reading hide a turn that is still in flight, or one
+\* committed and not yet started (the gap TurnCommitMark closes, #203; every earlier
+\* design had it)?
 Post ==
     /\ trigger' = "live" /\ orders' = orders + 1 /\ answered' = 0
     /\ q' = q + 1                              \* queue_frames() ENQUEUES; it does not cancel
     /\ sawLive' = FALSE                        \* no running request carries the new order
-    /\ interjected' = (interjected \/ run # "none"
-                       \/ (LATCH = "turnAware" /\ q > 0))
+    /\ interjected' = (interjected \/ run # "none" \/ q > 0)
 
 FQueue ==                                      \* add the order; queue LLMRunFrame
     /\ fpc = "queue"
@@ -140,12 +167,13 @@ FReplace ==
     /\ UNCHANGED <<user,bot,llm,tool,run,started,turns,fpc,lost>>
 
 \* An order no completion answered within REACT_MAX_WAIT_S is withdrawn before the
-\* next request is built (client_notes.py _expire_order, at the LLMContextFrame on its
-\* way to the LLM): the one the user's next turn asks for, or the tool's answering
-\* completion. The 20 s are out of scope: it may expire at any such moment. Not a
-\* silent loss either.
+\* next request is built (client_notes.py _expire_order, at the LLMContextFrame coming
+\* DOWN to the LLM): the one the user's next turn, or an LLMRunFrame, asks for. Not at
+\* the tool's answering request: that context frame goes UP from the assistant
+\* aggregator straight to the LLM and never passes ClientNotes (agent_session.py). The
+\* 20 s are out of scope: it may expire at any such moment. Not a silent loss either.
 FExpire ==
-    /\ Notes /\ trigger = "live" /\ (run = "none" \/ tool)
+    /\ Notes /\ trigger = "live" /\ run = "none"
     /\ trigger' = "neutral"
     /\ UNCHANGED <<user,bot,llm,tool,run,q,started,turns,fpc,orders,sawLive,answered,
                    lost,interjected>>
@@ -218,8 +246,10 @@ RunStart ==
     /\ UNCHANGED <<user,bot,tool,turns,fpc,orders,answered,interjected>>
 
 \* The first LLMTextFrame. A completion whose request carried the order answers from it
-\* here; under retireOnRead FollowupTrigger fires its armed shot at this frame, whoever's
-\* completion it is (followup_gate.py: no await between the check and the retirement).
+\* here. Under retireOnRead FollowupTrigger fires every armed shot at this frame,
+\* WHOEVER'S completion it is (followup_gate.py: no await between the check and the
+\* retirement); that it is the order's own is the window's guarantee (Clear), and the
+\* WINDOW = "speech" mutant shows what the trigger does without it.
 FirstText ==
     /\ run = "read" /\ llm /\ ~tool
     /\ run' = "text"
@@ -295,9 +325,10 @@ NoSilentLoss == ~lost
 \* reads the order again and answers it once.
 NoRepeatRecital == answered <= 1
 
-\* The order never goes into a turn that is still in flight. NOT implied by the
-\* read-count properties: an order appended during a tool call is answered exactly once,
-\* by the tool's own answering completion, while the two turns collide.
+\* The order never goes into a turn that is still in flight, nor behind one committed
+\* and not yet started. NOT implied by the order properties: an order appended during a
+\* tool call is answered exactly once, by the tool's own answering completion, while
+\* the two turns collide.
 NoInterjectMidTurn == ~interjected
 
 \* The gate's `_llm` side of PR #13: during a tool call with nobody speaking the gate
