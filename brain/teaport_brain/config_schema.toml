@@ -1078,7 +1078,7 @@ default = false
 read = "startup"
 tier = "tuning"
 services = ["teaport-brain"]
-help = "The same barge-in pause in the room (the box's own mic and speaker), with TEAPORT_BARGE_PAUSE on. The voice stops about 0.2 s after you start talking (up to two 40 ms blocks and the bridge's 120 ms lead). Off until the box's face and speaker follow a pause too (#255): through a pause the mouth keeps moving, and a goodbye you talk over can be cut short."
+help = "The same barge-in pause in the room (the box's own mic and speaker), with TEAPORT_BARGE_PAUSE on. The voice stops about 0.2 s after you start talking (up to two 40 ms blocks and the bridge's 120 ms lead). Off by default."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_RESUME_S"

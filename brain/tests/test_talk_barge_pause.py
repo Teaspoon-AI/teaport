@@ -377,6 +377,14 @@ async def test_a_talk_session_builds_the_pauser():
     # The room's echo guard dates the words on the transport's voice clock (echo_guard.py).
     room = build_agent_session(_talk_transport(_Socket()), front_end="room",
                                client_features=frozenset({"local"}))
+    # Only a client that asked is told of a pause (talk_transport's pause_notice).
+    assert not room.ledger._output.pause_notice, "not asked for"
+    told = build_agent_session(_talk_transport(_Socket()), front_end="room",
+                               client_features=frozenset({"local", "pause"}))
+    assert told.ledger._output.pause_notice
+    unpaused = build_agent_session(_talk_transport(_Socket(), pausable=False),
+                                   front_end="room", client_features=frozenset({"pause"}))
+    assert not getattr(unpaused.ledger._output, "pause_notice", False), "nothing pauses"
     out = room.ledger._output
     p, taps = out, []
     while p is not None:
@@ -446,6 +454,71 @@ async def test_talk_a_cut_drops_the_words_a_pause_held():
 async def test_talk_a_reply_stamped_after_the_resume_is_on_time():
     async with TalkRig() as rig:
         await check_a_reply_stamped_after_the_resume_is_on_time(rig)
+
+
+class NoticeRig(TalkRig):
+    """TalkRig whose transport tells its client of a pause, as a session builds it for one
+    that announced ?features=pause (the room bridge)."""
+
+    def __init__(self):
+        super().__init__()
+        self.out.pause_notice = True
+
+    def told(self):
+        return [m["on"] for m in self.wire.texts if m.get("type") == "pause"]
+
+
+async def test_a_client_that_asked_is_told_the_pause_and_its_end():
+    # #255 part 2: the room bridge reads a quiet speaker as the reply's end (a goodbye
+    # heard out, its idle timer); told of the pause, it waits it out.
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.pauser.on_onset(False)
+        await _at(rig, 3.4)
+        assert rig.told() == [True, False], rig.wire.texts
+
+
+async def test_a_pause_is_told_once_though_announced_again():
+    # The reply's synthesis ending while paused says the pause again, with its tail
+    # (PausablePlayout.process_frame): the client is not told twice.
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.out.set_playout_paused(True)
+        await rig.task.queue_frame(TTSStoppedFrame(context_id="r1"))
+        await asyncio.sleep(0.1)
+        assert rig.pause_frames(FrameDirection.DOWNSTREAM).count(True) >= 2, "no re-announce"
+        await rig.out.set_playout_paused(False)
+        await asyncio.sleep(0.1)
+        assert rig.told() == [True, False], rig.wire.texts
+
+
+async def test_a_cut_pause_is_ended_after_the_clear():
+    async with NoticeRig() as rig:
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        await _at(rig, 1.0)
+        await rig.task.queue_frame(InterruptionFrame())
+        await _at(rig, 1.6)
+        types = [m.get("type") for m in rig.wire.texts]
+        assert "clear" in types and types.index("pause") < types.index("clear"), types
+        # ...and, after the clear, that it is over (review round 2: a pause said while the
+        # clear was being written would come after it).
+        assert rig.told() == [True, False], rig.wire.texts
+        assert len(types) - 1 - types[::-1].index("pause") > types.index("clear"), types
+        # The next reply's pause is told again: the cut ended the last one.
+        await rig.speak()
+        await _at(rig, 0.6)
+        await rig.pauser.on_onset(True)
+        for _ in range(100):
+            if len(rig.told()) == 3:
+                break
+            await asyncio.sleep(0.01)
+        assert rig.told() == [True, False, True], rig.wire.texts
 
 
 def _pause_times(rig):

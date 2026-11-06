@@ -39,9 +39,12 @@ is the shared factory, so nothing is lost.
 ## Tests
 
 ```
-pip install pytest
-pytest brain/tests/
+uv sync --locked --project brain
+uv run --project brain python -m pytest brain/tests/test_suite.py -q
 ```
+
+From the lock, not `pip install pytest`: the suite stops at the start in a venv that
+does not hold what `uv.lock` installs (`brain/tests/README.md`, "Setting up a dev box").
 
 `tests/test_suite.py` is the gate. The `test_*.py` files are standalone scripts (each
 exits nonzero on failure); the suite runs them one per subprocess, which is why pytest
