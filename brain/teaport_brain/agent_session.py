@@ -554,7 +554,8 @@ class AgentSession:
             # gate inside the settle (the room's user starting a turn as the phone rings)
             # lets the line go ahead of a late own one, as on main. Two coincidences, and
             # waiting on the line's own interruption needs the task's flush probe, a
-            # change to every own line (#340).
+            # change to every own line (#340). A pipeline that has ended passes nothing
+            # on: the gate says so, and the line goes in at once, with no warning.
             if gate.interruptions == seen:
                 try:
                     await asyncio.wait_for(gate.interrupted_since(seen),
