@@ -1439,15 +1439,16 @@ def build_agent_session(transport, *, voice: str | None = None,
         # the reply's leading [mood: x] tag, off before the guard or the TTS see it
         MoodTag(lang_fn=voice_lang) if moods else None,
         LLMTextGuard(lang_fn=voice_lang) if llm_text_guard.ENABLED else None,
+        # DIRECTLY above the TTS, below what edits the text: a reply that ends with
+        # nothing to say ends the wait in which words nobody spoke join its turn
+        # (barge_pause.py, THE WAIT). Its End, held by the TTS, is seen only here.
+        barge_pause.UnspokenReplyTap(start_strategy.reply_unspoken),
         tts,
         # DIRECTLY below the TTS: the first processor to handle the TTS's frames is
         # where the ledger charts them, and a held reply must not be charted until it
         # plays. Everything below it (the taps, the bed, the transport) sees the reply
         # only once it is going to the caller.
         reply_gate,
-        # Below the TTS and the gate: a reply that ends with nothing to play ends the
-        # wait in which words nobody spoke join its turn (barge_pause.py, THE WAIT).
-        barge_pause.UnspokenReplyTap(start_strategy.reply_unspoken),
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
         bed,  # the thinking sound's typing (above), pushed as plain audio to the transport
