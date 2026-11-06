@@ -408,7 +408,7 @@ BuConfirmed ==
 \* A failed bring-up hangs up and tears its own call down, guarded by call_id:
 \* "never confirmed" (no `confirmed` within 10 s of call.answer), "STT
 \* unavailable" (greet() could not reach the engine), or -- since #277 -- no model
-\* to answer with (sip_server.py:936-949: the short line is said in full, then the
+\* to answer with (sip_server.py:947-960: the short line is said in full, then the
 \* call ends). The third is the second's shape here: answered, then its own
 \* teardown from the bring-up task; what it says first is out of scope.
 BuFail ==
