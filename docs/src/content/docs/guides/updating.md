@@ -167,7 +167,7 @@ To put the previous engine back, run the rollback on its own:
 
 The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under and any model it kept. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
 
-<!-- source: install.sh:13,50-51,691-707,3594-3633#b9eab268 -->
+<!-- source: install.sh:13,50-51,691-710,3601-3640#069be2b9 -->
 
 The engine-only update rolls back on its own when the engine fails its check. A rollback doesn't: if the engine doesn't come back, the run stops and says so. A full run doesn't roll back either; use the rollback by hand there.
 
