@@ -260,6 +260,7 @@ def test_a_billing_failure_is_about_its_own_words():
         assert not rec.about(other), other
     # The other kinds: what names them, and the words any reply says do not.
     for kind, named, other in (("error", "That hit an error, sorry.", "That song was a hit."),
+                               ("empty", "It came back empty.", "Sure, I can do that."),
                                ("timeout", None, "I ran the numbers: about forty dollars."),
                                ("unknown", None, "Sure, I can do that.")):
         status, outcome = owed.failure_outcome(kind)

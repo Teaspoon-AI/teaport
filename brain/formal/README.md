@@ -626,8 +626,12 @@ The model was written to lead the design, and it found these:
    reads a failure by `about`, one statement told whole. The residual: a timeout or an
    unknown outcome names nothing of its own, and any failure told in other words ("it
    timed out", "something went wrong") shares nothing with it. Such a telling that names
-   nothing of the request is still this row's trace, bounded as before by the record's
-   run and its one re-offer.
+   nothing of the request is still this row's trace: the record stays owed after it was
+   heard, and later turns carrying the note may tell it again (`RetellOnce` falls under
+   the mutation too), until the record's run, its eviction or the session's end. The
+   other side of the four words: a reply on another subject that says one of them
+   ("your credit card statement", "an error in that article") is about the record, and
+   closes it played through, unjudged, or counts as a cut telling.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a

@@ -483,7 +483,9 @@ def _terms(outcome: str, request: str, failure: Optional[str]) -> frozenset:
     a record of no terms, so it never closed it nor counted a cut, and the note rode
     every turn (formal audit C1, 11-05). A timeout or an unknown outcome names none, and
     a telling of any failure in other words ("something went wrong") none of them: those
-    lean on the request's words and the record's own run, as before."""
+    lean on the request's words and the record's own run, as before. The words can come
+    up by chance ("your credit card statement"): such a reply is about it, as one
+    sharing a word with the request always was."""
     if not failure:
         return terms_of(outcome, request)
     core = outcome.replace(_ACTION_HEDGE, "").replace(BILLING_SETTINGS_HINT, "")
