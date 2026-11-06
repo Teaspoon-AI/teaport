@@ -423,6 +423,122 @@ class _NothingToSay:
         pass
 
 
+# The completion being read now, in the task reading it (_process_context): what each
+# attempt's stream carried, for the "completion finished" line and for a caller's turn
+# that came back with nothing in it (#15). Set by _process_context alone, so a stream
+# opened anywhere else (a speculation's own task, a test) is not read through it.
+_COMPLETION: contextvars.ContextVar = contextvars.ContextVar("teaport_completion",
+                                                            default=None)
+
+# The most of a wordless attempt's content the "completion finished" line shows.
+_MAX_WORDLESS_LOG = 200
+
+
+class _Completion:
+    """One completion's attempts, as their streams carried them (#15).
+
+    `callers`: it answers the caller (BoundedOpenAILLMService._answers_caller). `sent`:
+    the request its first attempt went out as, note included, which the retry re-sends as
+    it was; None when that is not known here. `resend`: set for the retry. `raw` is every
+    attempt's content as streamed, `mark` where the current attempt's begins; the rest is
+    the current attempt's: how its stream ended, its token usage when the provider sent
+    it, and whether it streamed a tool call."""
+
+    __slots__ = ("callers", "sent", "resend", "raw", "mark", "finish", "usage", "tool_call")
+
+    def __init__(self, callers: bool):
+        self.callers = callers
+        self.sent = None
+        self.resend = None
+        self.raw: list = []
+        self.attempt()
+
+    def attempt(self) -> None:
+        self.mark = len(self.raw)
+        self.finish = None
+        self.usage = None
+        self.tool_call = False
+
+    def see(self, chunk) -> None:
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            # The last one: a provider that sends a cumulative snapshot on every chunk
+            # ends on the whole count, as base_llm reads it.
+            self.usage = usage
+        for choice in getattr(chunk, "choices", None) or ():
+            if getattr(choice, "finish_reason", None):
+                self.finish = choice.finish_reason
+            delta = getattr(choice, "delta", None)
+            if getattr(delta, "content", None):
+                self.raw.append(delta.content)
+            if getattr(delta, "tool_calls", None):
+                self.tool_call = True
+
+    def summary(self) -> str:
+        """The current attempt for the "completion finished" line: how the stream ended,
+        the tokens it billed, and, when it streamed no word and no call, what it did
+        stream. Two empty completions in a row were finish_reason=stop at ~80 completion
+        tokens, ~70 of them reasoning (2026-10-31, read back from the router afterwards):
+        not the token cap the code had assumed, and not tellable apart from it here."""
+        parts = [f"finish_reason={self.finish}"]
+        if self.usage is not None:
+            parts.append(f"completion_tokens={getattr(self.usage, 'completion_tokens', None)}")
+            details = getattr(self.usage, "completion_tokens_details", None)
+            reasoning = getattr(details, "reasoning_tokens", None)
+            if reasoning is not None:
+                parts.append(f"reasoning_tokens={reasoning}")
+        content = "".join(self.raw[self.mark:])
+        if not self.tool_call and not any(ch.isalnum() for ch in content):
+            # No letter or digit in any script: its repr carries nothing of the
+            # conversation, so it is shown whatever TEAPORT_LOG_CONVERSATIONS says (#114).
+            # "", "\n" and "..." are different failures, and nothing else logs them
+            # (RawLLMCapture only a degenerate completion).
+            more = (f" of {len(content)} chars" if len(content) > _MAX_WORDLESS_LOG else "")
+            parts.append(f"no words and no tool call: content "
+                         f"{content[:_MAX_WORDLESS_LOG]!r}{more}")
+        return ", ".join(parts)
+
+
+class _Observed:
+    """A completion's stream, each chunk shown to its _Completion on the way to base_llm
+    (#15) -- the stream it opened, or an adopted speculation's replay, read here in the
+    completion's own task either way. In the shape base_llm tears a stream down (see
+    _RenumberedStream): the iterator acloses the stream's own after it, then close()
+    releases the stream the way base_llm would have."""
+
+    __slots__ = ("_stream", "_iter")
+
+    def __init__(self, stream, completion: _Completion):
+        self._stream = stream
+        self._iter = _shown(stream.__aiter__(), completion)
+
+    def __aiter__(self):
+        return self._iter
+
+    async def close(self):
+        if hasattr(self._stream, "close"):
+            await self._stream.close()
+        elif hasattr(self._stream, "aclose"):
+            await self._stream.aclose()
+
+
+async def _shown(chunks, completion: _Completion):
+    try:
+        async for chunk in chunks:
+            completion.see(chunk)
+            yield chunk
+    finally:
+        if hasattr(chunks, "aclose"):
+            await chunks.aclose()
+
+
+def _tail(context) -> tuple:
+    """The context's length and its newest message: what a newer turn, or any message
+    after the one being answered, changes."""
+    messages = context.get_messages()
+    return len(messages), (messages[-1] if messages else None)
+
+
 # The request the LLM is answering now, in the task answering it (process_frame): an
 # owed.Reply. A speculation's request runs in a task of its own and reads None. Set
 # around the WHOLE process_frame: a task spawned inside it (a function call's) inherits
@@ -576,8 +692,12 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # take one log line.
     async def _process_context(self, context):
         started = time.monotonic()
+        completion = _Completion(self._answers_caller(_REPLY.get(), context))
+        tail = _tail(context)
+        token = _COMPLETION.set(completion)
         try:
-            await super()._process_context(context)
+            await self._attempt(context, completion)
+            await self._recover_nothing(context, completion, tail)
             await self._run_said_nothing()
         except asyncio.CancelledError:
             logger.warning(
@@ -594,14 +714,113 @@ class BoundedOpenAILLMService(OpenAILLMService):
         except Exception:
             await self._run_said_nothing()
             raise
+        finally:
+            _COMPLETION.reset(token)
+
+    async def _attempt(self, context, completion: _Completion):
+        """One request and the reading of its stream (base_llm), then its line."""
+        started = time.monotonic()
+        completion.attempt()
+        await super()._process_context(context)
+        # The success case is logged too, because "the bot said nothing" has three very
+        # different causes and the journal could not tell them apart: the completion
+        # never returned (no line), it returned and the reply went missing downstream
+        # (this line, then silence), or it returned a tool call that never dispatched
+        # (this line, then no "Calling function"). One line splits all three. How the
+        # stream ended rides on it (_Completion.summary, #15): an empty completion is a
+        # model that stopped on its own or one cut off at the token cap, and only the
+        # finish reason and the tokens tell which.
+        logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s "
+                    f"({completion.summary()})")
+
+    def _answers_caller(self, reply, context) -> bool:
+        """Does this request answer the caller (#15)? A commit whose context ends with
+        words they said (owed.is_caller_message: not a greeting's cue, not a note's
+        reaction order), or the answer to a tool round such a commit began. Never a run
+        of ours, which may mean to say nothing (_run_said_nothing)."""
+        if reply is None or reply.kind in owed_mod.RUNS:
+            return False
+        if reply.kind == owed_mod.POST:
+            return self._callers_round
+        messages = context.get_messages()
+        return bool(messages) and owed_mod.is_caller_message(messages[-1])
+
+    # Whether the tool round going on answers the caller: set by the request that put its
+    # calls out (run_function_calls), read by the answers to them (_answers_caller).
+    _callers_round = False
+
+    def _moved_on(self, context, tail) -> str | None:
+        """Why the caller's turn this completion answers is no longer the one to answer,
+        or None: their next turn is open or committed (FollowupGate.caller_request_pending;
+        a barge-in cancels the completion outright, so this is a next turn that did not),
+        or something came into the context after the words being answered."""
+        gate = self.owed.gate if self.owed is not None else None
+        if gate is not None and gate.caller_request_pending:
+            return "the caller's next turn is under way"
+        length, newest = _tail(context)
+        if length != tail[0] or newest is not tail[1]:
+            return "the context has moved on"
+        return None
+
+    async def _recover_nothing(self, context, completion: _Completion, tail):
+        """A caller's turn whose completion said nothing and called nothing (#15): asked
+        once more, then answered with the recovery line.
+
+        Live 2026-09-04, 2026-10-24 and 2026-10-31 (twice in a row): the model stopped on
+        its own, a 200 with no text and no tool call. Nothing below hears of it -- no
+        error for LLMErrorSpeaker, no text for the guard -- and the caller waited 8-18 s
+        in dead air and asked again; their repeat was answered. The retry is that repeat
+        without the wait. The test is _run_said_nothing's (the TTS's has_speech), so a
+        reply of only "..." (#16), only a mood emoji or only zero-width spaces is caught
+        here too, with a retry before the guard's own line at the End: that line is for
+        a reply the guard emptied, and once this one is spoken the guard has forwarded
+        text and stays quiet. A collapse the guard cut has had the line already
+        (its trip). Inside the completion, before its End: downstream sees one reply.
+
+        Not for legitimate silence: a run of ours (callers is never set for one); a
+        completion a barge-in cancelled (CancelledError, never here); a turn the caller
+        has moved on from (_moved_on); a call out (reply.calls -- stay_silent and the
+        tools that say nothing themselves, tools.no_inference, are calls)."""
+        reply = _REPLY.get()
+        if not completion.callers or reply.texts or reply.calls:
+            return
+        if self._dealt_with(context, completion, tail):
+            return
+        if completion.sent is not None:
+            logger.warning(f"{self}: the caller's turn came back with nothing to say and no "
+                           "tool call; asking once more")
+            completion.resend = completion.sent
+            await self._attempt(context, completion)
+            if reply.texts or reply.calls or self._dealt_with(context, completion, tail):
+                return
+            why = "asked twice, nothing to say either time"
         else:
-            # The success case is logged too, because "the bot said nothing" has three
-            # very different causes and the journal could not tell them apart: the
-            # completion never returned (no line), it returned and the reply went
-            # missing downstream (this line, then silence), or it returned a tool call
-            # that never dispatched (this line, then no "Calling function"). One line
-            # splits all three.
-            logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
+            # The request is not known here: an adopted speculation's whose note rendered
+            # in the speculation's own task. A second render here would wait on this very
+            # reply's settle (Owed.settled), so there is nothing to re-send.
+            why = "nothing to say, and its request (a speculation's) cannot be re-sent"
+        logger.warning(f"{self}: {why}; speaking the recovery line so the turn does not "
+                       "end in silence")
+        # Imported here: llm_text_guard imports this module. The guard's own line, pushed
+        # as the reply's text the way it pushes it: spoken, captioned and committed like
+        # any reply. Nothing was spoken before it, so no leading space.
+        from teaport_brain.llm_text_guard import RECOVERY_TEXT
+        await self.push_frame(LLMTextFrame(text=RECOVERY_TEXT.lstrip()))
+
+    def _dealt_with(self, context, completion: _Completion, tail) -> bool:
+        """The empty reply is not this method's to answer: the caller moved on, or the
+        guard has cut it as a collapse and spoken its line over it (a retry's text would
+        be swallowed whole, and the End delayed for it)."""
+        why = self._moved_on(context, tail)
+        if why is None:
+            from teaport_brain import llm_text_guard
+            if llm_text_guard.ENABLED and llm_text_guard.is_degenerate("".join(completion.raw)):
+                why = "the guard has cut it as a collapse and spoken its line"
+        if why is None:
+            return False
+        logger.info(f"{self}: the caller's turn came back with nothing to say, but {why}: "
+                    "no retry, no recovery line")
+        return True
 
     async def _run_said_nothing(self):
         """A run of ours that said nothing and called nothing (stay_silent alone, empty,
@@ -642,6 +861,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 reply.calls += len(function_calls)
                 if self.owed is not None:
                     self.owed.called(reply, [c.tool_call_id for c in function_calls])
+                completion = _COMPLETION.get()
+                if completion is not None and reply.kind != owed_mod.POST:
+                    # The answers to these calls answer whoever this request did (#15): the
+                    # caller, or a run of ours that called a tool.
+                    self._callers_round = completion.callers
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
@@ -697,6 +921,21 @@ class BoundedOpenAILLMService(OpenAILLMService):
             self.owed.gate.request_rendered()
 
     async def get_chat_completions(self, context):
+        completion = _COMPLETION.get()
+        if completion is None:
+            return await self._request(context)
+        if completion.resend is not None:
+            # The retry of a caller's turn that came back with nothing (#15): the request
+            # the first attempt went out as, re-sent as it was. Not rendered again -- that
+            # render is registered with the book already (Owed.noted), and a second would
+            # wait on this very reply's settle (Owed.settled) -- nor offered to a
+            # speculation, which by now can only be on the caller's next words.
+            stream = await self._send(completion.resend)
+        else:
+            stream = await self._request(context)
+        return _Observed(stream, completion)
+
+    async def _request(self, context):
         reply = _REPLY.get()
         # A speculation opened for this very context, if there is one, is the stream --
         # its buffered chunks replay first, then it continues live. The request-building
@@ -718,6 +957,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 elif (adopted := await self.speculator.take(context)) is not None:
                     if self.owed is not None:
                         self._rendered(reply, adopted.owed_noted, context)
+                    completion = _COMPLETION.get()
+                    if completion is not None and not adopted.owed_noted:
+                        # It rendered in its own task; with no note, its request was the
+                        # context take() has just matched to this one (#15's retry).
+                        completion.sent = context
                     return adopted
         return await self._open_stream(context)
 
@@ -753,6 +997,12 @@ class BoundedOpenAILLMService(OpenAILLMService):
             context = view
             if reply is None and (into := SPECULATION_NOTED.get()) is not None:
                 into[:] = noted
+        if (completion := _COMPLETION.get()) is not None:
+            completion.sent = context       # what its retry re-sends (#15)
+        return await self._send(context)
+
+    async def _send(self, context):
+        """`context` to the provider as it is: the stream, once it opens."""
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # The provider accepted the request (a refusal raises before the stream opens):

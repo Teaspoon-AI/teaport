@@ -222,7 +222,7 @@ The first two are said one time, at the start of a conversation in the room or i
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:950-954#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1200-1204#1508a36d -->
 
 ## One key for OpenClaw too
 

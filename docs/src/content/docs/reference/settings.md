@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2775#52347be1 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2775#5ae60468 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -42,7 +42,7 @@ In `/etc/teaport/brain.env`.
 | `LLM_EXTRA_BODY` | — | Optional JSON object merged into the request extra_body. OpenRouter routing example: {"provider":{"order":["Groq"],"allow_fallbacks":true}}. |
 | `TEAPORT_LLM_TEXT_GUARD` | **on** | Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse. |
 | `TEAPORT_FACE_MOOD` | `tag` | Where the OLED face's mood comes from. tag: the model begins a reply with a mood tag ([mood: sad], never spoken) when it has a clear feeling, and the reply's words are scored (VADER) when it gave none. text: the words only, no tag. off: the face is given no mood. One of `tag`, `text`, `off`. |
-| `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
+| `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call) twice in a row. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
 | `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. The notice for a refused key or a spent account waits ten times as long, since it already says that trying again won't help. |
 | `TEAPORT_RAW_LLM_CAPTURE` | **off** | Log a completion when it degenerates. Healthy turns log nothing. Its text is logged only with TEAPORT_LOG_CONVERSATIONS on. |
