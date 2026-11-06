@@ -546,6 +546,11 @@ class AgentSession:
             # settle: on a starved CPU it can take longer, and the line queued ahead of it
             # was cut by it, its watch settled as cut with it -- the call prompt's answer
             # time ran out on a question nobody heard, and the call was taken (#293).
+            # The count can't tell this interruption from another's: one that reaches the
+            # gate inside the settle (the room's user starting a turn as the phone rings)
+            # lets the line go ahead of a late own one, as on main. Two coincidences, and
+            # waiting on the line's own interruption needs the task's flush probe, a
+            # change to every own line (follow-up issue in #336).
             if gate.interruptions == seen:
                 try:
                     await asyncio.wait_for(gate.interrupted_since(seen),
