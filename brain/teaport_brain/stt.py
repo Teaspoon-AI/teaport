@@ -2092,7 +2092,14 @@ class TeaportSTTService(WebsocketSTTService):
     def _unmiss(self, turn: "_Turn") -> None:
         """THE EMPTY RATE: a slice turn's final brought words its preview had not, so the
         caller was heard after all -- the preview's miss, if still in the window, is
-        words. The episode's own tally is left as it counted; the next segment judges the
+        words. Its own entry only: later segments may have been counted since, and one
+        that has left the window (or a window started over) has nothing to take back.
+
+        A warning already logged stands: it said what the window held when a segment
+        with words judged it, and a final that settles after that cannot unsay a line.
+        The open episode's count is corrected instead -- every entry still in the
+        window is in it, there at the warning or counted since -- so its recovery line
+        counts only the misses that stayed misses, and the next segment judges the
         window as it now stands."""
         noted = turn.noted
         if noted is None:
@@ -2101,6 +2108,8 @@ class TeaportSTTService(WebsocketSTTService):
         at = noted - (self._seg_noted - len(w))
         if 0 <= at < len(w) and w[at]:
             w[at] = ""
+            if self._rate_episode is not None:
+                self._rate_episode[0] -= 1
 
     def _reset_empty_rate(self) -> None:
         """THE EMPTY RATE starts over, its episode closed without a line: the session or
