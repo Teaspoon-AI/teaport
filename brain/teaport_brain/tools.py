@@ -1656,6 +1656,14 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
                                    "was left ringing; you are not taking it. If the user "
                                    "wanted you to, say in a few words that it is too late "
                                    "for this one."})
+    elif outcome == cp.UNHEARD:
+        # The question was cut before its ask (call_prompt.CallPrompt.heard): the brain
+        # asks it again once the user has finished, and a reply now would talk into that.
+        await params.result_callback(
+            {"ok": False, "error": "the user has not heard the question yet (it was cut "
+                                   "off): don't answer it for them. It is asked again; "
+                                   "say nothing now."},
+            properties=no_inference())
     elif outcome == cp.GONE:
         await params.result_callback(
             {"ok": False, "error": "the caller hung up before you answered; nothing to do"})
