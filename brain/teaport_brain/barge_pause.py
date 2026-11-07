@@ -109,11 +109,11 @@
 #     skip. Meanwhile words over the reply are not judged either: they barge in on the
 #     word count, as without the pause. A ringtone near the box, music, a TV: each read
 #     as a speech onset, and the reply (the box's own "Someone's calling me..." on
-#     2026-11-06) was paused over and over, the user hearing almost nothing of it. Echo residue that trips the onset
-#     test the same. A backchannel (words, judged or under the word guard) re-arms it --
-#     with a word guard over one word, so can the bot's own echo transcribed as one word
-#     the echo guard let through; a pause the cap ended while the judge or the STT held
-#     it does not count.
+#     2026-11-06) was paused over and over, the user hearing almost nothing of it. Echo
+#     residue that trips the onset test the same. A backchannel (words, judged or under
+#     the word guard) re-arms it -- with a word guard over one word, so can the bot's own
+#     echo transcribed as one word the echo guard let through; a pause the cap ended
+#     while the judge or the STT held it does not count.
 #
 # The echo guard is the onset test itself: 128 ms of Silero confidence >= 0.6, which
 # typically fires within ~100-250 ms of the onset of real speech -- well ahead of the
