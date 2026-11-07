@@ -782,6 +782,81 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
     return True
 
 
+# A BARE STOP. A stop word cuts the reply (#216, and A STOP WORD below in the reply's
+# wait), and then its turn was committed like any other: the model was asked on "Okay,
+# wait." and answered the question it had just been stopped from answering ("What's the
+# tallest mountain in Africa?" -- cut -- "Okay, wait." -- "Mount Kilimanjaro."), on the
+# room, Talk and the phone alike. A caller who says only "wait" means: stop, listen,
+# say nothing, let me go on. So a turn whose words are ONLY stop words, give or take the
+# filler people put around them ("Okay, wait.", "No, wait.", "Hold on a second.",
+# "Stop, please."), and which cut a reply, is HELD at its commit: no message, no model
+# run (PauseAwareMinWordsStrategy.hold_bare_stop; endpointing.CutReplyFence.holds). The
+# box stays silent and listening, and the caller's next words are a turn as any other.
+#
+#   * Whole turns only: the commit's words, every segment of the turn. "Wait, what time
+#     is it?" is a turn; so is "Okay, wait." followed, in the same turn, by the question.
+#   * Only a turn that cut something: it began over the audible bot (or within
+#     _STOP_OVERLAP_S of it stopping -- the words said over its last syllables, their
+#     final after it), or in a reply's wait (the reply in flight, held or not yet
+#     audible: the turn start drops it), or it is the commit the cut fence drops an
+#     unplayed reply for. A lone "Stop." to a box with nothing to stop is the model's,
+#     as before: there it may be about something else -- a request running in the
+#     background (openclaw_agent_control; on Talk, run control asks OpenClaw first,
+#     upstream of all this, and a final it takes never gets here), an answer to "shall
+#     I wait?".
+#   * The fillers are English and fixed (_STOP_FILLERS): every word but them must be a
+#     stop entry (TEAPORT_STOP_WORDS), and one at least must be, so "Okay." or "No." is
+#     never a stop. "No" is filler here and not a stop word for the reason above (over
+#     the bot it is as often an answer): beside a stop word it is the objection.
+#
+# Where the words go: nowhere in the context. Kept as a user message, the next request
+# would read "Okay, wait." after the cut reply as words still to answer -- the very
+# reply this prevents -- and written without a request (pipecat's run_llm off) it would
+# still arm the reply hold for a reply that never comes, whose next commit the cut
+# fence then reads as a continuation. Held, it is a turn ended with nothing to answer,
+# as a final something else took ends (taken_turn.py): its words go on record in
+# TakenWords (slice mode's: the turn-text corrector reads it, and the speculation asked
+# on them stands down), and the cut reply stays in the context as the ledger says it
+# was heard (heard_context, at the next request). What the owed book holds stays as it
+# is: nothing was rendered or played, so nothing is told or heard, and a decline check
+# the cut made due reads the caller's next words, not these. Its re-offer at a lull,
+# armed by the turn's start, is disarmed (Owed.caller_waits): "they asked you to wait,
+# don't push it", which the re-offer could only read in words no longer there; the
+# caller's next turn arms it again. On SIP, a reply the turn
+# dropped before any of it played leaves the reply hold's TurnMerge asked for, so the
+# caller's next words join the question they cut short, as a continuation does; no
+# re-ask, since nothing commits until they speak.
+_STOP_FILLERS = ("okay", "ok", "no", "oh", "um", "uh", "er", "hmm", "hey", "sorry",
+                 "just", "please", "a second", "a sec", "a moment", "a minute",
+                 "one second", "one sec", "one moment")
+# How long after the bot stops a stop word still counts as said over it (A BARE STOP).
+# Over a playing reply the STT commits at once, and the final is back ~0.1-0.5 s after
+# the speech; a stop word begun on the reply's last words lands inside this.
+_STOP_OVERLAP_S = 2.0
+
+
+def is_bare_stop(text: str, stop_words=STOP_WORDS) -> bool:
+    """True when `text` is a stop and nothing else (A BARE STOP): every word a stop entry
+    or one of _STOP_FILLERS, and a stop entry among them -- "Okay, wait.", "No, wait.",
+    "Hold on a second.", "Stop.", not "Okay." nor "Wait, what time is it?"."""
+    toks = _tokens(text)
+    stops = _stop_phrases(stop_words)
+    phrases = sorted([(ph, True) for ph in stops]
+                     + [(ph, False) for ph in _stop_phrases(_STOP_FILLERS)
+                        if ph not in stops],
+                     key=lambda p: len(p[0]), reverse=True)
+    i, stopped = 0, False
+    while i < len(toks):
+        for ph, is_stop in phrases:
+            if tuple(toks[i:i + len(ph)]) == ph:
+                i += len(ph)
+                stopped = stopped or is_stop
+                break
+        else:
+            return False
+    return stopped
+
+
 # WORDS NOBODY SPOKE (#22). After a turn is committed the STT can return words with no
 # speech under them: the engine closing a segment of its own on the line's silence or
 # noise, a tail it decoded twice, the backstop's commit of a segment no VAD stop
@@ -854,6 +929,8 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 # from being cut on "don't stop"; here the cost runs the other way -- words wrongly
 # kept from the turn are the caller's "wait" lost and the reply going ahead, tool calls
 # and all, where words wrongly not taken as a tail only start the turn main started.
+# Such a turn made of nothing but the stop is then held at its commit (A BARE STOP,
+# above): the reply cut, and nothing asked in its place.
 #
 # THE ONSET (onset_is_speech). Where the reply hold is (SIP; Talk only with
 # TEAPORT_REPLY_HOLD_TALK), speech the onset test heard and the VAD's start did not (a
@@ -882,6 +959,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         words to on_tail_words) -- unless a stop word is among them.
         `onset_is_speech`: speech the onset test alone heard counts as heard (where the
         reply hold is);
+      * a turn that cut a reply and says nothing but the stop is held at its commit
+        (A BARE STOP, above; hold_bare_stop, CutReplyFence.holds): nothing is asked;
 
     and while playout is paused (PlayoutPauseFrame):
 
@@ -935,6 +1014,16 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._heard_at = None
         self._worded = False
         self._tail_open = False
+        # A BARE STOP. When the bot last went quiet (stopped, or was cut), on the
+        # monotonic clock; whether the open (or last) turn cut a reply, read at its start;
+        # whether the latest turn was held as a bare stop (deliberately_silent).
+        self._quiet_at = None
+        self._turn_cut = False
+        self._held = False
+        # speculate.Speculator, where the session has one: a held turn's speculation
+        # stands down (agent_session). () -> None: told of each hold (owed.Owed.caller_waits).
+        self.speculator = None
+        self.on_held = None
 
     async def on_onset(self, started: bool):
         """speech_onset.SpeechOnsetMixin listener: speech began (or ended) on the onset
@@ -983,6 +1072,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # counted as one over the bot (THE WAIT).
             self._audible, self._reply_due, self._tail_open = True, False, False
         elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
+            if self._audible:
+                self._quiet_at = time.monotonic()
             self._audible = False
         elif isinstance(frame, (SegmentDoneFrame, SegmentResetFrame)):
             self._tail_open = False
@@ -992,14 +1083,50 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             self._turn_words = False
 
     async def handle_user_turn_started(self):
+        # Before super(), which clears MinWords' own bot-speaking flag, and before the
+        # turn's interruption (the aggregator broadcasts it after the strategies hear of
+        # the start): did this turn cut a reply (A BARE STOP)?
+        self._turn_cut = (self._bot_speaking or self._audible or self._waiting()
+                          or (self._quiet_at is not None
+                              and time.monotonic() - self._quiet_at < _STOP_OVERLAP_S))
         await super().handle_user_turn_started()
-        self._turn_open, self._turn_words = True, False
+        self._turn_open, self._turn_words, self._held = True, False, False
         self._reply_due = self._tail_open = False
 
     async def handle_user_turn_stopped(self):
         await super().handle_user_turn_stopped()
         self._turn_open = False
         self._reply_due, self._due_at = self._turn_words, time.monotonic()
+
+    async def hold_bare_stop(self, text: str, dropped: bool = False) -> bool:
+        """CutReplyFence.holds: whether the commit of `text` is held (A BARE STOP) --
+        words that are only a stop, in a turn that cut a reply, or (`dropped`) a commit
+        the fence has just dropped an unplayed reply for. Held, nothing is asked: the
+        caller's words go on record as taken (TakenWords), a speculation asked on them
+        stands down, and no reply is awaited (THE WAIT), so the caller's next words are
+        a turn of their own, not a tail of these."""
+        if not ((dropped or self._turn_cut) and is_bare_stop(text, self._stop_words)):
+            return False
+        # No reply is awaited: the turn's words are gone, as a taken final's are (_note),
+        # whether its stop comes before this commit or after it (a commit on the stop
+        # strategy's inference, the turn still open).
+        self._held, self._turn_words = True, False
+        self._reply_due = self._tail_open = False
+        # info: the live measure, beside the cuts. Only quoted() words.
+        logger.info(f"{self}: {quoted(text.strip())} is only a stop -- the cut reply stays "
+                    "cut, nothing is asked, and the box listens (BARE STOP)")
+        if self.speculator is not None:
+            await self.speculator.cancel("bare-stop")
+        if self.on_held is not None:
+            self.on_held()
+        if self.taken_words is not None:
+            await self.taken_words.took(text, "held: only a stop, which nothing answers")
+        return True
+
+    def deliberately_silent(self) -> bool:
+        """The latest turn was held as a bare stop, and no turn has started since: its
+        silence is the answer (turn_timing.TurnTimer's silent-turn watchdog)."""
+        return self._held
 
     def _tail(self, frame) -> bool:
         """WORDS NOBODY SPOKE: `frame`'s words are a tail. Words with a stop word among

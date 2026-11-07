@@ -202,9 +202,10 @@ class Session:
     "room" (the same, with the room's wake gate and echo guard on the STT), or "sip"
     (the reply hold and its TurnMerge; the onset test's speech is speech heard).
     `stock`: pipecat's MinWords start strategy, the control, in place of the brain's.
-    `tts`: the real EngineTTSService below the tap, as agent_session places it."""
+    `tts`: the real EngineTTSService below the tap, as agent_session places it. `llm`:
+    another stand-in in InFlightLLM's place (test_bare_stop's playing reply)."""
 
-    def __init__(self, front_end: str, stock: bool, tts: bool = False):
+    def __init__(self, front_end: str, stock: bool, tts: bool = False, llm=None):
         self.context = LLMContext([{"role": "system", "content": "sys"}])
         self.stt = WiredSTT()
         if front_end == "room":
@@ -237,13 +238,17 @@ class Session:
         self.fence = CutReplyFence()
         self.fence.hold_commits(user)
         self.fence.close_owed = self.stop.close_owed
+        if not stock:
+            # As agent_session wires it: a turn that cut a reply and is only a stop is
+            # held at its commit (barge_pause.py A BARE STOP).
+            self.fence.holds = self.start.hold_bare_stop
         self.ledger = TranscriptLedger()
         self.merge = TurnMerge() if hold else None
         self.gate = ReplyHoldGate(merge=self.merge) if hold else None
         if self.gate is not None:
             self.fence.unplayed_reply = lambda: self.gate.armed
         self.corrector = HeardContextCorrector(self.ledger, self.context, merge=self.merge)
-        self.llm = InFlightLLM(audio=not tts)
+        self.llm = llm or InFlightLLM(audio=not tts)
         # Directly above the TTS, as agent_session places it.
         self.tap = None if stock else UnspokenReplyTap(self.start.reply_unspoken)
         self.tts = None
@@ -440,17 +445,58 @@ async def test_words_only_the_onset_heard_still_start_a_turn_and_merge_on_sip():
 async def _a_stop_word_among_the_words_cuts_the_reply(front_end):
     """Each of STOP_PHRASES in the reply's wait, as a zero-length line: on SIP with no
     speech heard, on Talk and the room after an onset (no speech there). It starts the
-    turn and cuts the reply in flight, as on main -- merged into one message on SIP by
-    the reply hold, a message of its own elsewhere."""
+    turn and cuts the reply in flight, as on main -- and, being only a stop, is held at
+    its commit (barge_pause.py A BARE STOP): the model is not asked again, and the
+    context still ends on the question. On SIP the reply hold dropped the reply
+    unplayed, so the merge it asked for waits for the caller's next words."""
     for said in STOP_PHRASES:
-        s = await _the_call(front_end, stock=False, onset=front_end != "sip", text=said)
+        s = await _the_held_call(front_end, said, onset=front_end != "sip")
         _the_tail_is_zero_length(s, said)
-        _cut_and_asked_again(s)
+        assert s.llm.cuts == 1 and len(s.llm.contexts) == 1, (
+            said, s.llm.cuts, len(s.llm.contexts))
+        assert s.turns_started == 2, (said, s.turns_started)
         assert s.appended == [], (said, s.appended)
-        want = ([("user", f"{QUESTION} {said}")] if front_end == "sip"
-                else [("user", QUESTION), ("user", said)])
-        assert _roles(s) == [("system", "sys"), *want, ("assistant", ANSWER)], (
-            said, _roles(s))
+        assert _roles(s) == [("system", "sys"), ("user", QUESTION)], (said, _roles(s))
+        assert s.taken.why(said) is not None, "the held words are not on record"
+        if s.merge is not None:
+            assert s.merge.pending, "the dropped reply's merge must wait for the next words"
+
+
+async def _the_held_call(front_end, said, *, onset=False) -> Session:
+    """The question, then `said` (a tail-shaped line, after an onset if `onset`) while
+    its reply is in flight; returns once that turn has ended, with the model asked on
+    the question alone or on `said` as well."""
+    s = Session(front_end, stock=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
+    await asyncio.sleep(STARTUP_S)
+    s.stt._websocket = WireRecorder()
+    try:
+        await s.question()
+        if onset:
+            await s.onset()
+        await s.tail(said)
+        assert await s.until(lambda: s.start.deliberately_silent()
+                             or len(s.llm.contexts) >= 2), (
+            f"{said!r} was neither held nor asked on")
+        await s.audio(0.3)          # nothing else is on its way
+    finally:
+        s.stt._websocket = None
+        await s.task.cancel()
+        await run
+    return s
+
+
+async def test_a_question_after_a_stop_word_in_the_wait_is_answered():
+    """The control: a stop word with a question after it ("Wait, what time is it?") is
+    not only a stop. It cuts the reply as on main, and the model is asked on it."""
+    for front_end in ("talk", "sip"):
+        said = "Wait, what time is it?"
+        s = await _the_held_call(front_end, said, onset=front_end != "sip")
+        _cut_and_asked_again(s)
+        assert not s.start.deliberately_silent()
+        users = [m["content"] for m in s.llm.contexts[1] if m["role"] == "user"]
+        assert users == ([f"{QUESTION} {said}"] if front_end == "sip"
+                         else [QUESTION, said]), (front_end, users)
 
 
 async def test_a_stop_word_among_the_words_cuts_the_reply_sip():

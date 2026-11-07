@@ -60,9 +60,12 @@ class TurnTimer(FrameProcessor):
     eviction briefly overlaps two sessions — a dead session's t0 would otherwise
     corrupt the replacement's first TURN-TIMING line."""
 
-    def __init__(self, marks: dict, watchdog: bool = False):
+    def __init__(self, marks: dict, watchdog: bool = False, deliberately_silent=None):
         super().__init__()
         self._marks = marks
+        # () -> bool: the last turn's silence is its answer (a bare stop the brain held,
+        # barge_pause.PauseAwareMinWordsStrategy.deliberately_silent): no warning for it.
+        self._deliberately_silent = deliberately_silent
         # Only one of the three taps arms the silent-turn watchdog. They all see
         # UserStoppedSpeakingFrame and share one dict, so without an owner every silent
         # turn would be reported three times.
@@ -103,6 +106,10 @@ class TurnTimer(FrameProcessor):
                 f"{_SILENT_TURN_SECS * _MAX_TOOL_EXTENSIONS:.0f}s — the consult never "
                 f"returned and nothing was spoken"
             )
+            return
+        if self._deliberately_silent is not None and self._deliberately_silent():
+            logger.debug("silent-turn watchdog: the turn was only a stop, held -- "
+                         "silence is its answer")
             return
         m = self._marks
         reached = [k for k in ("stt_final", "llm_start", "llm_first_token") if k in m]
