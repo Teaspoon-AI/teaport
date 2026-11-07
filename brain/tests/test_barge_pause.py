@@ -1133,6 +1133,7 @@ async def test_a_line_held_off_is_not_paused():
     # pauses it; two that overlap each lift only their own hold.
     out, p, task, run = await _pauser_rig()
     try:
+        p.hold_off(False)   # unbalanced: ignored, holds nothing off
         await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
         await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await asyncio.sleep(0.05)
@@ -1146,6 +1147,7 @@ async def test_a_line_held_off_is_not_paused():
         await p.on_onset(True)
         await asyncio.sleep(0.05)
         assert not p.paused, "still held off by the other line"
+        assert p.skipped_held == 2, p.skipped_held
         await p.on_onset(False)
         p.hold_off(False)
         await p.on_onset(True)

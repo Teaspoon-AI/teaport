@@ -89,7 +89,7 @@
 # window as before. formal/UserTurn.tla's NoUnjudgedWords checks it
 # (JUDGE = "quietWindow" is the window alone).
 #
-# Three things it does NOT pause, each because pausing there cost more than it saved:
+# Four things it does NOT pause, each because pausing there cost more than it saved:
 #
 #   * The end of a reply. A pause holds back the reply's TTSStoppedFrame with its audio,
 #     so the bot counts as speaking until the resume -- and a one-word answer ("Yes.")
@@ -108,9 +108,9 @@
 #     over the playing reply), the reply ends, or _NOWORD_WINDOW_S pass with no sound to
 #     skip. Meanwhile words over the reply are not judged either: they barge in on the
 #     word count, as without the pause. A ringtone near the box, music, a TV: each read
-#     as a speech onset, and the reply (the box's own "Someone's calling me..." on
-#     2026-11-06) was paused over and over, the user hearing almost nothing of it. Echo
-#     residue that trips the onset test the same. A backchannel (words, judged or under
+#     as a speech onset, and a reply was paused over and over, the user hearing almost
+#     nothing of it (on 2026-11-06 the incoming-call question, now never paused: below).
+#     Echo residue that trips the onset test the same. A backchannel (words, judged or under
 #     the word guard) re-arms it -- with a word guard over one word, so can the bot's own
 #     echo transcribed as one word the echo guard let through; a pause the cap ended
 #     while the judge or the STT held it does not count.
@@ -418,6 +418,7 @@ class BargeInPauser(FrameProcessor):
         self.cancels = 0
         self.skipped_near_end = 0
         self.skipped_noisy = 0
+        self.skipped_held = 0
 
     @property
     def paused(self) -> bool:
@@ -558,12 +559,18 @@ class BargeInPauser(FrameProcessor):
         the incoming-call question) -- nothing pauses it, whatever is heard over it (a
         ringtone read as speech paused it over and over, 2026-11-06). Counted, so lines
         that overlap each lift only their own."""
-        self._held_off = max(0, self._held_off + (1 if on else -1))
+        if not on and not self._held_off:
+            logger.warning("BARGE-PAUSE: hold-off lifted with none held")
+            return
+        self._held_off += 1 if on else -1
+        logger.info(f"BARGE-PAUSE: {'not pausing' if on else 'pausing again'} "
+                    f"({'the box' if on else 'done'} saying a line nothing may pause)")
 
     def _may_pause(self, source: str) -> bool:
         if self._paused or not self._bot_speaking or not self._reply_audio:
             return False
         if self._held_off:
+            self.skipped_held += 1
             return False
         if self._noisy:
             now = time.monotonic()
@@ -716,11 +723,12 @@ class BargeInPauser(FrameProcessor):
 
     async def cleanup(self):
         self._end()
-        if self.pauses:
+        if self.pauses or self.skipped_held:
             logger.info(f"BARGE-PAUSE summary: {self.pauses} pause(s): {self.cancels} "
                         f"cancelled by words, {self.resumes} resumed with none; skipped "
                         f"{self.skipped_near_end} near a reply's end, "
-                        f"{self.skipped_noisy} past the limit on pauses with no words")
+                        f"{self.skipped_noisy} past the limit on pauses with no words, "
+                        f"{self.skipped_held} over a line nothing may pause")
         await super().cleanup()
 
 

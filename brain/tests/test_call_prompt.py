@@ -326,10 +326,11 @@ class _STT:
         self.calls.append("resume")
 
 
-def _prompted(lang_voice=None):
-    """A real AgentSession (its say_last_line, FollowupGate, InputMute) with a CallPrompt."""
+def _prompted(lang_voice=None, play_secs=0.05):
+    """A real AgentSession (its say_last_line, FollowupGate, InputMute) with a CallPrompt;
+    each line takes `play_secs` to play."""
     ws = sa._WS({})
-    session = sa._session(ws)
+    session = sa._session(ws, play_secs=play_secs)
     if lang_voice:
         session.tts = sa._TTS(voice=lang_voice)
     session.stt = _STT()
@@ -382,8 +383,8 @@ async def test_the_phone_ringing_over_a_sentence_is_the_brains_own_cut():
 async def test_nothing_pauses_the_question_while_it_is_asked():
     """2026-11-06 on the box: a ringtone near it read as the user's speech, and the
     barge-in pause stopped the question about that very call, over and over. The
-    question is said unpausable: the pauser is held off for as long as it is asked."""
-    session, prompt = _prompted()
+    question is said unpausable: the pauser is held off until it has played out."""
+    session, prompt = _prompted(play_secs=1.0)
     seen = []
     session.barge_pauser = SimpleNamespace(hold_off=lambda on: seen.append(("hold", on)))
     queue = session.task.queue_frames
@@ -393,7 +394,16 @@ async def test_nothing_pauses_the_question_while_it_is_asked():
         await queue(frames)
     session.task.queue_frames = watched
     asking = asyncio.ensure_future(prompt.ask("Bob"))
-    await asyncio.sleep(0.4)
+
+    async def until(n):
+        while len(seen) < n:
+            await asyncio.sleep(0.02)
+    await asyncio.wait_for(until(2), 3)
+    await asyncio.sleep(0.5)
+    assert seen == [("hold", True), "TTSSpeakFrame"], (
+        "still held off while the question plays", seen)
+    await asyncio.wait_for(until(3), 3)
+    assert not asking.done(), "lifted once it has played, not held through the answer window"
     prompt.answer(False)
     assert await asyncio.wait_for(asking, 1) is False
     assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
