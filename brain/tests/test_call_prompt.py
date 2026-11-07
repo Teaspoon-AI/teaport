@@ -32,17 +32,27 @@ import test_sip_call_lifecycle as lc  # noqa: E402
 
 from loguru import logger  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     CancelFrame,
     InterruptionFrame,
     InterruptionWorkerFrame,
     OutputTransportMessageUrgentFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 
 from teaport_brain import call_prompt as cp  # noqa: E402
 from teaport_brain import session_arbiter as arb  # noqa: E402
 from teaport_brain import display, sip_server, tools  # noqa: E402
 from teaport_brain.sip_serializer import MSG_CONTROL  # noqa: E402
+from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
+from pipecat.observers.base_observer import FrameProcessed  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 
 # ---------------------------------------------------------------- the arbiter
@@ -476,6 +486,11 @@ _SAID_SECS = {
 _BRING_UP_SECS = 2.0
 # The caller's side gives up 20-30 s in (voicemail); 2026-11-06 it was ~25 s.
 _RING_TO_ANSWER_BUDGET_SECS = 15.0
+# The same with the question cut before its ask and asked again (~1 s in, the user saying
+# a word or two); and at worst, the user talking on (the re-ask REASK_WAIT_SECS after the
+# cut, REASK_BY_SECS after the ring at the latest).
+_RING_TO_ANSWER_REASK_SECS = 17.5
+_RING_TO_ANSWER_REASK_MAX_SECS = 18.5
 
 
 async def test_nobody_answering_picks_the_call_up_well_before_the_caller_gives_up():
@@ -517,6 +532,371 @@ async def test_nobody_answering_picks_the_call_up_well_before_the_caller_gives_u
     finally:
         (cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.ANSWER_GRACE_SECS, cp.QUESTION_MAX_SECS,
          cp.STEP_AWAY_MAX_SECS, cp.PROMPT_DEFAULT) = saved
+
+
+# ---------------------------------------------------------------- heard, or asked again
+
+class _Cuttable(sa._Task):
+    """A task whose lines play for as long as `secs` says (by their text; play_secs
+    otherwise) and can be cut while they play (cut), as a barge-in does: the audio stops,
+    the interruption reaches the gate, the transport says the bot stopped. Each line is
+    charted by the session's REAL TranscriptLedger, from its own frames: played through,
+    or cut with the share played that cut() was given."""
+
+    def __init__(self, ws, gate, ledger):
+        super().__init__(ws, gate=gate)
+        self.ledger, self.secs, self.playing, self.lines = ledger, {}, None, []
+        self._clock = 0.0
+        # What the ledger is shown for a line: the line itself, or as a TTS might hand it
+        # on (its dashes folded, a line before it in the same context).
+        self.as_charted = lambda text: text
+
+    async def _chart(self, f, t):
+        await self.ledger.on_process_frame(FrameProcessed(
+            processor=None, frame=f, direction=FrameDirection.DOWNSTREAM,
+            timestamp=int(t * 1e9)))
+
+    async def queue_frames(self, frames):
+        self.queued += frames
+        for f in frames:
+            if isinstance(f, InterruptionWorkerFrame):
+                await self._stop(None)
+                await sa._feed(self.gate, InterruptionFrame())
+            elif isinstance(f, TTSSpeakFrame):
+                self.lines.append(f.text)
+                self.playing = (f.text, asyncio.get_running_loop().create_task(
+                    self._play_line(f.text)))
+
+    def _secs(self, text):
+        return self.secs.get(text, self.play_secs)
+
+    async def _play_line(self, text):
+        self._clock += 100.0
+        t0 = self._clock
+        await self._chart(TTSSpeakFrame(text=self.as_charted(text), append_to_context=True),
+                          t0)
+        await self._chart(TTSStartedFrame(), t0 + 0.01)
+        await self._chart(BotStartedSpeakingFrame(), t0 + 0.01)
+        await self._chart(TTSAudioRawFrame(b"\0\0" * int(self._secs(text) * 24000), 24000, 1),
+                          t0 + 0.02)
+        await self._chart(TTSStoppedFrame(), t0 + 0.03)          # all of it synthesized
+        await sa._feed(self.gate, BotStartedSpeakingFrame())
+        await asyncio.sleep(self._secs(text))
+        self.playing = None
+        # Played out: the ledger charts it heard in full at the line's end.
+        await self._chart(BotStoppedSpeakingFrame(), t0 + 0.01 + self._secs(text) + 0.01)
+        await sa._feed(self.gate, BotStoppedSpeakingFrame())
+        self.played.set()
+
+    async def _stop(self, share):
+        """Cut what is playing after `share` of it (None: wherever it is)."""
+        if self.playing is None:
+            return
+        text, task = self.playing
+        self.playing = None
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        heard = self._secs(text) * (share if share is not None else 0.5)
+        await self._chart(InterruptionFrame(), self._clock + 0.01 + heard)
+
+    async def cut(self, share):
+        """The user talks over the line playing: cut after `share` of it."""
+        await self._stop(share)
+        await sa._feed(self.gate, InterruptionFrame())
+        await sa._feed(self.gate, BotStoppedSpeakingFrame())
+
+
+def _ledgered(lang_voice=None):
+    """_prompted, with a task that can be cut and the session's real ledger behind it."""
+    session, prompt = _prompted(lang_voice)
+    session.ledger = TranscriptLedger()
+    session.task = _Cuttable(session.task.ws, session.followup_gate, session.ledger)
+    session._OWN_LINE_SETTLE_S = 0.02
+    return session, prompt
+
+
+async def _until(pred, secs=3.0):
+    loop = asyncio.get_running_loop()
+    until = loop.time() + secs
+    while not pred():
+        assert loop.time() < until, "timed out"
+        await asyncio.sleep(0.01)
+
+
+def test_the_ask_is_found_in_every_language_and_every_form_ends_with_it():
+    """prompt_ask is taken from the question's own forms (session_arbiter._PROMPTS), in
+    the session's language: a reworded question or translation moves it along. Every
+    catalog must keep one ask shared by all three forms, or the heard check falls back to
+    needing the whole line."""
+    from teaport_brain import i18n
+    voices = {lang: code for code, lang in i18n.ESPEAK_TO_LANG.items()}
+    for lang in i18n.catalogs():
+        code = voices.get(lang, lang)
+        ask = arb.prompt_ask(code)
+        assert sum(c.isalnum() for c in ask) >= 6 and "{" not in ask, (lang, ask)
+        for caller in ("Ann Smith", "+1 555 123 4567", None):
+            assert arb.prompt_line(caller, code).endswith(ask), (lang, caller, ask)
+    assert arb.prompt_ask("en-us") == "Should I step away for a moment?"
+
+
+def test_heard_is_the_ask_heard_not_a_share_of_the_line():
+    """Cut at "Someone's calling me" (16% of the line, 2026-11-07) the ask was not heard;
+    cut half-way into the ask it was -- in any language, by the heard prefix."""
+    for code in ("en-us", "de", "ja", "es", "hi"):
+        ask = arb.prompt_ask(code)
+        for caller in ("Ann Smith", "+1 555 123 4567", None):
+            line = arb.prompt_line(caller, code)
+            who = line[:len(line) - len(ask)]
+            assert not cp.ask_heard(line, who, line, ask), (code, line)
+            assert not cp.ask_heard(line, who[:len(who) // 2], line, ask), (code, line)
+            assert not cp.ask_heard(line, "", line, ask)
+            assert cp.ask_heard(line, line, line, ask)
+            mostly = who + ask[:int(len(ask) * 0.75)]
+            assert cp.ask_heard(line, mostly, line, ask), (code, mostly)
+            barely = who + ask[:max(1, int(len(ask) * 0.2))]
+            assert not cp.ask_heard(line, barely, line, ask), (code, barely)
+    q = "Someone's calling me. Should I?"
+    assert not cp.ask_heard(q, "Something else", q, "Should I?")
+    # Charted with a line before it, or with the TTS's own dash and spacing: found by its
+    # letters and digits, and judged on its own words.
+    line = arb.prompt_line("+1 555 123 4567", "en-us")
+    ask = arb.prompt_ask("en-us")
+    folded = "Sure thing.  " + line.replace(" — ", " - ")
+    assert cp.ask_heard(folded, folded, line, ask)
+    assert not cp.ask_heard(folded, "Sure thing. Someone's calling me -", line, ask)
+    assert cp.ask_heard(folded, folded[:-len(" for a moment?")], line, ask)
+    assert not cp.ask_heard("Something else entirely.", "Something else entirely.", line, ask)
+
+
+async def test_an_answer_to_a_question_cut_before_its_ask_is_refused_and_it_is_asked_again():
+    """2026-11-07: the user's own talk cut the question at "Someone's calling me", and the
+    model read their "You know." as a yes. The tool is told the user has not heard it,
+    the question is asked again once they have finished, and the answer to that counts."""
+    for code in (None, "ef_dora"):
+        session, prompt = _ledgered(code)
+        task = session.task
+        task.play_secs = 5.0
+        asking = asyncio.ensure_future(prompt.ask("+1 555 123 4567"))
+        await _until(lambda: task.playing is not None)
+        await asyncio.sleep(0.05)
+        await task.cut(0.16)
+        task.play_secs = 0.1                                    # the re-ask plays out
+        assert prompt.answer(True) == cp.UNHEARD and prompt.pending
+        await _until(lambda: len(task.lines) == 2)
+        assert task.lines[1] == task.lines[0], task.lines      # the same question
+        await _until(lambda: task.played.is_set())              # played through
+        assert prompt.heard()
+        assert prompt.answer(True) == cp.TAKEN
+        assert await asyncio.wait_for(asking, 2) is True
+
+
+async def test_the_tool_refuses_for_an_unheard_question_and_says_nothing():
+    results = []
+
+    async def result_callback(result, properties=None):
+        results.append((result, properties))
+    session, prompt = _ledgered()
+    task = session.task
+    task.play_secs = 5.0
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    await _until(lambda: task.playing is not None)
+    await asyncio.sleep(0.05)
+    await task.cut(0.1)
+    await tools._answer_phone_call(SimpleNamespace(arguments={"take": True},
+                                                   result_callback=result_callback),
+                                   prompt=prompt)
+    result, props = results[-1]
+    assert result["ok"] is False and "not heard" in result["error"], result
+    assert props is not None and props.run_llm is False     # the brain asks again, not the model
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+
+
+async def test_an_answer_over_the_ask_is_taken():
+    """Cut once the ask has been heard -- "yes" over "…for a moment?" -- it is the answer:
+    no second question."""
+    session, prompt = _ledgered()
+    task = session.task
+    task.play_secs = 4.0
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    await _until(lambda: task.playing is not None)
+    await asyncio.sleep(0.05)
+    await task.cut(0.95)
+    assert prompt.heard()
+    assert prompt.answer(False) == cp.DECLINED
+    assert await asyncio.wait_for(asking, 2) is False
+    assert len(task.lines) == 1, task.lines
+
+
+async def test_a_question_played_through_is_heard_and_its_answer_taken():
+    session, prompt = _ledgered()
+    task = session.task
+    asking = asyncio.ensure_future(prompt.ask("Ann Smith"))
+    await _until(lambda: task.played.is_set())
+    assert prompt.heard() and prompt.answer(True) == cp.TAKEN
+    assert await asyncio.wait_for(asking, 2) is True
+    assert len(task.lines) == 1
+
+
+async def test_cut_twice_it_is_asked_once_more_and_then_the_default_holds():
+    """Asked again once at most. With no answer after the second saying -- cut again, or
+    played through -- the default holds when the time is up."""
+    saved = cp.PROMPT_SECS, cp.PROMPT_DEFAULT
+    try:
+        cp.PROMPT_SECS = 0.5
+        for default, want in (("take", True), ("ring", False)):
+            cp.PROMPT_DEFAULT = default
+            for second in ("cut", "played"):
+                session, prompt = _ledgered()
+                task = session.task
+                task.play_secs = 5.0
+                asking = asyncio.ensure_future(prompt.ask("Bob"))
+                await _until(lambda: task.playing is not None)
+                await asyncio.sleep(0.05)
+                await task.cut(0.1)
+                assert prompt.answer(True) == cp.UNHEARD
+                if second == "played":
+                    task.play_secs = 0.1
+                else:
+                    await _until(lambda: len(task.lines) == 2 and task.playing is not None)
+                    await asyncio.sleep(0.05)
+                    await task.cut(0.1)
+                assert await asyncio.wait_for(asking, 5) is want, (default, second)
+                assert len(task.lines) == 2, task.lines          # asked again once
+    finally:
+        cp.PROMPT_SECS, cp.PROMPT_DEFAULT = saved
+
+
+async def test_an_answer_after_the_second_cut_is_taken():
+    """#363's review, finding 2: cut before its ask a second time, there is no third
+    saying, and an UNHEARD there would refuse even a plain "no, let it ring" until the
+    default took the call. The user has heard "Someone's calling me" twice: the model's
+    reading of their answer is all there is, and it is taken."""
+    session, prompt = _ledgered()
+    task = session.task
+    task.play_secs = 5.0
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    for n in (1, 2):
+        await _until(lambda: len(task.lines) == n and task.playing is not None)
+        await asyncio.sleep(0.05)
+        await task.cut(0.1)
+    assert prompt.hearing() == cp.HEARD
+    assert prompt.answer(False) == cp.DECLINED
+    assert await asyncio.wait_for(asking, 2) is False
+
+
+async def test_an_answer_while_the_question_is_still_playing_is_not_taken():
+    """#363's review, finding 1: a new turn over the question cuts it, so an answer that
+    comes while it still plays is from a turn under way before it (2026-11-07: the user's
+    earlier words landed 0.11 s into the question). Not taken, and the model is told to
+    wait; once it has played, the answer counts."""
+    results = []
+
+    async def result_callback(result, properties=None):
+        results.append((result, properties))
+    session, prompt = _ledgered()
+    task = session.task
+    task.play_secs = 0.5
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    await asyncio.sleep(0)
+    assert prompt.answer(True) == cp.ASKING                       # not even queued yet
+    await _until(lambda: task.playing is not None)
+    assert prompt.hearing() == cp.ASKING
+    await tools._answer_phone_call(SimpleNamespace(arguments={"take": True},
+                                                   result_callback=result_callback),
+                                   prompt=prompt)
+    result, props = results[-1]
+    assert result["ok"] is False and "still being asked" in result["error"], result
+    assert props is not None and props.run_llm is False
+    assert prompt.pending
+    await _until(lambda: task.played.is_set())
+    assert prompt.answer(True) == cp.TAKEN
+    assert await asyncio.wait_for(asking, 2) is True
+    assert len(task.lines) == 1
+
+
+async def test_a_question_the_tts_folded_or_charted_with_a_line_before_it_is_still_judged():
+    """#363's review, finding 4: the chart is found by the line's letters and digits, so a
+    TTS that folds the em dash and spacing, or one context that charts a line before the
+    question with it, neither hides it (a cut would always ask again) nor judges the
+    other line's words as the ask's. The real ledger, the real em-dash line."""
+    for share, want_again in ((0.95, False), (0.2, True)):
+        session, prompt = _ledgered()
+        task = session.task
+        task.as_charted = lambda text: "Sure thing.  " + text.replace(" — ", " - ")
+        task.play_secs = 4.0
+        asking = asyncio.ensure_future(prompt.ask("+1 555 123 4567"))
+        await _until(lambda: task.playing is not None)
+        assert "—" in task.lines[0]
+        await asyncio.sleep(0.05)
+        await task.cut(share)
+        u = session.ledger.events[-1]
+        assert u.text.startswith("Sure thing.") and " - " in u.text, u.text
+        if want_again:
+            assert prompt.answer(True) == cp.UNHEARD
+            task.play_secs = 0.1
+            await _until(lambda: len(task.lines) == 2 and task.played.is_set())
+        assert prompt.answer(True) == cp.TAKEN, (share, u.heard_text)
+        assert await asyncio.wait_for(asking, 2) is True
+        assert len(task.lines) == (2 if want_again else 1), task.lines
+
+
+async def test_a_question_cut_and_asked_again_still_picks_the_call_up_in_time():
+    """The timing budget with the re-ask, nobody answering: the real ask() and hold() on
+    the default settings, time scaled down by K. The question is cut at "Someone's
+    calling me" (~1 s in) by the user talking ~0.6 s more, and is asked again once their
+    words are in (the gate's release, TEAPORT_REPLY_HOLD_RELEASE_S); the deadline still
+    counts from the ring. The user talking on: asked again REASK_WAIT_SECS after the cut.
+    And the worst: cut at the last word before the ask (~3.5 s in), the user talking on."""
+    from teaport_brain import followup_gate as fg
+    K = 0.05
+    names = ("PROMPT_SECS", "ANSWER_MIN_SECS", "ANSWER_GRACE_SECS", "QUESTION_MAX_SECS",
+             "STEP_AWAY_MAX_SECS", "REASK_WAIT_SECS", "REASK_BY_SECS",
+             "CHART_WAIT_SECS")
+    consts = names
+    saved = {n: getattr(cp, n) for n in consts}
+    loop = asyncio.get_running_loop()
+    worst = {}
+    try:
+        assert saved["PROMPT_SECS"] == 8 and cp.PROMPT_DEFAULT == "take"
+        for n in consts:
+            setattr(cp, n, saved[n] * K)
+        # (where the cut lands, how long the user talks on after it): past REASK_WAIT_SECS,
+        # and stopping before the deadline (talking through it is ANSWER_GRACE_SECS more).
+        for cut_at, talks_on in ((0.16, 0.6), (0.16, 4.0), (0.6, 4.0)):
+            session, prompt = _ledgered()
+            task = session.task
+            gate = session.followup_gate
+            gate._answer_release_secs = fg._ANSWER_RELEASE_SECS * K
+            gate._answer_max_secs = fg._ANSWER_MAX_SECS * K
+            # Its release timer, on this loop (an unstarted processor has no task manager).
+            gate.create_task = lambda coro, name=None: asyncio.get_running_loop().create_task(coro)
+            session._OWN_LINE_SETTLE_S = 0.2 * K
+            line = arb.prompt_line("+1 346 234 8500", "en-us")
+            task.secs = {line: _SAID_SECS[line] * K,
+                         arb.step_away_line("en-us"):
+                             _SAID_SECS["I'll take the call — back in a moment."] * K}
+            t0 = loop.time()
+            asking = asyncio.ensure_future(prompt.ask("+1 346 234 8500"))
+            await _until(lambda: task.playing is not None)
+            await asyncio.sleep(_SAID_SECS[line] * cut_at * K)
+            await sa._feed(gate, VADUserStartedSpeakingFrame())
+            await task.cut(cut_at)
+            await asyncio.sleep(talks_on * K)
+            await sa._feed(gate, VADUserStoppedSpeakingFrame())
+            assert await asyncio.wait_for(asking, 5) is True
+            await prompt.hold()
+            assert len(task.lines) == 3, task.lines                # question, again, hold
+            worst[cut_at, talks_on] = round((loop.time() - t0) / K + _BRING_UP_SECS, 1)
+            if session._keeper is not None:
+                session._keeper.cancel()
+    finally:
+        for n, v in saved.items():
+            setattr(cp, n, v)
+    print(f"    ring to connected, cut and asked again: {worst}")
+    assert worst[0.16, 0.6] <= _RING_TO_ANSWER_REASK_SECS, worst
+    assert worst[0.16, 4.0] <= _RING_TO_ANSWER_REASK_MAX_SECS, worst
+    assert worst[0.6, 4.0] <= _RING_TO_ANSWER_REASK_MAX_SECS, worst
 
 
 async def test_the_question_waits_for_its_own_cut_however_late_it_lands():
