@@ -1127,6 +1127,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (endpointing.CutReplyFence). Its head and tail go around the two aggregators below.
     cut_fence = CutReplyFence()
     cut_fence.hold_commits(context_aggregator.user())
+    # A turn that cut a reply and says only "wait" (or "okay, stop", "hold on") is held
+    # at its commit: nothing is asked, the box listens (barge_pause.py A BARE STOP).
+    cut_fence.holds = start_strategy.hold_bare_stop
     # A barge-in's tool-call cancel can overtake the call's in-progress frame on its way
     # to the assistant aggregator, which then writes the call IN_PROGRESS for good (#185):
     # it drops that frame, in the order the aggregator itself handles them.
@@ -1184,6 +1187,7 @@ def build_agent_session(transport, *, voice: str | None = None,
             pending=memory_recall.pending_messages if memory_recall is not None else None,
             cut_fence=cut_fence)
         stop_strategy.speculator = speculator
+        start_strategy.speculator = speculator    # a held bare stop's stands down
         llm.speculator = speculator
         # The engine's transcription report is asked for only when it will be used.
         stt.transcription_progress = speculator.on_decode
@@ -1298,6 +1302,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                 and settings_access.usable([settings_phrase]))
     if llm is not None:
         llm.owed = owed
+    # A held bare stop asked to wait: no re-offer at the lull for it (barge_pause.py).
+    start_strategy.on_held = owed.caller_waits
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
     # The room said goodbye but did not sleep (#221): a reply that is only a goodbye,
@@ -1376,7 +1382,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         InputMute(follow=input_mute, kinds=(TranscriptionFrame, InterimTranscriptionFrame)),
         # This tap owns the silent-turn watchdog (see TurnTimer): it is the first to
         # see the turn begin, and only one of the three may arm it.
-        TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
+        TurnTimer(turn_marks, watchdog=True,  # tap: user-stopped + stt-final
+                  deliberately_silent=start_strategy.deliberately_silent),
         UserTranscriptEmitter(activity),
         # DIRECTLY below the emitter: the final has gone to the relay, whose run control
         # reads it, and the turn has not ended on it yet (run_control.py). None off Talk.

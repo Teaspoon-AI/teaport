@@ -305,32 +305,41 @@ T_RESULTS = [{"title": "Toy Joy - Austin's Coolest Toy Store",
 async def test_204_a_sync_answer_cut_at_hold_on_is_owed_until_heard():
     """Call 3 of 2026-10-18 (17:27): a sync tool's answer, cut at "There's a Toy Joy
     store at" by "Hold on, hold on.". Live: "Got it, pausing." and 64 s of silence. Now:
-    the cut answer is owed with its whole text, the caller's turn carries the note
-    before their words, the lull's one re-offer goes, and its full telling closes it."""
+    the cut answer is owed with its whole text; "Hold on, hold on." is only a stop, held
+    (barge_pause.py A BARE STOP): nothing is asked on it, and no re-offer pushes the
+    answer at the lull that follows -- they asked to wait. Their next turn carries the
+    note before their words, and its full telling closes it."""
     async with Rig() as rig:
         async def web_search(params):                        # the box's: no agent here
             await params.result_callback({"results": T_RESULTS})
         rig.session.llm.register_function("web_search", web_search)
         rig.owed._reoffer_quiet_s = 0.6
-        rig.provider.replies = [("call", "web_search"), TOY, "Got it, pausing.", TOY]
+        rig.provider.replies = [("call", "web_search"), TOY, TOY]
         await rig.say(T_REQ)
         await rig.requests(2)                                # the post-tool answer
         await until(lambda: len(rig.played) >= 6)            # "There's a Toy Joy store at"
         await rig.say("Hold on, hold on.")
-        hold_on = await rig.requests(3)
+        start = rig.user._user_turn_controller._user_turn_strategies.start[0]
+        await until(start.deliberately_silent)
         rec = rig.owed.record("call-web_search")
         assert rec is not None and rec.state == owed.OWED, "the cut answer was owed to nobody"
         assert rec.outcome == owed.clean_outcome(TOY) and rec.request == T_REQ
         assert rec.heard_quote.startswith("There's a Toy Joy"), rec.heard_quote
-        msgs = hold_on["messages"]
-        assert msgs[-1]["content"] == "Hold on, hold on.", msgs[-1]
+        await asyncio.sleep(rig.owed._reoffer_quiet_s + 1.0)  # a lull, well past the quiet
+        assert len(rig.provider.requests) == 2, (
+            "the stop was answered, or the re-offer pushed the answer after a wait: "
+            f"{[r['messages'][-1]['content'][:60] for r in rig.provider.requests[2:]]}")
+        assert not any(m.get("content") == "Hold on, hold on."
+                       for m in rig.session.context.get_messages()), "the stop was committed"
+        stops = rig.bot_stops
+        await rig.say("Okay, go ahead.")
+        ahead = await rig.requests(3)
+        msgs = ahead["messages"]
+        assert msgs[-1]["content"] == "Okay, go ahead.", msgs[-1]
         assert msgs[-2]["content"].startswith(SYSTEM_NOTICE_TAG + "\nResults you have")
         assert f'They asked: "{T_REQ}"' in msgs[-2]["content"]
-        reoffer = await rig.requests(4)                      # the lull, after "pausing"
-        assert reoffer["messages"][-1]["content"].endswith(owed.REOFFER_LINE)
-        stops = rig.bot_stops
         await rig.played_out(stops)
-        assert rec.state == owed.CLOSED, "the re-offer's full telling left it owed"
+        assert rec.state == owed.CLOSED, "the full telling left it owed"
 
 
 def main():
