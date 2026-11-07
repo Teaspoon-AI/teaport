@@ -82,7 +82,7 @@ from teaport_brain.barge_pause import (  # noqa: E402
     PauseAwareMinWordsStrategy,
     is_bare_stop,
 )
-from teaport_brain.endpointing import CutReplyFence  # noqa: E402
+from teaport_brain.endpointing import CutReplyFence, SegmentDoneFrame  # noqa: E402
 from teaport_brain.taken_turn import TakenWords  # noqa: E402
 
 STOP = "Okay, wait."
@@ -262,7 +262,8 @@ async def test_a_stop_said_over_the_replys_last_words_is_held():
     short unvoiced "wait" the VAD misses) -- and its words land just after the bot
     stopped: still a stop over the reply."""
     for onset_only in (False, True):
-        rig = Rig(onset_is_speech=not onset_only)
+        # The onset alone is speech only where the reply hold is (SIP: THE ONSET).
+        rig = Rig(onset_is_speech=True)
         async with running_controller(rig.controller):
             await rig.committed_turn()
             await rig.feed(BotStartedSpeakingFrame())
@@ -275,6 +276,54 @@ async def test_a_stop_said_over_the_replys_last_words_is_held():
             assert rig.starts() == 2, (onset_only, rig.events)
             assert await rig.start.hold_bare_stop("Wait."), onset_only
             assert rig.start.deliberately_silent() and rig.taken.why("Wait.")
+
+
+async def test_speech_over_the_reply_that_gave_no_words_does_not_make_a_later_stop_a_cut():
+    """Speech heard over the reply that never yields words -- a VAD start the STT
+    closes empty, or an onset alone where the onset is not speech (Talk and the room:
+    the reply's own echo residue, say) -- says nothing about the user's next turn. Once
+    the bot has gone quiet, "Wait." with its own start after that is the answer to the
+    bot, not a stop over it: the model's. The control: the same "Wait." with its speech
+    begun over the reply is held."""
+    async def _wait_after(rig, over_the_reply, vad_start):
+        await rig.committed_turn()
+        await rig.feed(BotStartedSpeakingFrame())
+        await over_the_reply(rig)
+        await rig.feed(BotStoppedSpeakingFrame())
+        if vad_start:
+            await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
+        assert rig.starts() == 2, rig.events
+        return await rig.start.hold_bare_stop("Wait.")
+
+    async def empty_closed(rig):          # a VAD start, its stop, closed with no words
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(0.1)
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        await rig.feed(SegmentDoneFrame(stop_n=2))
+
+    async def onset_alone(rig):           # the onset test alone, where it is not speech
+        await rig.start.on_onset(True)
+        await rig.start.on_onset(False)
+
+    # The later "Wait." with its own VAD start, and -- a short word the VAD can miss --
+    # with none: then nothing at all says it began over the reply.
+    for name, over, vad_start in (("empty-closed VAD start", empty_closed, True),
+                                  ("onset alone", onset_alone, True),
+                                  ("onset alone, no VAD start after", onset_alone, False)):
+        rig = Rig(onset_is_speech=False)
+        async with running_controller(rig.controller):
+            assert not await _wait_after(rig, over, vad_start), (
+                f"{name}: a later 'Wait.' was held")
+    # The control: the stop's own speech began over the reply.
+    rig = Rig(onset_is_speech=False)
+    async with running_controller(rig.controller):
+        await rig.committed_turn()
+        await rig.feed(BotStartedSpeakingFrame())
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.feed(BotStoppedSpeakingFrame())
+        await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
+        assert await rig.start.hold_bare_stop("Wait."), "the stop over the reply"
 
 
 async def test_a_quick_stop_word_answer_after_the_bot_stopped_is_the_models():

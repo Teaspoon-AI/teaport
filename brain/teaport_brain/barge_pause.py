@@ -796,8 +796,9 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #   * Whole turns only: the commit's words, every segment of the turn. "Wait, what time
 #     is it?" is a turn; so is "Okay, wait." followed, in the same turn, by the question.
 #   * Only a turn that cut something: it began over the audible bot (or its speech
-#     did -- the VAD's start or the onset test, before the bot went quiet: words said
-#     over the reply's last syllables, their final after it), or in a reply's wait (the
+#     did -- the VAD's start, or the onset test where it is speech, before the bot went
+#     quiet: words said over the reply's last syllables, their final after it; speech
+#     that gave no words, or began before the reply did, counts for nothing: _spoke), or in a reply's wait (the
 #     reply in flight, held or not yet audible: the turn start drops it), or it is the
 #     commit the cut fence drops an unplayed reply for. A lone "Stop." to a box with
 #     nothing to stop is the model's, as before: there it may be about something else --
@@ -1017,8 +1018,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._worded = False
         self._tail_open = False
         # A BARE STOP. When the bot last went quiet (stopped, or was cut), and when the
-        # latest speech whose words have not come yet began (the VAD's start or the onset
-        # test; cleared by a final with words), on the monotonic clock; whether the open
+        # latest speech whose words have not come yet began (_spoke), on the monotonic
+        # clock; whether the open
         # (or last) turn cut a reply, read at its start; whether the latest turn was held
         # as a bare stop (deliberately_silent).
         self._quiet_at = None
@@ -1038,15 +1039,21 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         test. Called in the user aggregator's task, between the frames it processes.
         Speech heard only where `onset_is_speech` (THE ONSET); elsewhere the VAD's start
         is what says so."""
-        if started:
+        if started and self._onset_is_speech:
             self._spoke()
-            if self._onset_is_speech:
-                self._heard()
+            self._heard()
 
     def _spoke(self):
-        """Speech began (A BARE STOP): the first onset of words not yet in."""
-        if self._speech_at is None:
-            self._speech_at = time.monotonic()
+        """Speech began (A BARE STOP): the VAD's start, or the onset test where it is
+        speech (THE ONSET; elsewhere an onset alone over the reply is as likely its own
+        echo residue). The latest start wins: the user's own start after the bot went
+        quiet is theirs, whatever came before it. Speech that gives no words is
+        forgotten (_unspoke) -- a close with none, an empty final -- and so is any from
+        before the bot was last audible: it cannot have been speech over that reply."""
+        self._speech_at = time.monotonic()
+
+    def _unspoke(self):
+        self._speech_at = None
 
     def reply_unspoken(self, why: str):
         """UnspokenReplyTap: the reply to the last turn ended with nothing of it to play
@@ -1087,12 +1094,15 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # The wait is over, a tail's segment with it: from here every word is
             # counted as one over the bot (THE WAIT).
             self._audible, self._reply_due, self._tail_open = True, False, False
+            self._unspoke()
         elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
             if self._audible:
                 self._quiet_at = time.monotonic()
             self._audible = False
         elif isinstance(frame, (SegmentDoneFrame, SegmentResetFrame)):
+            # A close or reset: that speech's words, if any, are in (A BARE STOP).
             self._tail_open = False
+            self._unspoke()
             if isinstance(frame, SegmentDoneFrame) and self._worded:
                 self._closed(frame.stop_n)
         elif is_taken(frame):
@@ -1231,6 +1241,10 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             return await self._take_tail(frame)
         result = await self._count(frame)
         worded = isinstance(frame, TranscriptionFrame) and (frame.text or "").strip()
+        if isinstance(frame, TranscriptionFrame):
+            # After the count, which read it: a final, with words or none, ends that
+            # speech (A BARE STOP).
+            self._unspoke()
         if (result != ProcessFrameResult.STOP and worded
                 and self.taken_words is not None):
             # A final that starts no turn: the aggregator drops its words (the guard's
@@ -1240,7 +1254,6 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # After the count: a turn this final opens is open now, and the speech it
             # carries was heard before it, not after (WORDS NOBODY SPOKE).
             self._worded, self._tail_open = True, False
-            self._speech_at = None      # that speech's words are in (A BARE STOP)
             self._closed(getattr(frame, "stop_n", None))
             if self._turn_open:
                 self._turn_words = True
