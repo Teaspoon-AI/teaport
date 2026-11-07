@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -385,29 +386,34 @@ async def test_nothing_pauses_the_question_while_it_is_asked():
     barge-in pause stopped the question about that very call, over and over. The
     question is said unpausable: the pauser is held off until it has played out."""
     session, prompt = _prompted(play_secs=1.0)
-    seen = []
-    session.barge_pauser = SimpleNamespace(hold_off=lambda on: seen.append(("hold", on)))
+    seen, at = [], {}
+
+    def hold(on):
+        seen.append(("hold", on))
+        at[on] = time.monotonic()
+    session.barge_pauser = SimpleNamespace(hold_off=hold)
     queue = session.task.queue_frames
 
     async def watched(frames):
-        seen.extend(type(f).__name__ for f in frames if isinstance(f, TTSSpeakFrame))
+        if any(isinstance(f, TTSSpeakFrame) for f in frames):
+            seen.append("TTSSpeakFrame")
+            at["said"] = time.monotonic()
         await queue(frames)
     session.task.queue_frames = watched
     asking = asyncio.ensure_future(prompt.ask("Bob"))
 
-    async def until(n):
-        while len(seen) < n:
+    async def lifted():
+        while ("hold", False) not in seen:
             await asyncio.sleep(0.02)
-    await asyncio.wait_for(until(2), 3)
-    await asyncio.sleep(0.5)
-    assert seen == [("hold", True), "TTSSpeakFrame"], (
-        "still held off while the question plays", seen)
-    await asyncio.wait_for(until(3), 3)
+    await asyncio.wait_for(lifted(), 5)
+    assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
+        "held off from before the question goes in until it has been said", seen)
+    # The fake line plays for 1 s: a stall only makes the gap longer.
+    assert at[False] - at["said"] >= 0.9, ("held through its playing, not its queueing",
+                                           at[False] - at["said"])
     assert not asking.done(), "lifted once it has played, not held through the answer window"
     prompt.answer(False)
     assert await asyncio.wait_for(asking, 1) is False
-    assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
-        "held off from before the question goes in until it has been said", seen)
 
 
 async def test_the_question_speaks_the_sessions_language_and_withholds_nothing_it_has_not():

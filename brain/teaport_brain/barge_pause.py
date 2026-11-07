@@ -563,8 +563,10 @@ class BargeInPauser(FrameProcessor):
             logger.warning("BARGE-PAUSE: hold-off lifted with none held")
             return
         self._held_off += 1 if on else -1
-        logger.info(f"BARGE-PAUSE: {'not pausing' if on else 'pausing again'} "
-                    f"({'the box' if on else 'done'} saying a line nothing may pause)")
+        if on and self._held_off == 1:
+            logger.info("BARGE-PAUSE: not pausing (the box is saying a line nothing may pause)")
+        elif not on and not self._held_off:
+            logger.info("BARGE-PAUSE: pausing again (done saying a line nothing may pause)")
 
     def _may_pause(self, source: str) -> bool:
         if self._paused or not self._bot_speaking or not self._reply_audio:
