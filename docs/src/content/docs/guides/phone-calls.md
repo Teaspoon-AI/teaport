@@ -232,13 +232,16 @@ The question has three outcomes:
 
 An answer counts only after the question has been heard: played to the end, or
 cut after the user heard at least half of *"Should I step away for a
-moment?"*. If talk in the room cuts the question before that, the agent takes no
+moment?"*. While the question is still being said, the agent takes no answer.
+If talk in the room cuts the question before its last part, the agent takes no
 answer yet. When the user stops speaking, the agent asks the question again,
-one time only. A second cut leaves the call to the no-answer default. The
-waiting time still counts from the ring, so with the question asked twice and
-nobody answering, the call is picked up about 16 to 18 seconds after it rings.
+one time only. After that second time, the agent takes the user's answer even
+if the question was cut again. Without an answer, the no-answer default
+applies. The waiting time still counts from the ring, so with the question
+asked twice and nobody answering, the call is picked up about 16 to 18 seconds
+after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-53,64-89#f1ef005f; brain/teaport_brain/config_schema.toml:1949-1971#1d703178 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1949-1971#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a

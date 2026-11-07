@@ -35,9 +35,12 @@
 # the heard prefix the ledger charts for the line. Nothing pauses the question (#362),
 # so the user's own talk cuts it, and a cut at "Someone's calling me" left the model
 # reading "You know." as the answer, and the call was taken (seen live, 2026-11-07).
-# Unheard, the tool is told so (UNHEARD) and the question waits; once the user has
-# finished speaking (REASK_WAIT_SECS, REASK_BY_SECS at most) it is asked again, the same line the
-# same way -- once. A second cut leaves it to the default when the time is up.
+# While it is still being said, an answer is not taken either (ASKING): a new turn over
+# it cuts it, so one that comes uncut is from a turn under way before it. Cut before its
+# ask, the tool is told so (UNHEARD) and the question waits; once the user has finished
+# speaking (REASK_WAIT_SECS, REASK_BY_SECS at most) it is asked again, the same line the
+# same way -- once. Cut before its ask again, the answer to it is taken all the same
+# (they have heard "Someone's calling me" twice), and without one the default holds.
 #
 # The caller hears it ring all the while, and a carrier sends a call nobody answers to
 # voicemail 20-30 s in. So the answer time runs from the ring, not from the end of the
@@ -95,36 +98,57 @@ CHART_WAIT_SECS = 0.5
 # CLOSED_TAKEN (the call was taken: nobody answered in time, or the caller was already
 # connected), CLOSED_RINGING (it was left ringing), GONE (the caller hung up first), or
 # NONE (nothing was asked, or the conversation has been back from the call since).
-# UNHEARD: the question is open but the user has not heard it (cut before its ask, or
-# not said yet); the answer is not taken.
-TAKEN, DECLINED, GONE, NONE, UNHEARD = "taken", "declined", "gone", "none", "unheard"
+# While the question is open, an answer is not taken: ASKING while it is still being
+# said (or queued) -- an answer then comes from a turn under way before it, since a new
+# turn over it cuts it -- and UNHEARD once it was cut before its ask, to be asked again.
+TAKEN, DECLINED, GONE, NONE = "taken", "declined", "gone", "none"
+ASKING, UNHEARD = "asking", "unheard"
+# What hearing() makes of the question as last said: ASKING, UNHEARD, or HEARD.
+HEARD = "heard"
 CLOSED_TAKEN, CLOSED_RINGING = "closed-taken", "closed-ringing"
 
 
-def ask_heard(line: str, heard_text: str, ask: str) -> bool:
-    """`line` was cut with `heard_text` of it heard: had its `ask` (prompt_ask, the line's
-    ending) been heard, ASK_HEARD_SHARE of it at least? By letters and digits, as the
-    ledger aligns a heard prefix (_unheard); not aligned at all, it was not heard. An
-    empty ask (forms that no longer share one) needs the whole line."""
-    rest = _unheard(line, heard_text)
+def _alnum(text: str) -> str:
+    """`text` by its letters and digits, case-folded: how a heard prefix lines up with what
+    was meant to be said (transcript_ledger._unheard), whatever the spacing or dashes."""
+    return "".join(ch.casefold() for ch in text or "" if ch.isalnum())
+
+
+def ask_heard(charted: str, heard_text: str, line: str, ask: str) -> bool:
+    """Had the question `line` been heard, its `ask` (prompt_ask, the line's ending)
+    ASK_HEARD_SHARE of it at least? `charted` is the ledger's text the line was charted
+    in -- the line itself, or with a line beside it in one utterance -- and `heard_text`
+    what of that was heard (all of it when it played through). By letters and digits, as
+    the ledger aligns a heard prefix (_unheard): spacing and punctuation the TTS folded do
+    not matter. A chart that does not hold the line, or a prefix that does not align, is
+    not heard. An empty ask (forms that no longer share one) needs the whole line."""
+    whole, said = _alnum(charted), _alnum(line)
+    at = whole.find(said)
+    if not said or at < 0:
+        return False
+    rest = _unheard(charted, heard_text)
     if rest is None:
         return False
-    unheard = sum(ch.isalnum() for ch in rest)
-    whole = sum(ch.isalnum() for ch in ask)
-    if whole == 0:
-        return unheard == 0
-    return whole - min(unheard, whole) >= ASK_HEARD_SHARE * whole
+    heard = len(whole) - len(_alnum(rest))
+    end = at + len(said)
+    n = len(_alnum(ask))
+    if n == 0:
+        return heard >= end
+    return min(max(heard - (end - n), 0), n) >= ASK_HEARD_SHARE * n
 
 
 @dataclass
 class _Asked:
     """One saying of the question: its line and ask, the watch on its delivery (None until
-    it is queued), and where the ledger's chart stood before it."""
+    it is queued), where the ledger's chart stood before it, whether it is the last saying
+    (no re-ask after it), and whether its wait is over (_say returned)."""
     line: str
     ask: str
     ledger: object
     mark: int
+    last: bool = False
     delivery: object = None
+    over: bool = False
 
 
 class CallPrompt:
@@ -159,7 +183,7 @@ class CallPrompt:
             line = arb.prompt_line(caller, self._lang())
             ask = arb.prompt_ask(self._lang())
             for again in range(REASKS + 1):
-                await self._say(line, ask, fut)
+                await self._say(line, ask, fut, last=again == REASKS)
                 if fut.done() or again == REASKS or await self._heard_once_charted():
                     break
                 # Cut before its ask: the user did not hear what was asked. Once they
@@ -216,13 +240,14 @@ class CallPrompt:
             if self._pending is fut:
                 self._pending = None
 
-    async def _say(self, line: str, ask: str, fut: asyncio.Future) -> None:
+    async def _say(self, line: str, ask: str, fut: asyncio.Future, *, last: bool) -> None:
         """Say the question, and wait until it has played, been cut, or been answered
         (QUESTION_MAX_SECS at most)."""
         session = self.session
         ledger = getattr(session, "ledger", None)
         asked = self._asked = _Asked(line, ask, ledger,
-                                     len(ledger.events) if ledger is not None else 0)
+                                     len(ledger.events) if ledger is not None else 0,
+                                     last=last)
         # A phone ringing stops the sentence it rings over: the brain's own cut. And
         # nothing pauses the question -- the ringtone itself read as speech paused it
         # over and over (2026-11-06): the user answers over it or after it.
@@ -236,31 +261,44 @@ class CallPrompt:
             finally:
                 said.cancel()
                 session.followup_gate.drop_delivery(delivery)
+                asked.over = True
 
     def _charted(self, asked: _Asked):
         """The ledger's chart of this saying of the question, or None (not charted: cut
-        before any of it played, or not yet)."""
+        before any of it played, or not yet). Found by its letters and digits, so a line
+        the TTS folded (a dash, spacing), or charted with a line beside it, is found."""
         if asked.ledger is None:
             return None
+        said = _alnum(asked.line)
         for u in asked.ledger.events[asked.mark:]:
-            if u.speaker == "assistant" and u.text == asked.line.strip():
+            if u.speaker == "assistant" and said and said in _alnum(u.text):
                 return u
         return None
 
-    def heard(self) -> bool:
-        """Has the user heard the question as last said? Played through, or still playing
-        uncut (heard as it goes); cut, only once its ask had been heard (ask_heard, by the
-        ledger's chart of it). Not queued yet, or cut with nothing charted: not heard."""
+    def hearing(self) -> str:
+        """What the user has had of the question as last said: HEARD once it played
+        through, or was cut once its ask had been heard (ask_heard, by the ledger's chart
+        of it); UNHEARD when it was cut before that (nothing charted: cut before any of it
+        played); ASKING while it is queued or still playing. The last saying (no re-ask
+        after it) cut before its ask counts as HEARD: the user has heard "Someone's calling
+        me" twice, and the model's reading of their answer is all there is. A saying whose
+        wait ran out (QUESTION_MAX_SECS) without a word of how it went counts as heard."""
         asked = self._asked
         if asked is None or asked.delivery is None:
-            return False
+            return ASKING
         d = asked.delivery
-        if not d.done.is_set() or not d.interrupted:
-            return True
+        if not d.done.is_set():
+            return HEARD if asked.over else ASKING
+        if not d.interrupted:
+            return HEARD
         u = self._charted(asked)
-        if u is None:
-            return False
-        return not u.cut_short or ask_heard(u.text, u.heard_text, asked.ask)
+        if u is not None and (not u.cut_short or ask_heard(u.text, u.heard_text,
+                                                          asked.line, asked.ask)):
+            return HEARD
+        return HEARD if asked.last else UNHEARD
+
+    def heard(self) -> bool:
+        return self.hearing() == HEARD
 
     async def _heard_once_charted(self) -> bool:
         """heard(), giving a cut a moment to reach the ledger's chart first."""
@@ -275,16 +313,19 @@ class CallPrompt:
 
     def answer(self, take: bool) -> str:
         """The model's reading of the user's reply (the answer_phone_call tool): TAKEN or
-        DECLINED when it answered the open question, UNHEARD (not taken) while the user
-        has not heard it; once it has closed, what did happen (CLOSED_TAKEN,
-        CLOSED_RINGING, GONE) or NONE -- see the outcome names above."""
+        DECLINED when it answered the open question; not taken while it is still being
+        asked (ASKING) or was cut before its ask (UNHEARD); once it has closed, what did
+        happen (CLOSED_TAKEN, CLOSED_RINGING, GONE) or NONE -- see the outcome names
+        above."""
         fut = self._pending
         if fut is None or fut.done():
             return self._last or NONE
-        if not self.heard():
-            logger.info("phone call prompt: an answer to a question the user has not "
-                        "heard — not taken")
-            return UNHEARD
+        state = self.hearing()
+        if state != HEARD:
+            logger.info("phone call prompt: an answer while the question is "
+                        + ("still being asked" if state == ASKING
+                           else "unheard (cut before its ask)") + " — not taken")
+            return state
         fut.set_result(bool(take))
         return TAKEN if take else DECLINED
 
