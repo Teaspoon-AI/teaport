@@ -66,6 +66,10 @@ DYNAMIC = {
     "sip_server.py": {
         "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
     },
+    "session_arbiter.py": {                  # the call question's forms: N_() there
+        "t._(PROMPT_NAMED)", "t._(PROMPT_NUMBER)", "t._(PROMPT_SOMEONE)",
+        "t._(m)",                            # prompt_ask: each of _PROMPTS
+    },
     "openrouter_connect.py": {               # its lines: N_() there (#282)
         "t._(BACK)", "t._(CONNECTED_TEXT)", "t._(EXPIRED_TEXT)", "t._(FAILED_TEXT)",
         "t._(FINISH)", "t._(FINISH_HEADING)", "t._(FINISH_TEXT)", "t._(NOT_CONNECTED_TEXT)",
