@@ -3390,15 +3390,18 @@ where TLC could not be run (no Java runtime), so the row is left for the next ch
 
 The model's `Commit` always appends the turn's words and asks the model (`inference`),
 and its words carry no content, so nothing in it says a turn was only "wait". As
-shipped, a turn that cut a reply -- begun over the audible bot or within 2 s of it
-stopping, in a committed turn's reply wait, or the cut fence's continuation commit
-that dropped an unplayed reply -- and whose words are only stop entries and filler
+shipped, a turn that cut a reply -- begun over the audible bot (or its speech begun
+before the bot went quiet), in a committed turn's reply wait, or the cut fence's
+continuation commit that dropped an unplayed reply -- and not while the incoming-call
+question is open, and whose words are only stop entries and filler
 ("Okay, wait.", "Hold on a second.") is HELD at the commit (`barge_pause.py`, A BARE
 STOP; `endpointing.CutReplyFence.holds`): the aggregation is emptied, no message is
 appended, nothing is asked, and the turn ends as a taken one does (`taken_turn.py`).
 In model terms the start and the cut are unchanged (`StopWord` / `StartTurn` with the
-interruption's `cut`), and the turn's `Commit` is the empty commit a taken final
-makes: no `inference`, no gate arm. The rows here are chiefly about the start, the cut
+interruption's `cut`). What happens at the commit describes the code, not the model:
+`UserTurn.tla` has no taken final and no commit without `inference`, so the held turn
+is the code's empty commit (no request, no gate arm) with no action of its own here.
+The rows here are chiefly about the start, the cut
 and the order of commits, not about a commit's words being answered; on SIP a dropped
 reply's merge stays pending for the caller's next commit, as it does after a turn whose
 final was taken. In `Owed.tla` terms the held turn's `TurnStart` arms the re-offer and

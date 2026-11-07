@@ -1330,6 +1330,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         llm.owed = owed
     # A held bare stop asked to wait: no re-offer at the lull for it (barge_pause.py).
     start_strategy.on_held = owed.caller_waits
+    if prompt is not None:
+        # "No, wait." to "Should I step away?" is the answer, for answer_phone_call.
+        start_strategy.never_holds = lambda: prompt.pending
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
     # The room said goodbye but did not sleep (#221): a reply that is only a goodbye,

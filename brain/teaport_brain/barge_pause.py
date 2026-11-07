@@ -795,15 +795,21 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #
 #   * Whole turns only: the commit's words, every segment of the turn. "Wait, what time
 #     is it?" is a turn; so is "Okay, wait." followed, in the same turn, by the question.
-#   * Only a turn that cut something: it began over the audible bot (or within
-#     _STOP_OVERLAP_S of it stopping -- the words said over its last syllables, their
-#     final after it), or in a reply's wait (the reply in flight, held or not yet
-#     audible: the turn start drops it), or it is the commit the cut fence drops an
-#     unplayed reply for. A lone "Stop." to a box with nothing to stop is the model's,
-#     as before: there it may be about something else -- a request running in the
-#     background (openclaw_agent_control; on Talk, run control asks OpenClaw first,
-#     upstream of all this, and a final it takes never gets here), an answer to "shall
-#     I wait?".
+#   * Only a turn that cut something: it began over the audible bot (or its speech
+#     did -- the VAD's start or the onset test, before the bot went quiet: words said
+#     over the reply's last syllables, their final after it), or in a reply's wait (the
+#     reply in flight, held or not yet audible: the turn start drops it), or it is the
+#     commit the cut fence drops an unplayed reply for. A lone "Stop." to a box with
+#     nothing to stop is the model's, as before: there it may be about something else --
+#     a request running in the background (openclaw_agent_control; on Talk, run control
+#     asks OpenClaw first, upstream of all this, and a final it takes never gets here),
+#     or the answer to the bot's own "Should I wait?", said after it ended. A flat
+#     window after the bot stopped held that answer too, a quick one inside it.
+#   * Never while the incoming-call question is open (`never_holds`: call_prompt's
+#     pending, agent_session): "No, wait." or "Hold on." over "Someone's calling me --
+#     should I step away?" is the answer, and it reaches answer_phone_call only through
+#     the model. Held, nothing answered, and the prompt's default stepped away to the
+#     call the user had just said to wait on.
 #   * The fillers are English and fixed (_STOP_FILLERS): every word but them must be a
 #     stop entry (TEAPORT_STOP_WORDS), and one at least must be, so "Okay." or "No." is
 #     never a stop. "No" is filler here and not a stop word for the reason above (over
@@ -829,10 +835,6 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 _STOP_FILLERS = ("okay", "ok", "no", "oh", "um", "uh", "er", "hmm", "hey", "sorry",
                  "just", "please", "a second", "a sec", "a moment", "a minute",
                  "one second", "one sec", "one moment")
-# How long after the bot stops a stop word still counts as said over it (A BARE STOP).
-# Over a playing reply the STT commits at once, and the final is back ~0.1-0.5 s after
-# the speech; a stop word begun on the reply's last words lands inside this.
-_STOP_OVERLAP_S = 2.0
 
 
 def is_bare_stop(text: str, stop_words=STOP_WORDS) -> bool:
@@ -1014,24 +1016,37 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._heard_at = None
         self._worded = False
         self._tail_open = False
-        # A BARE STOP. When the bot last went quiet (stopped, or was cut), on the
-        # monotonic clock; whether the open (or last) turn cut a reply, read at its start;
-        # whether the latest turn was held as a bare stop (deliberately_silent).
+        # A BARE STOP. When the bot last went quiet (stopped, or was cut), and when the
+        # latest speech whose words have not come yet began (the VAD's start or the onset
+        # test; cleared by a final with words), on the monotonic clock; whether the open
+        # (or last) turn cut a reply, read at its start; whether the latest turn was held
+        # as a bare stop (deliberately_silent).
         self._quiet_at = None
+        self._speech_at = None
         self._turn_cut = False
         self._held = False
         # speculate.Speculator, where the session has one: a held turn's speculation
         # stands down (agent_session). () -> None: told of each hold (owed.Owed.caller_waits).
         self.speculator = None
         self.on_held = None
+        # () -> bool: hold nothing now -- the incoming-call question is open, and its
+        # answer is the model's to pass on (call_prompt.CallPrompt.pending; agent_session).
+        self.never_holds = None
 
     async def on_onset(self, started: bool):
         """speech_onset.SpeechOnsetMixin listener: speech began (or ended) on the onset
         test. Called in the user aggregator's task, between the frames it processes.
         Speech heard only where `onset_is_speech` (THE ONSET); elsewhere the VAD's start
         is what says so."""
-        if started and self._onset_is_speech:
-            self._heard()
+        if started:
+            self._spoke()
+            if self._onset_is_speech:
+                self._heard()
+
+    def _spoke(self):
+        """Speech began (A BARE STOP): the first onset of words not yet in."""
+        if self._speech_at is None:
+            self._speech_at = time.monotonic()
 
     def reply_unspoken(self, why: str):
         """UnspokenReplyTap: the reply to the last turn ended with nothing of it to play
@@ -1064,6 +1079,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         """The state WORDS NOBODY SPOKE reads, from every frame but a transcript's words
         (_handle_transcription)."""
         if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._spoke()
             self._heard()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._stops += 1
@@ -1087,8 +1103,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         # turn's interruption (the aggregator broadcasts it after the strategies hear of
         # the start): did this turn cut a reply (A BARE STOP)?
         self._turn_cut = (self._bot_speaking or self._audible or self._waiting()
-                          or (self._quiet_at is not None
-                              and time.monotonic() - self._quiet_at < _STOP_OVERLAP_S))
+                          or (self._speech_at is not None and self._quiet_at is not None
+                              and self._speech_at < self._quiet_at))
         await super().handle_user_turn_started()
         self._turn_open, self._turn_words, self._held = True, False, False
         self._reply_due = self._tail_open = False
@@ -1106,6 +1122,10 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         stands down, and no reply is awaited (THE WAIT), so the caller's next words are
         a turn of their own, not a tail of these."""
         if not ((dropped or self._turn_cut) and is_bare_stop(text, self._stop_words)):
+            return False
+        if self.never_holds is not None and self.never_holds():
+            logger.info(f"{self}: {quoted(text.strip())} is only a stop, but the incoming-call "
+                        "question is open -- it is the answer, the model's to pass on")
             return False
         # No reply is awaited: the turn's words are gone, as a taken final's are (_note),
         # whether its stop comes before this commit or after it (a commit on the stop
@@ -1220,6 +1240,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # After the count: a turn this final opens is open now, and the speech it
             # carries was heard before it, not after (WORDS NOBODY SPOKE).
             self._worded, self._tail_open = True, False
+            self._speech_at = None      # that speech's words are in (A BARE STOP)
             self._closed(getattr(frame, "stop_n", None))
             if self._turn_open:
                 self._turn_words = True

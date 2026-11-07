@@ -14,8 +14,10 @@
 # Shapes: the stop over the playing reply on each front end; the stop in the reply's
 # wait is test_zero_length_final's (_a_stop_word_among_the_words_cuts_the_reply). The
 # controls: a stop with a question in it is answered, a backchannel over the bot cuts
-# nothing, and the caller's next words after a held stop are a turn. Then the rule's
-# edges on the strategy and the fence alone.
+# nothing, the caller's next words after a held stop are a turn, a quick "Wait." that
+# answers the bot's own question after it ended is the model's, and so is "No, wait."
+# while the incoming-call question is open. Then the rule's edges on the strategy, the
+# fence and the session's wiring.
 #
 # All utterances are synthetic.
 #
@@ -24,6 +26,11 @@
 import asyncio
 import os
 import sys
+
+# A session built whole (the call prompt's wiring) needs somewhere to point: nowhere real.
+os.environ.setdefault("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime")
+os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9/v1")
+os.environ.setdefault("LLM_API_KEY", "not-a-real-key")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
@@ -69,7 +76,6 @@ from test_zero_length_final import (  # noqa: E402
 )
 from turn_harness import running_controller  # noqa: E402
 
-import teaport_brain.barge_pause as barge_pause  # noqa: E402
 import teaport_brain.turn_timing as turn_timing  # noqa: E402
 from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from teaport_brain.barge_pause import (  # noqa: E402
@@ -244,7 +250,6 @@ async def test_a_stop_with_nothing_to_cut_is_the_models():
         await rig.committed_turn()
         await rig.feed(BotStartedSpeakingFrame())     # the reply plays, and ends
         await rig.feed(BotStoppedSpeakingFrame())
-        rig.start._quiet_at -= barge_pause._STOP_OVERLAP_S + 0.1
         await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
         await rig.feed(InterimTranscriptionFrame("Stop", "u", "t"))
         assert rig.starts() == 2, rig.events
@@ -253,17 +258,101 @@ async def test_a_stop_with_nothing_to_cut_is_the_models():
 
 
 async def test_a_stop_said_over_the_replys_last_words_is_held():
-    """Its final lands just after the bot stopped: still a stop over the reply."""
-    rig = Rig()
-    async with running_controller(rig.controller):
-        await rig.committed_turn()
-        await rig.feed(BotStartedSpeakingFrame())
-        await rig.feed(BotStoppedSpeakingFrame())
-        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
-        await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
-        assert rig.starts() == 2, rig.events
-        assert await rig.start.hold_bare_stop("Wait.")
-        assert rig.start.deliberately_silent() and rig.taken.why("Wait.")
+    """Its speech began over the reply -- the VAD's start, or the onset test alone (a
+    short unvoiced "wait" the VAD misses) -- and its words land just after the bot
+    stopped: still a stop over the reply."""
+    for onset_only in (False, True):
+        rig = Rig(onset_is_speech=not onset_only)
+        async with running_controller(rig.controller):
+            await rig.committed_turn()
+            await rig.feed(BotStartedSpeakingFrame())
+            if onset_only:
+                await rig.start.on_onset(True)
+            else:
+                await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.feed(BotStoppedSpeakingFrame())
+            await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
+            assert rig.starts() == 2, (onset_only, rig.events)
+            assert await rig.start.hold_bare_stop("Wait."), onset_only
+            assert rig.start.deliberately_silent() and rig.taken.why("Wait.")
+
+
+async def test_a_quick_stop_word_answer_after_the_bot_stopped_is_the_models():
+    """The bot asks "Should I wait?"; it ends, and 0.5 s later the user says "Wait."
+    -- the answer, its speech begun after the bot went quiet. Nothing was cut, and the
+    model is asked on it."""
+    for front_end in ("talk", "sip"):
+        s = _session(front_end)
+        s.llm.answers = ["Should I wait?"]
+        run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
+        await asyncio.sleep(STARTUP_S)
+        s.stt._websocket = WireRecorder()
+        try:
+            await s.question()
+            s.llm.release.set()
+            assert await s.until(lambda: s.gate is None or not s.gate.armed)
+            await s.stt.queue_frame(BotStartedSpeakingFrame())
+            await s.audio(0.1)
+            s.llm.finish.set()                       # "Should I wait?" plays out
+            assert await s.until(lambda: s.llm.answered == 1)
+            await s.stt.queue_frame(BotStoppedSpeakingFrame())
+            await s.audio(0.5)
+            await _say(s, "Wait.")
+            assert await s.until(lambda: len(s.llm.contexts) >= 2), (
+                f"{front_end}: the answer 'Wait.' never reached the model")
+            await s.audio(0.2)
+        finally:
+            s.stt._websocket = None
+            await s.task.cancel()
+            await run
+        assert not s.start.deliberately_silent(), front_end
+        assert _users(s.llm.contexts[1])[-1] == "Wait.", _users(s.llm.contexts[1])
+
+
+async def test_while_the_call_question_is_open_a_stop_is_its_answer():
+    """"No, wait." over "Someone's calling me -- should I step away?" is the answer
+    to the question, which reaches answer_phone_call only through the model: it is not
+    held, though it cut the question and is only a stop."""
+    s = Session("talk", stock=False, llm=PlayingLLM())
+    s.start.never_holds = lambda: True               # the question is open
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(s.task))
+    await asyncio.sleep(STARTUP_S)
+    s.stt._websocket = WireRecorder()
+    try:
+        await s.question()
+        s.llm.release.set()
+        await s.stt.queue_frame(BotStartedSpeakingFrame())
+        await s.audio(0.1)
+        await _say(s, "No, wait.")
+        assert await s.until(lambda: len(s.llm.contexts) >= 2), "the answer was held"
+    finally:
+        s.stt._websocket = None
+        s.llm.finish.set()
+        await s.audio(0.1)
+        await s.task.cancel()
+        await run
+    assert s.llm.cuts == 1 and _users(s.llm.contexts[1]) == [QUESTION, "No, wait."]
+    assert not s.start.deliberately_silent()
+
+
+async def test_the_session_never_holds_while_its_call_prompt_is_pending():
+    """build_agent_session ties the hold to the session's CallPrompt: pending, nothing
+    is held; answered (or never asked), a cut "No, wait." is."""
+    from test_post_tool_under_speech import TalkTransport
+    from teaport_brain.agent_session import build_agent_session
+    from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
+
+    session = build_agent_session(TalkTransport(), front_end="talk")
+    prompt = session.call_prompt
+    assert prompt is not None, "a Talk session with a model has the call prompt"
+    inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
+    user = next(p for p in inner.processors if isinstance(p, LLMUserAggregator))
+    start = user._user_turn_controller._user_turn_strategies.start[0]
+    assert isinstance(start, PauseAwareMinWordsStrategy)
+    prompt._pending = asyncio.get_running_loop().create_future()
+    assert not await start.hold_bare_stop("No, wait.", dropped=True), "held the answer"
+    prompt._pending.set_result(False)
+    assert await start.hold_bare_stop("No, wait.", dropped=True)
 
 
 async def test_a_held_stop_stands_the_speculation_down_and_leaves_no_wait():
