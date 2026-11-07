@@ -734,7 +734,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "With TEAPORT_SPECULATIVE_REPLY on, ask the LLM once the engine reports it has transcribed past the end of the caller's speech -- the interim is then all the words that speech will get -- rather than once the interim has been unchanged for TEAPORT_SPECULATE_SETTLE_MS, which cannot tell a finished sentence from the engine pausing between two words while it catches up. Needs an engine that offers the report (the engine's transcription.progress message); with any other the settle window is used either way, as it is for a turn whose speech end could not be placed. The engine is asked for the report only when this and TEAPORT_SPECULATIVE_REPLY are both on. Off: always the settle window (the A/B switch). The margin past the speech end is TEAPORT_STT_TRANSCRIBED_MARGIN_MS."
+help = "With TEAPORT_SPECULATIVE_REPLY on, ask the LLM once the engine reports it has transcribed past the end of the caller's speech -- the interim is then all the words that speech will get -- rather than once the interim has been unchanged for TEAPORT_SPECULATE_SETTLE_MS, which cannot tell a finished sentence from the engine pausing between two words while it catches up. Needs an engine that offers the report (the engine's transcription.progress message); with any other the settle window is used either way, as it is for a turn whose speech end could not be placed. The engine is asked for the report when this and TEAPORT_SPECULATIVE_REPLY are both on (and, for the barge-in pause's own wait, with TEAPORT_BARGE_JUDGE on). Off: always the settle window (the A/B switch). The margin past the speech end is TEAPORT_STT_TRANSCRIBED_MARGIN_MS."
 
 [[settings]]
 name = "SMARTTURN_COMPLETE_THRESHOLD"
@@ -1091,7 +1091,7 @@ max = 7.75
 default = 0.8
 read = "startup"
 tier = "tuning"
-help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). Where the speech engine reports how far it has transcribed (asked for with TEAPORT_STT_TURN_TEXT=slice, or with the speculative reply waiting on the report), the reply instead waits for that report to pass the caller's speech, so a word it returns late is still decided over the paused reply; this, or 2.5 s if longer, is then only the bound on a report that does not come. At most 7.75, as the cap (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's 8 s guard on a held write."
+help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). Where the speech engine reports how far it has transcribed (the brain asks for that report with TEAPORT_BARGE_JUDGE on, with TEAPORT_STT_TURN_TEXT=slice, or with the speculative reply waiting on it), the reply instead waits for that report to pass the caller's speech, so a word it returns late is still decided over the paused reply; this, or 2.5 s if longer, is then only the bound on a report that does not come. At most 7.75, as the cap (TEAPORT_BARGE_PAUSE_MAX_S): under the transport's 8 s guard on a held write."
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_MAX_S"
@@ -1114,7 +1114,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
+help = "With TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s, they interrupt as before, about a judge's time later. One extra short LLM request per such pause. With it on, a pause also waits for the speech engine to have transcribed what was said over it (so a word it returns late is still judged): a cough over the reply holds it a little longer, at most 2.5 s (TEAPORT_BARGE_PAUSE_RESUME_S)."
 
 [[settings]]
 name = "TEAPORT_STOP_WORDS"

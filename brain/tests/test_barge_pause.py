@@ -1315,6 +1315,38 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     assert talk.tts.voice_clock is None, "no pausable transport: the pipeline clock"
 
 
+async def test_the_judge_s_session_asks_for_the_report_its_heard_out_wait_needs():
+    # Audit A2: the pause's heard-out wait needs the engine's transcription report, which
+    # only the speculative reply asked for: with the judge on and segment turn text, a
+    # late word cut the playing reply unjudged. Asked for with the judge -- not without
+    # it (the user, 2026-11-06: there the wait only holds a cough longer).
+    from teaport_brain import barge_pause as bp, speculate
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.sip_transport import SipGatewayTransport, make_sip_params
+    from test_service_unusable import _Transport
+
+    saved = bp.JUDGE, speculate.ENABLED
+    speculate.ENABLED = False
+    try:
+        for judge in (True, False):
+            bp.JUDGE = judge
+            wire = _Wire()
+            try:
+                session = build_agent_session(
+                    SipGatewayTransport(wire.connection, make_sip_params()))
+                assert isinstance(session.ledger._output.previous, BargeInPauser)
+                assert session.stt.transcription_progress is judge, (
+                    judge, session.stt.transcription_progress)
+            finally:
+                wire.connection.close()
+                wire.gw_sock.close()
+        bp.JUDGE = True
+        talk = build_agent_session(_Transport())      # no pauser, so no judge
+        assert not talk.stt.transcription_progress, "nothing asks: not asked"
+    finally:
+        bp.JUDGE, speculate.ENABLED = saved
+
+
 async def test_the_sip_session_wires_a_sliced_barge_in_s_hold_and_close_to_the_pauser():
     # The S1 fix's production wiring (stt.py TURN TEXT): on SIP, where the pauser is, a
     # sliced barge-in waiting on its final holds the pause through stt.barge_hold, and

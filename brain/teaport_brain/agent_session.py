@@ -1190,8 +1190,9 @@ def build_agent_session(transport, *, voice: str | None = None,
             cut_fence=cut_fence)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
-        # The engine's transcription report is asked for only when it will be used.
-        stt.transcription_progress = speculator.on_decode
+        # The engine's transcription report is asked for only when it will be used (here,
+        # or by the barge-in judge's session below: whichever asks, it is asked).
+        stt.transcription_progress = stt.transcription_progress or speculator.on_decode
         settle = f"{speculator.settle_secs * 1000:.0f} ms"
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
                     "once the words of a turn Smart Turn has not concluded on are complete "
@@ -1239,6 +1240,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     # the ledger has it at the pause, and the caller's words that asked for it.
     barge_judge = None
     if barge_pauser is not None and barge_pause.JUDGE and llm is not None:
+        # Where the words over a paused reply are judged, a late one must still find the
+        # reply paused: the pause waits for the engine's report to pass the speech, so it
+        # is asked for, whatever the speculative reply wants (audit A2: asked by the
+        # speculation alone, a session with the judge and segment turn text resumed on
+        # the window, and the late word cut the playing reply unjudged). Without the
+        # judge the wait buys nothing -- the word cuts the reply paused or not -- and
+        # only holds a cough longer: not asked for that.
+        stt.transcription_progress = True
         async def _judge_barge(said):
             paused = ledger.paused_reply()
             if paused is None:
