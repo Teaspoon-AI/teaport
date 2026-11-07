@@ -1415,6 +1415,11 @@ class CutReplyFence:
         # () -> bool: the latest VAD stop's close is still owed (the stop strategy's
         # receipts, LateStartTurnStopStrategy.close_owed). Set by agent_session.
         self.close_owed = None
+        # async (text, dropped) -> bool: these words, about to be committed, are held
+        # instead -- not committed, nothing asked (barge_pause.py A BARE STOP:
+        # PauseAwareMinWordsStrategy.hold_bare_stop). `dropped`: this commit has just
+        # dropped an unplayed reply as a continuation (hold_commits). Set by agent_session.
+        self.holds = None
         # Tallies, for the tests.
         self.waits = 0
         self.timeouts = 0
@@ -1474,7 +1479,14 @@ class CutReplyFence:
         `self.on_words_committed`, where set (agent_session: FollowupGate.words_committed),
         is told of every commit of words, after the waits, with a marker taken off pipecat's
         frame counter just before the commit's frame is made -- except while the latest VAD
-        stop's close is owed (`self.close_owed`): those words are not in the commit."""
+        stop's close is owed (`self.close_owed`): those words are not in the commit.
+
+        `self.holds`, where set, is asked last, after the waits and a continuation's drop:
+        words it holds (a bare stop, barge_pause.py) leave the aggregation unwritten, and
+        the turn ends as an empty one does -- the way a taken final's does (taken_turn.py),
+        with no commit for the gate or the reply hold to hear of. After the drop, so the
+        unplayed reply a held "wait" continues goes all the same; it asks for the
+        TurnMerge, which the caller's next commit then takes."""
         push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
         params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
@@ -1498,6 +1510,7 @@ class CutReplyFence:
             return await emit_stopped(strategy, on_session_end, *args, **kwargs)
 
         async def _push_aggregation(*args, **kwargs):
+            dropped = False
             if aggregator._aggregation:
                 continues = (await self.wait_for_cuts() and not ending
                              and self.unplayed_reply is not None and self.unplayed_reply())
@@ -1511,6 +1524,11 @@ class CutReplyFence:
                                 "the model gets the turn as one message")
                     await aggregator.push_frame(InterruptionFrame())
                     await self.wait_for_cuts()
+                    dropped = True
+            if (aggregator._aggregation and self.holds is not None
+                    and await self.holds(aggregator.aggregation_string(), dropped)):
+                await aggregator.reset()
+                return ""
             if (aggregator._aggregation and self.on_words_committed is not None
                     and not (self.close_owed is not None and self.close_owed())):
                 # After every wait: a VAD frame made during one is newer than this. Not

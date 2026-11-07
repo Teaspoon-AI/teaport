@@ -1152,6 +1152,15 @@ class Owed:
         carries the note."""
         self._arm(self.owed())
 
+    def caller_waits(self) -> None:
+        """The caller's turn was only a stop, and it was held (barge_pause.py A BARE STOP):
+        they asked to wait, and nothing of theirs went into the context for a re-offer to
+        read ("if their last words asked you to wait ... call stay_silent" has no words to
+        go by). So the re-offer that turn's start armed (caller_turn) is disarmed: the
+        records stay owed, and the caller's next turn arms it again and carries the note."""
+        for rec in self.owed():
+            rec.missed = False
+
     def _arm(self, records) -> None:
         for rec in records:
             rec.missed = True

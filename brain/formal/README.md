@@ -3386,6 +3386,32 @@ pending. The ghost has to be threaded through every action, and this change was 
 where TLC could not be run (no Java runtime), so the row is left for the next change to
 `UserTurn.tla` rather than added unchecked.
 
+### A bare stop is held: not modelled
+
+The model's `Commit` always appends the turn's words and asks the model (`inference`),
+and its words carry no content, so nothing in it says a turn was only "wait". As
+shipped, a turn that cut a reply -- begun over the audible bot (or its speech begun
+before the bot went quiet), in a committed turn's reply wait, or the cut fence's
+continuation commit that dropped an unplayed reply -- and not while the incoming-call
+question is open, and whose words are only stop entries and filler
+("Okay, wait.", "Hold on a second.") is HELD at the commit (`barge_pause.py`, A BARE
+STOP; `endpointing.CutReplyFence.holds`): the aggregation is emptied, no message is
+appended, nothing is asked, and the turn ends as a taken one does (`taken_turn.py`).
+In model terms the start and the cut are unchanged (`StopWord` / `StartTurn` with the
+interruption's `cut`). What happens at the commit describes the code, not the model:
+`UserTurn.tla` has no taken final and no commit without `inference`, so the held turn
+is the code's empty commit (no request, no gate arm) with no action of its own here.
+The rows here are chiefly about the start, the cut
+and the order of commits, not about a commit's words being answered; on SIP a dropped
+reply's merge stays pending for the caller's next commit, as it does after a turn whose
+final was taken. In `Owed.tla` terms the held turn's `TurnStart` arms the re-offer and
+the hold disarms it again (`Owed.caller_waits`: the caller asked to wait), which only
+removes re-offers -- `OneReoffer` and the records' states are untouched; the caller's
+next turn arms it as any turn does. A row would
+need a word class on `Interject`/`StopWord` (stop-only or not) and a monitor that a
+stop-only turn is never answered while a question with a stop word in it always is;
+the tests pin both (`test_bare_stop.py`, `test_zero_length_final.py`).
+
 ### Known limits of this model
 
 - **`Inference` requires `~userSpeaking`**, which the controller does not: the guard is on
