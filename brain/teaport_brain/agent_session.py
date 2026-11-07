@@ -1073,10 +1073,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # and when the STT has heard that speech out (barge_pause.py HEARD OUT).
     pause_link: dict = {}
 
-    async def _final_without_turn():
+    async def _final_without_turn(words=False):
         pauser = pause_link.get("pauser")
         if pauser is not None:
-            await pauser.on_final_without_turn()
+            await pauser.on_final_without_turn(words)
 
     async def _speech_heard(watch):
         pauser = pause_link.get("pauser")
@@ -1258,7 +1258,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                                          heard, said)
 
         barge_judge = barge_pause.BargeInJudgeGate(
-            start_strategy, _judge_barge, hold_resume=barge_pauser.hold_resume)
+            start_strategy, _judge_barge,
+            hold_resume=lambda on: barge_pauser.hold_resume(on, words=True))
         barge_judge.taken_words = taken_words
         logger.info("barge-in judge ON (TEAPORT_BARGE_JUDGE): words over a paused reply "
                     "are judged before they interrupt it")
