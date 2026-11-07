@@ -69,6 +69,7 @@ from typing import Awaitable, Callable
 from loguru import logger
 
 from teaport_brain import i18n
+from teaport_brain.i18n import N_
 
 TALK, ROOM, CALL = "talk", "room", "call"
 # Why a holder loses the slot (what its front-end's end() is told).
@@ -611,6 +612,19 @@ def _number_tail(said: str) -> str | None:
     return " ".join(digits[-CALLER_NUMBER_DIGITS:])
 
 
+# The question, in its three forms: the caller named, a number by its last digits, nobody
+# known. Each is the who part, then the ask -- the same ask in all three, in every catalog,
+# which is how prompt_ask finds it (test_i18n holds every catalog to that).
+# Translators: {caller} is a name or a phone number, as the caller ID gives it.
+PROMPT_NAMED = N_("Someone's calling me — {caller}. Should I step away for a moment?")
+# Translators: {digits} are the last four digits of the caller's phone number, spaced so
+# the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+PROMPT_NUMBER = N_("Someone's calling me — a number ending in {digits}. "
+                   "Should I step away for a moment?")
+PROMPT_SOMEONE = N_("Someone's calling me. Should I step away for a moment?")
+_PROMPTS = (PROMPT_NAMED, PROMPT_NUMBER, PROMPT_SOMEONE)
+
+
 def prompt_line(caller: str | None, espeak_language: str | None) -> str:
     """The question put to a live conversation when a call comes in. `caller`: who the
     call is from (sip_server.caller_id: a real display name, else the number); None when
@@ -620,15 +634,27 @@ def prompt_line(caller: str | None, espeak_language: str | None) -> str:
     said = speakable_caller(caller)
     tail = _number_tail(said) if said else None
     if tail:
-        # Translators: {digits} are the last four digits of the caller's phone number,
-        # spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
-        return t._("Someone's calling me — a number ending in {digits}. "
-                   "Should I step away for a moment?").format(digits=tail)
+        return t._(PROMPT_NUMBER).format(digits=tail)
     if said:
-        # Translators: {caller} is a name or a phone number, as the caller ID gives it.
-        return t._("Someone's calling me — {caller}. Should I step away for a moment?").format(
-            caller=said)
-    return t._("Someone's calling me. Should I step away for a moment?")
+        return t._(PROMPT_NAMED).format(caller=said)
+    return t._(PROMPT_SOMEONE)
+
+
+def prompt_ask(espeak_language: str | None) -> str:
+    """The question's ask ("Should I step away for a moment?"), in the session's language:
+    what every form of prompt_line ends with, from its first letter or digit. Taken from
+    the forms themselves rather than a msgid of its own, so a reworded question (or a
+    translation) moves it along; "" if the forms ever stop sharing one."""
+    t = i18n.for_espeak(espeak_language)
+    forms = [t._(m) for m in _PROMPTS]
+    # The common ending of the templates, placeholders unfilled: two of them end their
+    # who part on "}", the third on a word, so it can never reach back past the ask.
+    n = 0
+    while n < min(map(len, forms)) and len({f[len(f) - 1 - n] for f in forms}) == 1:
+        n += 1
+    ask = forms[0][len(forms[0]) - n:] if n else ""
+    start = next((i for i, ch in enumerate(ask) if ch.isalnum()), len(ask))
+    return ask[start:]
 
 
 def step_away_line(espeak_language: str | None) -> str:
