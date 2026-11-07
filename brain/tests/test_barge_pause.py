@@ -1128,6 +1128,36 @@ async def test_reply_audio_with_no_bot_speaking_does_not_pause():
         await run
 
 
+async def test_a_line_held_off_is_not_paused():
+    # The box's own urgent line (the incoming-call question, said unpausable): nothing
+    # pauses it; two that overlap each lift only their own hold.
+    out, p, task, run = await _pauser_rig()
+    try:
+        p.hold_off(False)   # unbalanced: ignored, holds nothing off
+        await task.queue_frames([TTSAudioRawFrame(_pcm(0), SR, 1, context_id="r")])
+        await task.queue_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        p.hold_off(True)
+        p.hold_off(True)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert not p.paused, "held off: not paused"
+        await p.on_onset(False)
+        p.hold_off(False)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert not p.paused, "still held off by the other line"
+        assert p.skipped_held == 2, p.skipped_held
+        await p.on_onset(False)
+        p.hold_off(False)
+        await p.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert p.paused, "lifted: pauses again"
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_words_being_judged_re_arm_the_no_words_limit():
     # A backchannel over the pause goes to the judge (BargeInJudgeGate holds the resume):
     # words came, and the line is not only noise.
@@ -1515,6 +1545,7 @@ async def test_the_session_builds_the_pauser_only_where_playout_can_pause():
     out = session.ledger._output
     pauser = out.previous
     assert isinstance(pauser, BargeInPauser), f"above the SIP transport: {pauser!r}"
+    assert session.barge_pauser is pauser, "own_line holds it off for an unpausable line"
     p = session.tts
     while not isinstance(p, LLMUserAggregator):
         p = p.previous
