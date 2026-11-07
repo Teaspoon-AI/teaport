@@ -588,10 +588,11 @@
     }
     if (!a.offered) { sec.hidden = true; $('#advtoggle').hidden = true; document.body.classList.add('show-adv'); return; }
     // On the box's trial credit (#280) its line stands in for "connected": a warning
-    // from half used on, an error once it has run out.
+    // from half used on, an error once it has run out -- as does the line that the
+    // account's own credit ran out (credit.out).
     const credit = a.credit || {};
     let state = credit.line
-      ? h('div', { class: 'banner' + ({ half: ' warn', low: ' warn', empty: ' err' }[credit.state] || '') }, h('p', {}, credit.line))
+      ? h('div', { class: 'banner' + (credit.out ? ' err' : ({ half: ' warn', low: ' warn', empty: ' err' }[credit.state] || '')) }, h('p', {}, credit.line))
       : h('p', { class: 'group-blurb' }, a.key_set ? T.connected : T.none);
     // A key saved (pasted, or from the sign-in): the line says so, whichever came first.
     const connected = () => {

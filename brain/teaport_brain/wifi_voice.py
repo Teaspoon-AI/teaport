@@ -53,6 +53,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    InterruptionFrame,
     OutputTransportMessageUrgentFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -101,6 +102,11 @@ YES_MAX_WORDS = 4
 # heard while it speaks or this soon after, is that echo.
 ECHO_TAIL_SECS = 1.5
 ECHO_LINES_SECS = 120.0
+# A line said and then waited on (PhraseVoice.heard_out): how long its speech may take to
+# start (the engine synthesises it first), and the longest it may play.
+LINE_START_SECS = 5.0
+LINE_MAX_SECS = 20.0
+LINE_POLL_SECS = 0.05
 # The setup network's name is teaport-<hex>: the word is said as a word.
 SSID_WORD = "teaport"
 # The first-boot setup (first_boot.py, begin_first_boot): the welcome, in place of the
@@ -132,6 +138,22 @@ KEEP_AWAKE_SECS = REMIND_SECS + 60.0
 _PUT_BACK = "the box's Wi-Fi is back as it was before."
 _UNCONFIRMED = "the user did not confirm, so it never started."
 
+# A request said on its own (the settings and sleep phrases, request_heard): the
+# English patterns' shared pieces. A short lead-in ("ok", "hey", "please"...) -- a phrase
+# adds its own words to it --, a polite wrapper ("can you ...", #309), the request, words
+# like "please" or "thanks" after it, and nothing else to the end of the utterance. The
+# anchoring is what keeps out talk that only mentions the request ("how do I open my
+# settings?"): a question mark is no reason to refuse one ("Can you open my settings?").
+_LEAD_IN = r"um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right"
+_CAN_YOU = r"(?:can|could|would|will) you(?: please)? "
+_THANKS = r"thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport"
+_TO_THE_END = r"[\s.,!?;:…]*$"
+
+
+def _lead_in(more: str = "") -> str:
+    return r"^\W*(?:(?:" + _LEAD_IN + more + r")\W+){0,3}"
+
+
 # What the user says, by meaning. The English patterns are the msgids of the "pattern"
 # entries in each language's catalog (i18n.py), whose msgstr is that language's own
 # pattern: a session listens for its language's words and always for the English ones.
@@ -154,17 +176,22 @@ PATTERNS = {
     "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
     "repeat": r"\b(?:repeat|again|what was|what's the|password|network name|say that)\b",
     # "open my settings" (settings_access.SettingsPhrase, #279): a request to see the
-    # box's settings, said as a request on its own -- it starts the utterance (after at
-    # most a short lead-in: "ok", "hey", "please"...), so "on my phone, open the settings"
-    # is not it, and the phrase ends the sentence (or "page", "please", "now" follow it).
-    # A polite wrapper may come first ("can you open my settings?", #309): a question
-    # mark is fine, the anchoring is what keeps out talk about settings. How short is the
-    # phrase's own rule (settings_access.phrase_heard). Every catalog's pattern is anchored
-    # the same way, with its language's own wrappers.
-    "settings": r"^\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\W+){0,3}"
-                r"(?:(?:can|could|would|will) you(?: please)? )?"
+    # box's settings, said as a request on its own (_lead_in, _CAN_YOU, _TO_THE_END), so
+    # "on my phone, open the settings" is not it, and the phrase ends the sentence (or
+    # "page", "please", "now" follow it). Every catalog's pattern is anchored the same
+    # way, with its language's own wrappers.
+    "settings": _lead_in() + r"(?:" + _CAN_YOU + r")?"
                 r"(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? "
-                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?:[\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\b)*[\s.,!?;:…]*$",
+                r"(?:(?:my|your|the|teaport's|teaport) )?settings(?:[\s,]+(?:page|please|now|for me|"
+                + _THANKS + r")\b)*" + _TO_THE_END,
+    # "go to sleep" (goodbye.SleepPhrase): the room goes back to sleep, said as a request
+    # on its own, the same way -- "okay, go to sleep", "you can go back to sleep now",
+    # "can you go to sleep?" -- and "no" or a goodbye may lead in ("No, go to sleep.",
+    # "Good night, go to sleep."). Talk about sleep is not it: "how do I make you go to
+    # sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep mode".
+    "sleep": _lead_in(r"|no|yes|yeah|just|thanks|thank you|good ?night|bye")
+             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?go (?:back )?to sleep"
+             r"(?:[\s,]+(?:now|please|then|for now|again|" + _THANKS + r")\b)*" + _TO_THE_END,
 }
 
 # English words that make a "start" match a question or a complaint about Wi-Fi rather
@@ -225,6 +252,25 @@ def words(text: str) -> int:
         unspaced = len(_UNSPACED.findall(token))
         n += max(1, math.ceil(unspaced / 3)) if unspaced else 1
     return n
+
+
+# A request said on its own is short: the pattern already holds the utterance to a
+# lead-in, a polite wrapper, the request and a few trailing words; this is a backstop,
+# with room for the longest of those ("Teaport, est-ce que tu peux ouvrir les réglages
+# s'il te plaît ?": 13 words by words(), which splits on hyphens and apostrophes).
+REQUEST_MAX_WORDS = 16
+
+
+def request_heard(meaning: str, text: str, t: i18n.T) -> bool:
+    """Is `text` the fixed request `meaning` -- "settings" (settings_access.SettingsPhrase),
+    "sleep" (goodbye.SleepPhrase) -- in English or t's language, said as a request of its
+    own? Its pattern (PATTERNS, and each catalog's) holds the request to the whole
+    utterance: a short lead-in, a polite wrapper ("can you ...", #309), the request, and
+    nothing after it but punctuation or a word like "please". So a question mark is no
+    reason to refuse it ("Can you open my settings?" is a request), and a sentence that
+    only mentions it ("how do I open my settings?", "open my settings on the phone") still
+    is not it. At most REQUEST_MAX_WORDS words."""
+    return heard(meaning, text, t) and words(text) <= REQUEST_MAX_WORDS
 
 
 def is_yes(text: str, t: i18n.T) -> bool:
@@ -343,7 +389,8 @@ class PhraseVoice(FrameProcessor):
 
     `phrases`: the phrases heard while nothing else holds the user's words, each an
     object with `async heard(voice, text) -> bool` (True: it took them) -- "open my
-    settings" (settings_access.SettingsPhrase, #279). A subclass that holds the words for
+    settings" (settings_access.SettingsPhrase, #279), the room's "go to sleep"
+    (goodbye.SleepPhrase). A subclass that holds the words for
     a while (WifiSetupVoice, while it asks or runs) says so with idle(), and answers the
     rest in _own()."""
 
@@ -361,6 +408,9 @@ class PhraseVoice(FrameProcessor):
         self._quiet_since = -math.inf
         self._said: deque = deque(maxlen=8)  # (when, normalized line)
         self.says = 0  # lines say() has started: whether a step got as far as speaking
+        self.bot_starts = 0  # the box's speech started so far (heard_out)
+        self.cuts = 0        # ... and cut by the user while it played (heard_out)
+        self._start_cuts = 0  # cuts when the box's speech last started
 
     @property
     def t(self) -> i18n.T:
@@ -394,6 +444,23 @@ class PhraseVoice(FrameProcessor):
         else:
             return False
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
+
+    async def heard_out(self, starts: int) -> bool:
+        """Until a line say() started has played to its end (`starts`: bot_starts read
+        before it was said). True once it has; False when the user cut it -- an
+        interruption once its speech had started (one before, of a reply the user's own
+        words cut, is not the line's). A line whose speech never starts (no voice, or
+        queued behind speech still playing) is waited on LINE_START_SECS, and one that
+        plays on past LINE_MAX_SECS is taken as over."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + LINE_START_SECS
+        while self.bot_starts <= starts and loop.time() < deadline:
+            await asyncio.sleep(LINE_POLL_SECS)
+        cuts = self._start_cuts if self.bot_starts > starts else self.cuts
+        deadline = loop.time() + LINE_MAX_SECS
+        while self._bot_speaking and loop.time() < deadline:
+            await asyncio.sleep(LINE_POLL_SECS)
+        return self.cuts == cuts
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
@@ -435,6 +502,10 @@ class PhraseVoice(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            self.bot_starts += 1
+            self._start_cuts = self.cuts
+        elif isinstance(frame, InterruptionFrame):
+            self.cuts += self._bot_speaking
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking, self._quiet_since = False, self._clock()
         elif isinstance(frame, (EndFrame, CancelFrame)):

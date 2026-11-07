@@ -35,9 +35,10 @@
 # client's {"type": "tool_result", "call_id", "result"} (the same message, and the same
 # consult_bridge registry, the plugin already answers consults with). Only a client
 # that announced the feature is ever asked; the local audio bridge
-# (local_audio.py) announces volume and restart. The brain calls one itself in one place:
+# (local_audio.py) announces volume and restart. The brain calls one itself for one tool:
 # end_conversation, in a room whose model said its goodbye and did not call it
-# (goodbye.py, #221), with "said": true beside the args -- the goodbye has played.
+# (goodbye.py, #221), or that heard "go to sleep" (goodbye.SleepPhrase), with "said": true
+# beside the args -- the goodbye has played.
 #
 # Host-run tools (HOST_RUN_TOOLS) are OpenClaw's own, by its name and schema, and run
 # by its side of a Talk session: openclaw_agent_consult (the relay runs it) and
@@ -404,10 +405,13 @@ OPEN_SETTINGS = FunctionSchema(
     description=(
         "Open this box's settings for the user on their phone: it shows a code on the "
         "box's screen to scan (or reads out an address where there is no screen) and tells "
-        "the user what to do itself. Call it, with no line before it, whenever the user "
-        "asks, in any words, to see or change your settings, their AI account or their key "
-        "(for example 'I need to change my AI key'). Not for their phone's settings, and "
-        "not for Wi-Fi (wifi_setup does that)."
+        "the user what to do itself. Call it, with no line before it, when the user asks, "
+        "in any words, for the settings to be opened or for something in them to be "
+        "changed: your settings, their AI account or their key (for example 'I need to "
+        "change my AI key', 'open my settings'). Not for a question about them ('How do I "
+        "open my settings?', 'Where do I change my key?'): answer that in words, and say "
+        "they can ask you to open them. Not for their phone's settings, and not for Wi-Fi "
+        "(wifi_setup does that)."
     ),
     properties={},
     required=[],
@@ -1349,7 +1353,8 @@ async def _outlive(name: str, call_id: str, fut, left: float, then) -> None:
 async def call_client_tool(llm, name: str, args: dict, extra: dict | None = None) -> dict:
     """Ask the client to perform `name` and return what it answers, as a dict: what a
     client tool's handler hands the model (_client_tool), and what the brain gets when it
-    calls one itself, as the goodbye backstop calls end_conversation (goodbye.py, #221).
+    calls one itself, as the goodbye backstop and the sleep phrase call end_conversation
+    (goodbye.py, #221; `llm` is then whichever processor pushes the call).
     `extra`: fields of the brain's own in the message, beside the arguments (that one's
     "said")."""
     result, failure = await _ask_client(llm, "client_tool", CLIENT_CALL_PREFIX, name, args,
@@ -1831,8 +1836,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(OPEN_SETTINGS, lambda ctx: functools.partial(_open_settings,
                                                       open_settings=ctx.open_settings),
          setting("TEAPORT_TOOL_OPEN_SETTINGS"), frozenset({"room_or_talk", "host:settings"}),
-         hint="open_settings (show the user how to open your settings, their AI account or "
-              "key, on their phone)"),
+         hint="open_settings (open your settings, their AI account or key on their phone, "
+              "when they ask to open or change them)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),

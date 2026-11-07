@@ -358,6 +358,11 @@ msgstr "عذرًا، هناك مكالمة واردة ويجب أن أرد عل�
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "هناك من يتصل بي — {caller}. هل أبتعد لحظة لأرد؟"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "هناك من يتصل بي — رقم ينتهي بـ {digits}. هل أبتعد لحظة لأرد؟"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "هناك من يتصل بي. هل أبتعد لحظة لأرد؟"
 
@@ -375,6 +380,22 @@ msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب ا�
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "ما زلتُ لا أستطيع الإجابة حتى تتم تسوية مشكلة حسابي."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. أضف رصيدًا على موقع OpenRouter، أو قل «افتح الإعدادات» للمساعدة."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. يمكن إضافة رصيد على موقع OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي. أضف إليه رصيدًا، أو قل «افتح الإعدادات» للمساعدة."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "عذرًا، لا أستطيع الإجابة: نفد رصيد حساب الذكاء الاصطناعي الخاص بي."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "ما زلتُ لا أستطيع الإجابة: لا يوجد رصيد في حساب الذكاء الاصطناعي الخاص بي."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "عذرًا، لم أتمكن من الحصول على إجابة الآن."
@@ -552,6 +573,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:اه|ام+|إم+|يعني|من فضلك|لو سمحت|يرجى|رجاء|طيب|حسنا|يا\\s*teaport|teaport|يا\\s*تيبورت|تيبورت)\\W+){0,2}(?:(?:هل\\s+)?(?:يمكنك|ممكن|بإمكانك|بامكانك|تقدر|تقدري)\\s+)?(?:ت(?:فتح|عرض)(?:ي|ين|وا)?(?:\\s?لي)?|[وف]?(?:افتح(?:ي|وا)?(?:\\s?لي)?|اعرض(?:ي|وا)?(?:\\s?لي)?|[اأ]ظهر(?:ي|وا)?(?:\\s?لي)?|ور(?:ي)?ني|فرجيني|خذني\\s+[اإ]لى|روح\\s+على|اذهب\\s+[اإ]لى|انتقل\\s+[اإ]لى)|فتح|عرض)\\s+(?:صفح[ةه]\\s+)?(?:ال[اإأ]عدادات|[اإأ]عدادات(?:ك|ي)|الضبط|settings)(?:\\s+(?:الخاص[ةه]\\s+بك|الخاص[ةه]\\s+بي|teaport|تيبورت))?(?:[\\s,،]+(?:teaport|شكرا|شكراً|من فضلك|لو سمحت|الآن|الان|رجاء)(?=\\s|$|[.,!?؟،]))*[\\s.,!?؟؛:…،]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:اه|ام+|إم+|يعني|من فضلك|لو سمحت|يرجى|رجاء|طيب|حسنا|لا|نعم|تصبح على خير|شكرا|يا\\s*teaport|teaport|يا\\s*تيبورت|تيبورت)\\W+){0,2}(?<!لا )(?<!ما )(?:(?:هل\\s+)?(?:يمكنك|ممكن|بإمكانك|بامكانك|تقدر|تقدري)\\s+)?(?:[وف]?(?:اذهب|اذهبي|روح|روحي|عد|عودي|ارجع|ارجعي)\\s+(?:[اإ]لى\\s+النوم|للنوم|نام|نامي)|(?:[أا]ن\\s+)?(?:تنام|تنامي|تذهب\\s+(?:[اإ]لى\\s+النوم|للنوم)|تعود\\s+(?:[اإ]لى\\s+النوم|للنوم)|تروح\\s+تنام)|[وف]?(?:نم|نامي))(?:[\\s,،]+(?:teaport|شكرا|من فضلك|لو سمحت|الآن|الان|رجاء)(?=\\s|$|[.,!?؟،]))*[\\s.,!?؟؛:…،]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "شرطة مائلة"
@@ -723,6 +748,10 @@ msgstr "يجب أن يكون هاتفك على شبكة Wi-Fi نفسها الت�
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "لا يوجد رصيد في حسابك على OpenRouter بعد، لذلك لا يستطيع Teaport الإجابة حتى تضيف رصيدًا على openrouter.ai/settings/credits."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "في آخر مرة حاول فيها Teaport الإجابة، كان رصيد حسابك على OpenRouter قد نفد. أضف رصيدًا على openrouter.ai/settings/credits، وسيتمكن Teaport من الإجابة مجددًا."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "تم ربط حساب الذكاء الاصطناعي الخاص بك، لكن لا يوجد فيه رصيد بعد. أضف رصيدًا على موقع OpenRouter، وبعدها أستطيع الإجابة."
 
@@ -732,3 +761,7 @@ msgstr "عذرًا، لا أستطيع الإجابة الآن: الحساب ا�
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "عذرًا، فقدتُ تسلسل أفكاري. هل يمكنك أن تقول ذلك مرة أخرى؟"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "حسنًا، سأخلد إلى النوم."

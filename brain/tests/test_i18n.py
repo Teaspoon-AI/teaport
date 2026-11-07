@@ -50,6 +50,10 @@ DYNAMIC = {
         "t._(v)",                            # ACCOUNT_TEXT's values: N_() there (#279)
         "_reader(request)._(e.reason)",      # ai_account.NotSaved: N_() there (#281)
         "_reader(request)._(check.note)",    # ai_account.NO_ACCOUNT_CREDIT: N_() there (#282)
+        "t._(ai_account.RAN_OUT_OF_CREDIT)",  # N_() there
+    },
+    "goodbye.py": {
+        "voice.t._(SLEEP_TEXT)",             # N_() there: the sleep phrase's line
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
         "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
@@ -57,7 +61,7 @@ DYNAMIC = {
         "t._(CONNECT_SPOKEN_TEXT if connect else SPOKEN_TEXT)",
     },
     "llm_error_speaker.py": {
-        "t._(text)",                         # its four notices: N_() there
+        "t._(text)",                         # its notices: N_() there
     },
     "sip_server.py": {
         "t._(NO_MODEL_CALL_TEXT)",           # N_() in llm_error_speaker.py (#277)
@@ -250,29 +254,29 @@ def test_placeholders_survive_translation(lang):
 
 SAYS = {  # what a speaker of each language says for each meaning (from the translators)
     "es": {"start": "conéctate a otra red wifi", "yes": "sí, claro", "no": "ahora no",
-           "cancel": "detente", "repeat": "¿cuál era la contraseña?", "settings": "abre los ajustes"},
+           "cancel": "detente", "repeat": "¿cuál era la contraseña?", "settings": "abre los ajustes", "sleep": "vete a dormir"},
     "pt_BR": {"start": "quero configurar o wi-fi", "yes": "pode ser", "no": "deixa pra lá",
-              "cancel": "chega", "repeat": "repete", "settings": "abrir as configurações"},
+              "cancel": "chega", "repeat": "repete", "settings": "abrir as configurações", "sleep": "vai dormir"},
     "fr": {"start": "Connecte-toi au Wi-Fi", "yes": "ouais vas-y", "no": "non merci, pas maintenant",
-           "cancel": "arrête la configuration", "repeat": "tu peux répéter ?", "settings": "ouvre les réglages"},
+           "cancel": "arrête la configuration", "repeat": "tu peux répéter ?", "settings": "ouvre les réglages", "sleep": "va dormir"},
     "it": {"start": "Collegati al wi-fi", "yes": "sì grazie", "no": "no grazie, non ora",
-           "cancel": "fermati", "repeat": "puoi ripetere?", "settings": "Apri le impostazioni"},
+           "cancel": "fermati", "repeat": "puoi ripetere?", "settings": "Apri le impostazioni", "sleep": "vai a dormire"},
     "de": {"start": "Richte das WLAN ein", "yes": "Ja, mach das", "no": "Nein danke",
-           "cancel": "Brich ab", "repeat": "Wiederhole das bitte", "settings": "Öffne die Einstellungen"},
+           "cancel": "Brich ab", "repeat": "Wiederhole das bitte", "settings": "Öffne die Einstellungen", "sleep": "Geh schlafen"},
     "nl": {"start": "Stel de wifi in", "yes": "Ja graag", "no": "Liever niet",
-           "cancel": "Annuleer", "repeat": "Nog een keer", "settings": "Open de instellingen"},
+           "cancel": "Annuleer", "repeat": "Nog een keer", "settings": "Open de instellingen", "sleep": "Ga slapen"},
     "ru": {"start": "Давай настроим вайфай", "yes": "да, давай", "no": "нет, не надо",
-           "cancel": "отмени настройку", "repeat": "повтори пароль", "settings": "Открой настройки"},
+           "cancel": "отмени настройку", "repeat": "повтори пароль", "settings": "Открой настройки", "sleep": "Иди спать"},
     "ar": {"start": "أريد إعداد الواي فاي", "yes": "نعم من فضلك", "no": "لا شكرا",
-           "cancel": "أوقف الإعداد", "repeat": "كرر من فضلك", "settings": "افتح الإعدادات"},
+           "cancel": "أوقف الإعداد", "repeat": "كرر من فضلك", "settings": "افتح الإعدادات", "sleep": "اذهب إلى النوم"},
     "hi": {"start": "मुझे वाई-फ़ाई सेट अप करना है", "yes": "हाँ, शुरू करो", "no": "नहीं, रहने दो",
-           "cancel": "कैंसल कर दो", "repeat": "पासवर्ड दोबारा बोलिए", "settings": "सेटिंग्स खोलो"},
+           "cancel": "कैंसल कर दो", "repeat": "पासवर्ड दोबारा बोलिए", "settings": "सेटिंग्स खोलो", "sleep": "सो जाओ"},
     "zh": {"start": "帮我设置一下无线网络", "yes": "好的，开始吧", "no": "不用了",
-           "cancel": "取消设置", "repeat": "再说一遍密码", "settings": "打开设置"},
+           "cancel": "取消设置", "repeat": "再说一遍密码", "settings": "打开设置", "sleep": "去睡觉吧"},
     "ja": {"start": "Wi-Fiを設定して", "yes": "はい、お願いします", "no": "いいえ、やめておきます",
-           "cancel": "設定を中止して", "repeat": "もう一回言って", "settings": "設定を開いて"},
+           "cancel": "設定を中止して", "repeat": "もう一回言って", "settings": "設定を開いて", "sleep": "もう寝ていいよ"},
     "ko": {"start": "와이파이 설정해 줘", "yes": "네 해 주세요", "no": "아니요 됐어요",
-           "cancel": "취소해 주세요", "repeat": "다시 말해 줘", "settings": "설정 열어 줘"},
+           "cancel": "취소해 주세요", "repeat": "다시 말해 줘", "settings": "설정 열어 줘", "sleep": "자러 가"},
 }
 
 
@@ -464,6 +468,75 @@ def test_the_settings_pattern_hears_requests_not_talk(lang):
     assert [s for s in asks if wifi_voice.heard("start", s, t)] == []
 
 
+# "go to sleep" (goodbye.SleepPhrase): the room back to sleep, said as a request on its
+# own, and talk about sleep that is not one -- a question about it, the caller's own
+# sleep, a request with more after it -- heard as the phrase hears it
+# (wifi_voice.request_heard).
+SLEEP = {
+    "es": (["vete a dormir", "Vale, vete a dormir ya.", "¿Puedes irte a dormir?", "vuelve a dormir, gracias", "duérmete", "Ya puedes ir a dormir.", "no, vete a dormir"],
+          ["¿Cómo te mando a dormir?", "me voy a dormir", "voy a dormir", "vete a dormir y luego llama a mamá", "no quiero ir a dormir"]),
+    "pt_BR": (["vai dormir", "Pode ir dormir.", "Não, vai dormir.", "Não. Vai dormir.", "Não, pode ir dormir.", "volta a dormir, valeu", "você pode voltar a dormir?"],
+             ["como faço você dormir?", "eu vou dormir", "vou dormir agora", "vai dormir na casa da vó?", "não vai dormir", "não vá dormir", "não pode ir dormir"]),
+    "fr": (["va dormir", "D’accord, va dormir.", "Tu peux aller dormir ?", "Non, retourne dormir.", "Rendors-toi, merci", "Vous pouvez vous mettre en veille ?", "mets-toi en veille"],
+          ["Comment je te fais aller dormir ?", "je vais dormir", "va dormir chez ta sœur", "je n’arrive pas à dormir"]),
+    "it": (["vai a dormire", "Va bene, vai a dormire.", "Puoi tornare a dormire?", "No, torna a dormire, grazie", "ora puoi andare a dormire"],
+          ["Come ti mando a dormire?", "vado a dormire", "vai a dormire da tua nonna", "non riesco a dormire"]),
+    "de": (["Geh schlafen", "Okay, geh schlafen.", "Kannst du schlafen gehen?", "Nein, geh wieder schlafen.", "Du kannst jetzt schlafen gehen.", "Schlaf ein, danke"],
+          ["Wie bringe ich dich dazu, schlafen zu gehen?", "Ich gehe schlafen", "Geh schlafen und dann ruf Mama an", "Wann gehst du schlafen?"]),
+    "nl": (["Ga slapen", "Oké, ga maar slapen.", "Kun je gaan slapen?", "Nee, ga weer slapen.", "Je mag nu slapen gaan."],
+          ["Hoe laat ga je slapen?", "Ik ga slapen", "ga slapen bij oma", "Wanneer ga je slapen?"]),
+    "ru": (["Иди спать", "Ладно, иди спать.", "Ну всё, иди спать", "Можешь идти спать?", "Нет, засыпай.", "Спи, спасибо", "Перейди в спящий режим"],
+          ["Как отправить тебя спать?", "Я иду спать", "Иди спать к бабушке", "Ты спишь?"]),
+    "ar": (["نم", "حسنًا، نم الآن", "اذهب إلى النوم", "هل يمكنك أن تنام؟", "لا، عد إلى النوم", "ممكن تروح تنام؟", "لا، اذهب إلى النوم", "لا. نم", "لا، يمكنك أن تنام", "روح نام", "عد إلى النوم"],
+          ["كيف أجعلك تنام؟", "سأذهب إلى النوم", "أريد أن أنام", "هل تنام؟", "لا تذهب إلى النوم", "لا تنام", "لا يمكنك أن تنام", "لا نم"]),
+    "hi": (["सो जाओ", "ठीक है, सो जाओ", "अब सो जाओ", "क्या आप सो सकते हैं?", "नहीं, वापस सो जाओ, धन्यवाद", "सोने जाओ"],
+          ["मैं सोने जा रहा हूँ", "तुम्हें कैसे सुलाऊँ?", "वह सो जाता है", "सो जाओ और फिर मम्मी को फ़ोन करो"]),
+    "zh": (["去睡觉吧", "好的，你可以去睡觉了", "回去睡觉", "不，去睡吧", "晚安，去睡觉吧，谢谢", "进入睡眠模式"],
+          ["我要去睡觉了", "怎么让你去睡觉？", "你去睡觉吗？", "你睡觉吗？"]),
+    "ja": (["寝て", "もう寝ていいよ", "寝てください", "スリープしてもらえますか？", "おやすみ、寝てね", "スリープに戻って"],
+          ["どうやって寝かせるの？", "寝てる？", "寝ていい？", "もう寝ます"]),
+    "ko": (["자러 가", "이제 자러 가", "자러 가 줄래요?", "아니, 가서 자", "잘 자, 이제 자도 돼", "주무세요", "절전 모드로 들어가"],
+          ["어떻게 재워?", "나 잘게", "자?", "자고 있어?", "자.", "자"]),
+}
+
+
+def _sleep_heard(text: str, t) -> bool:
+    return wifi_voice.request_heard("sleep", text, t)
+
+
+def test_go_to_sleep_is_heard_as_a_request_not_talk_in_english():
+    en = i18n.get("en")
+    for ask in ("go to sleep", "Go to sleep.", "Okay, go to sleep.", "No, go to sleep.",
+                "go to sleep now", "you can go to sleep", "You can go back to sleep now.",
+                "please go to sleep", "Go back to sleep, thanks.", "Can you go to sleep?",
+                "Teaport, go to sleep.", "okay okay, just go to sleep", "Good night, go to sleep.",
+                "um, go to sleep please"):
+        assert _sleep_heard(ask, en), ask
+    for talk in ("How do I make you go to sleep?", "Why did you go to sleep?",
+                 "I need to go to sleep", "Don't go to sleep.", "Can I go to sleep?",
+                 "Tell the kids to go to sleep.", "go to sleep mode on my phone",
+                 "you can go to sleep when I'm done", "Go to sleep and wake me at seven.",
+                 "Did you go to sleep?", "I'm going to go to sleep.", "When do you go to sleep?",
+                 "Okay, going to sleep.", "open my settings", "set up wifi"):
+        assert not _sleep_heard(talk, en), talk
+    # And neither of the other requests is it.
+    assert not _settings_heard("go to sleep", en) and not wifi_voice.heard("start", "go to sleep", en)
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_the_sleep_pattern_hears_requests_not_talk(lang):
+    from teaport_brain import goodbye
+    t = i18n.get(lang)
+    asks, talk = SLEEP[lang]
+    assert [s for s in asks if not _sleep_heard(s, t)] == []
+    assert [s for s in talk if _sleep_heard(s, t)] == []
+    assert _sleep_heard("Okay, go to sleep.", t)                  # English works too
+    # The box's own line, heard back, is not the request (nor the other phrases).
+    assert not _sleep_heard(t._(goodbye.SLEEP_TEXT), t), t._(goodbye.SLEEP_TEXT)
+    assert [s for s in asks if _settings_heard(s, t) or wifi_voice.heard("start", s, t)] == []
+    assert [s for s in SETTINGS[lang][0] if _sleep_heard(s, t)] == []
+
+
 # The quotation marks the catalogs put round a phrase to say, opening -> closing.
 _QUOTES = {'"': '"', "“": "”", "„": "“", "«": "»", "‘": "’", "'": "'", "「": "」"}
 
@@ -477,13 +550,16 @@ def _quoting_lines():
             "key not saved": ("settings", wifi_voice.ACCOUNT_NOT_SAVED_TEXT),
             "new code": ("settings", 'Ask Teaport for a new one: say "open my settings".'),
             "account": ("settings", llm_error_speaker.ACCOUNT_SETTINGS_TEXT),
+            "out of credit": ("settings", llm_error_speaker.CREDIT_SETTINGS_TEXT),
+            "out of credit, other": ("settings", llm_error_speaker.CREDIT_OTHER_SETTINGS_TEXT),
             "credit half": ("settings", credit.HALF_TEXT), "credit low": ("settings", credit.LOW_TEXT),
             "credit empty": ("settings", credit.EMPTY_TEXT),
             "sign-in session": ("settings", openrouter_connect.SESSION_ENDED_TEXT),
             "sign in later": ("settings", wifi_setup.SIGN_IN_LATER)}
 
 
-@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "account", "key not saved",
+@pytest.mark.parametrize("which", ["no model", "again", "offline", "no account", "account",
+                                   "out of credit", "out of credit, other", "key not saved",
                                    "new code", "credit half", "credit low", "credit empty",
                                    "sign-in session", "sign in later"])
 @pytest.mark.parametrize("lang", i18n.catalogs())

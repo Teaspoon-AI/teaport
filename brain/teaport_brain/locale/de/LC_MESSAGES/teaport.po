@@ -347,6 +347,11 @@ msgstr "Tut mir leid, gerade kommt ein Anruf rein, den ich annehmen muss. Wir k�
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Jemand ruft mich an — {caller}. Soll ich kurz rangehen?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Jemand ruft mich an — eine Nummer, die auf {digits} endet. Soll ich kurz rangehen?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Jemand ruft mich an. Soll ich kurz rangehen?"
 
@@ -364,6 +369,22 @@ msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für m
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Ich kann erst wieder antworten, wenn mein Konto in Ordnung gebracht ist."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Tut mir leid, ich kann nicht antworten: Mein KI-Konto hat kein Guthaben mehr. Lade Guthaben auf der Website von OpenRouter auf, oder sag „Öffne die Einstellungen“, wenn du Hilfe brauchst."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Tut mir leid, ich kann nicht antworten: Mein KI-Konto hat kein Guthaben mehr. Guthaben lässt sich auf der Website von OpenRouter aufladen."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Tut mir leid, ich kann nicht antworten: Mein KI-Konto hat kein Guthaben mehr. Lade Guthaben auf, oder sag „Öffne die Einstellungen“, wenn du Hilfe brauchst."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Tut mir leid, ich kann nicht antworten: Mein KI-Konto hat kein Guthaben mehr."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Ich kann immer noch nicht antworten: Mein KI-Konto hat kein Guthaben mehr."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Tut mir leid, ich habe gerade keine Antwort bekommen."
@@ -541,6 +562,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so)\\W+){0,3}(?:(?:(?:kannst|könntest)\\s+du|(?:können|könnten)\\s+sie)(?:\\s+(?:mir|uns|bitte|mal|doch|kurz))*\\s+)?(?:(?:öffne|öffnet|oeffne|offne|zeig|zeige|zeigt|ruf|rufe|geh|gehe)(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich|zu|in))*\\s+(?:(?:die|deine|meine|ihre|der|den|teaports?)\\s+)?einstellung(?:en|sseite)(?:\\s+(?:auf|an))?(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt|mal|seite)\\b)*[\\s.,!?;:…]*$|mach(?:e|t)?(?:\\s+(?:mir|uns|bitte|mal|doch|jetzt|gleich))*\\s+(?:(?:die|deine|meine|ihre|teaports?)\\s+)?einstellung(?:en|sseite)\\s+auf(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt|mal)\\b)*[\\s.,!?;:…]*$|(?:bitte\\s+)?(?:(?:die|deine|meine|ihre)\\s+)?einstellung(?:en|sseite)\\s+(?:bitte\\s+)?(?:öffnen|oeffnen|offnen|aufmachen|zeigen|anzeigen|aufrufen)(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke|danke schön|dankeschön|bitte|jetzt)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:äh+m?|öh+m?|ähm|hm+|ehm|teaport|ok|okay|also|hey|und|bitte|na|so|nein|ja|gute nacht|danke)\\W+){0,3}(?:(?:(?:kannst|könntest)\\s+du|(?:können|könnten)\\s+sie|du\\s+kannst|sie\\s+können)(?:\\s+(?:jetzt|bitte|mal|doch|ruhig|wieder))*\\s+)?(?:(?:geh(?:e)?|gehen\\s+sie)(?:\\s+(?:jetzt|bitte|mal|doch|ruhig|wieder))*\\s+schlafen|(?:(?:jetzt|bitte|mal|doch|ruhig|wieder)\\s+)*schlafen\\s+gehen|schlaf(?:e)?(?:\\s+(?:jetzt|wieder))*\\s+ein)(?:[\\s,،]+(?:teaport|vielen dank|danke sehr|danke schön|dankeschön|danke|bitte|jetzt|gleich)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "Schrägstrich"
@@ -712,6 +737,10 @@ msgstr "Dein Handy muss im selben WLAN sein wie Teaport. Wenn es nicht von selbs
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "Dein OpenRouter-Konto hat noch kein Guthaben, deshalb kann Teaport nicht antworten, bis du welches auf openrouter.ai/settings/credits aufgeladen hast."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Als Teaport zuletzt antworten wollte, hatte dein OpenRouter-Konto kein Guthaben mehr. Lade welches auf openrouter.ai/settings/credits auf, dann kann Teaport wieder antworten."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Dein KI-Konto ist verbunden, aber es hat noch kein Guthaben. Lade welches auf der Website von OpenRouter auf, dann kann ich antworten."
 
@@ -721,3 +750,7 @@ msgstr "Tut mir leid, ich kann gerade nicht antworten: Das Konto, das ich für m
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Tut mir leid, da habe ich den Faden verloren. Kannst du das noch einmal sagen?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Okay, ich gehe schlafen."

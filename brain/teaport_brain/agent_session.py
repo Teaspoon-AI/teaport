@@ -326,6 +326,9 @@ class AgentSession:
         # Asks this conversation whether to take a phone call (call_prompt.CallPrompt);
         # None where it cannot be asked (build_agent_session decides).
         self.call_prompt = None
+        # The barge-in pauser (barge_pause.BargeInPauser), where playout can pause: held
+        # off for a line said unpausable (own_line).
+        self.barge_pauser = None
 
     async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True,
                     prepared: str | None = None, notice: str | None = None):
@@ -531,16 +534,22 @@ class AgentSession:
     _OWN_LINE_SETTLE_MAX_S = 5.0
 
     @contextlib.asynccontextmanager
-    async def own_line(self, line: str, *, append_to_context: bool):
+    async def own_line(self, line: str, *, append_to_context: bool, unpausable: bool = False):
         """Stop whatever is being said and put `line` in its place, yielding the watch on
         its delivery (FollowupGate.watch_delivery): the session's last line
         (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
+        `unpausable`: the box's own urgent line -- no barge-in pause stops it for as long
+        as the block runs (BargeInPauser.hold_off); the user is still heard, and words
+        over it still barge in.
         The cut is the brain's, not the caller's: the owed book counts no cut telling and
         reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
         not a timer the ledger's charting of the cut could lose to."""
         owed = getattr(self.llm, "owed", None)
         if owed is not None:
             owed.own_cut = True
+        pauser = self.barge_pauser if unpausable else None
+        if pauser is not None:
+            pauser.hold_off(True)
         try:
             gate = self.followup_gate
             seen = gate.interruptions
@@ -572,6 +581,8 @@ class AgentSession:
         finally:
             if owed is not None:
                 owed.own_cut = False
+            if pauser is not None:
+                pauser.hold_off(False)
 
     async def say_last_line(self, line: str, max_secs: float, *,
                             append_to_context: bool = False) -> bool:
@@ -935,14 +946,19 @@ def build_agent_session(transport, *, voice: str | None = None,
     # where the front door is known. With or without a model.
     settings_phrase = (SettingsPhrase() if front_end in ("talk", "room") and via is None
                        and settings_access.heard_here() else None)
+    # "go to sleep" (goodbye.SleepPhrase): the room's own way back to sleep, with or
+    # without a model -- where end_conversation is offered there (the bridge with wake
+    # words: client:sleep), as the goodbye backstop below. Talk has no sleep, and a phone
+    # call ends by hanging up.
+    sleep_phrase = (goodbye.SleepPhrase() if front_end == "room"
+                    and any(t.name == goodbye.TOOL for t in session_tools) else None)
+    fixed = [p for p in (settings_phrase, sleep_phrase) if p is not None]
     voice_lang = lambda: getattr(tts, "espeak_language", "en-us")  # noqa: E731
-    wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None,
-                           phrases=[settings_phrase] if settings_phrase else ())
+    wifi = (WifiSetupVoice(lang_fn=voice_lang, model=llm is not None, phrases=fixed)
             if any(t.name == "wifi_setup" for t in session_tools) else None)
     # The session's fixed phrases, one processor (wifi_voice.PhraseVoice): Wi-Fi setup's
-    # where it is on, else one for "open my settings" alone.
-    phrases = wifi or (PhraseVoice(lang_fn=voice_lang, phrases=[settings_phrase])
-                       if settings_phrase else None)
+    # where it is on, else one for the phrases above alone.
+    phrases = wifi or (PhraseVoice(lang_fn=voice_lang, phrases=fixed) if fixed else None)
     # The pair_device tool's offer, screen and outcome note (pair_device.py): only where
     # that tool is active (switched on, a gateway, the room or a Talk session) and a model
     # can call it.
@@ -1068,10 +1084,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # and when the STT has heard that speech out (barge_pause.py HEARD OUT).
     pause_link: dict = {}
 
-    async def _final_without_turn():
+    async def _final_without_turn(words=False):
         pauser = pause_link.get("pauser")
         if pauser is not None:
-            await pauser.on_final_without_turn()
+            await pauser.on_final_without_turn(words)
 
     async def _speech_heard(watch):
         pauser = pause_link.get("pauser")
@@ -1189,8 +1205,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         stop_strategy.speculator = speculator
         start_strategy.speculator = speculator    # a held bare stop's stands down
         llm.speculator = speculator
-        # The engine's transcription report is asked for only when it will be used.
-        stt.transcription_progress = speculator.on_decode
+        # The engine's transcription report is asked for only when it will be used (here,
+        # or by the barge-in judge's session below: whichever asks, it is asked).
+        stt.transcription_progress = stt.transcription_progress or speculator.on_decode
         settle = f"{speculator.settle_secs * 1000:.0f} ms"
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
                     "once the words of a turn Smart Turn has not concluded on are complete "
@@ -1238,6 +1255,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     # the ledger has it at the pause, and the caller's words that asked for it.
     barge_judge = None
     if barge_pauser is not None and barge_pause.JUDGE and llm is not None:
+        # Where the words over a paused reply are judged, a late one must still find the
+        # reply paused: the pause waits for the engine's report to pass the speech, so it
+        # is asked for, whatever the speculative reply wants (audit A2: asked by the
+        # speculation alone, a session with the judge and segment turn text resumed on
+        # the window, and the late word cut the playing reply unjudged). Without the
+        # judge the wait buys nothing -- the word cuts the reply paused or not -- and
+        # only holds a cough longer: not asked for that.
+        stt.transcription_progress = True
         async def _judge_barge(said):
             paused = ledger.paused_reply()
             if paused is None:
@@ -1248,7 +1273,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                                          heard, said)
 
         barge_judge = barge_pause.BargeInJudgeGate(
-            start_strategy, _judge_barge, hold_resume=barge_pauser.hold_resume)
+            start_strategy, _judge_barge,
+            hold_resume=lambda on: barge_pauser.hold_resume(on, words=True))
         barge_judge.taken_words = taken_words
         logger.info("barge-in judge ON (TEAPORT_BARGE_JUDGE): words over a paused reply "
                     "are judged before they interrupt it")
@@ -1598,6 +1624,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         client_notes=client_notes,
         input_mute=input_mute,
     )
+    session.barge_pauser = barge_pauser
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
     session.phrases = phrases  # the fixed phrases (Wi-Fi setup's, or the settings phrase's)
@@ -1608,6 +1635,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     session.wake_gate = wake_gate
     session.owed = owed    # what the caller is still owed (owed.py)
     session.goodbye_sleep = goodbye_sleep  # the room's goodbye backstop (goodbye.py), or None
+    session.sleep_phrase = sleep_phrase    # the room's "go to sleep" (goodbye.py), or None
     session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:
         prompt.session = session

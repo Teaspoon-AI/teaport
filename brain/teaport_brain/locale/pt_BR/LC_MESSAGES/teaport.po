@@ -347,6 +347,11 @@ msgstr "Desculpe, está chegando uma ligação e preciso atender. Podemos conver
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Alguém está me ligando — {caller}. Posso atender rapidinho?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Alguém está me ligando — um número que termina em {digits}. Posso atender rapidinho?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Alguém está me ligando. Posso atender rapidinho?"
 
@@ -364,6 +369,22 @@ msgstr "Desculpe, não consigo responder agora: a conta que uso para as minhas r
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Ainda não consigo responder até que a minha conta seja resolvida."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Adicione créditos no site do OpenRouter, ou diga “abrir as configurações” para ter ajuda."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Dá para adicionar créditos no site do OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos. Adicione créditos a ela, ou diga “abrir as configurações” para ter ajuda."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Desculpe, não consigo responder: minha conta de IA ficou sem créditos."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Ainda não consigo responder: minha conta de IA está sem créditos."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Desculpe, não consegui uma resposta agora há pouco."
@@ -541,6 +562,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:hã|hum|ahn|eh|é|teaport|ok|okay|ei|ent[aã]o|e|por favor|beleza)\\W+){0,3}(?:(?:voc[eê] )?(?:pode|poderia|podes|consegue)(?: me)? )?(?:abr(?:e|a|ir)(?:-?(?:me|nos))?|me abr(?:e|a)|mostr(?:a|e|ar)(?:-?(?:me|nos))?|me mostr(?:a|e)|v(?:ai|[aá]|ou)|ir|entr(?:a|e|ar)|(?:me )?lev(?:a|e)(?:-?me)?)(?: (?:pras?|pros|para|n?as|n?os|n?a|n?o|em|[aà]s|aos))? (?:(?:as|os|suas|seus|minhas|meus|tuas|teus|a|o|sua|minha|tua|nas|nos) )?(?:(?:p[aá]gina|tela|menu) (?:de|das|dos|do|da) (?:(?:minhas|suas|tuas) )?)?(?:configura[cç](?:[oõ]es|[aã]o)|ajustes|prefer[eê]ncias)(?:[\\s,،]+(?:teaport|valeu|muito obrigad[oa]|obrigad[oa]|por favor|agora|j[aá]|a[ií]|do teaport)\\b)*[\\s.,!?;:…]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:hã|hum|ahn|eh|é|teaport|ok|okay|ei|ent[aã]o|e|por favor|beleza|n[aã]o|sim|t[aá]|boa noite|obrigad[oa])\\W+){0,3}(?<!n[aã]o )(?:(?:voc[eê] )?(?:pode|poderia|podes|consegue|j[aá] pode) )?(?<!n[aã]o )(?:(?:vai|v[aá]|ir|volt(?:a|e|ar) a) dormir)(?:[\\s,،]+(?:teaport|valeu|muito obrigad[oa]|obrigad[oa]|por favor|agora|j[aá]|de novo)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "barra"
@@ -712,6 +737,10 @@ msgstr "O celular precisa estar no mesmo Wi-Fi que o Teaport. Se não continuar 
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "Sua conta do OpenRouter ainda não tem créditos, então o Teaport não consegue responder até você adicionar créditos em openrouter.ai/settings/credits."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Na última vez que o Teaport tentou responder, sua conta do OpenRouter tinha ficado sem créditos. Adicione créditos em openrouter.ai/settings/credits e o Teaport volta a responder."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Sua conta de IA está conectada, mas ainda não tem créditos. Adicione créditos no site do OpenRouter e aí eu consigo responder."
 
@@ -721,3 +750,7 @@ msgstr "Desculpe, não consigo responder agora: a conta que uso para as minhas r
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Desculpe, perdi o fio da meada. Pode repetir?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Tá bom, vou dormir."

@@ -49,13 +49,13 @@ To configure the line, follow these steps:
    password, and enables the service. If the registration fails, the wizard
    writes nothing and telephony stays off.
 
-<!-- source: cli/teaport:498-506#27174433; cli/teaport:19,27#80224d4c; cli/teaport:1412-1421#938e530e; cli/teaport:1612-1613#fed8b523 -->
+<!-- source: cli/teaport:502-510#27174433; cli/teaport:19,27#80224d4c; cli/teaport:1416-1425#938e530e; cli/teaport:1616-1617#fed8b523 -->
 
 Run the wizard as the user the services run as. As root, add `sudo -E`: a plain
 `sudo` resets `HOME`, so the wizard writes a configuration the gateway never
 reads, and it refuses to.
 
-<!-- source: cli/teaport:929-935,950#f979126a -->
+<!-- source: cli/teaport:933-939,954#f979126a -->
 
 ### Turn it on without prompts
 
@@ -73,7 +73,7 @@ Replace the following:
 - `SIP_USER`: the username the trunk assigns you.
 - `SIP_PASSWORD`: the trunk password.
 
-<!-- source: cli/teaport:1369-1376#3a2472e8 -->
+<!-- source: cli/teaport:1373-1380#3a2472e8 -->
 
 ### Use an existing gateway configuration
 
@@ -92,7 +92,7 @@ the brain answers the call, after a couple of rings. If a gateway or SIP
 front-end launched by hand is still running, the command refuses and names it:
 the service it is about to enable needs port 5060 and the socket.
 
-<!-- source: cli/teaport:1238-1241#bafef1f1; cli/teaport:1447-1457#f6ff2e6c; cli/teaport:1479-1482#e22022c1 -->
+<!-- source: cli/teaport:1242-1245#bafef1f1; cli/teaport:1451-1461#f6ff2e6c; cli/teaport:1483-1486#e22022c1 -->
 
 ### Change the trunk later
 
@@ -105,7 +105,7 @@ does not know. Before the test registration, the wizard lists by name the
 settings it keeps. To keep nothing and write a fresh template, run
 `teaport sip configure --fresh`.
 
-<!-- source: cli/teaport:515-518#c26fec26; cli/teaport:519-536#e3a362d0; cli/teaport:646-652#b5bd2dd5 -->
+<!-- source: cli/teaport:519-522#c26fec26; cli/teaport:523-540#e3a362d0; cli/teaport:650-656#b5bd2dd5 -->
 
 ## Check the line
 
@@ -117,7 +117,7 @@ in it, and the registration from this run:
 teaport sip status
 ```
 
-<!-- source: cli/teaport:1559-1586#e661c53b; cli/teaport:751-759#9fceb4c7 -->
+<!-- source: cli/teaport:1563-1590#e661c53b; cli/teaport:755-763#9fceb4c7 -->
 
 To follow the gateway's journal:
 
@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:8,484-488#0ac45871; brain/teaport_brain/sip_server.py:494#f51c16f8 -->
+<!-- source: cli/teaport:8,488-492#0ac45871; brain/teaport_brain/sip_server.py:494#f51c16f8 -->
 
 ## Keep the line running
 
@@ -149,7 +149,7 @@ teaport sip restart
 
 The command waits for the trunk's `200 OK`; the brain reconnects on its own.
 
-<!-- source: cli/teaport:1524-1530,1620#a48b0483 -->
+<!-- source: cli/teaport:1528-1534,1624#a48b0483 -->
 
 The gateway cancels echo for the caller. `teaport sip aec` prints the current
 acoustic echo cancellation (AEC) setting:
@@ -166,7 +166,7 @@ teaport sip aec off
 teaport sip aec on
 ```
 
-<!-- source: cli/teaport:1532-1547,1555-1556,1619#6acaab27 -->
+<!-- source: cli/teaport:1536-1551,1559-1560,1623#6acaab27 -->
 
 To turn telephony off:
 
@@ -178,7 +178,7 @@ The command stops and disables the gateway. The configuration stays at
 `~/.config/teaport/teaport-sip.conf`; add `--purge` to remove it too. Run the
 wizard again to turn telephony back on.
 
-<!-- source: cli/teaport:1589-1596,1621#4454f6b2 -->
+<!-- source: cli/teaport:1593-1600,1625#4454f6b2 -->
 
 The configuration is the gateway's own `key=value` format: `registrar_uri`,
 `id_uri`, `username`, `password`, `uds_path`, `aec`, `auto_answer`, and more.
@@ -188,7 +188,7 @@ confirmed, because the gateway still runs the configuration it started with.
 Nothing about the line lives in `/tmp`: the configuration is in
 `~/.config/teaport`, the socket in `/run/teaport`, and the logs in journald.
 
-<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:563-582#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:515-518#c26fec26; cli/teaport:788-800#399f6773 -->
+<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:567-586#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:519-522#c26fec26; cli/teaport:792-804#399f6773 -->
 
 ## A call during a conversation
 
@@ -203,12 +203,16 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1936-1946#a986d676; cli/teaport:1453-1455#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1936-1946#a986d676; cli/teaport:1457-1459#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
-conversation's language: *"Someone's calling me — +1 346 234 8500. Should I
-step away for a moment?"* When the call carries no name or number, the agent
-asks *"Someone's calling me. Should I step away…"*.
+conversation's language: *"Someone's calling me — Ann Smith. Should I step away
+for a moment?"* The agent uses the caller's name when the call carries a real
+one. A placeholder such as "WIRELESS CALLER" does not count. Otherwise the agent
+says the last four digits of the number: *"Someone's calling me — a number
+ending in 8 5 0 0…"*. The device's screen shows the whole number. When the call
+carries no name or number, the agent asks *"Someone's calling me. Should I step
+away…"*.
 
 The question has three outcomes:
 
@@ -218,11 +222,15 @@ The question has three outcomes:
   resumes with *"Sorry about that — where were we?"*
 - **No**: the call is never answered. The caller hears it ring until they give
   up.
-- **No answer**: after `TEAPORT_CALL_PROMPT_SECS`, 12 seconds by default, the
-  call is taken by default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep
-  ringing.
+- **No answer**: `TEAPORT_CALL_PROMPT_SECS`, 8 seconds by default, after the
+  question starts, and at least 3 seconds after it ends, the call is taken by
+  default (`TEAPORT_CALL_PROMPT_DEFAULT`); it can instead keep ringing. If someone
+  is still talking at that point, the agent waits up to 5 seconds more. The
+  caller hears it ring the whole time, and many carriers send an unanswered call
+  to voicemail after 20 to 30 seconds. With nobody answering, the call is
+  picked up about 12 to 14 seconds after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,602-616#f6a0b0f1; brain/teaport_brain/config_schema.toml:1949-1971#e70d77f4 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,594-643#d982d7ca; brain/teaport_brain/call_prompt.py:25-43,51-60#8329a441; brain/teaport_brain/config_schema.toml:1949-1971#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
@@ -268,7 +276,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1355-1357#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1381-1383#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the

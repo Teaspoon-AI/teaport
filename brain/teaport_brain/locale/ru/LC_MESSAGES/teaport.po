@@ -355,6 +355,11 @@ msgstr "Извините, поступает звонок, и мне нужно 
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Мне звонят — {caller}. Можно я ненадолго отвлекусь и отвечу?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Мне звонят — номер заканчивается на {digits}. Можно я ненадолго отвлекусь и отвечу?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Мне звонят. Можно я ненадолго отвлекусь и отвечу?"
 
@@ -372,6 +377,22 @@ msgstr "Извините, я сейчас не могу ответить: акк
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Я всё ещё не могу отвечать, пока с моим аккаунтом не разберутся."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Пополните баланс на сайте OpenRouter или скажите «открой настройки», если нужна помощь."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Баланс можно пополнить на сайте OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства. Пополните его баланс или скажите «открой настройки», если нужна помощь."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Извините, я не могу ответить: на моём аккаунте ИИ закончились средства."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Я всё ещё не могу отвечать: на моём аккаунте ИИ нет средств."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Извините, сейчас не получилось получить ответ."
@@ -549,6 +570,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:э+|эм+|мм+|teaport|типорт|ну|так|окей|ок|слушай|пожалуйста|а|и)\\W+){0,3}(?:(?:(?:ты\\s+)?можешь|(?:вы\\s+)?можете|(?:(?:ты|вы)\\s+)?(?:не\\s+)?(?:мог|могла|могли)\\s+бы(?:\\s+(?:ты|вы))?)(?:\\s+(?:мне|нам|пожалуйста))*\\s+)?(?:(?:открой(?:те)?|покажи(?:те)?|зайди(?:те)?|перейди(?:те)?|открыть|показать)(?:\\s+(?:мне|нам|пожалуйста|в|на|ка))*\\s+(?:(?:мои|свои|твои|ваши)\\s+настройки|настройки|(?:(?:мою|свою|твою|вашу)\\s+)?страницу\\s+настроек)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас)\\b)*[\\s.,!?;:…]*$|(?:(?:мои|свои|твои)\\s+)?настройки\\s+(?:пожалуйста\\s+)?(?:открой(?:те)?|покажи(?:те)?)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:э+|эм+|мм+|teaport|типорт|ну|так|окей|ок|ладно|хорошо|слушай|пожалуйста|а|и|нет|да|всё|все|спокойной ночи|спасибо)\\W+){0,3}(?:(?:(?:ты\\s+)?можешь|(?:вы\\s+)?можете|(?:(?:ты|вы)\\s+)?(?:не\\s+)?(?:мог|могла|могли)\\s+бы(?:\\s+(?:ты|вы))?)(?:\\s+(?:пожалуйста|уже))*\\s+)?(?:(?:иди(?:те)?|идти|пойди(?:те)?|пойти|ложись|ложитесь|лечь)(?:\\s+(?:уже|обратно|снова))?\\s+спать|засыпай(?:те)?|усни(?:те)?|засни(?:те)?|уснуть|заснуть|спи(?:те)?|(?:переходи(?:те)?|перейди(?:те)?|перейти)\\s+в\\s+спящий\\s+режим)(?:[\\s,،]+(?:teaport|большое спасибо|спасибо|пожалуйста|сейчас|уже|давай)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "слэш"
@@ -720,6 +745,10 @@ msgstr "Телефон должен быть в той же сети Wi-Fi, чт
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "На вашем аккаунте OpenRouter пока нет средств, поэтому Teaport не сможет отвечать, пока вы не пополните баланс на openrouter.ai/settings/credits."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Когда Teaport в последний раз пытался ответить, на вашем аккаунте OpenRouter закончились средства. Пополните баланс на openrouter.ai/settings/credits, и Teaport снова сможет отвечать."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Ваш аккаунт ИИ подключён, но на нём пока нет средств. Пополните баланс на сайте OpenRouter, и тогда я смогу отвечать."
 
@@ -729,3 +758,7 @@ msgstr "Извините, я сейчас не могу ответить: акк
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Извините, я потерял мысль. Можете повторить?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Хорошо, засыпаю."

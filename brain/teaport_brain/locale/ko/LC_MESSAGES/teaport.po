@@ -456,6 +456,11 @@ msgstr "죄송해요, 전화가 와서 받아야 해요. 통화가 끝나면 다
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "전화가 왔어요 — {caller}. 잠깐 받고 와도 될까요?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "전화가 왔어요 — 끝자리가 {digits}인 번호예요. 잠깐 받고 와도 될까요?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "전화가 왔어요. 잠깐 받고 와도 될까요?"
 
@@ -473,6 +478,22 @@ msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 �
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "계정 문제가 해결될 때까지는 아직 답할 수 없어요."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "죄송해요, 답할 수 없어요. 제 AI 계정의 크레딧이 다 떨어졌어요. OpenRouter 웹사이트에서 크레딧을 추가하시거나, 도움이 필요하시면 '설정 열어 줘'라고 말해 주세요."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "죄송해요, 답할 수 없어요. 제 AI 계정의 크레딧이 다 떨어졌어요. 크레딧은 OpenRouter 웹사이트에서 추가할 수 있어요."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "죄송해요, 답할 수 없어요. 제 AI 계정의 크레딧이 다 떨어졌어요. 크레딧을 추가하시거나, 도움이 필요하시면 '설정 열어 줘'라고 말해 주세요."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "죄송해요, 답할 수 없어요. 제 AI 계정의 크레딧이 다 떨어졌어요."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "AI 계정에 크레딧이 없어서 아직 답할 수 없어요."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "죄송해요, 방금은 답을 받지 못했어요."
@@ -650,6 +671,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:네|너의|니|당신의|내|제|나의|teaport의?|티포트의?)\\s*)?(?:설정|세팅)\\s*(?:페이지|화면|창|메뉴)?\\s*(?:을|를)?\\s*(?:좀\\s*)?(?:열어|보여|띄워)\\s*(?:줘요|줘|줄래요|줄래|주세요|주실래요|줄\\s*수\\s*있(?:어요|어|나요|을까요|니)|봐요|봐)?\\s*(?:[,\\s]*(?:제발|감사합니다|고마워(?:요)?))?[\\s.!,…?？]*$"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:음|어|저|에|그럼|자|저기|이제|아니|아니야|응|네|그래|고마워|잘\\s*자|teaport(?:야|아)?|티포트(?:야|아)?)[\\s,.!]*){0,3}(?:(?:이제|다시|빨리)\\s*)*(?:(?:자러|잠자러)\\s*가(?:요|세요|\\s*줘(?:요)?|\\s*줄래(?:요)?\\s*[?？]?)?|가서\\s*자(?:요)?|자도\\s*(?:돼|되)(?:요)?|주무세요|잠들어(?:요)?|(?:절전|슬립|대기)\\s*모드로\\s*(?:들어가|가|전환해)(?:요|세요|\\s*줘(?:요)?|\\s*줄래(?:요)?\\s*[?？]?)?)\\s*(?:[,\\s]*(?:제발|감사합니다|고마워(?:요)?|부탁해(?:요)?))?[\\s.!,…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "슬래시"
@@ -821,6 +846,10 @@ msgstr "휴대폰이 Teaport와 같은 Wi-Fi에 연결돼 있어야 해요. 자�
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "OpenRouter 계정에 아직 크레딧이 없어서, openrouter.ai/settings/credits에서 크레딧을 추가할 때까지 Teaport가 대답할 수 없어요."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Teaport가 마지막으로 대답하려고 했을 때 OpenRouter 계정의 크레딧이 다 떨어져 있었어요. openrouter.ai/settings/credits에서 크레딧을 추가하면 Teaport가 다시 대답할 수 있어요."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "AI 계정은 연결됐지만 아직 크레딧이 없어요. OpenRouter 웹사이트에서 크레딧을 추가하면 대답할 수 있어요."
 
@@ -830,3 +859,7 @@ msgstr "죄송해요, 지금은 답할 수 없어요. 제가 답변에 쓰는 �
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "죄송해요, 하던 생각을 놓쳤어요. 다시 한번 말씀해 주시겠어요?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "알겠어요. 이제 잘게요."

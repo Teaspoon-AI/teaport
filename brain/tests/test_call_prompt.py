@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -283,6 +284,28 @@ def test_the_spoken_caller_is_capped_and_cleaned():
     assert "Bob" in arb.prompt_line("Bob", "en-us")
 
 
+def test_the_question_names_the_caller_and_says_a_number_by_its_last_digits():
+    """A named caller is named; a number is said by its last four digits, spaced so the
+    voice reads them one by one -- read whole, it took 5 of the question's 8 s; an
+    unknown caller is "someone". The face shows the whole number."""
+    q = "Should I step away for a moment?"
+    assert arb.prompt_line("Ann Smith", "en-us") == f"Someone's calling me — Ann Smith. {q}"
+    for number in ("+1 555 123 4567", "+44 20 7946 0958", "15551234567", "+1 (555) 123-4567"):
+        tail = " ".join(number.replace("-", "")[-4:])
+        assert arb.prompt_line(number, "en-us") == (
+            f"Someone's calling me — a number ending in {tail}. {q}"), number
+    # An extension is short enough to say whole; a name with digits in it is a name.
+    assert arb.prompt_line("1001", "en-us") == f"Someone's calling me — 1001. {q}"
+    assert arb.prompt_line("Pharmacy 24", "en-us") == f"Someone's calling me — Pharmacy 24. {q}"
+    assert arb.prompt_line(None, "en-us") == f"Someone's calling me. {q}"
+    # The carrier's placeholder names never reach it: the SIP front-end says the number.
+    who = sip_server.caller_id('"WIRELESS CALLER" <sip:+15551234567@example.com>')
+    assert arb.prompt_line(who, "en-us") == f"Someone's calling me — a number ending in 4 5 6 7. {q}"
+    # Translated, digits kept.
+    de = arb.prompt_line("+1 555 123 4567", "de")
+    assert "4 5 6 7" in de and de != arb.prompt_line("+1 555 123 4567", "en-us"), de
+
+
 def test_the_spoken_caller_keeps_every_script():
     """The review's finding 4: combining marks are part of a name."""
     import unicodedata
@@ -304,10 +327,11 @@ class _STT:
         self.calls.append("resume")
 
 
-def _prompted(lang_voice=None):
-    """A real AgentSession (its say_last_line, FollowupGate, InputMute) with a CallPrompt."""
+def _prompted(lang_voice=None, play_secs=0.05):
+    """A real AgentSession (its say_last_line, FollowupGate, InputMute) with a CallPrompt;
+    each line takes `play_secs` to play."""
     ws = sa._WS({})
-    session = sa._session(ws)
+    session = sa._session(ws, play_secs=play_secs)
     if lang_voice:
         session.tts = sa._TTS(voice=lang_voice)
     session.stt = _STT()
@@ -326,7 +350,7 @@ async def test_the_question_is_put_into_the_conversation_and_answered_by_the_too
     await asyncio.sleep(0.4)
     assert isinstance(session.task.queued[0], InterruptionWorkerFrame)   # it rings over
     q = _spoken(session)[0]
-    assert q.text == arb.prompt_line("+1 555 123 4567", "en-us") and "+1 555 123 4567" in q.text
+    assert q.text == arb.prompt_line("+1 555 123 4567", "en-us") and "4 5 6 7" in q.text
     assert q.append_to_context is True, "the model must know it asked"
     assert prompt.pending and not asking.done()
     assert prompt.answer(True) == cp.TAKEN
@@ -357,6 +381,41 @@ async def test_the_phone_ringing_over_a_sentence_is_the_brains_own_cut():
     assert book.own_cut is False, "the user's answer is theirs again"
 
 
+async def test_nothing_pauses_the_question_while_it_is_asked():
+    """2026-11-06 on the box: a ringtone near it read as the user's speech, and the
+    barge-in pause stopped the question about that very call, over and over. The
+    question is said unpausable: the pauser is held off until it has played out."""
+    session, prompt = _prompted(play_secs=1.0)
+    seen, at = [], {}
+
+    def hold(on):
+        seen.append(("hold", on))
+        at[on] = time.monotonic()
+    session.barge_pauser = SimpleNamespace(hold_off=hold)
+    queue = session.task.queue_frames
+
+    async def watched(frames):
+        if any(isinstance(f, TTSSpeakFrame) for f in frames):
+            seen.append("TTSSpeakFrame")
+            at["said"] = time.monotonic()
+        await queue(frames)
+    session.task.queue_frames = watched
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+
+    async def lifted():
+        while ("hold", False) not in seen:
+            await asyncio.sleep(0.02)
+    await asyncio.wait_for(lifted(), 5)
+    assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
+        "held off from before the question goes in until it has been said", seen)
+    # The fake line plays for 1 s: a stall only makes the gap longer.
+    assert at[False] - at["said"] >= 0.9, ("held through its playing, not its queueing",
+                                           at[False] - at["said"])
+    assert not asking.done(), "lifted once it has played, not held through the answer window"
+    prompt.answer(False)
+    assert await asyncio.wait_for(asking, 1) is False
+
+
 async def test_the_question_speaks_the_sessions_language_and_withholds_nothing_it_has_not():
     session, prompt = _prompted(lang_voice="ef_dora")
     asking = asyncio.ensure_future(prompt.ask(None))
@@ -379,6 +438,85 @@ async def test_nobody_answering_takes_the_default():
             assert prompt.answer(not want) == (cp.CLOSED_TAKEN if want else cp.CLOSED_RINGING)
     finally:
         cp.PROMPT_SECS, cp.PROMPT_DEFAULT = saved
+
+
+async def test_the_answer_time_runs_from_the_start_of_the_question():
+    """The caller hears it ring from the moment the question starts: the answer time is
+    counted from there, not from its end -- but never ends sooner than ANSWER_MIN_SECS
+    after the question has been said."""
+    saved = cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.PROMPT_DEFAULT
+    loop = asyncio.get_running_loop()
+    try:
+        cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.PROMPT_DEFAULT = 0.8, 0.2, "take"
+        for question_secs, want in ((0.3, 0.8), (0.9, 0.9 + 0.2)):
+            session, prompt = _prompted()
+            session._OWN_LINE_SETTLE_S = 0.0
+            session.task.play_secs = question_secs
+            t0 = loop.time()
+            assert await asyncio.wait_for(prompt.ask("Bob"), 5) is True
+            took = loop.time() - t0
+            # From the end it would have been question_secs + PROMPT_SECS.
+            assert want - 0.05 <= took < want + 0.15, (question_secs, took)
+    finally:
+        cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.PROMPT_DEFAULT = saved
+
+
+# How long each line takes to say, in seconds: espeak-ng at its default rate, which put the
+# question that took 8.0 s live (2026-11-06, "+1 346 234 8500" read whole) at 8.15 s.
+# Re-measure when a line changes; the test below fails until then.
+_SAID_SECS = {
+    "Someone's calling me — Ann Smith. Should I step away for a moment?": 4.2,
+    "Someone's calling me — a number ending in 8 5 0 0. Should I step away for a moment?": 5.7,
+    "Someone's calling me. Should I step away for a moment?": 3.3,
+    "I'll take the call — back in a moment.": 2.4,
+}
+# From the conversation letting the engine go to the caller connected: the call's
+# pipeline, its greeting worded, call.answer and `confirmed` (sip_server; 2026-11-06:
+# ~1.5 s from the end of "back in a moment" to `confirmed`). Generous.
+_BRING_UP_SECS = 2.0
+# The caller's side gives up 20-30 s in (voicemail); 2026-11-06 it was ~25 s.
+_RING_TO_ANSWER_BUDGET_SECS = 15.0
+
+
+async def test_nobody_answering_picks_the_call_up_well_before_the_caller_gives_up():
+    """The timing budget, ring to answer, when nobody answers: the real ask() and hold()
+    on the default settings, time scaled down by K, each line playing as long as it takes
+    to say. 2026-11-06 it was ~25 s (the whole number read out, 12 s from the end of the
+    question), and the caller had given up."""
+    K = 0.05
+    names = ("Ann Smith", "+1 346 234 8500", None)
+    saved = (cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.ANSWER_GRACE_SECS, cp.QUESTION_MAX_SECS,
+             cp.STEP_AWAY_MAX_SECS, cp.PROMPT_DEFAULT)
+    loop = asyncio.get_running_loop()
+    try:
+        # The schema's defaults (this test's env sets neither).
+        assert saved[0] == 8 and saved[-1] == "take", saved
+        (cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.ANSWER_GRACE_SECS, cp.QUESTION_MAX_SECS,
+         cp.STEP_AWAY_MAX_SECS) = (s * K for s in saved[:5])
+        for caller in names:
+            session, prompt = _prompted()
+            session._OWN_LINE_SETTLE_S *= K
+            queue = session.task.queue_frames
+
+            async def timed(frames, session=session, queue=queue):
+                for f in frames:
+                    if isinstance(f, TTSSpeakFrame):
+                        assert f.text in _SAID_SECS, f"re-measure _SAID_SECS: {f.text!r}"
+                        session.task.play_secs = _SAID_SECS[f.text] * K
+                await queue(frames)
+            session.task.queue_frames = timed
+            t0 = loop.time()
+            assert await asyncio.wait_for(prompt.ask(caller), 5) is True
+            await prompt.hold()
+            ring_to_answer = (loop.time() - t0) / K + _BRING_UP_SECS
+            assert ring_to_answer <= _RING_TO_ANSWER_BUDGET_SECS, (caller, ring_to_answer)
+            # Not cut short either: the room had its time to answer.
+            assert ring_to_answer >= saved[0] + _SAID_SECS["I'll take the call — back in a moment."]
+            if session._keeper is not None:
+                session._keeper.cancel()
+    finally:
+        (cp.PROMPT_SECS, cp.ANSWER_MIN_SECS, cp.ANSWER_GRACE_SECS, cp.QUESTION_MAX_SECS,
+         cp.STEP_AWAY_MAX_SECS, cp.PROMPT_DEFAULT) = saved
 
 
 async def test_the_question_waits_for_its_own_cut_however_late_it_lands():

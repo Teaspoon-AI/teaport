@@ -347,6 +347,11 @@ msgstr "すみません、電話がかかってきたので出なければなり
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "電話がかかってきました — {caller}。少し席を外して出てもいいですか？"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "電話がかかってきました — 末尾が{digits}の番号です。少し席を外して出てもいいですか？"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "電話がかかってきました。少し席を外して出てもいいですか？"
 
@@ -364,6 +369,22 @@ msgstr "すみません、今はお答えできません。回答に使ってい
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "アカウントの問題が解決するまで、まだお答えできません。"
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "すみません、お答えできません。私の AI アカウントのクレジットがなくなりました。OpenRouter のウェブサイトでクレジットを追加するか、困ったときは「設定を開いて」と言ってください。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "すみません、お答えできません。私の AI アカウントのクレジットがなくなりました。クレジットは OpenRouter のウェブサイトで追加できます。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "すみません、お答えできません。私の AI アカウントのクレジットがなくなりました。クレジットを追加するか、困ったときは「設定を開いて」と言ってください。"
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "すみません、お答えできません。私の AI アカウントのクレジットがなくなりました。"
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "AI アカウントのクレジットがないため、まだお答えできません。"
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "すみません、今は答えを得られませんでした。"
@@ -540,6 +561,10 @@ msgstr "この機器には AI サービスが設定されていません"
 msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:あなた|君|きみ|teaport|ティーポート|私|わたし|僕|ぼく)\\s*の\\s*)?(?:設定|せってい|セッティング)\\s*(?:画面|ページ|メニュー)?\\s*(?:を|は)?\\s*(?:開いて|ひらいて|開けて|あけて|見せて|みせて|表示して|出して|だして|開く|ひらく)\\s*(?:ください|下さい|くれる|くれ|ちょうだい|もらえる|もらえます|もらえません|くれます|くれません|ほしい|欲しい)?\\s*(?:ね|よ|か)?\\s*(?:[、,\\s]*(?:お願い(?:します)?|ありがとう(?:ございます)?|どうも(?:ありがとう)?))?[\\s。.!！、,…?？]*$"
+
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^[\\s、。,.!！]*(?:(?:えっと|えーと|えー|あー|うーん|ちょっと|じゃあ|ねえ|あの|いいえ|はい|うん|ありがとう|おやすみ(?:なさい)?|teaport|ティーポート)[\\s、,.!！]*){0,2}(?:(?:もう|そろそろ)\\s*)?(?:寝て|ねて|眠って|ねむって|スリープして|スリープに(?:入|はい|戻|もど)って|休んで|やすんで)\\s*(?:(?:もらえ(?:る|ます|ません)|くれ(?:る|ます|ません))\\s*か?[\\s。.!！、,…?？]*$|(?:(?:ください|下さい|ちょうだい|くれ|いいよ|いいです(?:よ)?|もいいよ|もいいです(?:よ)?|ね|よ)\\s*)?(?:[、,\\s]*(?:お願い(?:します)?|ありがとう(?:ございます)?))?[\\s。.!！、,…]*$)"
 
 msgctxt "spell"
 msgid "slash"
@@ -817,6 +842,10 @@ msgstr "電話を Teaport と同じ Wi-Fi につないでおく必要があり�
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "OpenRouter アカウントにまだクレジットがないため、openrouter.ai/settings/credits でクレジットを追加するまで Teaport は答えられません。"
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Teaport が最後に答えようとしたとき、OpenRouter アカウントのクレジットがなくなっていました。openrouter.ai/settings/credits でクレジットを追加すると、Teaport はまた答えられるようになります。"
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "AI アカウントは接続されましたが、まだクレジットがありません。OpenRouter のウェブサイトでクレジットを追加すると、答えられるようになります。"
 
@@ -826,3 +855,7 @@ msgstr "すみません、今はお答えできません。回答に使ってい
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "すみません、話の流れを見失いました。もう一度言っていただけますか？"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "わかりました。スリープします。"

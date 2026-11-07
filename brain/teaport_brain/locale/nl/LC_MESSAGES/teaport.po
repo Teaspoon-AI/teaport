@@ -347,6 +347,11 @@ msgstr "Sorry, er komt een telefoontje binnen en dat moet ik aannemen. We kunnen
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Er belt iemand — {caller}. Zal ik even opnemen?"
 
+#. Translators: {digits} are the last four digits of the caller's phone number,
+#. spaced so the voice reads them one by one ("8 5 0 0"). Keep them as they are.
+msgid "Someone's calling me — a number ending in {digits}. Should I step away for a moment?"
+msgstr "Er belt iemand — een nummer dat eindigt op {digits}. Zal ik even opnemen?"
+
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Er belt iemand. Zal ik even opnemen?"
 
@@ -364,6 +369,22 @@ msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorde
 
 msgid "I still can't answer until my account is sorted out."
 msgstr "Ik kan nog steeds niet antwoorden tot mijn account in orde is."
+
+# Out of credit (llm_error_speaker.CREDIT_*): the cause, and where credit is added.
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit on OpenRouter's website, or say \"open my settings\" for help."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe op de website van OpenRouter, of zeg ‘open de instellingen’ als je hulp wilt."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Credit can be added on OpenRouter's website."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Tegoed kan worden toegevoegd op de website van OpenRouter."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit. Add credit to it, or say \"open my settings\" for help."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op. Voeg tegoed toe, of zeg ‘open de instellingen’ als je hulp wilt."
+
+msgid "Sorry, I can't answer: my AI account has run out of credit."
+msgstr "Sorry, ik kan niet antwoorden: het tegoed van mijn AI-account is op."
+
+msgid "I still can't answer: my AI account is out of credit."
+msgstr "Ik kan nog steeds niet antwoorden: het tegoed van mijn AI-account is op."
 
 msgid "Sorry, I couldn't get an answer just then."
 msgstr "Sorry, ik kreeg net geen antwoord."
@@ -541,6 +562,10 @@ msgctxt "pattern"
 msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? )?(?:open|show|bring up|pull up|go to|get)(?: up)?(?: me)?(?: to)? (?:(?:my|your|the|teaport's|teaport) )?settings(?:[\\s,]+(?:page|please|now|for me|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
 msgstr "^\\W*(?:(?:eh|ehm|uh|uhm|hm+|teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou)\\W+){0,3}(?:(?:(?:kun|kan|zou|wil)\\s+je|(?:kunt|zou|wilt)\\s+u)(?:\\s+(?:me|mij|even|eens|alsjeblieft|graag|nu))*\\s+)?(?:(?:open|opent|toon|ga|haal)(?:\\s+(?:me|mij|ons|eens|even|nu|maar|naar|alsjeblieft|graag))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)(?:\\s+(?:open|op|erbij))?(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even|pagina)\\b)*[\\s.,!?;:…]*$|laat(?:\\s+(?:me|mij|ons|eens|even|nu|maar))*\\s+(?:(?:de|je|jouw|mijn|teaports?)\\s+)?instelling(?:en|enpagina|enscherm)\\s+zien(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)*[\\s.,!?;:…]*$|(?:(?:de|je|jouw|mijn)\\s+)?instelling(?:en|enpagina|enscherm)\\s+(?:(?:even|graag|nu|maar)\\s+)?(?:openen|tonen|laten zien|openmaken|open)(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alsjeblief|alstublieft|graag|nu|even)\\b)*[\\s.,!?;:…]*$)"
 
+msgctxt "pattern"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:eh|ehm|uh|uhm|hm+|teaport|ok|oké|okee|hé|hey|en|dus|alsjeblieft|graag|nou|nee|ja|welterusten|bedankt)\\W+){0,3}(?:(?:(?:kun|kan|zou|wil)\\s+je|(?:kunt|zou|wilt)\\s+u|je\\s+(?:kunt|mag)|u\\s+(?:kunt|mag))(?:\\s+(?:nu|even|maar|weer|alsjeblieft))*\\s+)?(?:(?:ga|gaat\\s+u|gaan)(?:\\s+(?:nu|maar|weer|even|terug))*\\s+slapen|(?:(?:nu|maar|weer)\\s+)*slapen\\s+gaan)(?:[\\s,،]+(?:teaport|dank je wel|dank u wel|dank je|dank u|bedankt|alsjeblieft|alstublieft|graag|nu)\\b)*[\\s.,!?;:…]*$"
+
 msgctxt "spell"
 msgid "slash"
 msgstr "schuine streep"
@@ -712,6 +737,10 @@ msgstr "Je telefoon moet op dezelfde wifi zitten als Teaport. Gaat het niet vanz
 msgid "Your OpenRouter account has no credit yet, so Teaport can't answer until you add some at openrouter.ai/settings/credits."
 msgstr "Je OpenRouter-account heeft nog geen tegoed, dus Teaport kan pas antwoorden als je tegoed toevoegt op openrouter.ai/settings/credits."
 
+# The Settings page, while answers are refused for credit (ai_account.RAN_OUT_OF_CREDIT).
+msgid "When Teaport last tried to answer, your OpenRouter account had run out of credit. Add some at openrouter.ai/settings/credits, and Teaport can answer again."
+msgstr "Toen Teaport het laatst probeerde te antwoorden, was het tegoed van je OpenRouter-account op. Voeg tegoed toe op openrouter.ai/settings/credits, dan kan Teaport weer antwoorden."
+
 msgid "Your AI account is connected, but it has no credit yet. Add some on OpenRouter's website, and then I can answer."
 msgstr "Je AI-account is gekoppeld, maar heeft nog geen tegoed. Voeg tegoed toe op de website van OpenRouter, dan kan ik antwoorden."
 
@@ -721,3 +750,7 @@ msgstr "Sorry, ik kan nu niet antwoorden: het account dat ik voor mijn antwoorde
 # The recovery line (llm_text_guard.recovery_text): a collapsed or empty reply (#15).
 msgid "Sorry, I lost my train of thought there. Could you say that again?"
 msgstr "Sorry, ik ben de draad kwijt. Kun je dat nog een keer zeggen?"
+
+# The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
+msgid "Okay, going to sleep."
+msgstr "Oké, ik ga slapen."
