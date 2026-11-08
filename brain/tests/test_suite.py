@@ -171,6 +171,28 @@ def test_a_scripts_socket_dirs_land_in_its_private_tmpdir():
         tempfile.tempdir = saved
 
 
+def test_an_evals_env_file_is_read_as_systemd_reads_it(tmp_path, monkeypatch):
+    """appliance.load_env_file: no shell -- a JSON value keeps its quotes, a value with
+    spaces is one value, one pair of outer quotes goes -- and a variable already set in
+    the environment is kept."""
+    env = tmp_path / "brain.env"
+    env.write_text('# a comment\nLLM_EXTRA_BODY={"provider":{"order":["Groq"]}}\n'
+                   'TEAPORT_LLM_GUARD_RECOVERY="Let me say that again, plainly."\n'
+                   "LLM_MODEL='a/model'\nLLM_BASE_URL=http://from-the-file\n")
+    for k in ("LLM_EXTRA_BODY", "TEAPORT_LLM_GUARD_RECOVERY", "LLM_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("LLM_BASE_URL", "http://from-the-shell")
+    monkeypatch.setenv("TEAPORT_EVAL_ENV_FILE", str(env))
+    assert appliance.load_env_file() == str(env)
+    assert os.environ["LLM_EXTRA_BODY"] == '{"provider":{"order":["Groq"]}}'
+    assert os.environ["TEAPORT_LLM_GUARD_RECOVERY"] == "Let me say that again, plainly."
+    assert os.environ["LLM_MODEL"] == "a/model"
+    assert os.environ["LLM_BASE_URL"] == "http://from-the-shell"
+    monkeypatch.setenv("TEAPORT_EVAL_ENV_FILE", str(tmp_path / "missing.env"))
+    with pytest.raises(SystemExit):
+        appliance.load_env_file()
+
+
 @pytest.mark.parametrize("script,timeout", SCRIPTS,
                          ids=[s for s, _ in SCRIPTS])
 def test_script(script, timeout):

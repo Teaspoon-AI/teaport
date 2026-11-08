@@ -402,7 +402,11 @@ RunUncut(p, cut, g) ==
 \* means all was heard (1/145 false HEARD by majority; judgeWrong is that residual). OWES
 \* lets it answer OWED, or not in time, when all was heard (14/96 false OWED, at the
 \* trailing edge). prefixLexical is the rule before: the heard PREFIX by the lexical rule,
-\* which closes on "words" (89/145 false closes).
+\* which closes on "words" (89/145 false closes). A failure's cut is asked of a judge of its
+\* own, shown the record's statement (owed.FAILURE_CUT_JUDGE_PROMPT): the cut judge, which
+\* looks for a name or a number, broke this premise for a failure (40/43 false HEARD); the
+\* failure judge keeps it, with the same residuals (1/43 false HEARD, 11/56 false OWED,
+\* 2026-11-08). Which prompt is asked is not modelled: the verdict is free either way.
 Verdicts(s, r) ==
     IF s # "tell" THEN {"skip"}                                  \* coverage fails: no call
     ELSE (IF r = "all" THEN {"heard"} \cup (IF OWES THEN {"owed", "none"} ELSE {})

@@ -145,10 +145,10 @@ def _notes(params):
 
 
 async def test_the_judges_ask_the_sessions_model_and_read_one_word():
-    """BoundedOpenAILLMService.judge_cut and judge_gist (owed.Owed's defaults): the
-    session's own client, model and routing; the measured prompts
-    (owed.cut_judge_messages, owed.gist_judge_messages); a small completion budget;
-    HEARD / OWED / anything else (no verdict)."""
+    """BoundedOpenAILLMService.judge_cut, judge_gist and judge_failure_cut (owed.Owed's
+    defaults): the session's own client, model and routing; the measured prompts
+    (owed.cut_judge_messages, owed.gist_judge_messages, owed.failure_cut_judge_messages);
+    a small completion budget; HEARD / OWED / anything else (no verdict)."""
     calls = []
 
     class Completions:
@@ -169,13 +169,19 @@ async def test_the_judges_ask_the_sessions_model_and_read_one_word():
         verdicts.append(await llm.judge_gist("What year was the lighthouse first lit?",
                                              "The lighthouse was first lit in 1871.",
                                              "1871 is the year the lighthouse was first lit."))
-    assert verdicts == [True, True, False, False, None, None, None, None], verdicts
+        verdicts.append(await llm.judge_failure_cut(
+            "What's on my calendar?", "No answer: it ran out of time before it finished.",
+            "Sorry,", "that lookup ran out of time."))
+    assert verdicts == [True] * 3 + [False] * 3 + [None] * 6, verdicts
     assert calls[0]["messages"] == owed.cut_judge_messages(
         "What's the price?", "It's two hundred", "forty-nine dollars.")
     assert calls[1]["messages"] == owed.gist_judge_messages(
         "What year was the lighthouse first lit?", "The lighthouse was first lit in 1871.",
         "1871 is the year the lighthouse was first lit.")
-    for params in calls[:2]:
+    assert calls[2]["messages"] == owed.failure_cut_judge_messages(
+        "What's on my calendar?", "No answer: it ran out of time before it finished.",
+        "Sorry,", "that lookup ran out of time.")
+    for params in calls[:3]:
         assert params["max_tokens"] == services._JUDGE_MAX_TOKENS and "stream" not in params
         assert params["model"] == services.setting("LLM_MODEL")
 

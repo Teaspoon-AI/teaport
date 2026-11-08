@@ -132,12 +132,14 @@ class Rig:
         session = build_agent_session(transport, front_end="talk")
         self.session, self.owed = session, session.owed
         assert self.owed.judge == session.llm.judge_cut, "the session's cut judge"
+        assert self.owed.failure_judge == session.llm.judge_failure_cut, \
+            "the session's failure judge"
         assert self.owed.gist == session.llm.judge_gist, "the session's gist judge"
         assert self.owed.decline == session.llm.judge_decline, "the session's decline check"
         # The scripted provider answers the turns; nothing is judged here: a cut errs owed,
         # a reply about a record played to its end closes it (no verdict), and the words
         # that cut a telling leave it owed (no verdict).
-        self.owed.judge = self.owed.gist = self.owed.decline = None
+        self.owed.judge = self.owed.failure_judge = self.owed.gist = self.owed.decline = None
         inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
         procs = inner.processors
         first = next(i for i, p in enumerate(procs) if isinstance(p, LLMUserAggregator))

@@ -132,19 +132,10 @@ def _authorize(request: Request) -> None:
 
 # ------------------------------------------------------------------ env files
 
-_KV_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
-
-
-def unquote(raw: str) -> str:
-    """systemd EnvironmentFile value rules, near enough: trim, strip one layer
-    of matching quotes, unescape \\-sequences inside double quotes."""
-    v = raw.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-        inner = v[1:-1]
-        if v[0] == '"':
-            inner = re.sub(r'\\(["\\$`\n])', r"\1", inner)
-        return inner
-    return v
+# The env-file reader is settings.py's (settings.parse_env), so a tool that loads a file
+# before any setting is read (tests/appliance.load_env_file) need not import this module.
+_KV_RE = settings.ENV_LINE
+unquote = settings.unquote
 
 
 def quote(value: str) -> str:
@@ -155,13 +146,7 @@ def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def parse_env(text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        m = _KV_RE.match(line)
-        if m and not line.lstrip().startswith("#"):
-            out[m.group(1)] = unquote(m.group(2))
-    return out
+parse_env = settings.parse_env
 
 
 def parse_conf(text: str) -> dict[str, str]:

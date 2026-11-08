@@ -68,7 +68,7 @@ BACKUPS = 5
 # box) and those are not ours to rotate out.
 BACKUP_RE = re.compile(r"\.bak-\d{8}-\d{6}(-\d+)?$")
 # What a line may be: blank, a comment, or KEY=value. The KEY=value shape MUST be
-# exactly what config_ui._KV_RE accepts (leading whitespace, an `export `, spaces
+# exactly what settings.ENV_LINE accepts (leading whitespace, an `export `, spaces
 # around `=`): the UI preserves every line it did not touch verbatim, so a line
 # its parser reads but this check refuses would make the whole file unsaveable.
 LINE_RE = re.compile(r"^(?:\s*(?:#.*)?|\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=.*)$")

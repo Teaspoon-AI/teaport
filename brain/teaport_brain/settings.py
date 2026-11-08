@@ -332,3 +332,33 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
     if row["type"] == "flag" and not value:
         logger.info(f"{name}={raw.lower()} — disabled")  # never silently off
     return value
+
+
+# ------------------------------------------------------------------ env files
+
+# A KEY=value line of an env file (brain.env): leading whitespace, an `export `, spaces
+# around `=`. config_apply.LINE_RE must accept exactly these.
+ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
+
+
+def unquote(raw: str) -> str:
+    """systemd EnvironmentFile value rules, near enough: trim, strip one layer
+    of matching quotes, unescape \\-sequences inside double quotes."""
+    v = raw.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        inner = v[1:-1]
+        if v[0] == '"':
+            inner = re.sub(r'\\(["\\$`\n])', r"\1", inner)
+        return inner
+    return v
+
+
+def parse_env(text: str) -> dict[str, str]:
+    """An env file's KEY=value lines as systemd's EnvironmentFile reads them (no shell:
+    a JSON value keeps its quotes, a value with spaces is one value); comments skipped."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        m = ENV_LINE.match(line)
+        if m and not line.lstrip().startswith("#"):
+            out[m.group(1)] = unquote(m.group(2))
+    return out

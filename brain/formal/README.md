@@ -557,6 +557,21 @@ stays pending, so the next render waits up to the call's latency (bounded by
 `SETTLE_WAIT_S`, past which the readers go on and the verdict applies on the live book --
 `OwedAnswers.tla`'s `LATE`).
 
+### A failure's cut is judged against its own statement (#312, 2026-11-08)
+
+`Verdicts` takes the cut judge's HEARD to mean all was heard, for every outcome. For a
+failure that premise was false: the cut judge looks for "a name, number, date, time, place
+or item" of an answer, a failure has none, and on synthetic cuts of five failure tellings
+it answered HEARD at "Sorry, I can't..." on 40-41 of 43 owed cuts -- the caller never told
+they were out of credit. So a failure record's cut goes to a judge of its own, shown the
+record's plain statement (`owed.FAILURE_CUT_JUDGE_PROMPT`, `owed.failure_core`): 1/43
+false HEARD and 11/56 false OWED (gpt-oss-120b, majority of 10), 4/66 and 9/65 on
+tellings in other words and languages. The model is unchanged: which prompt realizes
+the verdict is not modelled, the verdict is already a free choice in `Verdicts`, and the
+new judge's residuals are the ones its rows already carry (`judgeWrong` for a false
+HEARD, `OWES` for a false OWED). A cut failure found OWED is re-told through the note
+like any record (`Decline`, `BoundedTellings`): no new action, so no new row.
+
 ### The gist close (#210, 2026-10-23)
 
 On 2026-10-23 at 14:06 a room session's one-fact answer (a founding year, with the day

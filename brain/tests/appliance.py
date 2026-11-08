@@ -99,6 +99,31 @@ def _probe(host: str, port: int, timeout: float):
         return e
 
 
+# --- the appliance's env file ---------------------------------------------------------
+# A live eval reads its settings (LLM_BASE_URL, LLM_MODEL, LLM_EXTRA_BODY, the key) the way
+# the brain does. `set -a; . /etc/teaport/brain.env` in a shell garbles them: the shell
+# strips LLM_EXTRA_BODY's JSON quotes and runs a value with spaces as a command. So the
+# script loads the file itself, as systemd's EnvironmentFile does (settings.parse_env).
+
+def load_env_file(name: str = "TEAPORT_EVAL_ENV_FILE"):
+    """Apply the env file `name` points at (unset: nothing), before any setting is read.
+    A variable already set in the environment is kept, so one value can be overridden on
+    the command line. An unreadable file is a broken run, not an absent dependency."""
+    path = (os.getenv(name) or "").strip()
+    if not path:
+        return None
+    from teaport_brain.settings import parse_env  # import-light: reads nothing at import
+    try:
+        with open(path, encoding="utf-8") as f:
+            values = parse_env(f.read())
+    except OSError as e:
+        raise SystemExit(f"{name}={path}: cannot read it ({e.__class__.__name__}); run as a "
+                         "user that can (the brain's own, or with sudo -E)") from e
+    for key, value in values.items():
+        os.environ.setdefault(key, value)
+    return path
+
+
 # --- file modes, as root -------------------------------------------------------------
 # A case that stages an unreadable file or a read-only dir proves nothing as root, which
 # reads and writes through any mode. As root it is skipped by name, out loud (run_tests),
