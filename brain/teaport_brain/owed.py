@@ -132,7 +132,11 @@ NOT_HEARD = "They have NOT heard this yet."
 # Round 4 "S3": 20/20 answer after a partial telling (v1's "heard part of it": 15/20).
 PART_HEARD = "They heard only \"{quote}\" before they spoke, which is not the whole answer."
 # A cut failure's (Record.unheard): the failure judge found that what they heard did not get
-# across what happened, so the re-telling says the part they missed. Not replayed.
+# across what happened, so the re-telling says the part they missed. Replayed 2026-11-08
+# (gpt-oss-120b, a synthetic out-of-credit failure cut after "Sorry, I can't do that right
+# now.", a short stand-in system prompt, 10 runs each): the next reply named the credit
+# 10/10 after "go on" (1/10 without this line) and 6/10 after "Okay." (2/10); after a new
+# question it answered that, 0/10 either way, and the failure stays owed for the lull.
 NOT_HEARD_REST = "They did not hear: \"{rest}\""
 FOOTER = ("Say only what a result says. If they want something it doesn't include (a link, "
           "more detail, other items), say you don't have that and offer to look it up; never "

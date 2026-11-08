@@ -2620,6 +2620,19 @@ async def test_a_cut_failure_owed_is_retold_with_what_they_missed_and_closed_whe
     assert rec.state == CLOSED and rec.unheard == "", (rec.state, rec.unheard)
 
 
+async def test_the_reoffer_note_says_not_heard_without_the_rest_line():
+    """The re-offer's note says NOT heard whatever was quoted (note_text): the rest line, like
+    PART_HEARD, stays out of it, and in the caller's note it follows PART_HEARD only."""
+    b, _, _ = credit_cut(FakeFailureJudge(False))
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.unheard and rec.heard_quote
+    reoffer = owed.note_text([rec], owed.REOFFER)
+    assert "They did not hear" not in reoffer and owed.NOT_HEARD in reoffer, reoffer
+    caller = owed.note_text([rec], "caller")
+    assert caller.count("They did not hear") == 1 and owed.PART_HEARD.split("{")[0] in caller
+
+
 async def test_a_cut_failure_is_declined_by_a_dismissal():
     b, ctx, _ = credit_cut(FakeFailureJudge(False), decline=FakeDecline(True))
     await judged(b)
