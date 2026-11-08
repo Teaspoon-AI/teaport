@@ -2519,6 +2519,180 @@ def test_the_decline_checks_request_is_the_measured_one():
         True, False, None, None]
 
 
+
+# =============================================================== a cut failure (C1, #312)
+
+class FakeFailureJudge(FakeJudge):
+    """The failure judge (Owed.failure_judge), scripted as FakeJudge: called with
+    (question, outcome, heard, rest)."""
+
+    async def __call__(self, question, outcome, heard, rest):
+        self.calls.append((question, outcome, heard, rest))
+        if self.error is not None:
+            raise self.error
+        return self.verdict
+
+
+# A synthetic telling of an out-of-credit failure, cut once the caller has heard only that
+# it could not be done: what happened is in the rest.
+CREDIT_REPLY = ("Sorry, I can't check your calendar right now because your AI account has "
+                "run out of credit. Want me to open your settings?")
+CREDIT_CUT = "Sorry, I can't check your calendar right now"
+
+
+def credit_cut(failure_judge, judge=None, decline=None, heard=CREDIT_CUT):
+    """An out-of-credit failure told by the caller's turn and cut after `heard`."""
+    b, ctx, gate = book(pending=True, settings=True, judge=judge or FakeJudge(True),
+                        failure_judge=failure_judge, gist=FakeGist(True),
+                        decline=decline or FakeDecline(False))
+    b.land(CAL_REQ, None, "call-cal", failure="error", detail=CREDIT_402)
+    cut(b, noted_reply(b, "caller", ("call-cal",)), heard, CREDIT_REPLY)
+    return b, ctx, gate
+
+
+def _note_of(view) -> str:
+    notes = [m["content"] for m in view.get_messages() if m.get("role") == "user"
+             and str(m.get("content", "")).startswith(SYSTEM_NOTICE_TAG)]
+    assert len(notes) == 1, notes
+    return notes[0]
+
+
+def test_the_failure_judges_request_is_the_measured_one():
+    """The text the eval measured (2026-11-08: 2/43 false closes, 5/56 false owes by majority
+    of 5), with the failure's own statement as what happened."""
+    msgs = owed.failure_cut_judge_messages("Q?", "It failed.", "heard", "rest")
+    assert msgs[0]["content"] == owed.FAILURE_CUT_JUDGE_PROMPT
+    assert msgs[1]["content"] == ('What they asked: Q?\n\nWhat happened: It failed.\n\n'
+                                  'What they heard:\n"heard"\n\n'
+                                  'The rest, which they did not hear:\n"rest"')
+
+
+def test_a_failures_core_is_its_statement_without_the_instructions():
+    """failure_core: what the failure judge is shown, and the words its terms come from."""
+    _, outcome = owed.failure_outcome("error", "out of credit", settings=True)
+    assert owed.failure_core(outcome) == ("No answer: it couldn't be done because the AI "
+                                          "account has run out of credit."), outcome
+    _, outcome = owed.failure_outcome("timeout")
+    assert owed.failure_core(outcome) == "No answer: it ran out of time before it finished."
+
+
+async def test_a_cut_failure_is_judged_against_its_own_statement():
+    """A cut telling of a failure goes to the failure judge, shown the record's own
+    statement -- not to the cut judge, which looks for a name or a number and finds the
+    rest of a failure has none (40/43 false closes on 11-08). OWED keeps it owed: the cut
+    counts, what they heard is quoted and the rest they did not hear is kept for the note."""
+    fj, judge = FakeFailureJudge(False), FakeJudge(True)
+    b, _, _ = credit_cut(fj, judge)
+    await judged(b)
+    rec = b.record("call-cal")
+    rest = _unheard(CREDIT_REPLY, CREDIT_CUT)
+    assert judge.calls == [], "the cut judge was asked about a failure"
+    assert fj.calls == [(rec.asked, owed.failure_core(rec.outcome), CREDIT_CUT, rest)], fj.calls
+    assert "open_settings" not in fj.calls[0][1], "the settings hint is no part of what happened"
+    assert rec.state == OWED and rec.cuts == 1, (rec.state, rec.cuts)
+    assert rec.heard_quote == CREDIT_CUT and rec.unheard == rest, (rec.heard_quote, rec.unheard)
+
+
+async def test_a_cut_failure_the_judge_finds_heard_is_closed():
+    fj, judge = FakeFailureJudge(True), FakeJudge(False)
+    b, _, _ = credit_cut(fj, judge, heard="Sorry, I can't check your calendar right now "
+                         "because your AI account has run out of credit.")
+    await judged(b)
+    assert b.record("call-cal").state == CLOSED and judge.calls == [] and len(fj.calls) == 1
+
+
+async def test_a_cut_failure_owed_is_retold_with_what_they_missed_and_closed_when_heard():
+    """User's design (11-08): the cut failure found OWED is re-told on the next turn through
+    the note -- what they heard (PART_HEARD) and the rest they did not (NOT_HEARD_REST) --
+    after the decline check reads their words; the next telling heard to its end closes it."""
+    decline = FakeDecline(False)
+    b, ctx, _ = credit_cut(FakeFailureJudge(False), decline=decline)
+    await judged(b)
+    rec = b.record("call-cal")
+    says(ctx, "Wait, why not?")
+    view, keys = await b.view(ctx, owed.COMMIT)
+    assert keys == ("call-cal",) and rec.state == OWED and len(decline.calls) == 1
+    note = _note_of(view)
+    rest = _unheard(CREDIT_REPLY, CREDIT_CUT)
+    status = owed.PART_HEARD.format(quote=CREDIT_CUT)
+    assert f"   {status}\n   They did not hear: \"{rest}\"\n" in note, note
+    b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False, audio=True)
+    assert rec.state == CLOSED and rec.unheard == "", (rec.state, rec.unheard)
+
+
+async def test_the_reoffer_note_says_not_heard_without_the_rest_line():
+    """The re-offer's note says NOT heard whatever was quoted (note_text): the rest line, like
+    PART_HEARD, stays out of it, and in the caller's note it follows PART_HEARD only."""
+    b, _, _ = credit_cut(FakeFailureJudge(False))
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.unheard and rec.heard_quote
+    reoffer = owed.note_text([rec], owed.REOFFER)
+    assert "They did not hear" not in reoffer and owed.NOT_HEARD in reoffer, reoffer
+    caller = owed.note_text([rec], "caller")
+    assert caller.count("They did not hear") == 1 and owed.PART_HEARD.split("{")[0] in caller
+
+
+async def test_a_cut_failure_is_declined_by_a_dismissal():
+    b, ctx, _ = credit_cut(FakeFailureJudge(False), decline=FakeDecline(True))
+    await judged(b)
+    says(ctx, "Never mind, I'll sort it out later.")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ()
+    assert b.record("call-cal").state == owed.DECLINED
+
+
+async def test_a_failure_told_and_cut_twice_is_dropped():
+    """BoundedTellings: the second cut telling the failure judge finds OWED ends it."""
+    fj = FakeFailureJudge(False)
+    b, ctx, _ = credit_cut(fj)
+    await judged(b)
+    says(ctx, "Wait, why not?")
+    await b.view(ctx, owed.COMMIT)
+    cut(b, noted_reply(b, "caller", ("call-cal",)), CREDIT_CUT, CREDIT_REPLY)
+    await judged(b)
+    assert b.record("call-cal").state == owed.DROPPED and len(fj.calls) == 2
+
+
+async def test_a_cut_failure_with_no_failure_judge_goes_to_the_cut_judge():
+    """Nothing wired (a test's book): the cut judge, as before."""
+    judge = FakeJudge(False)
+    b, _, _ = credit_cut(None, judge)
+    await judged(b)
+    assert len(judge.calls) == 1 and b.record("call-cal").state == OWED
+    fj = FakeFailureJudge(error=RuntimeError("x"))
+    b, _, _ = credit_cut(fj, FakeJudge(True))
+    await judged(b)
+    assert len(fj.calls) == 1 and b.record("call-cal").state == OWED, "an error errs owed"
+
+
+async def test_an_answer_cut_keeps_the_cut_judge_and_its_measured_note():
+    """A record with an answer: the cut judge, never the failure judge, and the note the
+    replay rounds measured -- no rest line."""
+    fj, judge = FakeFailureJudge(True), FakeJudge(False)
+    b, ctx, _ = book(judge=judge, failure_judge=fj, gist=FakeGist(True),
+                     decline=FakeDecline(False))
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    cut(b, noted_reply(b, "caller"), CUT_AT, TELLING)
+    await judged(b)
+    rec = b.record("call-hn")
+    assert fj.calls == [] and len(judge.calls) == 1 and rec.state == OWED
+    assert rec.heard_quote == CUT_AT and rec.unheard == ""
+    says(ctx, "Wait, what was that?")
+    view, _ = await b.view(ctx, owed.COMMIT)
+    assert _note_of(view) == owed.note_text([rec], owed.COMMIT)
+    assert "They did not hear" not in _note_of(view)
+
+
+def test_a_cut_failures_rest_survives_the_rooms_sleep():
+    status, outcome = owed.failure_outcome("error", CREDIT_402)
+    rec = Record.make("call-cal", CAL_REQ, outcome, failure=status, heard_quote=CREDIT_CUT,
+                      unheard="because it ran out of credit.")
+    b, _, _ = book()
+    b.restore([rec.to_saved()])
+    got = b.record("call-cal")
+    assert got.unheard == rec.unheard and got.heard_quote == CREDIT_CUT
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

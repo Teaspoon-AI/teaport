@@ -171,6 +171,35 @@ def test_a_scripts_socket_dirs_land_in_its_private_tmpdir():
         tempfile.tempdir = saved
 
 
+def test_an_evals_env_file_is_read_as_systemd_reads_it(tmp_path, monkeypatch):
+    """appliance.load_env_file: no shell -- a JSON value keeps its quotes, a value with
+    spaces is one value, one pair of outer quotes goes -- and a variable already set in
+    the environment is kept. It writes this process's os.environ, which every script
+    after it inherits (test_script): the environment is put back whole afterwards, and
+    the names are ones no script reads (a TEAPORT_LLM_GUARD_RECOVERY left behind once
+    gave test_empty_completion its English override)."""
+    env = tmp_path / "brain.env"
+    env.write_text('# a comment\nTEAPORT_TEST_ENVFILE_JSON={"provider":{"order":["Groq"]}}\n'
+                   'TEAPORT_TEST_ENVFILE_SPACES="Let me say that again, plainly."\n'
+                   "TEAPORT_TEST_ENVFILE_SINGLE='a/model'\n"
+                   "TEAPORT_TEST_ENVFILE_KEPT=http://from-the-file\n")
+    saved = dict(os.environ)
+    try:
+        monkeypatch.setenv("TEAPORT_TEST_ENVFILE_KEPT", "http://from-the-shell")
+        monkeypatch.setenv("TEAPORT_EVAL_ENV_FILE", str(env))
+        assert appliance.load_env_file() == str(env)
+        assert os.environ["TEAPORT_TEST_ENVFILE_JSON"] == '{"provider":{"order":["Groq"]}}'
+        assert os.environ["TEAPORT_TEST_ENVFILE_SPACES"] == "Let me say that again, plainly."
+        assert os.environ["TEAPORT_TEST_ENVFILE_SINGLE"] == "a/model"
+        assert os.environ["TEAPORT_TEST_ENVFILE_KEPT"] == "http://from-the-shell"
+        monkeypatch.setenv("TEAPORT_EVAL_ENV_FILE", str(tmp_path / "missing.env"))
+        with pytest.raises(SystemExit):
+            appliance.load_env_file()
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 @pytest.mark.parametrize("script,timeout", SCRIPTS,
                          ids=[s for s, _ in SCRIPTS])
 def test_script(script, timeout):

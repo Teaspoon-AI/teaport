@@ -1316,12 +1316,13 @@ def build_agent_session(transport, *, voice: str | None = None,
     # cut tellings (owed.py, #203/#204): the LLM renders its note into every request, the
     # ledger settles each reply into it -- judged by the session's own model for the gist
     # (llm.judge_gist, asked as the reply's stream ends) and, cut, for the rest
-    # (llm.judge_cut) and for whether the caller still wants it (llm.judge_decline,
-    # #231) --, the gate is the door its runs go through, and a room's sleep keeps it
+    # (llm.judge_cut; a failure's, llm.judge_failure_cut) and for whether the caller
+    # still wants it (llm.judge_decline, #231) --, the gate is the door its runs go through, and a room's sleep keeps it
     # with the conversation. With no model nothing is ever owed (no tool runs), and it
     # has no judges: a room's restored records still travel on with the conversation.
     owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS,
                 judge=llm.judge_cut if llm is not None else None,
+                failure_judge=llm.judge_failure_cut if llm is not None else None,
                 gist=llm.judge_gist if llm is not None else None,
                 decline=llm.judge_decline if llm is not None else None,
                 settings=any(t.name == "open_settings" for t in session_tools)
