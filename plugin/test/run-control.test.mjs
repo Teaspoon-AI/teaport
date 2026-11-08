@@ -404,6 +404,21 @@ test("a control call goes to the relay, and its result back to the brain, never 
   assert.equal((await ask(ws, "cancel that", "r2"))[0].claimed, false, "no consult open any more");
 });
 
+test("only OpenClaw's own tools go to the relay; a brain tool's call is dropped", async () => {
+  // onToolCall has no display-only call: every client runs or refuses what it is shown
+  // (the Apple app's talk.client.toolCall rejects web_search). A brain from before the
+  // echo was removed still sends a tool_call for its own tools.
+  const { ws, toolCalls } = await session();
+  ws.reply({ type: "tool_call", call_id: "fc_1", name: "web_search", args: { query: "q" } });
+  ws.reply({ type: "tool_call", call_id: "fc_2", name: "get_current_time", args: {} });
+  ws.reply({ type: "tool_call", call_id: "fc_3", name: "", args: {} });
+  ws.reply({ type: "tool_call", call_id: "fc_4", args: {} });
+  assert.deepEqual(toolCalls, []);
+  ws.reply({ type: "tool_call", call_id: "teaport-consult-x1", name: "openclaw_agent_consult", args: { question: "q" } });
+  ws.reply({ type: "tool_call", call_id: "teaport-control-x1", name: "openclaw_agent_control", args: { text: "t", mode: "status" } });
+  assert.deepEqual(toolCalls.map((c) => c.name), ["openclaw_agent_consult", "openclaw_agent_control"]);
+});
+
 test("a consult the brain gave up on is cancelled at the relay", async () => {
   const { bridge, ws, events } = await session();
   startConsult(ws, bridge);

@@ -268,9 +268,9 @@ OPENCLAW_AGENT_CONTROL = FunctionSchema(
 )
 # The tools OpenClaw's side of a Talk session runs, by OpenClaw's contract (module
 # comment): the host's schema replaces the brain's copy (host_tool_schemas), the handler
-# sends the call the relay acts on, and _wrap sends no display card for them -- the relay
-# runs every consult it is handed and the Control UI every control call it sees, so a card
-# would run the tool a second time.
+# sends the call the relay acts on. They are the only {"type": "tool_call"} the brain
+# sends: the relay runs every consult it is handed and the Talk client every other call
+# it is shown, so a call for any other tool would be run, or refused, by OpenClaw (_wrap).
 HOST_RUN_TOOLS = frozenset({OPENCLAW_AGENT_CONSULT.name, OPENCLAW_AGENT_CONTROL.name})
 
 LIST_VOICES = FunctionSchema(
@@ -2092,17 +2092,14 @@ def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
         # break the tool itself.
         try:
             args = params.arguments or {}
-            # Machine-readable event: the plugin forwards it to the relay's
-            # onToolCall (tool.call Talk event). Today's control-ui doesn't render
-            # those yet, so ALSO send the styled bubble the Talk view can render.
-            # Not for a host-run tool (HOST_RUN_TOOLS): the relay RUNS every
-            # openclaw_agent_consult call it is handed, and the Control UI every
-            # openclaw_agent_control call it is shown, so a card would run it a second
-            # time. Their handlers send the call that runs, which is also their card.
-            if name not in HOST_RUN_TOOLS:
-                await params.llm.push_frame(OutputTransportMessageUrgentFrame(
-                    message={"type": "tool_call", "call_id": params.tool_call_id,
-                             "name": name, "args": args}))
+            # The bubble is the card: the only display of a tool the brain runs itself.
+            # No {"type": "tool_call"} goes for it. The plugin hands those to the relay's
+            # onToolCall, and OpenClaw has no display-only tool call: the relay shows
+            # every call to the Talk client as one to RUN (OpenClaw 2026.9.7 to main).
+            # The Control UI and Android answered the brain's web_search with an error
+            # result, and the Apple app sent it to talk.client.toolCall, which rejected it,
+            # with "Thinking…" shown meanwhile; no client drew a card. Only a host-run
+            # tool's handler sends one (HOST_RUN_TOOLS: _send_call), the call OpenClaw runs.
             summary = _args_summary(args)
             await _bubble(params.llm,
                           f"> 🔧 **{name}**" + (f" · `{summary}`" if summary else ""))
