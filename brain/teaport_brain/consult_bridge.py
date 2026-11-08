@@ -22,12 +22,12 @@ from loguru import logger
 
 _pending: dict = {}
 
-# Every consult call_id starts with this (tools._openclaw_agent_consult mints them). The relay
-# also echoes tool_results for the brain's OWN tool calls -- the display-only
-# tool_call events tools._wrap sends with pipecat's "fc_..." ids -- dozens per Talk
-# consult. Those are not calls of ours and never were, so they are dropped without a log
-# line; only one of our ids that matches nothing (a result landing after its waiter
-# gave up) is worth one. All of ours start with _OURS.
+# Every consult call_id starts with this (tools._openclaw_agent_consult mints them). A
+# tool_result for an id not of ours is dropped without a log line: a brain before the
+# echo was removed sent a tool_call for each of its OWN tools (pipecat's "fc_..." ids),
+# and the Talk client answered each with an error result. Only one of our ids that
+# matches nothing (a result landing after its waiter gave up) is worth a line. All of
+# ours start with _OURS.
 CALL_ID_PREFIX = "teaport-consult-"
 _OURS = "teaport-"
 

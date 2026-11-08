@@ -52,6 +52,9 @@ const RUN_CONTROL_PROTOCOL = 1;
 const RELAY_FEATURE = "relay";
 // OpenClaw's consult tool, whose calls the relay runs (and its run control acts on).
 const CONSULT_TOOL_NAME = "openclaw_agent_consult";
+// The brain's tool calls OpenClaw runs (brain: tools.HOST_RUN_TOOLS); the only ones
+// handed to the relay's onToolCall.
+const HOST_RUN_TOOL_NAMES = new Set([CONSULT_TOOL_NAME, "openclaw_agent_control"]);
 // How long a claim waits for the relay to act on the words (answerRunControl): its reply
 // (sendUserMessage) or a cancelled consult result. A status or a cancel takes the relay
 // moments; past this the words are left to the brain's model.
@@ -858,22 +861,22 @@ class TeaportBridge {
         }
         this._forward(events);
       } else if (msg.type === "tool_call") {
-        // Surface the brain's tool calls in the OpenClaw Talk UI: the relay's
-        // onToolCall emits a tool.call event — the same card the text agent's
-        // tool calls render as. OpenClaw's own two tools run from there, and their
-        // results come back through submitToolResult for the call_id they carry:
-        // "openclaw_agent_consult" invokes the relay's agent-consult machinery
-        // (working responses + a final result) — the brain's delegation path — and
-        // "openclaw_agent_control" is run by the Talk client (the Control UI's
-        // handleToolCall -> talk.session.steer), which submits its result the same
-        // way. Every other name is a display-only card (the client answers it with
-        // an error result, which the brain drops).
-        // NOTE for the future voice-call (phone) surface: that handler EXECUTES
-        // every onToolCall name — informational events must be re-guarded there.
+        // OpenClaw's own two tools, which OpenClaw runs: the relay's onToolCall
+        // shows the call to the Talk client, and the result comes back through
+        // submitToolResult for the call_id it carries. "openclaw_agent_consult"
+        // invokes the relay's agent-consult machinery (working responses + a final
+        // result) — the brain's delegation path — and "openclaw_agent_control" is
+        // run by the Talk client (the Control UI's handleToolCall ->
+        // talk.session.steer), which submits its result the same way.
+        // No other name goes: onToolCall has no display-only call (OpenClaw 2026.9.7
+        // to main). The Control UI and Android answer one with an error result, the
+        // Apple app sends it to talk.client.toolCall, which refuses it, and no
+        // client draws a card. A tool the brain runs itself is shown by the
+        // brain's own bubble, a transcript line. A brain from before that change
+        // still sends a tool_call for its own tools; it is dropped here.
         if (
           this._req.onToolCall &&
-          typeof msg.name === "string" &&
-          msg.name
+          HOST_RUN_TOOL_NAMES.has(msg.name)
         ) {
           const callId = typeof msg.call_id === "string" && msg.call_id ? msg.call_id : undefined;
           if (msg.name === CONSULT_TOOL_NAME && callId) this._consults.set(callId, false);

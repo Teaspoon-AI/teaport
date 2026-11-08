@@ -435,24 +435,24 @@ async def test_a_control_cancelled_by_a_barge_in_still_tells_what_it_did():
         tools.CONTROL_TIMEOUT_S = saved
 
 
-async def test_no_display_card_runs_a_host_run_tool_a_second_time():
-    """tools._wrap sends a display tool_call for every tool; the relay runs every consult
-    and the Control UI every control call it is shown, so theirs must not go."""
-    for name in tools.HOST_RUN_TOOLS:
+async def test_wrap_sends_no_tool_call_for_any_tool():
+    """No {"type": "tool_call"} from _wrap, for any tool. The plugin hands one to the
+    relay's onToolCall, and every Talk client runs or refuses what it is shown (OpenClaw
+    has no display-only call): a host-run tool's would run a second time, and a brain
+    tool's was refused (the Apple app's talk.client.toolCall rejects web_search). The
+    bubble is the only card; a host-run tool's own handler sends the call that runs."""
+    async def handler(params):
+        await params.result_callback({"ok": True})
+
+    for name, args in [*((n, {"text": "x", "mode": "status"}) for n in tools.HOST_RUN_TOOLS),
+                       ("get_current_time", {}), ("web_search", {"query": "q"})]:
         llm = _LLM()
         llm._teaport_spoke = True
-
-        async def handler(params):
-            await params.result_callback({"ok": True})
-
-        params, _ = _params(llm, {"text": "x", "mode": "status"})
+        params, _ = _params(llm, args)
         await tools._wrap(name, handler, lambda: "en")(params)
         assert llm.messages("tool_call") == [], name
-    llm = _LLM()
-    llm._teaport_spoke = True
-    params, _ = _params(llm, {})
-    await tools._wrap("get_current_time", handler, lambda: "en")(params)
-    assert len(llm.messages("tool_call")) == 1, "other tools keep their card"
+        bubbles = [m for m in llm.messages("transcript") if "🔧" in m.get("text", "")]
+        assert len(bubbles) == 1, (name, "the bubble still goes")
 
 
 async def test_control_is_offered_on_talk_only_and_only_with_the_consult():

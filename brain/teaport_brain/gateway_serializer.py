@@ -69,7 +69,7 @@
 #                                                           openclaw_agent_consult or, on
 #                                                           Talk, openclaw_agent_control,
 #                                                           answered with a tool_result;
-#                                                           or a display-only card)
+#                                                           never for another tool)
 #           {"type":"tool_cancel","call_id":...}           (the brain stopped waiting on a
 #                                                           consult the relay acknowledged:
 #                                                           the relay is to stop it too,

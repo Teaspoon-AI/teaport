@@ -113,7 +113,7 @@ Every tool is one record: a schema for the model, a handler, an on and off switc
 
 The full set is `get_host_status`, `get_current_time`, `web_search`, `web_fetch`, `search_memory`, `remember`, `openclaw_agent_consult`, `openclaw_agent_control`, `list_voices`, `switch_voice`, `set_volume`, `restart_session`, `end_conversation`, `answer_phone_call`, `pair_device`, `open_settings`, and `wifi_setup`.
 
-<!-- source: brain/teaport_brain/tools.py:106-378#62c4e78f; brain/teaport_brain/tools.py:389-401#1143271d -->
+<!-- source: brain/teaport_brain/tools.py:106-378#2b9a971d; brain/teaport_brain/tools.py:389-401#1143271d -->
 
 In agent mode (`TEAPORT_AGENT=openclaw`), the brain calls the co-resident OpenClaw gateway over loopback, so the voice agent shares the agent's web search, web fetch, and long-term memory. The relay runs `openclaw_agent_consult` itself on Talk; the gateway's agent lane runs it on every other front end.
 

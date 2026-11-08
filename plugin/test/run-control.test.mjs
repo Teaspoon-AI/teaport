@@ -311,7 +311,8 @@ test("nothing is claimed with no consult the relay is running", async () => {
   bridge.submitToolResult("teaport-consult-b", { status: "working" }, { willContinue: true });
   bridge.submitToolResult("teaport-consult-b", { text: "Sunny." });
   assert.equal((await ask(ws, "cancel that", "r3"))[0].claimed, false, "answered");
-  // A tool result for one of the brain's display-only calls is no consult.
+  // A tool result for an id the plugin never handed the relay (an old brain's own-tool
+  // call, fc_…) is no consult.
   bridge.submitToolResult("fc_1", { ok: true }, { willContinue: true });
   assert.equal((await ask(ws, "cancel that", "r4"))[0].claimed, false);
 });
@@ -402,6 +403,21 @@ test("a control call goes to the relay, and its result back to the brain, never 
   bridge.submitToolResult("teaport-consult-a1", { status: "cancelled", message: "Cancelled the active OpenClaw run." });
   assert.equal(results(ws, "r1")[0].claimed, true);
   assert.equal((await ask(ws, "cancel that", "r2"))[0].claimed, false, "no consult open any more");
+});
+
+test("only OpenClaw's own tools go to the relay; a brain tool's call is dropped", async () => {
+  // onToolCall has no display-only call: every client runs or refuses what it is shown
+  // (the Apple app's talk.client.toolCall rejects web_search). A brain from before the
+  // echo was removed still sends a tool_call for its own tools.
+  const { ws, toolCalls } = await session();
+  ws.reply({ type: "tool_call", call_id: "fc_1", name: "web_search", args: { query: "q" } });
+  ws.reply({ type: "tool_call", call_id: "fc_2", name: "get_current_time", args: {} });
+  ws.reply({ type: "tool_call", call_id: "fc_3", name: "", args: {} });
+  ws.reply({ type: "tool_call", call_id: "fc_4", args: {} });
+  assert.deepEqual(toolCalls, []);
+  ws.reply({ type: "tool_call", call_id: "teaport-consult-x1", name: "openclaw_agent_consult", args: { question: "q" } });
+  ws.reply({ type: "tool_call", call_id: "teaport-control-x1", name: "openclaw_agent_control", args: { text: "t", mode: "status" } });
+  assert.deepEqual(toolCalls.map((c) => c.name), ["openclaw_agent_consult", "openclaw_agent_control"]);
 });
 
 test("a consult the brain gave up on is cancelled at the relay", async () => {
