@@ -311,7 +311,8 @@ test("nothing is claimed with no consult the relay is running", async () => {
   bridge.submitToolResult("teaport-consult-b", { status: "working" }, { willContinue: true });
   bridge.submitToolResult("teaport-consult-b", { text: "Sunny." });
   assert.equal((await ask(ws, "cancel that", "r3"))[0].claimed, false, "answered");
-  // A tool result for one of the brain's display-only calls is no consult.
+  // A tool result for an id the plugin never handed the relay (an old brain's own-tool
+  // call, fc_…) is no consult.
   bridge.submitToolResult("fc_1", { ok: true }, { willContinue: true });
   assert.equal((await ask(ws, "cancel that", "r4"))[0].claimed, false);
 });

@@ -422,3 +422,19 @@ def test_elsewhere_the_filler_is_charted_as_it_plays():
     assert _filler_call(False) == [
         ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
+
+
+def test_the_plugin_hands_the_relay_exactly_the_host_run_tools():
+    """plugin/provider.js forwards a tool_call to the relay's onToolCall only for
+    HOST_RUN_TOOL_NAMES, its copy of tools.HOST_RUN_TOOLS. A host-run tool missing there
+    would be dropped by the plugin and never run; an extra name would hand OpenClaw a
+    call it runs or refuses."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "..", "plugin", "provider.js"),
+               encoding="utf-8").read()
+    consts = dict(re.findall(r'^const (\w+) = "([^"]+)";', src, re.M))
+    m = re.search(r"^const HOST_RUN_TOOL_NAMES = new Set\(\[([^\]]*)\]\);", src, re.M)
+    assert m, "HOST_RUN_TOOL_NAMES not found in provider.js"
+    names = set()
+    for item in (x.strip() for x in m.group(1).split(",") if x.strip()):
+        names.add(item.strip('"') if item.startswith('"') else consts[item])
+    assert names == set(tools.HOST_RUN_TOOLS), names
