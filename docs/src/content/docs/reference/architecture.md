@@ -33,7 +33,7 @@ The heard-grounding ledger records what you actually heard, the endpointing poli
 
 One process serves every front end: the `/talk` WebSocket and the phone line live in `teaport-brain`. Each session still gets a pipeline of its own, so one session's failure ends that session only.
 
-<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:907-910#50aa8078 -->
+<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:931-934#50aa8078 -->
 
 ## The plugin
 
@@ -121,7 +121,7 @@ In agent mode (`TEAPORT_AGENT=openclaw`), the brain calls the co-resident OpenCl
 
 A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway, a configured front door, and a room or Talk conversation behind `pair_device`, which is never offered on a phone call or through the Discord bridge; and the settings site and a room or Talk conversation behind `open_settings`, under the same rule. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
 
-<!-- source: brain/teaport_brain/tools.py:19-25,1777-1801,1814-1825,1826-1828,1831-1832,1838-1842,1843-1848#6cf4ebb0; brain/teaport_brain/wifi_voice.py:289-291#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
+<!-- source: brain/teaport_brain/tools.py:19-25,1777-1801,1814-1825,1826-1828,1831-1832,1838-1842,1843-1848#6cf4ebb0; brain/teaport_brain/wifi_voice.py:290-292#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces client-tool features; the phone and Discord announce none and never see these tools.
 

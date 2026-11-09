@@ -964,6 +964,46 @@ def test_an_answer_over_a_reply_goes_in_its_place():
     asyncio.run(run())
 
 
+def test_only_the_hearings_own_line_goes_in_place():
+    """#389 review: a line something else says while a phrase is still deciding (the
+    setup poller's news, started before) answers nothing and is said as usual; the
+    phrase's own answer, after its wait, goes in place of the reply."""
+    async def run():
+        placed = []
+
+        async def in_place(text, max_secs):
+            placed.append(text)
+            return True
+
+        class Slow:
+            go = asyncio.Event()
+
+            async def heard(self, voice, text):
+                if text != "open the pod bay doors":
+                    return False
+                await self.go.wait()                     # e.g. a network check
+                await voice.say("the answer")
+                return True
+        v = _Voice()
+        v.say_in_place = in_place
+        v.phrases.insert(0, Slow())
+        news = asyncio.Event()
+
+        async def poller():
+            await news.wait()
+            await v.say("the news")
+        background = asyncio.get_running_loop().create_task(poller())
+        hearing = asyncio.get_running_loop().create_task(v._heard("open the pod bay doors"))
+        await asyncio.sleep(0.02)
+        news.set()
+        await background
+        assert placed == [] and v.said() == ["the news"], (placed, v.said())
+        Slow.go.set()
+        assert await hearing
+        assert placed == ["the answer"] and v.said() == ["the news"], (placed, v.said())
+    asyncio.run(run())
+
+
 def _without_a_model():
     """The environment of a box with no model (test_no_model_session.py): no endpoint,
     no key, a HOME with no key file. Returns what to put back."""
@@ -1030,6 +1070,50 @@ async def test_the_phrase_wins_over_an_owed_failure_which_stays_owed():
         assert [d["key"] for d in rig.owed.snapshot()] == ["call-1"]
 
 
+async def test_a_line_that_cannot_go_in_place_is_said_as_usual():
+    """#389 review: own_line failing before the line is queued is no line placed --
+    say_in_place says False, the phrase says it the usual way, and the failure is
+    logged, not left in a task nobody reads."""
+    import contextlib
+    session = build_agent_session(TalkTransport(), front_end="room",
+                                  client_features=frozenset({"sleep"}))
+    session.followup_gate._bot = True                    # a reply is playing
+
+    @contextlib.asynccontextmanager
+    async def broken(line, **kw):
+        raise RuntimeError("the pipeline is gone")
+        yield  # noqa: unreachable -- an async generator
+    session.own_line = broken
+    assert await session.say_in_place("Okay, going to sleep.", 1.0) is False
+    await asyncio.sleep(0)
+    assert not session._lines
+    v = _Voice()
+    v.say_in_place = session.say_in_place
+    assert await v._heard("go to sleep")
+    assert v.said() == [goodbye.SLEEP_TEXT], "the line was lost"
+
+
+async def test_a_line_held_in_place_ends_with_the_session():
+    """#389 review: the hold on a line said in place (the brain's own cut) does not
+    outlive the session: its end settles it at once."""
+    import contextlib
+    from teaport_brain.followup_gate import Delivery
+    session = build_agent_session(TalkTransport(), front_end="room",
+                                  client_features=frozenset({"sleep"}))
+    gate = session.followup_gate
+    gate._bot = True
+
+    @contextlib.asynccontextmanager
+    async def queued(line, **kw):
+        yield Delivery()                              # queued, never played
+    session.own_line = queued
+    assert await session.say_in_place("Okay, going to sleep.", 20.0)
+    (task,) = session._lines
+    gate._end_interruption_waits()                    # the session ends
+    assert await asyncio.wait_for(task, 1.0) is False
+    assert not session._lines
+
+
 # A long reply: about 14 s of synthesized speech (WORD_SECS a word).
 STORY = " ".join(["Once upon a time a small fox walked through the quiet woods."] * 4)
 
@@ -1062,6 +1146,8 @@ async def test_389_go_to_sleep_over_a_paused_reply_stops_it_and_sleeps():
         assert len(rig.provider.requests) == 1, "a model was asked about the phrase"
         assert rig.session.sleep_phrase.sent
         assert list(rig.session.sleep_phrase.decisions) == [SENT]
+        # The pause was ended by the box's own line, not counted as the caller's barge-in.
+        assert (pauser.own_cuts, pauser.cancels) == (1, 0), (pauser.own_cuts, pauser.cancels)
 
 
 async def test_the_backstop_sleeps_on_a_sign_off_with_only_a_failure_owed():

@@ -37,6 +37,7 @@
 # never a password.
 #
 import asyncio
+import contextvars
 import json
 import math
 import os
@@ -380,6 +381,23 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
         ssid=spell(ssid, t), password=spell(password, t), url=url)
 
 
+class _Answer:
+    """The answer to one transcript a phrase is hearing (PhraseVoice._heard): open until
+    its first line is said, or the hearing is over."""
+
+    __slots__ = ("voice", "open")
+
+    def __init__(self, voice):
+        self.voice, self.open = voice, True
+
+
+# The answer being given in this task, and in the tasks it starts (asyncio copies the
+# context into each): a line said elsewhere -- the setup poller's news, a line said again
+# after a cut, started before or outside the hearing -- answers nothing (PhraseVoice.say).
+_ANSWERING: contextvars.ContextVar = contextvars.ContextVar("teaport_phrase_answer",
+                                                            default=None)
+
+
 class PhraseVoice(FrameProcessor):
     """The session's fixed phrases, between the user's transcript and the LLM: what the
     box hears and answers itself, without the model, in the session's language (catalog
@@ -414,8 +432,6 @@ class PhraseVoice(FrameProcessor):
         # AgentSession.say_in_place, where the session wires it: an answer to the user's
         # words said while the bot is replying stops that reply first (say()).
         self.say_in_place = None
-        # A phrase is answering words just heard (_heard), and has not spoken yet.
-        self._answering = False
 
     @property
     def t(self) -> i18n.T:
@@ -429,10 +445,14 @@ class PhraseVoice(FrameProcessor):
         the user asked for something else. Queued behind it instead, the barge-in pauser
         found no turn in words a phrase took and resumed the reply, and the answer waited
         for the rest of it (#389). One place for every phrase: "go to sleep", "open my
-        settings", Wi-Fi setup's."""
+        settings", Wi-Fi setup's. Only a line said by the hearing itself (or a task it
+        started, _ANSWERING): one said meanwhile by anything else answers nothing."""
         self.says += 1
         self.note_said(text)
-        answering, self._answering = self._answering, False
+        answer = _ANSWERING.get()
+        answering = answer is not None and answer.open and answer.voice is self
+        if answering:
+            answer.open = False
         if (answering and self.say_in_place is not None
                 and await self.say_in_place(text, LINE_START_SECS + LINE_MAX_SECS)):
             return
@@ -500,7 +520,8 @@ class PhraseVoice(FrameProcessor):
         if self._echo(text):
             logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
             return True
-        self._answering = True
+        answer = _Answer(self)
+        reset = _ANSWERING.set(answer)
         try:
             if self.idle():
                 for phrase in self.phrases:
@@ -508,7 +529,8 @@ class PhraseVoice(FrameProcessor):
                         return True
             return await self._own(text)
         finally:
-            self._answering = False
+            answer.open = False
+            _ANSWERING.reset(reset)
 
     async def _own(self, text: str) -> bool:
         """A subclass's own phrases and answers: none here."""
@@ -683,9 +705,11 @@ class WifiSetupVoice(PhraseVoice):
             logger.debug(f"wifi setup: could not tell the client ({e!r})")
 
     async def _shielded(self, coro) -> None:
-        """Run a unit operation to its end even if the frame that asked for it is
-        interrupted: a barge-in cancels the frame being processed, and half a start (the
-        unit asked to start, nobody following it) or half a cancel is worse than either."""
+        """Run a unit operation to its end even if the task that asked for it is
+        cancelled -- a session ending under it, a pipeline torn down mid-frame (a final
+        is not dropped by an interruption any more: process_frame holds it while the
+        phrases decide) -- since half a start (the unit asked to start, nobody following
+        it) or half a cancel is worse than either."""
         await asyncio.shield(self._spawn(coro))
 
     async def _start(self, welcome: bool = False) -> None:

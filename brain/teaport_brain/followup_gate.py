@@ -542,6 +542,11 @@ class FollowupGate(FrameProcessor):
             await self._interrupted.wait()
         return True
 
+    async def until_ended(self) -> None:
+        """Until the session is ending or over (ended): what holds a line of its own
+        (AgentSession._hold_line) does not outlive it."""
+        await self._ended_event.wait()
+
     def _end_interruption_waits(self) -> None:
         """The pipeline is over: what waits in interrupted_since goes on, and so does a
         wait on the caller's speech (speech_over)."""
