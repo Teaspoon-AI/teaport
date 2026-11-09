@@ -253,6 +253,8 @@ def test_every_lane_asks_the_agent_to_search_before_it_browses(monkeypatch):
     the model's."""
     note = tools._CONSULT_LOOKUP_NOTE
     assert "web_search" in note and "web_fetch" in note and "browser" in note
+    # Nothing the model could pass on to the listener, or read as "never browse".
+    assert note.endswith("could not answer: it is slow on this device."), note
     asked = []
 
     async def consult(message, **kw):
