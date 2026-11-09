@@ -2210,7 +2210,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   #
   # A line given as `?KEY=value` is a SEED: written on a first install, but an existing
   # KEY in the file wins over it on a repair. That is for the values the config page
-  # (http://<box>:$BRAIN_PORT/config) lets the operator change and the installer merely
+  # (https://<box>:$SETTINGS_PORT/settings/config) lets the operator change and the installer merely
   # defaults — LLM_BASE_URL/LLM_MODEL when nobody answered the prompt or set the env var.
   # Without it the documented repair action put the box back on the local LLM endpoint
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
@@ -2572,7 +2572,7 @@ reissue_short_intermediate() {
 # code is a bearer secret until used, and the session cookie is Secure); the rest of the
 # brain (/talk, the config page at /config) stays off the front door, and the http block
 # above never matches them, so a cleartext hit is just redirected to https first. The
-# brain's own port is open to the LAN (the config page), so the brain itself answers
+# brain's own port is open to the LAN (/talk), so the brain itself answers
 # these only to a loopback peer that says X-Forwarded-Proto https -- this proxy, which
 # sets that header itself -- and gives anything else a 404 (pairing.py via_front_door).
 #
@@ -2779,7 +2779,7 @@ phase_services() {
   install_config_sudoers
 }
 
-# The config page (http://<box>:$BRAIN_PORT/config, on the brain) writes the env files
+# The config page (/settings/config on the Settings site, /config on the box itself) writes the env files
 # above and restarts teaport-* units. The env files are root:$RUN_USER 0640 and a restart
 # is systemctl, so the brain — which runs as $RUN_USER — cannot do either itself. This
 # is the one line that lets it, through one script that only ever touches those files

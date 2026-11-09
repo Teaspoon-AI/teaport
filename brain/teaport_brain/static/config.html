@@ -279,6 +279,8 @@
 
   // On the front door the page is /settings/config and its routes are under /settings,
   // where the owner's Settings session stands in for the token (settings_access.py).
+  // The operator's token works there too (?token=, one remembered, or the gate at
+  // /settings/config#token); a 401 anywhere but #token sends the owner to the code page.
   const BASE = location.pathname.startsWith('/settings/') ? '/settings' : '';
   document.body.classList.toggle('show-adv', !BASE);
 
@@ -849,8 +851,10 @@
       if (banner) renderBanners(banner);
       document.querySelectorAll('section.group').forEach((s) => io.observe(s));
     } catch (e) {
-      if (e.status === 401 && BASE) {
-        location.href = '/settings';  // the session ran out: the code page
+      if (e.status === 401 && BASE && location.hash !== '#token') {
+        // The session ran out, or a remembered token is stale (a changed token ends the
+        // session too): the code page. The operator's gate is /settings/config#token.
+        location.href = '/settings';
       } else if (e.status === 401) {
         $('#page').hidden = true; $('#gate').hidden = false;
         $('#gateerr').hidden = !token;

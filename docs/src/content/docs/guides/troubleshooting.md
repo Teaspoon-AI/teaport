@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2145#2ca3ef5a; install.sh:2560-2629#8db50552 -->
+<!-- source: install.sh:2145#2ca3ef5a; install.sh:2560-2629#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2560-2629#8db50552; install.sh:2432-2477#cd323bfa -->
+<!-- source: install.sh:2560-2629#d970b544; install.sh:2432-2477#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -553,7 +553,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:86-93#336ee9d4 -->
+<!-- source: cli/teaport:86-93#b8312c4d -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -585,7 +585,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:59-112#0ca3ecaa -->
+<!-- source: cli/teaport:59-112#1ca6dd03 -->
 
 ## teaport says its AI account has run out of credit
 
@@ -616,7 +616,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:94-97#5e2e8c16; brain/teaport_brain/config_ui.py:747-753#b2285852 -->
+<!-- source: cli/teaport:94-97#5e2e8c16; brain/teaport_brain/config_ui.py:757-763#b2285852 -->
 
 ## teaport does not remember anything
 

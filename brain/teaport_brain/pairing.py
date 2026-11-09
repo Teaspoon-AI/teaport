@@ -32,7 +32,7 @@
 #     app's steps. Neither is ever logged, the access log's request line has the code
 #     masked (gateway_server._RedactTokens: /p/<redacted>), and both pages are
 #     no-store. /p/ answers only what came through Caddy over HTTPS
-#     (via_front_door); the brain's own port, open to the LAN for the config page,
+#     (via_front_door); the brain's own port, open to the LAN for /talk,
 #     gets a 404 there that does not count as a guess.
 #
 # Minting at the tap, not at start(), is the choice made in #244: the screen shows the
@@ -996,7 +996,7 @@ def _expired() -> HTMLResponse:
 
 def via_front_door(request: Request) -> bool:
     """Whether the request came through Caddy over HTTPS. The brain listens on every
-    interface (http://<box>:7861 is the config page), so without this anyone on the
+    interface (http://<box>:7861 serves /talk), so without this anyone on the
     LAN could reach /p/ in cleartext, or burn a live offer with wrong guesses. uvicorn
     trusts X-Forwarded-* only from 127.0.0.1 (its forwarded_allow_ips default) and then
     sets the scheme from X-Forwarded-Proto, so "https" here means Caddy said so. Run

@@ -156,7 +156,7 @@ The packets in **Wave 1** don't depend on each other. Run them in parallel. Run
 
 - File: `src/content/docs/guides/configuration.md` (keep the path)
 - Type: task. Title: "Configure teaport".
-- Covers: how to change a setting with the configuration page (`http://DEVICE_IP:7861/config`,
+- Covers: how to change a setting with the configuration page (`https://DEVICE_NAME.local:8443/settings/config`, or `/config` on the device itself,
   how to open it with the gateway token, what it shows about services still running old
   values); how to change a setting by editing the file over SSH; where secrets go and why
   an environment variable that is set overrides its secret file; how to apply a change
