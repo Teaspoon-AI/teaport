@@ -107,14 +107,18 @@ def _get(manifest: dict, *keys):
     return node
 
 
-def _models(manifest: dict) -> str | None:
-    """The model files' sha256s, in one string; None when a manifest names none."""
+def _model_shas(manifest: dict) -> dict:
+    """{model name: sha256} for the model files a manifest names."""
     models = _get(manifest, "models")
     if not isinstance(models, dict):
-        return None
-    shas = [str(m.get("sha256")) for _, m in sorted(models.items())
-            if isinstance(m, dict) and m.get("sha256")]
-    return ",".join(shas) or None
+        return {}
+    return {n: str(m["sha256"]) for n, m in sorted(models.items())
+            if isinstance(m, dict) and m.get("sha256")}
+
+
+def _models(manifest: dict) -> str | None:
+    """The model files' sha256s, in one string; None when a manifest names none."""
+    return ",".join(_model_shas(manifest).values()) or None
 
 
 def component(manifest: dict, name: str) -> str | None:
@@ -141,6 +145,18 @@ def compare(installed: dict, latest: dict) -> dict:
     rows, changed = {}, []
     for name in COMPONENTS:
         have, new = component(installed, name), component(latest, name)
+        if name == "models":
+            # Per file: a file the channel has not released (a placeholder hash) must not
+            # hide a real change in another.
+            now = {n: h for n, h in _model_shas(latest).items() if released(h)}
+            mine = {n: h for n, h in _model_shas(installed).items() if n in now}
+            have = ",".join(mine.values()) or None
+            new = ",".join(now.values()) or None
+            differs = any(mine.get(n) != h for n, h in now.items())
+            rows[name] = {"installed": have, "latest": new, "changed": differs}
+            if differs:
+                changed.append(name)
+            continue
         # The version names the release; it is shown, but a release whose parts are all the
         # box's own has nothing to install (a beta that is only a placeholder, say).
         differs = name != "version" and released(new) and have != new
@@ -214,7 +230,8 @@ class Monitor:
         except (OSError, ValueError):
             return
         if isinstance(found, dict) and isinstance(found.get("components"), dict) \
-                and isinstance(found.get("changed"), list) and "channel" in found:
+                and isinstance(found.get("changed"), list) and "channel" in found \
+                and isinstance(found.get("checked"), (int, float)):
             found["available"] = bool(found["changed"])
             self._last = found
 

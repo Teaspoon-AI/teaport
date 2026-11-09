@@ -73,6 +73,15 @@ def test_what_the_channel_has_not_released_is_not_an_update():
     assert not updates.compare(_manifest(), beta)["available"]
 
 
+def test_a_placeholder_model_hash_does_not_hide_a_real_change_in_another():
+    latest = _manifest()
+    latest["models"] = {"kokoro": {"sha256": "TODO"}, "voxtral": {"sha256": "cc"}}
+    got = updates.compare(_manifest(), latest)
+    assert got["changed"] == ["models"], got
+    latest["models"]["voxtral"]["sha256"] = "bb"
+    assert not updates.compare(_manifest(), latest)["available"]
+
+
 def test_a_component_the_box_has_no_record_of_is_changed():
     old = _manifest()
     del old["plugin"]
@@ -140,6 +149,9 @@ def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
         # A file that is not a look is no look.
         with open(path, "w") as f:
             f.write('{"channel": 3}')
+        assert updates.Monitor(path=path).status()["state"] == "unknown"
+        with open(path, "w") as f:
+            f.write('{"channel": "stable", "components": {}, "changed": ["engine"]}')
         assert updates.Monitor(path=path).status()["state"] == "unknown"
         # Off: nothing is said, and the loop does not read.
         updates.CHECK_SECS = 0

@@ -109,7 +109,7 @@ and prints the installed value and the channel's value for the version, the engi
 release, the brain tag, the plugin version, the OpenClaw version, and the model files. A
 part the channel hasn't released yet (an empty value or `TODO`) isn't an update, and a new version name on its own isn't one either.
 
-<!-- source: brain/teaport_brain/updates.py:47,131-134,136-160,273-286#e14a5a37 -->
+<!-- source: brain/teaport_brain/updates.py:47,135-137,140-167,292-305#99f3fd1c -->
 
 | Option | Description |
 | --- | --- |
@@ -117,7 +117,7 @@ part the channel hasn't released yet (an empty value or `TODO`) isn't an update,
 | `--json` | Prints the result as one JSON object: the channel, the address, when it was read, and each part. |
 | `--channel` | Looks at `stable` or `beta` for this run. |
 
-<!-- source: cli/teaport:468-481#c5a52881; brain/teaport_brain/updates.py:289-325#ad4bdb28 -->
+<!-- source: cli/teaport:468-481#c5a52881; brain/teaport_brain/updates.py:306-342#ad4bdb28 -->
 
 Without `--channel`, the command uses the `TEAPORT_UPDATE_CHANNEL` setting in
 `/etc/teaport/brain.env`. When that is empty, it uses the channel the installed manifest
@@ -126,7 +126,7 @@ for either channel. When nothing differs, the command prints `up to date.`. Othe
 prints `changed:` and the names of the parts. It exits 1 when the installed manifest is
 missing or the channel's manifest can't be read.
 
-<!-- source: brain/teaport_brain/updates.py:71-86,163-176,273-286,289-325#2249ccec -->
+<!-- source: brain/teaport_brain/updates.py:71-86,179-192,290-303,306-342#2249ccec -->
 
 Without `--check`, the command doesn't apply the update: it prints the `install.sh`
 command to run instead, `install.sh --only brain` for a brain-only change or
@@ -137,7 +137,7 @@ command to run instead, `install.sh --only brain` for a brain-only change or
 The brain also does this check by itself every day (the `TEAPORT_UPDATE_CHECK_SECS`
 setting; `0` turns it off), and `teaport status` shows the result on a `release` line.
 
-<!-- source: brain/teaport_brain/updates.py:179-200,248-270#f1d8d54b; cli/teaport:149-165#b622f9de -->
+<!-- source: brain/teaport_brain/updates.py:195-216,265-287#f1d8d54b; cli/teaport:149-165#b622f9de -->
 
 Example:
 
