@@ -409,6 +409,14 @@ class FollowupGate(FrameProcessor):
         return self._llm or self._turn
 
     @property
+    def replying(self) -> bool:
+        """The bot is speaking -- a reply paused by a barge-in included, which holds
+        back its stop (barge_pause.py) -- or a reply is on its way: a completion
+        streaming, a turn's answering completion still to come, a committed turn not
+        yet asked. What a fixed phrase's answer stops first (AgentSession.say_in_place)."""
+        return self._bot or self._llm or self._turn or self._commit_unrendered
+
+    @property
     def caller_speaking(self) -> bool:
         """Caller speech is pending at the VAD level (_vad, _speech_pending): they are
         talking, or stopped too short a while ago for their words to have come. No turn

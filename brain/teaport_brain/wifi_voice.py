@@ -411,6 +411,11 @@ class PhraseVoice(FrameProcessor):
         self.bot_starts = 0  # the box's speech started so far (heard_out)
         self.cuts = 0        # ... and cut by the user while it played (heard_out)
         self._start_cuts = 0  # cuts when the box's speech last started
+        # AgentSession.say_in_place, where the session wires it: an answer to the user's
+        # words said while the bot is replying stops that reply first (say()).
+        self.say_in_place = None
+        # A phrase is answering words just heard (_heard), and has not spoken yet.
+        self._answering = False
 
     @property
     def t(self) -> i18n.T:
@@ -418,8 +423,19 @@ class PhraseVoice(FrameProcessor):
 
     # -- speaking
     async def say(self, text: str) -> None:
+        """Say `text`. The first line of an answer to the user's words (_heard), said
+        while the bot is replying -- speaking, paused over those very words, or about to
+        -- goes in place of that reply, which stops as for a barge-in (say_in_place):
+        the user asked for something else. Queued behind it instead, the barge-in pauser
+        found no turn in words a phrase took and resumed the reply, and the answer waited
+        for the rest of it (#389). One place for every phrase: "go to sleep", "open my
+        settings", Wi-Fi setup's."""
         self.says += 1
         self.note_said(text)
+        answering, self._answering = self._answering, False
+        if (answering and self.say_in_place is not None
+                and await self.say_in_place(text, LINE_START_SECS + LINE_MAX_SECS)):
+            return
         await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
 
     def note_said(self, text: str) -> None:
@@ -484,11 +500,15 @@ class PhraseVoice(FrameProcessor):
         if self._echo(text):
             logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
             return True
-        if self.idle():
-            for phrase in self.phrases:
-                if await phrase.heard(self, text):
-                    return True
-        return await self._own(text)
+        self._answering = True
+        try:
+            if self.idle():
+                for phrase in self.phrases:
+                    if await phrase.heard(self, text):
+                        return True
+            return await self._own(text)
+        finally:
+            self._answering = False
 
     async def _own(self, text: str) -> bool:
         """A subclass's own phrases and answers: none here."""
@@ -512,7 +532,15 @@ class PhraseVoice(FrameProcessor):
             await self._ending()
         elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
               and not is_taken(frame)):
-            if await self._heard(frame.text or ""):
+            # Not dropped mid-decision by the interruption a phrase's own answer sends
+            # (say_in_place, from the pipeline's top): the STT's finals never are
+            # (stt.FinalTranscriptionFrame); any other is held to the same while here.
+            was, frame.interruptible = frame.interruptible, False
+            try:
+                took = await self._heard(frame.text or "")
+            finally:
+                frame.interruptible = was
+            if took:
                 if self.taken_words is not None:
                     await self.taken_words.took(frame.text, self.TAKEN_BY)
                 await self.push_frame(taken(frame), direction)  # ours: no words go on

@@ -329,6 +329,8 @@ class AgentSession:
         # The barge-in pauser (barge_pause.BargeInPauser), where playout can pause: held
         # off for a line said unpausable (own_line).
         self.barge_pauser = None
+        # Fixed phrases' lines said in place of a reply (say_in_place), still playing.
+        self._lines: set = set()
 
     async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True,
                     prepared: str | None = None, notice: str | None = None):
@@ -604,14 +606,50 @@ class AgentSession:
         unheard: the caller of this decides when to listen again."""
         if self.input_mute is not None:
             self.input_mute.muted = True
-        async with self.own_line(line, append_to_context=append_to_context) as delivery:
-            try:
-                await asyncio.wait_for(delivery.done.wait(), max_secs)
-            except asyncio.TimeoutError:
-                self.followup_gate.drop_delivery(delivery)
-                logger.info(f"{name} did not finish within {max_secs:g} s — going on")
-                return False
-            return not delivery.interrupted
+        return await self._hold_line(line, max_secs, name=name,
+                                     append_to_context=append_to_context)
+
+    async def _hold_line(self, line: str, max_secs: float, *, name: str,
+                         append_to_context: bool = False,
+                         queued: asyncio.Event | None = None) -> bool:
+        """Put `line` in place of whatever is being said (own_line) and hold the block --
+        the brain's own cut -- until it has played or been cut, up to max_secs. True when
+        it played to the end. `queued` is set once the line is in (or the attempt is
+        over): what has been said before it is gone by then."""
+        try:
+            async with self.own_line(line, append_to_context=append_to_context) as delivery:
+                if queued is not None:
+                    queued.set()
+                try:
+                    await asyncio.wait_for(delivery.done.wait(), max_secs)
+                except asyncio.TimeoutError:
+                    self.followup_gate.drop_delivery(delivery)
+                    logger.info(f"{name} did not finish within {max_secs:g} s — going on")
+                    return False
+                return not delivery.interrupted
+        finally:
+            if queued is not None:
+                queued.set()
+
+    async def say_in_place(self, line: str, max_secs: float) -> bool:
+        """A fixed phrase's answer to the caller (wifi_voice.PhraseVoice.say), heard while
+        the bot is replying -- speaking, paused over the caller's words, or about to: stop
+        that reply the way a barge-in does, its queued audio and all, and say `line` in
+        its place (own_line), the caller still heard. Returns once the line is in; the
+        block is held in the background until it has played (or max_secs). False when
+        there is nothing to stop: the phrase says its line as usual.
+
+        Without it, the words a phrase took are no turn to the barge-in pauser, which
+        resumed the reply, and the line waited behind the rest of it (#389)."""
+        if not self.followup_gate.replying:
+            return False
+        queued = asyncio.Event()
+        task = asyncio.ensure_future(self._hold_line(line, max_secs, name="a fixed phrase's line",
+                                                     queued=queued))
+        self._lines.add(task)
+        task.add_done_callback(self._lines.discard)
+        await queued.wait()
+        return True
 
     # --- On hold for a phone call (the session arbiter's PROMPT, issue #111) ------------
     # While held, the pipeline runs on with nothing to do: the engine's STT session is
@@ -1632,6 +1670,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.wifi = wifi    # spoken Wi-Fi setup, or None (first_boot.run starts it unasked)
     session.phrases = phrases  # the fixed phrases (Wi-Fi setup's, or the settings phrase's)
+    if phrases is not None:
+        # A phrase's answer heard over a reply stops the reply first (#389).
+        phrases.say_in_place = session.say_in_place
     session.start_notice = start_notice  # the conversation-start notice, or None
     if wake_gate is not None and start_notice is not None:
         wake_gate.notice_due = lambda: start_notice.line() is not None
