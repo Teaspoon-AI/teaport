@@ -37,6 +37,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputTransportMessageUrgentFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
@@ -616,30 +617,37 @@ async def test_a_reply_that_is_only_a_face_is_not_retried():
     """A reply of only a face -- an emoticon or an emoji -- has no speech, but it said
     that: the guard forwards it whole and history keeps it. Not asked again, and no
     line glued onto it (review round 1b: ":):)Sorry, I lost my train of thought..."). A
-    mood tag alone, the emoji or the bracketed one, is MoodTag's: it strips the tag and
-    speaks the line itself, once. A face after an empty first attempt ends it there."""
+    mood tag alone, the emoji or the bracketed one, agrees (#383): MoodTag strips it and
+    shows a known mood at once (starts: []), with nothing spoken and no line; only a tag
+    whose name the face does not know ends in the line, MoodTag's, once. A face after an
+    empty first attempt ends it there."""
     def reply(text):
         return [_chunk(text), _chunk(finish="stop")]
 
     guard = (lambda: [LLMTextGuard()])
     moods = (lambda: [MoodTag(), LLMTextGuard()])
-    for name, procs, replies, asks, expect in (
-            ("an emoticon", guard, (reply(":)"),), 1, ":)"),
-            ("a thumbs-up", guard, (reply("\U0001F44D"),), 1, "\U0001F44D"),
-            ("a red heart", guard, (reply("\u2764\ufe0f"),), 1, "\u2764\ufe0f"),
-            ("sparkles", guard, (reply("\u2728"),), 1, "\u2728"),
-            ("a mood emoji, moods off", guard, (reply("\U0001F622"),), 1, "\U0001F622"),
-            ("an emoticon, moods on", moods, (reply(":)"),), 1, ":)"),
-            ("a mood emoji, moods on", moods, (reply("\U0001F622"),), 1, LINE),
-            ("a bracket tag, moods on", moods, (reply("[mood: sad]"),), 1, LINE),
-            ("nothing, then a face", guard, (EMPTY, reply(":)")), 2, ":)"),
-            ("'...', then a face", guard, (reply("..."), reply(":)")), 2, ":)")):
+    for name, procs, replies, asks, expect, shown in (
+            ("an emoticon", guard, (reply(":)"),), 1, ":)", []),
+            ("a thumbs-up", guard, (reply("\U0001F44D"),), 1, "\U0001F44D", []),
+            ("a red heart", guard, (reply("\u2764\ufe0f"),), 1, "\u2764\ufe0f", []),
+            ("sparkles", guard, (reply("\u2728"),), 1, "\u2728", []),
+            ("a mood emoji, moods off", guard, (reply("\U0001F622"),), 1, "\U0001F622", []),
+            ("an emoticon, moods on", moods, (reply(":)"),), 1, ":)", []),
+            ("a mood emoji, moods on", moods, (reply("\U0001F622"),), 1, "", [("sad", [])]),
+            ("a bracket tag, moods on", moods, (reply("[mood: sad]"),), 1, "", [("sad", [])]),
+            ("an unknown bracket tag, moods on", moods, (reply("[mood: grumpy]"),), 1, LINE,
+             []),
+            ("nothing, then a face", guard, (EMPTY, reply(":)")), 2, ":)", []),
+            ("'...', then a face", guard, (reply("..."), reply(":)")), 2, ":)", [])):
         ctx = _context({"role": "user", "content": ASK})
         provider = _Provider(*replies)
         llm, _ = _llm(provider, ctx)
         frames = await _run([llm, *procs()], LLMContextFrame(context=ctx))
         assert len(provider.requests) == asks, (name, len(provider.requests))
         assert "".join(_texts(frames)).strip() == expect, (name, _texts(frames))
+        assert [(f.message["mood"], f.message["starts"]) for f in frames
+                if isinstance(f, OutputTransportMessageUrgentFrame)
+                and f.message.get("type") == "mood"] == shown, name
 
 
 def test_a_face_here_is_a_face_the_guard_keeps_whole():

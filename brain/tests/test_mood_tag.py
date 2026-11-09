@@ -23,6 +23,7 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from teaport_brain import mood_tag  # noqa: E402
+from teaport_brain.followup_gate import RunSilentFrame  # noqa: E402
 from teaport_brain.mood_tag import MoodTag, parse_leading_tag  # noqa: E402
 
 
@@ -44,6 +45,9 @@ def run(deltas, end=True):
     moods = [f.message["mood"] for f in out if isinstance(f, OutputTransportMessageUrgentFrame)]
     run.starts = [f.message["starts"] for f in out
                   if isinstance(f, OutputTransportMessageUrgentFrame)]
+    run.silent = sum(isinstance(f, RunSilentFrame) for f in out)
+    if run.silent:     # (ahead of the End: the gate must see it, and the TTS holds the End)
+        assert [type(f) for f in out][-2:] == [RunSilentFrame, LLMFullResponseEndFrame]
     return text, moods
 
 
@@ -59,7 +63,7 @@ def test_the_mood_carries_the_first_words_of_its_reply():
     run(["[mood: sad] Oh dear."])                                      # a short reply: what it had
     assert run.starts == [["oh", "dear"]]
     run(["[mood: sad]"])
-    assert run.starts == []                                            # nothing to match: none
+    assert run.starts == [[]]                          # no words to match: shown now (#383)
 
 
 def test_a_tag_split_across_deltas():
@@ -99,9 +103,8 @@ def test_an_emoji_tag_waits_for_the_words_after_it():
     assert run(["😊", " [mo", "od: sad] Hi there my friend."]) == ("Hi there my friend.", ["happy"])
     assert run(["😊😮\u200d💨 hi"])[1] == []
     assert run(["😊 \ufe0f hi there my friend"]) == ("hi there my friend", ["happy"])
-    # a reply of only the emoji still ends: nothing to say, so the recovery line is spoken
-    text, moods = run(["😊"])
-    assert moods == [] and text.strip() and "😊" not in text
+    # a reply of only the emoji still ends: its face is shown now, and nothing is spoken
+    assert run(["😊"]) == ("", ["happy"]) and run.starts == [[]]
 
 
 def test_every_emoji_names_a_mood_the_avatar_knows():
@@ -111,9 +114,8 @@ def test_every_emoji_names_a_mood_the_avatar_knows():
 
 
 def test_case_spaces_and_a_tag_with_nothing_after_it():
-    # (a reply of only a tag is apologised for, not left silent: see below; with no
-    # words of its own there is nothing to match its mood to, so none is sent)
-    assert run(["  [Mood : CALM ]"])[1] == []
+    # (a reply of only a tag shows its face at once: see below)
+    assert run(["  [Mood : CALM ]"]) == ("", ["calm"]) and run.starts == [[]]
 
 
 def test_no_tag_passes_through_untouched():
@@ -189,12 +191,27 @@ def test_the_prompt_names_every_mood():
     assert all(m in mood_tag.PARAGRAPH for m in mood_tag.MOODS)
 
 
-def test_a_reply_of_only_a_tag_is_not_left_silent():
+def test_a_reply_of_only_a_known_mood_shows_it_and_is_not_apologised_for():
+    # #383: "show me an angry face" answered with the emoji alone is an answer: the face
+    # shows it at once (no first words to wait for) and no recovery line is spoken.
+    for deltas in (["😠"], ["😠", " "], ["  😠\ufe0f"], ["😠", " \n"], ["[mood: angry]"],
+                   ["[mood: angry]", " \n"], ["[ mo", "od: angry ]"]):
+        text, moods = run(deltas)
+        assert (text.strip(), moods, run.starts) == ("", ["angry"], [[]]), deltas
+        # nothing to speak: the turn ends here, not when the End the TTS holds goes
+        assert run.silent == 1, deltas
+    assert run(["[mood: sad] ok"]) == ("ok", ["sad"]) and run.starts == [["ok"]]
+    assert run(["😠 Grr, like this?"]) == ("Grr, like this?", ["angry"])
+    assert run.starts == [["grr", "like", "this"]] and run.silent == 0
+
+
+def test_a_reply_of_only_an_unknown_tag_is_not_left_silent():
+    # a name the face does not know showed nothing and said nothing: the recovery line
     from teaport_brain.llm_text_guard import RECOVERY_TEXT
-    assert run(["[mood: sad]"]) == (RECOVERY_TEXT, [])
-    text, moods = run(["[mood: sad]", " \n"])
+    assert run(["[mood: grumpy]"]) == (RECOVERY_TEXT, []) and run.silent == 0
+    text, moods = run(["[mood: grumpy]", " \n"])
     assert text.strip() == RECOVERY_TEXT.strip() and moods == []
-    assert run(["[mood: sad] ok"]) == ("ok", ["sad"])
+    assert run(["[mood: grumpy] Hmph."]) == ("Hmph.", []) and run.silent == 0
 
 
 def test_an_emoji_alone_before_a_tool_call_is_not_apologised_for():
@@ -212,6 +229,17 @@ def test_an_emoji_alone_before_a_tool_call_is_not_apologised_for():
             await tag.process_frame(f, FrameDirection.DOWNSTREAM)
     asyncio.run(go())
     assert not any(isinstance(f, LLMTextFrame) for f in out)       # nothing spoken
+    assert [(f.message["mood"], f.message["starts"]) for f in out
+            if isinstance(f, OutputTransportMessageUrgentFrame)] == [("concerned", [])]
+    assert not any(isinstance(f, RunSilentFrame) for f in out)     # the call is the turn's
+
+
+def test_the_prompt_asks_for_words_after_the_emoji():
+    # (#383: "write nothing else around it" read as "no words" and invited the bare emoji)
+    p = mood_tag.PARAGRAPH
+    assert "nothing else around" not in p
+    assert "a few words" in p and "😠 Grr, like this?" in p
+    assert "no second emoji" in p and "brackets" in p
 
 
 def test_sympathy_in_an_untagged_reply_shows_concerned_not_angry():

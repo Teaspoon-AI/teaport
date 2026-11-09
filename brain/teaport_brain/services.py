@@ -870,9 +870,10 @@ class BoundedOpenAILLMService(OpenAILLMService):
         A reply that is only a face -- an emoticon (":)") or an emoji -- said that
         (_shows_a_face): the guard forwards it whole and history keeps it, so it is not
         asked again, and no line is glued onto it (":):)Sorry, ..." when it was). A mood
-        tag alone, the emoji or the bracketed "[mood: sad]" (which has letters, so it is
-        speech here), is MoodTag's: it strips the tag and speaks the line itself at the
-        End.
+        tag alone agrees (MoodTag, #383): the emoji is a face here, and the bracketed
+        "[mood: sad]" has letters, so it is speech here and never reaches this; either
+        way MoodTag strips the tag, shows a known mood at once and says nothing, and
+        speaks the line itself at the End only for a name the face does not know.
 
         Not for legitimate silence: a run of ours (callers is never set for one); a
         completion a barge-in cancelled (CancelledError, never here); a turn the caller
@@ -921,9 +922,10 @@ class BoundedOpenAILLMService(OpenAILLMService):
         await self.push_frame(LLMTextFrame(text=line if streamed else line.lstrip()))
 
     def _dealt_with(self, context, completion: _Completion, tail) -> bool:
-        """The empty reply is not this method's to answer: it is a face, the caller moved
-        on, or the guard has cut it as a collapse and spoken its line over it (a retry's
-        text would be swallowed whole, and the End delayed for it)."""
+        """The empty reply is not this method's to answer: it is a face (a mood emoji
+        alone too, which MoodTag shows on the client's face: #383), the caller moved on,
+        or the guard has cut it as a collapse and spoken its line over it (a retry's text
+        would be swallowed whole, and the End delayed for it)."""
         if _shows_a_face("".join(completion.raw)):
             logger.info(f"{self}: the caller's turn came back with no words, only a face "
                         "(an emoticon or emoji), which says something: no retry, no "

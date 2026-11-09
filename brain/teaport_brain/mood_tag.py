@@ -14,6 +14,14 @@
 # or until what came is plainly not one (then the held deltas go on untouched). A tag
 # with a name the avatar does not know is stripped and sent nowhere.
 #
+# A reply that is only a known tag ("show me an angry face" answered with just 😠, #383)
+# is an answer, not dead air: its mood goes with no first words (starts: []), which the
+# client shows at once, and nothing is spoken -- as services._dealt_with takes a reply of
+# only a face. The TTS opens no context for a reply with no text and holds its End, so
+# the turn is ended here (RunSilentFrame), as a run that says nothing is. A tag alone
+# whose name the avatar does not know showed nothing and said nothing, so that one ends
+# in the recovery line.
+#
 import re
 
 from loguru import logger
@@ -30,6 +38,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.face_mood import LEAD_WORDS, lead_words
+from teaport_brain.followup_gate import RunSilentFrame
 from teaport_brain.llm_text_guard import recovery_text
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
@@ -55,12 +64,13 @@ EMOJI = {"😊": "happy", "😠": "angry", "😢": "sad", "😨": "afraid", "�
 PARAGRAPH = (
     "You have a small face that shows a mood. When your reply carries a feeling, or you "
     "are asked to show or act one out, begin the reply with exactly one emoji naming it, "
-    "as its very first character. This is the one exception to the rule against emojis: "
-    "the face reads it and the voice never does. "
+    "as its very first character, and then say a few words as usual: asked to show a "
+    "face, show it and say something with it (😠 Grr, like this?). This is the one "
+    "exception to the rule against emojis: the face reads it and the voice never does. "
     "The emojis: " + ", ".join(f"{e} {m}" for e, m in EMOJI.items())
     + ". Use 😟 when someone shares bad news or you sympathise. The emoji is never "
-    "spoken and is not part of your words; write nothing else around it, and only one. "
-    "A reply with no clear feeling gets no emoji."
+    "spoken and is not part of your words: only one, with no second emoji and no "
+    "brackets around it. A reply with no clear feeling gets no emoji."
 )
 
 # What may sit between an emoji tag and the words: spaces, and the invisible marks that
@@ -122,22 +132,24 @@ class MoodTag(FrameProcessor):
     def _reset(self):
         self._deciding = True      # still looking at the first deltas of this completion
         self._held = []            # (frame, its text) held while deciding
-        # A tag took the whole reply, and nothing since (a tool call, a word) has answered:
-        # at the End that is dead air, so it is apologised for as the guard does.
+        # A tag took the whole reply, and nothing since (a tool call, a word) has
+        # answered. At the End a known mood is the answer, shown at once (_send_mood);
+        # an unknown one is dead air -- no face, no words -- and is apologised for as the
+        # guard does.
         self._bare = False
         # A tag was read and its mood waits for the reply's first words: the face matches
         # a mood to the reply it hears by them. (mood, the text that followed the tag)
         self._mood = None
 
     async def _send_mood(self, direction):
-        """The tagged mood, with the first words of the reply it is for."""
+        """The tagged mood, with the first words of the reply it is for -- none, at the End
+        of a reply that had no words (only the tag, #383): the client shows it at once."""
         name, text = self._mood
         self._mood = None
         words = lead_words(text)
-        if words:
-            logger.info(f"mood: {name}")
-            await self.push_frame(OutputTransportMessageUrgentFrame(
-                message={"type": "mood", "mood": name, "starts": words}), direction)
+        logger.info(f"mood: {name}" if words else f"mood: {name}, a reply of no words: shown now")
+        await self.push_frame(OutputTransportMessageUrgentFrame(
+            message={"type": "mood", "mood": name, "starts": words}), direction)
 
     async def _settle(self, direction):
         """The reply stops here (its end, or a tool call): an emoji tag still waiting for
@@ -205,10 +217,15 @@ class MoodTag(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self._settle(direction)
             await self._release(direction)
-            if self._mood:       # a short reply: the words it had
+            bare, shown, self._bare = self._bare, self._mood is not None, False
+            if self._mood:       # a short reply: the words it had (none: shown now)
                 await self._send_mood(direction)
-            if self._bare:
-                self._bare = False
-                logger.warning("mood: a reply of only a tag; speaking the recovery line")
+            if bare and shown:
+                # The face was the answer (#383), and there is nothing to speak: the turn
+                # is over here, not when a later context frees the End the TTS holds.
+                await self.push_frame(RunSilentFrame(), direction)
+            elif bare:
+                logger.warning("mood: a reply of only a tag the face does not know; "
+                               "speaking the recovery line")
                 await self.push_frame(LLMTextFrame(text=recovery_text(self._lang_fn())), direction)
         await self.push_frame(frame, direction)

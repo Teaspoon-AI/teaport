@@ -2398,6 +2398,22 @@ def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
     assert _moods(sent) == ["sad"] and _moods(old_sent) == []
 
 
+def test_a_mood_with_no_words_is_shown_at_once():
+    # #383: a reply of only the mood ("show me an angry face" -> the emoji alone) has no
+    # words to be heard by: the face shows it now, and the avatar holds it its usual time.
+    face, sent, _ = _mood_face(features={"moods": ["sad", "angry"]})
+    face.user("show me an angry face", True)
+    face.mood("angry", [])
+    assert _moods(sent) == ["angry"]
+    face.assistant("Done.", True, "u2")                # the next reply is its own:
+    assert _moods(sent) == ["angry", "neutral"]        # scored, not given the shown mood
+    old, old_sent, _ = _mood_face(features={"screen": 1})
+    old.mood("angry", [])                               # an avatar without moods: nothing
+    text, text_sent, _ = _mood_face("text")
+    text.mood("sad", [])                                # nor with the model's moods off
+    assert _moods(old_sent) == [] and _moods(text_sent) == []
+
+
 def test_the_models_mood_follows_the_reply_it_was_tagged_for():
     face, sent, clock = _mood_face()
     face.assistant("so", False, "u1")                  # reply 1 is captioning...
