@@ -264,3 +264,35 @@ h1 {
 	outline: 2px solid var(--sl-color-accent);
 	outline-offset: 2px;
 }
+
+/* Wide screens: give the content column the room the viewport has, up to
+   64rem, so reference tables are not squeezed into the 45rem prose
+   measure while hundreds of pixels sit empty either side. Starlight sizes
+   the table of contents from this width, so it shrinks to match. Running
+   text stays at the 45rem reading measure; tables and code blocks take the
+   full column. */
+@media (min-width: 72rem) {
+	:root {
+		--sl-content-width: clamp(45rem, calc(100vw - 2 * var(--sl-sidebar-width)), 64rem);
+	}
+	.sl-markdown-content > :is(p, ul, ol, dl, blockquote, .starlight-aside) {
+		max-width: 45rem;
+	}
+}
+
+/* Reference tables. A setting name never breaks, and the closing
+   description column of a three-or-more column table keeps a readable
+   width instead of letting long cells to its left take the room. Where the
+   column cannot hold all of that, the table scrolls sideways (Starlight's
+   default) rather than overflowing the column. */
+.sl-markdown-content td:first-child code {
+	white-space: nowrap;
+}
+.sl-markdown-content tr > :last-child:nth-child(n + 3) {
+	min-width: 20rem;
+}
+@media (min-width: 100rem) {
+	.sl-markdown-content tr > :last-child:nth-child(n + 3) {
+		min-width: 28rem;
+	}
+}
