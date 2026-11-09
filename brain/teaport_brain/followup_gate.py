@@ -189,8 +189,9 @@ class RunFrame(LLMContextFrame):
 
 @dataclass
 class RunSilentFrame(ControlFrame):
-    """A run's completion that will say nothing (it called stay_silent, or it came back
-    empty): pushed down by the LLM service so the gate ends the turn it opened. The TTS
+    """A completion that will say nothing: a run's (it called stay_silent, or it came back
+    empty), pushed down by the LLM service, or a reply of only a mood the face shows,
+    pushed by MoodTag (#383); so the gate ends the turn it opened. The TTS
     holds the End of a completion with no text until a later context ends
     (test_pipecat_premises.py), so without this the gate would read a turn in flight
     until the next interruption. A ControlFrame, not a SystemFrame: it must reach the
@@ -658,8 +659,8 @@ class FollowupGate(FrameProcessor):
             self.release_claim()
             self._refresh()
         elif isinstance(frame, (LLMFullResponseEndFrame, RunSilentFrame)):
-            # RunSilentFrame: a run's completion that says nothing (stay_silent, or
-            # empty); its End is held at the TTS (RunSilentFrame's docstring).
+            # RunSilentFrame: a completion that says nothing (a run's stay_silent or
+            # empty one, a mood shown alone); its End is held at the TTS (its docstring).
             self._llm = False
             self._turn = False
             self._refresh()
