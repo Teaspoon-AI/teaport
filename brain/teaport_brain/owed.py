@@ -119,14 +119,44 @@ _LULL_TICK_S = 0.25
 # where rounds 4 and 5 measured it (spec_round4.note_with(run=RE_S), appended; 18-20/20
 # "By the way, ..." after an unrelated exchange or "thanks", 10/20 stay_silent after
 # "hold on"). §2's sketch lists both lines under the tag; the measured placement is kept.
+#
+# #387 re-measured the run lines and the failures' texts (tests/test_owed_note_eval.py,
+# gpt-oss-120b on Groq, the room's live system prompt and tools, 20 trials a case,
+# 2026-11-09; before -> after). Round 5's "Lead with the answer, then say what it answers
+# (\"<answer> is …\")" was read out ("That answers your request.", ~50 times on the box
+# in ten days): a list answer 7/20 -> 0/20, the answer first 20/20 either way. A failure
+# had no line of its own, and the hedge below told every failure "rather than saying it
+# failed": a timed-out lookup's run told it failed and why 3/20 -> 20/20 (the rest: "no
+# results", "not yet"), an error's 0/20 -> 20/20, in Spanish 1/20 -> 20/20 and Italian
+# 2/20 -> 20/20; "What about the bookshops?" after it 1/20 -> 15/20 (19/20 by reading:
+# "the search didn't finish" without the reason), "How are those searches going?" with
+# two failed 0/20 ("still waiting on those searches") -> 20/20; its re-offer 9/20 ->
+# 18/20; an action's timeout 8/20 -> 20/20, asking them to check 15/20.
 RUN_LINE = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-            "Lead with the answer, then say what it answers (\"<answer> is …\"), not "
-            "the other way round.")
+            "Start with the answer itself, as a full sentence (\"The museum opens at ten.\"), "
+            "not with their question, and don't talk about your reply or their request.")
+# The landing run of a failure (#387): there is no answer to lead with, and told to lead
+# with one the model made one up ("No bookshop results are available."), as if nothing
+# existed.
+FAILURE_RUN_LINE = ("Nothing else is going on: tell them now, in one or two short spoken "
+                    "sentences, that you couldn't do it and the reason the result gives.")
+# Under a failure's result in every note (#387): it has ended. Without it, a caller's turn
+# after a timed-out lookup was answered "I don't have those results yet" (the footer's "say
+# you don't have that"), or "still waiting on those searches".
+FAILED_LINE = ("This one did not get done, and it is over: if you tell them about it, say "
+               "that and why, never that you're still waiting on it or that nothing was "
+               "found.")
 REOFFER_LINE = ("They haven't heard this yet and the conversation has gone quiet. If their "
                 "last words asked you to wait and they haven't come back to you, call "
                 "stay_silent. Otherwise mention it once in passing, in one short sentence "
                 "that says what it's about and gives the answer (\"By the way, that ... is "
                 "...\").")
+# A failure's re-offer (#387): the same, with nothing to give but what happened.
+FAILURE_REOFFER_LINE = ("They haven't heard this yet and the conversation has gone quiet. If "
+                        "their last words asked you to wait and they haven't come back to "
+                        "you, call stay_silent. Otherwise mention it once in passing, in one "
+                        "short sentence that says what it was and why it didn't get done "
+                        "(\"By the way, that ... didn't work: ...\").")
 NOTE_HEAD = "Results you have for the user. Each is everything that result contains."
 NOT_HEARD = "They have NOT heard this yet."
 # Round 4 "S3": 20/20 answer after a partial telling (v1's "heard part of it": 15/20).
@@ -286,9 +316,11 @@ STAY_SILENT_SCHEMA = FunctionSchema(
 # the record's outcome, in plain words the model can say (#80: each kind says what
 # actually happened). A failure's terms are its statement's own, without the hedge and
 # the settings hint (Record.make): a reply about it heard to its end closes it (Owed.tla
-# RUNCLOSE = "about").
-_ACTION_HEDGE = (" If it was something visible (a message, poll or post), it may have gone "
-                 "through anyway: ask them to check rather than saying it failed.")
+# RUNCLOSE = "about"). The hedge is for an action that may have gone through; until #387
+# it said "ask them to check rather than saying it failed", which every lookup read as
+# "don't say it failed" (measured above, with the failure's own lines).
+_ACTION_HEDGE = (" If it was to send, post or change something, it may have gone through "
+                 "anyway: say so, and ask them to check. A lookup has nothing to check.")
 
 
 # How a landing whose placeholder is not in the context yet is logged (Owed._rewrite).
@@ -662,17 +694,19 @@ def note_text(records: list, purpose: str) -> str:
     the quote contradicts its line and reads as engagement."""
     lines = [SYSTEM_NOTICE_TAG]
     if purpose == RUN:
-        lines.append(RUN_LINE)
+        lines.append(FAILURE_RUN_LINE if all(r.failure for r in records) else RUN_LINE)
     lines.append(NOTE_HEAD)
     for i, r in enumerate(records, 1):
         status = (PART_HEARD.format(quote=r.heard_quote)
                   if r.heard_quote and purpose != REOFFER else NOT_HEARD)
-        lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}\n   {status}")
+        failed = f"\n   {FAILED_LINE}" if r.failure else ""
+        lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}{failed}\n"
+                     f"   {status}")
         if r.failure and r.unheard and r.heard_quote and purpose != REOFFER:
             lines.append(f"   {NOT_HEARD_REST.format(rest=r.unheard)}")
     lines.append(FOOTER)
     if purpose == REOFFER:
-        lines.append(REOFFER_LINE)
+        lines.append(FAILURE_REOFFER_LINE if all(r.failure for r in records) else REOFFER_LINE)
     return "\n".join(lines)
 
 
