@@ -156,6 +156,12 @@ summary = "These settings decide how a new box helps its owner set it up, with n
 blurb = "For an appliance unboxed by someone with no SSH (first_boot.py): the box's own voice and screen guide them. Off in the open install; appliance provisioning turns them on."
 
 [[groups]]
+id = "updates"
+title = "Updates"
+summary = "These settings decide whether the box looks for a new release, how often, and on which channel."
+blurb = "The brain reads the release manifest once a day (updates.py) and `teaport update --check` reads it on demand. Nothing is installed by looking; a new release is offered and only installed when the owner says yes."
+
+[[groups]]
 id = "talk_client"
 title = "Talk client context notes"
 summary = "These settings cap the size, the count, and the rate of the context notes a Talk client sends."
@@ -2785,3 +2791,27 @@ type = "string"
 read = "startup"
 tier = "installer"
 help = "The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. A name made only of hex digits (0-9, a-f) is ignored with a warning, and the MAC-based name used: some phones' QR scanners read such a name as raw bytes."
+
+[[settings]]
+name = "TEAPORT_UPDATE_CHANNEL"
+store = "brain_env"
+group = "updates"
+type = "enum"
+values = ["", "stable", "beta"]
+default = ""
+read = "startup"
+tier = "setup"
+help = "Which release channel the box looks at for a new version: stable, or beta (earlier, less settled releases). Empty means the channel the installed release came from (the \"channel\" in /opt/teaport/manifest.json), else stable. TEAPORT_MANIFEST_URL, where set, replaces the address for either."
+
+[[settings]]
+name = "TEAPORT_UPDATE_CHECK_SECS"
+store = "brain_env"
+group = "updates"
+type = "float"
+unit = "s"
+min = 0
+max = 2592000
+default = 86400
+read = "startup"
+tier = "tuning"
+help = "How often the brain reads the release manifest to see whether a new version is out (one small request to get.teaspoon.tech, never in a turn; a read that fails changes nothing and is tried again an hour later). 0 turns the check off: `teaport update --check` still works by hand."

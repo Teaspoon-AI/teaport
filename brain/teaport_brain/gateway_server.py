@@ -51,7 +51,7 @@ from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import agent_key, ai_account, conversation_log, credit, first_boot, host_context
 from teaport_brain import openrouter_connect, pairing, settings_access
-from teaport_brain import run_control
+from teaport_brain import run_control, updates
 from teaport_brain import sip_server
 from teaport_brain.tasks import cancel_and_wait
 from teaport_brain import session_arbiter as arb
@@ -667,6 +667,8 @@ async def _lifespan(_app):
     watcher = asyncio.create_task(first_boot.watch())
     # The trial credit's reader (credit.py, #280): beside the sessions, never in a turn.
     monitor = asyncio.create_task(credit.MONITOR.run())
+    # Whether a newer release is out (updates.py): one small read a day, never in a turn.
+    updater = asyncio.create_task(updates.MONITOR.run())
     # OpenClaw's restart for a key it was given, and the first look at whether it already
     # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
     # the engine counts as live already.
@@ -677,7 +679,8 @@ async def _lifespan(_app):
         yield
     finally:
         for name, t in (("busy lamp", lamp), ("first-boot watcher", watcher),
-                        ("credit monitor", monitor), ("agent key restarter", restarter)):
+                        ("credit monitor", monitor), ("update check", updater),
+                        ("agent key restarter", restarter)):
             err = await cancel_and_wait(t)
             if err is not None:  # it had ended on its own, with this
                 logger.warning(f"{name} had stopped: {err!r}")
@@ -714,13 +717,17 @@ async def health():
     # and `teaport doctor` print it.
     # "credit": the box's included trial credit (credit.MONITOR.status, #280): none (no
     # key), own (the owner's key), unknown, ok, half, low or empty, with what is left.
+    # "update": whether a newer release is out on the box's channel (updates.MONITOR.status):
+    # off, unknown, current or available, with the channel, when it was last read, and
+    # which components differ. `teaport status` prints it.
     # "agent_key": whether OpenClaw uses the brain's key (agent_key.status, #281): off,
     # absent, other, none, unsynced (not known yet), separate, shared, restart (owed, once
     # nobody is talking) or mismatch (a failed change left the two on different keys),
     # with a reason.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
             "tts_pacing": pacing_status(), "answers": answers_status(),
-            "credit": credit.MONITOR.status(), "agent_key": ai_account.agent_key_status()}
+            "credit": credit.MONITOR.status(), "update": updates.MONITOR.status(),
+            "agent_key": ai_account.agent_key_status()}
 
 
 # "Connect your OpenRouter account" (openrouter_connect.py, #282): its start and code
