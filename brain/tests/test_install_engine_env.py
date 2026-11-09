@@ -33,9 +33,9 @@ warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
 resolve_gateway_token() { GATEWAY_TOKEN=tok; }
 render_unit() { :; }
-brain_activate() { :; }
-brain_prune() { :; }
-install_config_sudoers() { :; }
+brain_deb_prune() { :; }
+brain_retire_old_tools() { :; }
+brain_sudoers() { :; }
 sudo() { "$@"; }
 SUDO() { case "$1" in tee) command tee "$2" ;; mkdir|chmod) "$@" ;; *) : ;; esac; }
 '''

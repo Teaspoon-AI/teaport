@@ -21,7 +21,7 @@ You need:
   repository, and the service runs `~/teaport-sip/build/teaport-sip`.
 - Access to the device as the user the teaport services run as.
 
-<!-- source: install.sh:3274-3275#439739d4; cli/teaport:27-29#8d57683f -->
+<!-- source: install.sh:2986-2987#439739d4; cli/teaport:27-29#8d57683f -->
 
 ## Turn on telephony
 
@@ -49,13 +49,13 @@ To configure the line, follow these steps:
    password, and enables the service. If the registration fails, the wizard
    writes nothing and telephony stays off.
 
-<!-- source: cli/teaport:504-512#27174433; cli/teaport:20,27#80224d4c; cli/teaport:1418-1427#938e530e; cli/teaport:1618-1619#fed8b523 -->
+<!-- source: cli/teaport:494-502#27174433; cli/teaport:20,27#80224d4c; cli/teaport:1408-1417#938e530e; cli/teaport:1608-1609#fed8b523 -->
 
 Run the wizard as the user the services run as. As root, add `sudo -E`: a plain
 `sudo` resets `HOME`, so the wizard writes a configuration the gateway never
 reads, and it refuses to.
 
-<!-- source: cli/teaport:935-941,956#f979126a -->
+<!-- source: cli/teaport:925-931,946#f979126a -->
 
 ### Turn it on without prompts
 
@@ -73,7 +73,7 @@ Replace the following:
 - `SIP_USER`: the username the trunk assigns you.
 - `SIP_PASSWORD`: the trunk password.
 
-<!-- source: cli/teaport:1375-1382#3a2472e8 -->
+<!-- source: cli/teaport:1365-1372#3a2472e8 -->
 
 ### Use an existing gateway configuration
 
@@ -92,7 +92,7 @@ the brain answers the call, after a couple of rings. If a gateway or SIP
 front-end launched by hand is still running, the command refuses and names it:
 the service it is about to enable needs port 5060 and the socket.
 
-<!-- source: cli/teaport:1244-1247#bafef1f1; cli/teaport:1453-1463#f6ff2e6c; cli/teaport:1485-1488#e22022c1 -->
+<!-- source: cli/teaport:1234-1237#bafef1f1; cli/teaport:1443-1453#f6ff2e6c; cli/teaport:1475-1478#e22022c1 -->
 
 ### Change the trunk later
 
@@ -105,7 +105,7 @@ does not know. Before the test registration, the wizard lists by name the
 settings it keeps. To keep nothing and write a fresh template, run
 `teaport sip configure --fresh`.
 
-<!-- source: cli/teaport:521-524#c26fec26; cli/teaport:525-542#e3a362d0; cli/teaport:652-658#b5bd2dd5 -->
+<!-- source: cli/teaport:511-514#c26fec26; cli/teaport:515-532#e3a362d0; cli/teaport:642-648#b5bd2dd5 -->
 
 ## Check the line
 
@@ -117,7 +117,7 @@ in it, and the registration from this run:
 teaport sip status
 ```
 
-<!-- source: cli/teaport:1565-1592#e661c53b; cli/teaport:757-765#9fceb4c7 -->
+<!-- source: cli/teaport:1555-1582#e661c53b; cli/teaport:747-755#9fceb4c7 -->
 
 To follow the gateway's journal:
 
@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:9,490-494#0ac45871; brain/teaport_brain/sip_server.py:494#f51c16f8 -->
+<!-- source: cli/teaport:9,480-484#0ac45871; brain/teaport_brain/sip_server.py:494#f51c16f8 -->
 
 ## Keep the line running
 
@@ -149,7 +149,7 @@ teaport sip restart
 
 The command waits for the trunk's `200 OK`; the brain reconnects on its own.
 
-<!-- source: cli/teaport:1530-1536,1626#a48b0483 -->
+<!-- source: cli/teaport:1520-1526,1616#a48b0483 -->
 
 The gateway cancels echo for the caller. `teaport sip aec` prints the current
 acoustic echo cancellation (AEC) setting:
@@ -166,7 +166,7 @@ teaport sip aec off
 teaport sip aec on
 ```
 
-<!-- source: cli/teaport:1538-1553,1561-1562,1625#6acaab27 -->
+<!-- source: cli/teaport:1528-1543,1551-1552,1615#6acaab27 -->
 
 To turn telephony off:
 
@@ -178,7 +178,7 @@ The command stops and disables the gateway. The configuration stays at
 `~/.config/teaport/teaport-sip.conf`; add `--purge` to remove it too. Run the
 wizard again to turn telephony back on.
 
-<!-- source: cli/teaport:1595-1602,1627#4454f6b2 -->
+<!-- source: cli/teaport:1585-1592,1617#4454f6b2 -->
 
 The configuration is the gateway's own `key=value` format: `registrar_uri`,
 `id_uri`, `username`, `password`, `uds_path`, `aec`, `auto_answer`, and more.
@@ -188,7 +188,7 @@ confirmed, because the gateway still runs the configuration it started with.
 Nothing about the line lives in `/tmp`: the configuration is in
 `~/.config/teaport`, the socket in `/run/teaport`, and the logs in journald.
 
-<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:569-588#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:521-524#c26fec26; cli/teaport:794-806#399f6773 -->
+<!-- source: cli/teaport:27,29#1bfec8de; cli/teaport:559-578#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:511-514#c26fec26; cli/teaport:784-796#399f6773 -->
 
 ## A call during a conversation
 
@@ -203,7 +203,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1955-1965#a986d676; cli/teaport:1459-1461#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1955-1965#a986d676; cli/teaport:1449-1451#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — Ann Smith. Should I step away
@@ -365,7 +365,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,256#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:22#3f95ac55; brain/teaport_brain/sip_server.py:5-7,256#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
 
 To test the phone path, follow these steps:
 

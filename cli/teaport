@@ -10,7 +10,7 @@
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
 # Thin wrapper over systemd + the release manifest (teaport_brain.updates), reading the layout install.sh
-# produces: /opt/teaport (bin/models/venv/manifest.json), /etc/teaport/*.env,
+# produces: /opt/teaport (bin/models/brain/manifest.json), /etc/teaport/*.env,
 # ~/.config/teaport (secrets).
 #
 set -euo pipefail
@@ -240,38 +240,27 @@ cmd_status() {
 }
 
 # ---- doctor ----------------------------------------------------------------
-# brain_lock_check — is the live brain venv still the set brain/uv.lock installed?
-# install.sh builds every venv with `uv sync --locked` and records what it held
-# (teaport-build.json); this diffs the venv against that record. Drift is a hand
-# `pip install` into the venv, and it is the failure that used to accumulate unseen for
-# weeks: CI tests the lock, the box runs something else. A venv with no record cannot be
-# checked: a pip venv from before the uv installer, a uv one built before the records
-# existed, or a hand build. Which, the venv cannot say, so the warning does not guess.
-# Uses doctor's ok/warnc (dynamically scoped from cmd_doctor).
-brain_lock_check() {
-  local venv="$PREFIX/venv" rec out
-  rec="$venv/teaport-build.json"
-  [ -x "$venv/bin/python" ] || return 0
-  if [ ! -f "$rec" ]; then
-    warnc "brain venv has no build record, so it cannot be checked against brain/uv.lock (built before build records existed, or by hand) — rebuild it from a brain source that has teaport_brain/lockcheck.py (any since 2026-09-23) to get one: install.sh --only brain"
+# brain_package_check -- is the brain the teaport-brain package, with its files as the
+# package shipped them? `dpkg -V` is the check: it compares every file with the checksum
+# the package recorded, so a hand `pip install` into the venv, an edited module or a missing
+# file shows as a changed path. (A .pyc is part of the package; a __pycache__ written beside
+# it is not, and the CI job that builds the package fails when the installed tree grows one.)
+# A box still on the pre-package venv (/opt/teaport/venv, built by an older install.sh) is
+# told to switch. Uses doctor's ok/warnc (dynamically scoped from cmd_doctor).
+brain_package_check() {
+  local ver changed
+  ver="$(dpkg-query -W -f='${db:Status-Status} ${Version}\n' teaport-brain 2>/dev/null | awk '$1=="installed"{print $2; exit}')" || ver=""
+  if [ -z "$ver" ]; then
+    if [ -x "$PREFIX/venv/bin/teaport-brain" ]; then
+      warnc "the brain is a venv built on this box by an older installer, not the teaport-brain package, so its files cannot be checked — switch to the package: install.sh --only brain"
+    fi
     return 0
   fi
-  # -I (isolated) so the venv's python imports its own teaport_brain — not one from a
-  # PYTHONPATH the operator has exported, not the cwd. The diff
-  # lives in the brain package (teaport_brain.lockcheck), next to the code that wrote
-  # the record, so writer and reader cannot normalize names differently.
-  # stdout only: the three lines below are parsed by position, and a warning the venv's
-  # interpreter prints on stderr would shift them into a false drift report.
-  local err; err="$(mktemp)"
-  if ! out="$("$venv/bin/python" -I -m teaport_brain.lockcheck diff "$rec" 2>"$err")"; then
-    warnc "brain venv: cannot read its build record ($rec): $(tail -n 1 "$err")"
-    rm -f "$err"; return 0
+  changed="$(dpkg -V teaport-brain 2>&1 || true)"
+  if [ -z "$changed" ]; then ok "brain package teaport-brain $ver: every file as shipped"
+  else
+    warnc "brain package teaport-brain $ver has changed files (dpkg -V): $(printf '%s\n' "$changed" | awk '{print $NF}' | head -5 | paste -sd' ')$([ "$(printf '%s\n' "$changed" | wc -l)" -gt 5 ] && echo ' ...') — put them back: install.sh --only brain"
   fi
-  rm -f "$err"
-  local what n detail
-  { IFS= read -r what; IFS= read -r n; IFS= read -r detail || true; } <<<"$out"
-  if [ "$n" = 0 ]; then ok "brain venv matches its uv.lock build ($what)"
-  else warnc "brain venv has drifted from its uv.lock build ($what) — $n change(s): $detail — rebuild: install.sh --only brain"; fi
 }
 
 # brain_pacing_check — TTS_PACING as configured vs as the running brain paces (/health's
@@ -294,8 +283,8 @@ elif p.get("invalid"):
           " in %s/brain.env" % (c, p["invalid"], e, sys.argv[1]))
 else:
     print("warn\tTTS_PACING=%s, but the brain paces %s: it does not fit pipecat %s (%s)"
-          " — replies still play, a barge-in throws away more synthesis; if the brain venv"
-          " drifted from uv.lock: install.sh --only brain; if not, engine_tts.py needs new hooks"
+          " — replies still play, a barge-in throws away more synthesis; if the brain package"
+          " has drifted (dpkg -V teaport-brain): install.sh --only brain; if not, engine_tts.py needs new hooks"
           % (c, e, p.get("pipecat") or "?", "; ".join(p.get("missing") or ["?"])))' "$ETC" 2>/dev/null)" || return 0
   case "$line" in
     ok$'\t'*)   ok "${line#*$'\t'}" ;;
@@ -362,8 +351,9 @@ cmd_doctor() {
   [ -f "$PREFIX/models/voxtral/consolidated.safetensors" ] && ok "STT model" || failc "STT model missing ($PREFIX/models/voxtral)"
   [ -f "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf" ] && ok "Kokoro TTS model" || failc "Kokoro model missing ($PREFIX/models/kokoro)"
   [ -f "$PREFIX/THIRD_PARTY_NOTICES.txt" ] && ok "engine third-party notices" || failc "engine third-party notices missing ($PREFIX/THIRD_PARTY_NOTICES.txt — re-run install.sh)"
-  [ -x "$PREFIX/venv/bin/teaport-brain" ] && ok "brain (teaport-brain)" || failc "brain not installed in $PREFIX/venv"
-  brain_lock_check
+  if [ -x "$PREFIX/brain/bin/teaport-brain" ] || [ -x "$PREFIX/venv/bin/teaport-brain" ]; then ok "brain (teaport-brain)"
+  else failc "brain not installed in $PREFIX/brain (run install.sh)"; fi
+  brain_package_check
   have espeak-ng && ok "espeak-ng (engine G2P dep)" || failc "espeak-ng missing — apt install espeak-ng"
   local fpt
   if env_file_check "$ETC/engine.env"; then
@@ -466,7 +456,7 @@ cmd_doctor() {
 # code that checks once a day for /health: run under the brain's own venv, isolated (-I),
 # so there is one copy of it and no second one in bash. Applying is not wired yet.
 cmd_update() {
-  local venv="$PREFIX/venv" check_only=0 pass=(--prefix "$PREFIX" --etc "$ETC")
+  local venv="$PREFIX/brain" check_only=0 pass=(--prefix "$PREFIX" --etc "$ETC")
   while [ $# -gt 0 ]; do
     case "$1" in
       --check) check_only=1 ;;
@@ -477,10 +467,10 @@ cmd_update() {
     esac
     shift
   done
-  [ -x "$venv/bin/python" ] || die "no brain venv at $venv — is teaport installed? (run install.sh first)"
+  [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
   "$venv/bin/python" -I -m teaport_brain.updates check ${pass[@]+"${pass[@]}"} || exit $?
   [ "$check_only" = 1 ] && return 0
-  die "applying an update is not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+  die "applying an update is not wired yet — for a brain change run: install.sh --only brain (installs the teaport-brain package, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
 }
 
 # ---- logs ------------------------------------------------------------------

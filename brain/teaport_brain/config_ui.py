@@ -73,7 +73,7 @@ ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts (install.sh
 # install_config_sudoers). NOT sys.executable / the package's own copy: the venv
 # belongs to the run user, so trusting it would be trusting the brain itself.
-APPLY_HELPER = "/usr/local/lib/teaport/config_apply.py"
+APPLY_HELPER = "/usr/lib/teaport/config_apply.py"
 SYSTEM_PYTHON = "/usr/bin/python3"
 # Keys an operator may have added to an env file by hand that look like
 # credentials; masked from the page like the schema's secrets (same glob as

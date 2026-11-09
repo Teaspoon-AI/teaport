@@ -3,10 +3,9 @@
 # venv under contents must first be built AT /opt/teaport/brain (a venv is not
 # relocatable) and the version comes from the script.
 #
-# Build-only for now: the package lays its files down and has no maintainer scripts.
-# The installer and the units still run the brain from its own venv, so installing
-# this .deb changes nothing that is running. Pointing the units, the sudoers line and
-# the config page at these paths is a separate step.
+# Installing it puts the brain live: postinst writes the config page's sudoers line,
+# links the old /opt/teaport/venv path to the new tree and restarts the brain's units
+# (packaging/deb/postinst). install.sh renders the units; this package carries what runs.
 name: teaport-brain
 arch: ${TEAPORT_DEB_ARCH}
 platform: linux
@@ -49,6 +48,9 @@ depends:
 
 umask: 0o022
 
+scripts:
+  postinstall: packaging/deb/postinst
+
 contents:
   # The venv, byte for byte as uv built it (bytecode included, so a root-owned tree
   # never needs a __pycache__ write). Symlinks such as bin/python -> /usr/bin/python3.12
@@ -71,6 +73,15 @@ contents:
   # of the venv: a root-owned copy outside it (see config_apply.py's docstring).
   - src: brain/teaport_brain/config_apply.py
     dst: /usr/lib/teaport/config_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
+  # The one writer of the config page's sudoers line (see the script): run by postinst
+  # and by install.sh once it has rendered the unit that names the run user.
+  - src: packaging/deb/sudoers-sync
+    dst: /usr/lib/teaport/sudoers-sync
     file_info:
       mode: 0o755
       owner: root
