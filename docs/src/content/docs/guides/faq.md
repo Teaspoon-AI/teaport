@@ -15,7 +15,7 @@ No. Speech recognition and speech synthesis run on the device: the brain uses th
 
 No. The speech models run on the Jetson, so nothing in the cloud needs a GPU. You supply the LLM: a cloud key from a provider such as Groq or OpenRouter, or a local OpenAI-compatible server. The two ways to set one are in [Set up the language model](/guides/configuration/#set-up-the-language-model).
 
-<!-- source: README.md:16,18#0cb1a833; brain/teaport_brain/config_schema.toml:228#6ff18580 -->
+<!-- source: README.md:16,18#0cb1a833; brain/teaport_brain/config_schema.toml:234#6ff18580 -->
 
 ## Which Jetson devices does teaport support?
 
@@ -49,6 +49,6 @@ The engine serves a single speech-to-text session at a time, and the brain holds
 
 ## How do updates work?
 
-The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it builds a new environment beside the running one, checks it, swaps it in, and restarts `teaport-brain`. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new environment is not healthy, the previous one comes back by itself. An engine release has its own path too: `--only engine` updates the engine alone, and puts the previous engine back by itself when the new one doesn't come up healthy. The `teaport update` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
+The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it builds a new environment beside the running one, checks it, swaps it in, and restarts `teaport-brain`. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new environment is not healthy, the previous one comes back by itself. An engine release has its own path too: `--only engine` updates the engine alone, and puts the previous engine back by itself when the new one doesn't come up healthy. The `teaport update --check` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
 
-<!-- source: install.sh:17-23,1398#544cd662; install.sh:12,37-45#0188744d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7#a00a5a5b -->
+<!-- source: install.sh:17-23,1398#544cd662; install.sh:12,37-45#0188744d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7-8#efef4a9b -->

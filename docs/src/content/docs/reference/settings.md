@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2787#b1646c7f -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2817#9f8bc8f4 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -237,6 +237,17 @@ In `/etc/teaport/brain.env`. For an appliance unboxed by someone with no SSH (fi
 | `TEAPORT_STARTER_HALF_USED` | **0.5** (0.05–0.95) | While the box runs on its included trial credit (the provisioned starter key, marked by its SHA-256 in ~/.local/state/teaport/starter_key_sha256), the share of the key's limit used at which the box says, once at the start of a room or Talk conversation, that half of it is gone and how to connect an own account ("open my settings"); again at most once a day while that lasts. Shown on the configuration page (the owner's Settings), in /health's credit and by teaport status too. The credit is read from OpenRouter's GET /api/v1/key every TEAPORT_STARTER_POLL_SECS and after each conversation. Any other key saved later is the owner's, and the warnings stop. |
 | `TEAPORT_STARTER_LOW_USD` | **1.0** USD (0–100) | While on the trial credit: how many dollars left count as almost used up, said once at the start of a conversation as for TEAPORT_STARTER_HALF_USED. With nothing left the box stops answering (never switching to another model) and says to connect an own account; fixed phrases, "open my settings" and setup mode still work. |
 | `TEAPORT_STARTER_POLL_SECS` | **1800** s (60–86400) | While on the trial credit: how often the brain reads the starter key's record from OpenRouter (one free request), besides after each conversation. Never in a turn; a read that fails changes nothing. |
+
+## Updates
+
+These settings decide whether the box looks for a new release, how often, and on which channel.
+
+In `/etc/teaport/brain.env`. The brain reads the release manifest once a day (updates.py) and `teaport update --check` reads it on demand. Nothing is installed by looking; a new release is offered and only installed when the owner says yes.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_UPDATE_CHANNEL` | `""` | Which release channel the box looks at for a new version: stable, or beta (earlier, less settled releases). Empty means the channel the installed release came from (the "channel" in /opt/teaport/manifest.json), else stable. TEAPORT_MANIFEST_URL, where set, replaces the address for either. One of `""`, `stable`, `beta`. |
+| `TEAPORT_UPDATE_CHECK_SECS` | **86400** s (0–2592000) | How often the brain reads the release manifest to see whether a new version is out (one small request to get.teaspoon.tech, never in a turn; a read that fails changes nothing and is tried again an hour later). 0 turns the check off: `teaport update --check` still works by hand. |
 
 ## Talk client context notes
 

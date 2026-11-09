@@ -4,11 +4,12 @@
 #
 #   teaport status                three services + ports + memory at a glance
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
-#   teaport update [--check]      diff installed vs the release manifest; apply what changed
+#   teaport update --check [--json] [--channel stable|beta]
+#                                 is a newer release out? (diff installed vs the channel's manifest)
 #   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; bare, this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
-# Thin wrapper over systemd + the release manifest, reading the layout install.sh
+# Thin wrapper over systemd + the release manifest (teaport_brain.updates), reading the layout install.sh
 # produces: /opt/teaport (bin/models/venv/manifest.json), /etc/teaport/*.env,
 # ~/.config/teaport (secrets).
 #
@@ -17,7 +18,6 @@ set -euo pipefail
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
 ETC="${TEAPORT_ETC:-/etc/teaport}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
-MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 # SIP telephony (opt-in). The credentials .conf the wizard writes + the gateway unit gates
@@ -144,6 +144,25 @@ credit_line() {  # the trial credit, as a status line; nothing off it (an own ke
   case "$st" in ok) col="$GREEN" ;; half|low) col="$YEL" ;; empty) col="$RED" ;; *) col="0" ;; esac
   printf '  %-28s %s\n' "trial credit (brain)" "$(c "$col" "${line#*$'\t'}")"
 }
+# Whether a newer release is out (/health "update", updates.py), as a status line; nothing
+# when the check is off or the brain does not say.
+update_line() {
+  local line; line="$(brain_health | python3 -c 'import json, sys
+u = json.load(sys.stdin).get("update")
+if not isinstance(u, dict) or u.get("state") not in ("unknown", "current", "available"):
+    raise SystemExit(1)
+st = u["state"]
+ch = u.get("channel", "")
+stale = "" if u.get("fresh", True) else " (last check failed; this is the last known)"
+text = {"unknown": "not checked yet",
+        "current": "up to date (%s)%s" % (ch, stale),
+        "available": "a new release is out on %s: %s%s -- teaport update --check" % (
+            ch, ", ".join(u.get("changed") or []), stale)}[st]
+print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
+  [ -n "$line" ] || return 0
+  local col="0"; case "${line%%$'\t'*}" in current) col="$GREEN" ;; available) col="$YEL" ;; esac
+  printf '  %-28s %s\n' "release" "$(c "$col" "${line#*$'\t'}")"
+}
 # Whether OpenClaw pays with the brain's key (/health "agent_key", issue #281), as
 # "<state>\t<text>": off | absent | other | remote | none | unsynced | separate | shared | restart | mismatch,
 # or "unknown" when the brain does not say.
@@ -196,14 +215,6 @@ confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/de
 # each read as confval reads one. Nothing when the file cannot be read.
 confvals()  { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/#.*$//; s/[[:space:]]+$//' || true; }
 
-fetch() {  # fetch <url-or-path> <dest>
-  case "$1" in
-    /*|file://*) cp "${1#file://}" "$2" ;;
-    *) curl -fsSL --retry 3 -o "$2" "$1" || die "cannot fetch manifest: $1" ;;
-  esac
-  python3 -c "import json;json.load(open('$2'))" 2>/dev/null || die "manifest is not valid JSON: $1"
-}
-
 # ---- status ----------------------------------------------------------------
 svc_line()  { local st; st="$(active "$1")"; local col="$RED"; [ "$st" = active ] && col="$GREEN"; printf '  %-28s %s\n' "$1" "$(c "$col" "$st")"; }
 port_line() { if listening "$1"; then printf '  %-28s %s\n' "port :$1 ($2)" "$(c "$GREEN" listening)"; else printf '  %-28s %s\n' "port :$1 ($2)" "$(c "$RED" 'not listening')"; fi; }
@@ -220,6 +231,7 @@ cmd_status() {
   # listen, and only real turns find out (#205).
   answers_line
   credit_line
+  update_line
   agent_key_line
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
@@ -450,35 +462,25 @@ cmd_doctor() {
 }
 
 # ---- update ----------------------------------------------------------------
+# Is a newer release out? The comparison is the brain's (teaport_brain.updates), the same
+# code that checks once a day for /health: run under the brain's own venv, isolated (-I),
+# so there is one copy of it and no second one in bash. Applying is not wired yet.
 cmd_update() {
-  local check_only=0; [ "${1:-}" = --check ] && check_only=1
-  local local_mf="$PREFIX/manifest.json"
-  [ -f "$local_mf" ] || die "not installed: $local_mf missing (run install.sh first)"
-  local remote; remote="$(mktemp)"; fetch "$MANIFEST_URL" "$remote"
-  echo "teaport — update  (installed  ->  $MANIFEST_URL)"
-  local changed
-  changed="$(python3 - "$local_mf" "$remote" <<'PY'
-import json, sys
-a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
-comp = {"version": (a.get("version"), b.get("version")),
-        "engine":  (a.get("engine", {}).get("release"), b.get("engine", {}).get("release")),
-        "brain":   (a.get("brain", {}).get("tag"), b.get("brain", {}).get("tag")),
-        "plugin":  (a.get("plugin", {}).get("version"), b.get("plugin", {}).get("version"))}
-ch = []
-for k, (x, y) in comp.items():
-    print(f"  {k:8} {x}  {'->' if x != y else '=='}  {y}", file=sys.stderr)
-    if x != y: ch.append(k)
-print(",".join(ch))
-PY
-)"
-  if [ -z "$changed" ]; then echo "  up to date."; return 0; fi
-  echo "  changed: $changed"
-  [ "$check_only" = 1 ] && { echo "  (--check) not applying."; return 0; }
-  # Applying swaps only changed artifacts + restarts only affected units — the same
-  # idempotent, sha-verifying path install.sh runs. Wire it in once get.teaspoon.tech hosts
-  # real artifacts; until then, install.sh is the update path — for the brain alone,
-  # `install.sh --only brain` (its venv from uv.lock); for the engine alone, --only engine.
-  die "apply not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+  local venv="$PREFIX/venv" check_only=0 pass=(--prefix "$PREFIX" --etc "$ETC")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --check) check_only=1 ;;
+      --json) pass+=(--json) ;;
+      --channel) [ $# -ge 2 ] || die "--channel needs stable or beta"; pass+=(--channel "$2"); shift ;;
+      --channel=*) pass+=(--channel "${1#*=}") ;;
+      *) die "unknown argument: $1 (try: teaport update --check [--json] [--channel stable|beta])" ;;
+    esac
+    shift
+  done
+  [ -x "$venv/bin/python" ] || die "no brain venv at $venv — is teaport installed? (run install.sh first)"
+  "$venv/bin/python" -I -m teaport_brain.updates check ${pass[@]+"${pass[@]}"} || exit $?
+  [ "$check_only" = 1 ] && return 0
+  die "applying an update is not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
 }
 
 # ---- logs ------------------------------------------------------------------
