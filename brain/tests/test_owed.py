@@ -70,9 +70,8 @@ MEASURED_FOOTER = (
 # #387 replaced round 5's "Lead with the answer, then say what it answers (\"<answer> is …\")",
 # which was read out ("That answers your request."): test_owed_note_eval.py, 2026-11-09.
 MEASURED_FIRST = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-                  "Start with the answer itself, as a full sentence (\"The museum opens at "
-                  "ten.\"), not with their question, and don't talk about your reply or their "
-                  "request.")
+                  "Start with the answer itself, in a full sentence, not with their question, "
+                  "and don't talk about your reply or their request.")
 MEASURED_REOFFER = (
     "They haven't heard this yet and the conversation has gone quiet. If their last words asked "
     "you to wait and they haven't come back to you, call stay_silent. Otherwise mention it once "
@@ -550,6 +549,21 @@ def test_a_failures_note_says_it_is_over_and_its_run_says_why():
     assert owed.note_text([answer], owed.REOFFER).endswith(owed.REOFFER_LINE)
     both = owed.note_text([answer, fail], owed.RUN)
     assert both.split("\n")[1] == owed.RUN_LINE and both.count(owed.FAILED_LINE) == 1
+
+
+def test_a_consult_that_never_reported_back_is_over_not_failed():
+    """#398 review: a consult the session's end cut off lands "unknown" -- it may have been
+    done (Owed.close_session) -- so its note says it is over and brought no answer
+    (ENDED_LINE), never that it "did not get done", and its run and re-offer are the
+    answer's lines, not the failure's "you couldn't do it"."""
+    rec = _failure_record("unknown")
+    for purpose in (owed.RUN, "caller", owed.REOFFER):
+        note = owed.note_text([rec], purpose)
+        assert owed.ENDED_LINE in note and owed.FAILED_LINE not in note, (purpose, note)
+    assert owed.note_text([rec], owed.RUN).split("\n")[1] == owed.RUN_LINE
+    assert owed.note_text([rec], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    both = owed.note_text([_failure_record("timeout", key="t"), rec], owed.RUN)
+    assert both.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE in both
 
 
 def test_a_failures_outcome_never_says_not_to_say_it_failed():

@@ -124,39 +124,55 @@ _LULL_TICK_S = 0.25
 # gpt-oss-120b on Groq, the room's live system prompt and tools, 20 trials a case,
 # 2026-11-09; before -> after). Round 5's "Lead with the answer, then say what it answers
 # (\"<answer> is …\")" was read out ("That answers your request.", ~50 times on the box
-# in ten days): a list answer 7/20 -> 0/20, the answer first 20/20 either way. A failure
+# in ten days): a list answer 7/20 -> 0/20, the answer first 20/20 either way; in Spanish
+# and Italian sessions 1/10 and 3/10 -> 0/20. An English example in the line ("The museum
+# opens at ten.") made a Spanish session answer in English 5/10: there is none. A failure
 # had no line of its own, and the hedge below told every failure "rather than saying it
 # failed": a timed-out lookup's run told it failed and why 3/20 -> 20/20 (the rest: "no
-# results", "not yet"), an error's 0/20 -> 20/20, in Spanish 1/20 -> 20/20 and Italian
-# 2/20 -> 20/20; "What about the bookshops?" after it 1/20 -> 15/20 (19/20 by reading:
-# "the search didn't finish" without the reason), "How are those searches going?" with
-# two failed 0/20 ("still waiting on those searches") -> 20/20; its re-offer 9/20 ->
-# 18/20; an action's timeout 8/20 -> 20/20, asking them to check 15/20.
-RUN_LINE = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-            "Start with the answer itself, as a full sentence (\"The museum opens at ten.\"), "
-            "not with their question, and don't talk about your reply or their request.")
+# results", "not yet"), an error's 0/20 -> 19/20, in Spanish 0/10 -> 20/20 and Italian
+# 0/10 -> 20/20; "What about the bookshops?" after it 1/20 -> 20/20 (in Spanish 0/10 ->
+# 12/20: the rest mostly "no se obtuvo respuesta", the outcome's "No answer"); "How are
+# those searches going?" with two failed 0/20 ("still waiting on those searches") ->
+# 19/20, in Italian 20/20; its re-offer 9/20 -> 20/20; an action's timeout 8/20 -> 20/20.
+# What the run lines share, and the re-offer lines (the texts stay as they were measured).
+_RUN_HEAD = "Nothing else is going on: tell them now"
+_REOFFER_HEAD = ("They haven't heard this yet and the conversation has gone quiet. If their "
+                 "last words asked you to wait and they haven't come back to you, call "
+                 "stay_silent. Otherwise mention it once in passing, in one short sentence "
+                 "that says ")
+RUN_LINE = (_RUN_HEAD + " in one or two short spoken sentences. Start with the answer "
+            "itself, in a full sentence, not with their question, and don't talk about your "
+            "reply or their request.")
 # The landing run of a failure (#387): there is no answer to lead with, and told to lead
 # with one the model made one up ("No bookshop results are available."), as if nothing
 # existed.
-FAILURE_RUN_LINE = ("Nothing else is going on: tell them now, in one or two short spoken "
-                    "sentences, that you couldn't do it and the reason the result gives.")
+FAILURE_RUN_LINE = (_RUN_HEAD + ", in one or two short spoken sentences, that you couldn't "
+                    "do it and the reason the result gives.")
 # Under a failure's result in every note (#387): it has ended. Without it, a caller's turn
 # after a timed-out lookup was answered "I don't have those results yet" (the footer's "say
 # you don't have that"), or "still waiting on those searches".
 FAILED_LINE = ("This one did not get done, and it is over: if you tell them about it, say "
                "that and why, never that you're still waiting on it or that nothing was "
                "found.")
-REOFFER_LINE = ("They haven't heard this yet and the conversation has gone quiet. If their "
-                "last words asked you to wait and they haven't come back to you, call "
-                "stay_silent. Otherwise mention it once in passing, in one short sentence "
-                "that says what it's about and gives the answer (\"By the way, that ... is "
-                "...\").")
+# The same for a consult that never reported back (failure "unknown": the session ended
+# while it ran, Owed.close_session): it may have been done, so "did not get done" would be
+# false -- an action asked for may well have gone through.
+ENDED_LINE = ("This one is over and brought no answer: if you tell them about it, say that "
+              "and what happened, as the result says, never that you're still waiting on "
+              "it.")
+REOFFER_LINE = (_REOFFER_HEAD + "what it's about and gives the answer (\"By the way, that "
+                "... is ...\").")
 # A failure's re-offer (#387): the same, with nothing to give but what happened.
-FAILURE_REOFFER_LINE = ("They haven't heard this yet and the conversation has gone quiet. If "
-                        "their last words asked you to wait and they haven't come back to "
-                        "you, call stay_silent. Otherwise mention it once in passing, in one "
-                        "short sentence that says what it was and why it didn't get done "
-                        "(\"By the way, that ... didn't work: ...\").")
+FAILURE_REOFFER_LINE = (_REOFFER_HEAD + "what it was and why it didn't get done (\"By the "
+                        "way, that ... didn't work: ...\").")
+
+
+def _failed(r) -> bool:
+    """A record of a consult that did not get done -- a timeout, an error, nothing back --
+    not one that never reported back ("unknown"), which may have been."""
+    return bool(r.failure) and r.failure != "unknown"
+
+
 NOTE_HEAD = "Results you have for the user. Each is everything that result contains."
 NOT_HEARD = "They have NOT heard this yet."
 # Round 4 "S3": 20/20 answer after a partial telling (v1's "heard part of it": 15/20).
@@ -694,19 +710,21 @@ def note_text(records: list, purpose: str) -> str:
     the quote contradicts its line and reads as engagement."""
     lines = [SYSTEM_NOTICE_TAG]
     if purpose == RUN:
-        lines.append(FAILURE_RUN_LINE if all(r.failure for r in records) else RUN_LINE)
+        lines.append(FAILURE_RUN_LINE if all(_failed(r) for r in records) else RUN_LINE)
     lines.append(NOTE_HEAD)
     for i, r in enumerate(records, 1):
         status = (PART_HEARD.format(quote=r.heard_quote)
                   if r.heard_quote and purpose != REOFFER else NOT_HEARD)
-        failed = f"\n   {FAILED_LINE}" if r.failure else ""
+        failed = (f"\n   {FAILED_LINE if _failed(r) else ENDED_LINE}" if r.failure
+                  else "")
         lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}{failed}\n"
                      f"   {status}")
         if r.failure and r.unheard and r.heard_quote and purpose != REOFFER:
             lines.append(f"   {NOT_HEARD_REST.format(rest=r.unheard)}")
     lines.append(FOOTER)
     if purpose == REOFFER:
-        lines.append(FAILURE_REOFFER_LINE if all(r.failure for r in records) else REOFFER_LINE)
+        lines.append(FAILURE_REOFFER_LINE if all(_failed(r) for r in records)
+                     else REOFFER_LINE)
     return "\n".join(lines)
 
 
