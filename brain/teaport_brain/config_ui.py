@@ -14,9 +14,12 @@ runs, this is a static file and a few file reads.
 
 Auth is the same shared secret /talk uses: GATEWAY_TOKEN, as a bearer header
 or ?token=. Unset means open, exactly like /talk, and the brain already warns
-about that at startup. On the front door the owner's phone gets in without it: the
-routes are mounted again under /settings (gateway_server), and a Settings session
-from "open my settings" stands in for the token there (settings_access.py, #279).
+about that at startup. On the brain's own port, plain HTTP, the page and its routes
+answer only the box itself (_on_box_or_settings): over the LAN the token would travel
+in cleartext. Other devices use the front door: the routes are mounted again under
+/settings (gateway_server), on the Settings site over HTTPS, where a Settings session
+from "open my settings" or the token as a bearer header gets in (settings_access.py,
+#279).
 
 Saving LLM_API_KEY checks the key with the provider first (ai_account.check_key, the
 one way every page takes a key): one that is refused or cannot be checked is not saved
@@ -57,7 +60,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
@@ -90,7 +93,24 @@ SIP_CONF = "~/.config/teaport/teaport-sip.conf"
 # as up or down (an idle one is inactive by design, not broken).
 ON_DEMAND_UNITS = ("teaport-wifi-setup",)
 
-router = APIRouter()
+
+def _on_box_or_settings(request: Request) -> None:
+    """Every route here, on either mount. Under /settings, SettingsGuard has already
+    let only the Settings site through. On the brain's own port, plain HTTP open to the
+    LAN, only the box itself (settings_access.on_box): the token would cross the network
+    in cleartext, and an unset token would open the page to anyone on it. Elsewhere the
+    answer names the Settings site, where the same token works over HTTPS."""
+    if request.url.path.startswith(settings_access.PREFIX) or settings_access.on_box(request):
+        return
+    where = (f" at {settings_access.origin()}{settings_access.PAGE_PATH}"
+             if settings_access.available() else ", which this box has not set up")
+    raise HTTPException(status_code=403, detail=(
+        "The configuration page answers only on the box itself here. From another "
+        f"device, open Settings over HTTPS{where} (the same token works there), or "
+        "tunnel to this port over SSH."))
+
+
+router = APIRouter(dependencies=[Depends(_on_box_or_settings)])
 
 
 # ------------------------------------------------------------------ auth
@@ -99,34 +119,24 @@ def _token() -> str:
     return settings.setting("GATEWAY_TOKEN")
 
 
-def token_matches(got: str | None, want: str | None) -> bool:
-    """Constant-time compare of a presented token against the configured one, so
-    the time a wrong guess takes says nothing about how much of it was right.
-    Bytes, not str: compare_digest refuses non-ASCII str. surrogateescape so an
-    env value that is not valid UTF-8 (os.environ decodes it to lone surrogates)
-    still compares instead of raising. None counts as empty."""
-    def b(s: str | None) -> bytes:
-        return (s or "").encode("utf-8", "surrogateescape")
-    return hmac.compare_digest(b(got), b(want))
-
-
 def _authorize(request: Request) -> None:
+    """The token, or under /settings what Settings takes (settings_access.authorized).
+    gateway_server's /talk/status asks this too, on the brain's own port."""
     url = getattr(request, "url", None)  # a bare stand-in (a test's) has none
     if getattr(url, "path", "").startswith(settings_access.PREFIX):
-        # The front door's mount (gateway_server): the owner's Settings session and
-        # nothing else, whatever the token -- an unset token opens the LAN port, never
-        # the front door.
+        # The front door's mount (gateway_server): the owner's Settings session or the
+        # operator's token as a bearer header -- an unset token opens the box itself,
+        # never the front door.
         if not settings_access.authorized(request):
             raise HTTPException(status_code=401, detail="no Settings session")
         return
     want = _token()
     if not want:
         return
-    got = request.query_params.get("token", "")
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        got = auth[7:].strip()
-    if not token_matches(got, want):
+    got = settings_access.bearer(request)
+    if got is None:
+        got = request.query_params.get("token", "")
+    if not settings_access.token_matches(got, want):
         raise HTTPException(status_code=401, detail="bad or missing token")
 
 

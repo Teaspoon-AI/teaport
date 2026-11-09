@@ -90,7 +90,7 @@ elif st == "unconfigured":
             " a fixed line — with only an OpenRouter key missing,%s in setup mode (\"set up Wi-Fi\") type"
             " it on the setup page; otherwise set LLM_BASE_URL in %s/brain.env (then"
             " restart the brain) and write the key to ~/.config/teaport/llm_key, or set"
-            " both on the configuration page at :7861/config" % (why, phone, sys.argv[1]))
+            " both on the configuration page at https://<box>:8443/settings/config" % (why, phone, sys.argv[1]))
 elif st == "account" and a.get("credit") is True:
     text = ("out of credit %s: the AI account behind the answers has run out of credit,"
             " and it will not pass by itself — add credit to it (an OpenRouter account:"

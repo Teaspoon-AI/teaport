@@ -262,7 +262,7 @@ def _page(box):
     config_ui._unit_states = states
     app = FastAPI()
     app.include_router(config_ui.router)
-    return TestClient(app), etc
+    return TestClient(app, client=("127.0.0.1", 50000)), etc  # on the box: config_ui._on_box_or_settings
 
 
 def test_the_settings_page_saves_both_or_says_it_did_not():
@@ -301,7 +301,7 @@ def test_a_failed_step_after_the_save_takes_it_back():
     _save(OLD)
     box.modes("ok", "ok")
     try:
-        r = TestClient(client.app, raise_server_exceptions=False).put(
+        r = TestClient(client.app, raise_server_exceptions=False, client=("127.0.0.1", 50000)).put(
             "/api/config", headers={"authorization": "Bearer t0k3n"},
             json={"store": "brain_env", "values": {"LLM_API_KEY": NEW}})
         assert r.status_code == 500
@@ -1084,7 +1084,7 @@ def test_an_undo_that_cannot_run_says_brain_env_still_differs():
     real = ai_account.Saved.undo
     ai_account.Saved.undo = busy
     try:
-        r = TestClient(client.app, raise_server_exceptions=False).put(
+        r = TestClient(client.app, raise_server_exceptions=False, client=("127.0.0.1", 50000)).put(
             "/api/config", headers={"authorization": "Bearer t0k3n"},
             json={"store": "brain_env", "values": {"LLM_API_KEY": NEW}})
         assert r.status_code == 500
@@ -1115,7 +1115,7 @@ def test_an_undo_that_cannot_run_without_a_brain_env_copy_is_only_logged():
     lines = []
     sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
     try:
-        r = TestClient(client.app, raise_server_exceptions=False).put(
+        r = TestClient(client.app, raise_server_exceptions=False, client=("127.0.0.1", 50000)).put(
             "/api/config", headers={"authorization": "Bearer t0k3n"},
             json={"store": "brain_env", "values": {"LLM_API_KEY": NEW, "TTS_VOICE": "af_bella"}})
         assert r.status_code == 500

@@ -629,8 +629,8 @@ def test_a_settings_code_never_reaches_the_access_log():
 
 
 def test_no_token_does_not_open_the_front_door():
-    """An unset GATEWAY_TOKEN leaves the LAN port open as before, never the front door's
-    mount: there only a Settings session counts (#279 review)."""
+    """An unset GATEWAY_TOKEN leaves the brain's own port open to the box itself, never
+    the front door's mount: there only a Settings session counts (#279 review)."""
     async def run():
         _setup()
         os.environ["GATEWAY_TOKEN"] = ""
@@ -641,7 +641,7 @@ def test_no_token_does_not_open_the_front_door():
             assert (await c.post("/settings/api/restart", json={"unit": "teaport-brain"})).status_code == 401
             assert (await c.post("/settings/api/wifi/connect", json={"ssid": "x"})).status_code == 401
         async with _client(proto=None, origin=None, port=7861) as c:
-            assert (await c.get("/api/config")).status_code == 200  # the LAN port, open as before
+            assert (await c.get("/api/config")).status_code == 200  # the box itself, open
         screen = Screen()
         await Voice(screen)._heard("open my settings")
         async with _client() as c:
@@ -654,8 +654,8 @@ def test_no_token_does_not_open_the_front_door():
 def test_the_brains_own_port_serves_nothing_under_settings():
     """Every /settings route, whoever mounted it, answers only through the Settings site:
     on the brain's LAN port the page shell, its API, /settings/health and the code pages
-    are a 404, while /config there is the operator's page as before (a live check found
-    /settings/config served the shell there)."""
+    are a 404 (a live check found /settings/config served the shell there), and /config
+    there answers only the box itself."""
     async def run():
         _setup()
         app = gateway_server.app  # the brain's own app: every router it mounts, the guard
@@ -670,8 +670,10 @@ def test_the_brains_own_port_serves_nothing_under_settings():
                          "/settings", "/settings/AB3CD9"):
                 r = await lan.get(path)
                 assert r.status_code == 404 and "<html" not in r.text.lower(), (path, r.status_code)
-            r = await lan.get("/config")
-            assert r.status_code == 200 and "<html" in r.text.lower()
+            for path in ("/config", "/config/logo.svg", "/api/config", "/api/account"):
+                r = await lan.get(path)
+                assert r.status_code == 403 and "<html" not in r.text.lower(), (path, r.status_code)
+            assert f"{ORIGIN}/settings/config" in (await lan.get("/config")).json()["detail"]
             # A loopback peer that does not say https (no Caddy) is no Settings site either.
             r = await lan.get("/settings/config", headers={"Host": f"{HOST}:{PORT}"})
             assert r.status_code == 404
@@ -680,6 +682,74 @@ def test_the_brains_own_port_serves_nothing_under_settings():
             assert r.status_code == 200 and "<html" in r.text.lower()
             assert r.headers["x-frame-options"] == "DENY"
             assert (await site.get("/settings/api/config")).status_code == 401
+    asyncio.run(run())
+
+
+def test_the_operator_page_answers_only_the_box_itself():
+    """http://<box>:7861/config is plain HTTP: the token it asks for would cross the LAN
+    in cleartext, and an unset one would open it to the LAN. Only a loopback peer no
+    proxy forwarded gets it -- with no token set too; /talk/status, which shares the
+    token check, stays on the LAN for the room bridge."""
+    async def run():
+        _setup()
+        app = gateway_server.app
+
+        def peer(host, **headers):
+            return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(host, 40000)),
+                                     base_url="http://box:7861", headers=headers)
+        auth = {"authorization": f"Bearer {TOKEN}"}
+        async with peer("127.0.0.1") as box, peer("::1") as box6:
+            assert (await box.get("/config")).status_code == 200
+            assert (await box6.get("/config")).status_code == 200
+            assert (await box.get("/api/config")).status_code == 401  # still the token
+            assert (await box.get("/api/config", headers=auth)).status_code == 200
+        async with peer("192.168.1.50") as lan:
+            r = await lan.get("/api/config", headers=auth)  # the right token, the wrong way
+            assert r.status_code == 403, r.text
+            assert (await lan.post("/api/restart", headers=auth, json={"unit": "teaport-brain"})).status_code == 403
+            assert (await lan.get("/talk/status", headers=auth)).status_code == 200
+        # A loopback peer a proxy forwarded is not the box itself.
+        async with peer("127.0.0.1", **{"X-Forwarded-For": "192.168.1.50"}) as fwd:
+            assert (await fwd.get("/api/config", headers=auth)).status_code == 403
+        async with peer("127.0.0.1", **{"X-Forwarded-Proto": "http"}) as fwd:
+            assert (await fwd.get("/api/config", headers=auth)).status_code == 403
+        # No token set: open on the box, still nothing for the LAN.
+        os.environ["GATEWAY_TOKEN"] = ""
+        try:
+            async with peer("127.0.0.1") as box, peer("192.168.1.50") as lan:
+                assert (await box.get("/api/config")).status_code == 200
+                assert (await lan.get("/api/config")).status_code == 403
+        finally:
+            os.environ["GATEWAY_TOKEN"] = TOKEN
+    asyncio.run(run())
+
+
+def test_the_operator_token_opens_settings_over_https():
+    """The operator's way from another device: the token as a bearer header on the
+    Settings site, beside the owner's session. Not as ?token= (it would sit in URLs), not
+    a wrong one, not from another origin, and an unset token opens nothing."""
+    async def run():
+        _setup()
+        auth = {"authorization": f"Bearer {TOKEN}"}
+        put = {"store": "brain_env", "values": {"LLM_BASE_URL": "https://example.test/v1"}}
+        async with _client() as c:
+            assert (await c.get("/settings/api/config", headers=auth)).status_code == 200
+            assert (await c.put("/settings/api/config", headers=auth, json=put)).status_code == 200
+            assert (await c.get(f"/settings/api/config?token={TOKEN}")).status_code == 401
+            assert (await c.get("/settings/api/config",
+                                headers={"authorization": "Bearer wrong"})).status_code == 401
+        async with _client(fetch_site="same-site", origin=f"https://{HOST}") as c:
+            assert (await c.get("/settings/api/config", headers=auth)).status_code == 401
+            assert (await c.put("/settings/api/config", headers=auth, json=put)).status_code == 401
+        async with _client(port=443, origin=f"https://{HOST}") as c:
+            assert (await c.get("/settings/api/config", headers=auth)).status_code == 404
+        os.environ["GATEWAY_TOKEN"] = ""
+        try:
+            async with _client() as c:
+                assert (await c.get("/settings/api/config",
+                                    headers={"authorization": "Bearer "})).status_code == 401
+        finally:
+            os.environ["GATEWAY_TOKEN"] = TOKEN
     asyncio.run(run())
 
 

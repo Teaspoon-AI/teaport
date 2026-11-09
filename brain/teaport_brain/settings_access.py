@@ -29,13 +29,15 @@
 #      page, /settings/config. The cookie (COOKIE) is HttpOnly, Secure, SameSite=Strict,
 #      Path=/settings, and lasts SESSION_SECS.
 #   4. config_ui's routes take the session in place of the token (authorized()), under
-#      the /settings prefix gateway_server mounts them at. The token keeps working, on
-#      the brain's own port, for operators.
+#      the /settings prefix gateway_server mounts them at. The operator's token works
+#      there too, as a bearer header (operator_token); on the brain's own port, plain
+#      HTTP, the page answers only the box itself (on_box), so the token never crosses
+#      the LAN in cleartext.
 #
 # The session is a signed expiry, not a server-side record: an HMAC under a key derived
 # from GATEWAY_TOKEN (_key), so it outlives a brain restart (the page restarts the
 # brain), ends when the token is changed, and is checked in constant time. With no
-# token the page is open on the LAN anyway; a per-process random key then signs.
+# token the page is open on the box itself anyway; a per-process random key then signs.
 #
 # What keeps a session to the owner's phone:
 #   - the code: shown on the box's screen or said aloud in the room, five minutes, once;
@@ -216,11 +218,51 @@ def on_settings_site(request: Request) -> bool:
     return (int(port) if port.isdigit() else 443) == SETTINGS_PORT
 
 
+def on_box(request: Request) -> bool:
+    """Sent from the box itself, straight to the brain's port: a loopback peer that no
+    proxy forwarded (Caddy, the only one, always adds X-Forwarded-For). The operator's
+    plain-HTTP config page answers only this (config_ui._on_box_or_settings): the token
+    it asks for would otherwise cross the LAN in cleartext. From elsewhere: the Settings
+    site, or an SSH tunnel to the port."""
+    peer = request.client.host if request.client else None
+    return (pairing._is_loopback(peer) and "x-forwarded-for" not in request.headers
+            and "x-forwarded-proto" not in request.headers)
+
+
+def token_matches(got: str | None, want: str | None) -> bool:
+    """Constant-time compare of a presented token against the configured one, so
+    the time a wrong guess takes says nothing about how much of it was right.
+    Bytes, not str: compare_digest refuses non-ASCII str. surrogateescape so an
+    env value that is not valid UTF-8 (os.environ decodes it to lone surrogates)
+    still compares instead of raising. None counts as empty."""
+    def b(s: str | None) -> bytes:
+        return (s or "").encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(b(got), b(want))
+
+
+def bearer(request: Request) -> str | None:
+    """The token of an `Authorization: Bearer` header, or None."""
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else None
+
+
+def operator_token(request: Request) -> bool:
+    """GATEWAY_TOKEN as a bearer header: the operator's way into Settings, over HTTPS,
+    beside the owner's session. A header only: a browser never attaches one on its own,
+    so no other page can borrow it. An unset token opens nothing here."""
+    want = setting("GATEWAY_TOKEN")
+    got = bearer(request)
+    return bool(want) and got is not None and token_matches(got, want)
+
+
 def authorized(request: Request) -> bool:
-    """Is this a Settings session from the owner's phone: on the Settings site, a valid
-    session cookie, nothing a browser marks as from another origin, and for anything but
-    a read, from the Settings page itself."""
-    if not on_settings_site(request) or not session_ok(request.cookies.get(COOKIE)):
+    """Is this the owner's phone or the operator on Settings: on the Settings site, a
+    valid session cookie or the operator's token (operator_token), nothing a browser
+    marks as from another origin, and for anything but a read, from the Settings page
+    itself."""
+    if not on_settings_site(request):
+        return False
+    if not (session_ok(request.cookies.get(COOKIE)) or operator_token(request)):
         return False
     if (request.headers.get("sec-fetch-site") or "same-origin").lower() not in (
             "same-origin", "none"):
@@ -309,7 +351,7 @@ class SettingsGuard:
     router mounted it (this one, config_ui's routes and its page shell, /settings/health):
     a request that did not come through the Settings site (on_settings_site) gets a 404 --
     the brain's own port, open to the LAN, serves nothing there, the page shell included
-    (operators have /config); and every answer carries FRAME_GUARD, whatever Caddyfile
+    (operators have /config on the box itself); and every answer carries FRAME_GUARD, whatever Caddyfile
     fronts it (Caddy's Settings site adds them too)."""
 
     def __init__(self, app):

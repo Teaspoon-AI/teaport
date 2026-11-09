@@ -40,7 +40,7 @@ import subprocess
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from teaport_brain import agent_key, ai_account, config_ui, settings
+from teaport_brain import agent_key, ai_account, config_ui, settings, settings_access
 import appliance
 from tempdirs import tempdir
 
@@ -145,7 +145,7 @@ def setup():
 
     app = FastAPI()
     app.include_router(config_ui.router)
-    return TestClient(app), etc, home, calls
+    return TestClient(app, client=("127.0.0.1", 50000)), etc, home, calls  # on the box: _on_box_or_settings
 
 
 H = {"authorization": "Bearer t0k3n"}
@@ -385,20 +385,20 @@ def test_token_compare_is_constant_time_and_total():
     from fastapi.websockets import WebSocketDisconnect
     from teaport_brain import gateway_server as gs
 
-    assert config_ui.token_matches("t0k3n", "t0k3n")
+    assert settings_access.token_matches("t0k3n", "t0k3n")
     for got in ("t0k3", "t0k3n ", "", None, "t\u00f6k3n"):
-        assert not config_ui.token_matches(got, "t0k3n"), got
-    assert config_ui.token_matches(None, "") and config_ui.token_matches("", None)
+        assert not settings_access.token_matches(got, "t0k3n"), got
+    assert settings_access.token_matches(None, "") and settings_access.token_matches("", None)
     seen = []
     real = hmac.compare_digest
     with mock.patch.object(hmac, "compare_digest", lambda a, b: seen.append((a, b)) or real(a, b)):
-        config_ui.token_matches("x", "t0k3n")
+        settings_access.token_matches("x", "t0k3n")
     assert seen == [(b"x", b"t0k3n")], seen
     # a GATEWAY_TOKEN that is not valid UTF-8 (os.environ hands it over as lone
     # surrogates) compares rather than raising
-    assert config_ui.token_matches("t\udcff", "t\udcff")
-    assert not config_ui.token_matches("t\ufffd", "t\udcff")
-    assert not config_ui.token_matches("t", "t\udcff")
+    assert settings_access.token_matches("t\udcff", "t\udcff")
+    assert not settings_access.token_matches("t\ufffd", "t\udcff")
+    assert not settings_access.token_matches("t", "t\udcff")
 
     client, *_ = setup()
     # non-ASCII in the query string: a plain compare_digest(str, str) would raise

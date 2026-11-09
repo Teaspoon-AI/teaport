@@ -12,20 +12,20 @@ You can make the edit in two places: the brain's configuration page, or the conf
 ## Before you begin
 
 - The IP address of the device on your network. The steps call it `DEVICE_IP`.
-- The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You add it to the page address once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
+- The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
 <!-- source: brain/teaport_brain/config_ui.py:15-17#68fec1eb; brain/teaport_brain/config_schema.toml:2209-2218#38d9c1ca; install.sh:2697#31d4462b -->
 
 ## Change a setting in the configuration page
 
-The brain serves the page at `http://DEVICE_IP:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
+The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, because over the network the token would travel unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
 <!-- source: brain/teaport_brain/config_ui.py:8-12,29-35#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:285-295#2b63b6f7 -->
 
 To change a setting there:
 
-1. Open `http://DEVICE_IP:7861/config?token=GATEWAY_TOKEN`. After the page has loaded once with the token in the address, the browser remembers it. If you did not set a token, open the address without the parameter; an unset token means the page is open, and the brain warns about that at startup.
+1. Open `https://DEVICE_NAME.local:8443/settings/config#token` and enter `GATEWAY_TOKEN`. The browser remembers it. Over the SSH tunnel, open `http://127.0.0.1:7861/config`, which asks for the same token. If you did not set a token, the tunnelled address opens without one, and the brain warns about that at startup; the settings site never opens without a token or a phone session.
 2. Find the setting in the group that covers it. The page shows each value as the services read it, which is not always the way the file spells it.
 3. Enter the new value and save. The page checks the value against the schema, its type and its bounds, before it writes anything.
 4. The page then lists every service that still runs the old values: a service whose configuration file changed after the unit started. Restart each one from the page, or apply the restarts yourself as [Apply the change](/guides/configuration/#apply-the-change) describes.
@@ -50,7 +50,7 @@ When a model is set up, you can also ask in your own words, for example "I need 
 
 <!-- source: brain/teaport_brain/settings_access.py:21-30#aa6588f4; brain/teaport_brain/settings_access.py:86-89#a87770ee; brain/teaport_brain/pairing.py:144-145#a83a8487 -->
 
-The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session nothing on that port opens, whether or not `GATEWAY_TOKEN` is set. The token keeps working on `http://DEVICE_IP:7861/config`.
+The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session or the token nothing on that port opens, and an unset `GATEWAY_TOKEN` opens nothing there.
 
 <!-- source: brain/teaport_brain/settings_access.py:76#2e08b20b; brain/teaport_brain/settings_access.py:284-294#8831dd56; brain/teaport_brain/settings_access.py:219-228#f38a8411 -->
 

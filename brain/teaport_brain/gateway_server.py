@@ -753,7 +753,7 @@ async def talk(websocket: WebSocket):
     # Auth BEFORE anything else: an unauthenticated socket must never reach the session
     # arbiter — otherwise any host that can reach this port can use the agent (and its
     # memory read/write tools), or claim a client's id and replace its session.
-    if GATEWAY_TOKEN and not config_ui.token_matches(
+    if GATEWAY_TOKEN and not settings_access.token_matches(
             websocket.query_params.get("token"), GATEWAY_TOKEN):
         logger.warning("rejected /talk client: missing or bad token")
         await websocket.close(code=1008)
