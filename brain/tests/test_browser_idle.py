@@ -35,8 +35,10 @@ IDLE = 600.0
 
 
 class Gateway:
-    def __init__(self, sessions=(), running=True, sessions_ok=True, stop_takes=True):
-        self.sessions = list(sessions)  # the stored rows, newest first
+    def __init__(self, sessions=(), running=True, sessions_ok=True, stop_takes=True,
+                 now=None):
+        self.now = now or (lambda: 0.0)  # the gateway's clock, for activeMinutes
+        self.sessions = list(sessions)  # the stored rows
         self.active = []                # the rows with a live run (activeOnly)
         self.running = running
         self.sessions_ok = sessions_ok
@@ -62,8 +64,17 @@ class Gateway:
         if tool == "sessions_list":
             if not self.sessions_ok or (args.get("activeOnly") and not self.active_ok):
                 return False, {}
-            rows = self.active if args.get("activeOnly") else self.sessions
-            return True, {"sessions": rows[:args.get("limit", 100)], **self.extra}
+            rows = list(self.active if args.get("activeOnly") else self.sessions)
+            # As OpenClaw 2026.9.7 lists them: activeMinutes filters before the sort and
+            # the limit, pinned rows sort first, and the tool drops "global" and
+            # "unknown" rows after the limit.
+            if args.get("activeMinutes"):
+                cutoff = (self.now() - args["activeMinutes"] * 60) * 1000
+                rows = [r for r in rows if r.get("updatedAt", 0) >= cutoff]
+            rows.sort(key=lambda r: (not r.get("pinned"), -r.get("updatedAt", 0)))
+            rows = [r for r in rows[:args.get("limit", 100)]
+                    if r.get("key") not in ("global", "unknown")]
+            return True, {"sessions": rows, **self.extra}
         raise AssertionError(tool)
 
     async def list_pages(self, url):
@@ -83,6 +94,7 @@ class Clock:
 
 
 def _monitor(gw, clock, idle=IDLE):
+    gw.now = clock
     return browser_idle.Monitor(clock=clock, invoke=gw.invoke, pages=gw.list_pages,
                                 idle_secs=idle)
 
@@ -122,6 +134,7 @@ def test_never_while_a_consult_runs_nor_until_the_idle_time_after_it():
     """Built as the first version was (no argument of the later reviews'), so this case
     reads the same on every version of the monitor."""
     gw, clock = Gateway(), Clock()
+    gw.now = clock
     m = browser_idle.Monitor(clock=clock, invoke=gw.invoke, pages=gw.list_pages,
                              idle_secs=IDLE)
     check(m)
@@ -184,20 +197,68 @@ def test_a_session_stamped_lately_holds_it_from_its_stamp():
     assert check(m) == "stopped"
 
 
-def test_however_long_the_gateway_has_run_the_newest_stamp_is_enough():
+def test_however_long_the_gateway_has_run_only_the_idle_time_is_read():
     """Round 2 of the review: a listing that had to reach back to the gateway's start
-    stopped nothing once 200 rows post-dated it. Only the newest row is read now."""
+    stopped nothing once 200 rows post-dated it. Only the stamps within the idle time are
+    asked for now (activeMinutes), a few rows of them."""
     clock = Clock()
     rows = [{"key": f"agent:main:openai:{i}", "status": "done",
              "updatedAt": (clock.t - 3600 * (i + 1)) * 1000} for i in range(500)]
     gw = Gateway(sessions=rows)
-    gw.extra = {"hasMore": True}
     m = _monitor(gw, clock)
     check(m)
     clock.t += IDLE + 1
     assert check(m) == "stopped"
-    asked = [a for t, a in gw.calls if t == "sessions_list"]
-    assert all(a.get("limit") == 1 for a in asked), asked
+    asked = [a for t, a in gw.calls if t == "sessions_list" and not a.get("activeOnly")]
+    assert all(a == {"activeMinutes": 12, "limit": browser_idle._RECENT_ROWS}
+               for a in asked), asked
+
+
+def test_a_pinned_session_does_not_hide_a_run_between_two_looks():
+    """Pinned sessions sort first: the first row of a plain listing is the owner's pinned
+    chat, however old, and a short run that started and ended between two looks would
+    leave no stamp to read."""
+    clock = Clock()
+    pinned = {"key": "agent:main:main", "status": "done", "pinned": True,
+              "updatedAt": (clock.t - 30 * 86400) * 1000}
+    gw = Gateway(sessions=[pinned])
+    m = _monitor(gw, clock)
+    check(m)
+    clock.t += IDLE - 30
+    short = {"key": "agent:main:openai:x", "status": "done",
+             "updatedAt": (clock.t - 5) * 1000}
+    gw.sessions.append(short)            # ran and ended since the last look
+    clock.t += 60                        # past the idle time since the first look
+    assert check(m) == "in-use" and not gw.stops()
+    clock.t += IDLE - 55 + 1
+    assert check(m) == "stopped"
+    # Pinned sessions stamped lately too, a full page of them: a newer stamp may be past
+    # the page, so the browser counts as used now.
+    clock.t += 10 * IDLE
+    gw = Gateway(sessions=[dict(pinned, key=f"agent:main:p{i}",
+                                updatedAt=(clock.t - IDLE + 30) * 1000) for i in range(3)])
+    m = _monitor(gw, clock)
+    check(m)
+    clock.t += IDLE - 25
+    assert check(m) == "in-use" and not gw.stops()
+    clock.t += IDLE
+    assert check(m) == "stopped"         # the page has aged out of the window
+
+
+def test_a_row_the_tool_drops_after_its_limit_does_not_empty_the_answer():
+    """The tool drops the "global" and "unknown" rows after applying the limit, so a
+    one-row page could come back empty although a session was stamped."""
+    clock = Clock()
+    gw = Gateway(sessions=[{"key": "global", "updatedAt": clock.t * 1000},
+                           {"key": "unknown", "updatedAt": clock.t * 1000}])
+    m = _monitor(gw, clock)
+    check(m)
+    clock.t += IDLE - 30
+    gw.sessions = [{"key": "global", "updatedAt": (clock.t - 1) * 1000},
+                   {"key": "agent:main:openai:y", "status": "done",
+                    "updatedAt": (clock.t - 2) * 1000}]
+    clock.t += 60
+    assert check(m) == "in-use" and not gw.stops()
 
 
 def test_an_update_stamped_in_the_future_is_now_not_later():
@@ -378,7 +439,7 @@ def test_an_agent_run_the_brain_started_counts_until_it_ends():
 
         async def run():
             await release.wait()
-            return None
+            return tools.oc.ConsultOutcome("an answer")
 
         tools._run_detached(run())
         await asyncio.sleep(0)

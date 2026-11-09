@@ -17,7 +17,8 @@
 #   - an agent run of the gateway's going, whoever started it -- a Control UI chat, Talk,
 #     a cron job (sessions_list with activeOnly: the gateway's live run state, not the
 #     sessions' stored status, which a run stamps only when it starts and ends, and a run
-#     may go 48 h) -- or an agent session stamped since (sessions_list's newest row). The
+#     may go 48 h) -- or an agent session stamped since (sessions_list's activeMinutes:
+#     a row stamped within the idle time; not the first row, which is a pinned one). The
 #     brain cannot see the browser's users any other way;
 #   - the browser starting (a new Chromium process: whoever started it is using it);
 #   - a change in the browser's open pages (their CDP target list: ids and addresses).
@@ -42,6 +43,7 @@
 #
 import asyncio
 import json
+import math
 import time
 import urllib.request
 from urllib.parse import urlparse
@@ -56,6 +58,9 @@ IDLE_SECS = setting("TEAPORT_BROWSER_IDLE_STOP_SECS")
 # How often the browser is looked at: the stop comes up to this much later than IDLE_SECS
 # after the last use.
 POLL_SECS = 120.0
+# Rows asked for of the sessions stamped lately. Pinned ones sort first, so a page this
+# full may hold back a newer stamp: then the browser counts as used now.
+_RECENT_ROWS = 3
 # OpenClaw's own stop waits up to 15 s for Chromium to exit.
 _STOP_TIMEOUT_SECS = 20.0
 # The longest a consult of the brain's can be in flight: the longest of its ceilings, and
@@ -191,8 +196,12 @@ class Monitor:
         # an older gateway refuses activeOnly, which is unknown).
         active = _listed(*await self._invoke("sessions_list",
                                              {"activeOnly": True, "limit": 1}))
-        # The newest stamp of any session: the rows come newest first.
-        newest = _listed(*await self._invoke("sessions_list", {"limit": 1}))
+        # The sessions stamped within the idle time (and a little more: the stop is judged
+        # on the newest of them). By activeMinutes, which OpenClaw applies before its sort
+        # and limit: the first row of a plain listing is a pinned session, however old,
+        # and the rows it drops after the limit ("global", "unknown") could leave none.
+        newest = _listed(*await self._invoke("sessions_list", {
+            "activeMinutes": math.ceil(self._idle_secs / 60) + 2, "limit": _RECENT_ROWS}))
         now = self._clock()
         if active is None or newest is None:
             self._used(now)
@@ -206,6 +215,8 @@ class Monitor:
         for row in newest:
             if isinstance(row.get("updatedAt"), (int, float)):
                 self._used(row["updatedAt"] / 1000.0)
+        if len(newest) >= _RECENT_ROWS:
+            self._used(now)            # a full page: a newer stamp may be past it
         self._held(None)
         idle = now - self._last_use
         if idle < self._idle_secs or self._consults:
