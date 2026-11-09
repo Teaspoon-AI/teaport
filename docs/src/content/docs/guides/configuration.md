@@ -21,7 +21,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 
 The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, so the token never crosses the network unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:97-113#c8b094e2; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,32-38#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:287-297#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:97-113#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,32-38#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:287-297#2b63b6f7 -->
 
 To change a setting there:
 

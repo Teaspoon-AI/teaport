@@ -105,9 +105,9 @@ def _on_box_or_settings(request: Request) -> None:
     where = (f" at {settings_access.origin()}{settings_access.PAGE_PATH}"
              if settings_access.available() else ", which this box has not set up")
     raise HTTPException(status_code=403, detail=(
-        "The configuration page answers only on the box itself here. From another "
-        f"device, open Settings over HTTPS{where} (the same token works there), or "
-        "tunnel to this port over SSH."))
+        "The configuration page answers here only as http://127.0.0.1:<port>/config, "
+        f"on the box itself. From another device, open Settings over HTTPS{where} (the "
+        "same token works there), or tunnel to this port over SSH."))
 
 
 router = APIRouter(dependencies=[Depends(_on_box_or_settings)])
