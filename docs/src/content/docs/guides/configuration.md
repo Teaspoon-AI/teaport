@@ -21,7 +21,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 
 The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, so the token never crosses the network unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:97-113#c8b094e2; brain/teaport_brain/settings_access.py:221-229#2428059c; brain/teaport_brain/config_ui.py:8-12,32-38#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:287-297#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:97-113#c8b094e2; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,32-38#a24a491a; brain/teaport_brain/config_schema.toml:2184-2194#39346419; brain/teaport_brain/static/config.html:287-297#2b63b6f7 -->
 
 To change a setting there:
 
@@ -52,11 +52,11 @@ When a model is set up, you can also ask in your own words, for example "I need 
 
 The settings open at `https://DEVICE_NAME.local:8443/settings/config`: a port of their own, set by `TEAPORT_SETTINGS_PORT`, so that no page the gateway serves on the usual HTTPS port shares an origin with them. The plain address that the device reads out redirects there. Phones on your network must be able to reach TCP port 8443 on the device. The full installer sets this site up; an `install.sh --only brain` update does not touch Caddy, so on a device last fully installed before it, the device says that its settings can't be reached from a phone until you run the installer without `--only`. The phone stays signed in for an hour, in a cookie the browser sends only to that address over HTTPS. Without a session or the token nothing on that port opens, and an unset `GATEWAY_TOKEN` opens nothing there.
 
-<!-- source: brain/teaport_brain/settings_access.py:78#2e08b20b; brain/teaport_brain/settings_access.py:326-336#8831dd56; brain/teaport_brain/settings_access.py:249-270#90eeb13f -->
+<!-- source: brain/teaport_brain/settings_access.py:78#2e08b20b; brain/teaport_brain/settings_access.py:330-340#8831dd56; brain/teaport_brain/settings_access.py:253-274#90eeb13f -->
 
 Until the phone trusts the device's certificate, the browser warns that the connection is not private. The pages link to the steps that install the device's certificate on each kind of phone and computer.
 
-<!-- source: brain/teaport_brain/settings_access.py:419-428#35429dc2 -->
+<!-- source: brain/teaport_brain/settings_access.py:423-432#35429dc2 -->
 
 If the device is on no network at all and spoken Wi-Fi setup is on, the device asks you to get it online first: a phone cannot reach it yet. A home network without internet is enough. In setup mode the setup page takes the key too, as [Connect the device to Wi-Fi](/guides/wifi-setup/#connect-your-ai-account) shows.
 

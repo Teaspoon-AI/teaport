@@ -553,7 +553,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:86-93#84499568 -->
+<!-- source: cli/teaport:86-93#b8312c4d -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -585,7 +585,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:59-112#dd45c44c -->
+<!-- source: cli/teaport:59-112#1ca6dd03 -->
 
 ## teaport says its AI account has run out of credit
 
