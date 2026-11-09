@@ -434,6 +434,14 @@ def no_inference() -> FunctionCallResultProperties:
     return FunctionCallResultProperties(run_llm=False)
 
 
+def placeholder_properties(owed) -> FunctionCallResultProperties:
+    """An async consult's placeholder result: no inference (no_inference), and once the
+    assistant aggregator has put it in the context, a landing that came before it
+    replaces it (owed.Owed.placed, #386: a consult that fails within milliseconds lands
+    ahead of its own placeholder)."""
+    return FunctionCallResultProperties(run_llm=False, on_context_updated=owed.placed)
+
+
 def _mem_available_mb() -> int | None:
     try:
         with open("/proc/meminfo") as f:
@@ -1088,7 +1096,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             {"status": "duplicate",
              "instruction": ("This exact request is already in progress. Do not "
                              "respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
@@ -1144,7 +1152,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             "status": "working_in_background",
             "instruction": ("The task is running in the background and nothing has "
                             "come back yet. Do not respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,

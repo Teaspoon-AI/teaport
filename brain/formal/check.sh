@@ -207,6 +207,7 @@ run Owed.tla ow_staleFlag          "(expected: FAILS OwedResolves — the gate's
 run Owed.tla ow_adoptDropsKeys     "(expected: FAILS NoRepeatRecital — the commit adopting a speculation does not register the keys its note carried: a full telling is no evidence, and the lull tells it again)"
 run Owed.tla ow_failure           "(expected: holds — a failure record (one item, told whole) under the design (about): every safety property)"
 run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolves under FairSpec)"
+run Owed.tla ow_rewriteOnce       "(expected: FAILS NoStaleResult — the landing rewrites the tool result once (before #386): a consult that fails before its placeholder is in the context finds nothing, and the placeholder that comes in after says it is still running)"
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
 run Owed.tla ow_failNotAbout      "(expected: FAILS NoStaleNote — a failure record with no terms (before the formal audit's C1): a telling in its own words, by any reply but its run, is not about it, never closes it, and the note says NOT heard)"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"

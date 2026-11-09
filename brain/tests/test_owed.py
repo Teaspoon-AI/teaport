@@ -449,6 +449,71 @@ async def test_landing_rewrites_the_placeholder_once_and_asks_the_run():
     assert b.record("call-hn").state == OWED and gate.asked == [(["call-hn"], "run")]
 
 
+def _tool_content(ctx, key="call-hn"):
+    return next(m["content"] for m in ctx.get_messages()
+                if m.get("role") == "tool" and m.get("tool_call_id") == key)
+
+
+def _the_call_comes_in(ctx, content):
+    """What the assistant aggregator writes for the consult's call: the call and pipecat's
+    IN_PROGRESS at its FunctionCallInProgressFrame (`content` "IN_PROGRESS"), or the
+    placeholder over it at its FunctionCallResultFrame."""
+    msgs = ctx.get_messages()
+    tool = next((m for m in msgs if m.get("role") == "tool"), None)
+    if tool is None:
+        ctx.add_messages(tool_round()[2:])
+        tool = ctx.get_messages()[-1]
+    tool["content"] = content
+
+
+PLACEHOLDER = json.dumps({"status": "working_in_background"})
+
+
+async def test_a_landing_before_its_placeholder_replaces_it_when_it_comes_in():
+    """#386 (Owed.tla Place, ow_rewriteOnce): a consult that fails within milliseconds
+    lands before the aggregator has taken its call. The landing is held: written over
+    IN_PROGRESS and held on (the placeholder's result frame writes over that), and once
+    the placeholder is in (its on_context_updated: Owed.placed) it replaces it for good.
+    The context ends up as after a slow landing."""
+    b, ctx, gate = book(msgs=tool_round()[:2])          # the question; no call in it yet
+    assert b.dispatch("call-hn", HN_REQ) is None
+    rec = b.land(HN_REQ, None, "call-hn", failure="timeout")
+    assert rec.state == OWED and gate.asked == [(["call-hn"], "run")]
+    failed = {"status": "timeout", "error": rec.outcome}
+    _the_call_comes_in(ctx, owed.IN_PROGRESS)
+    b.place_landed()
+    assert json.loads(_tool_content(ctx)) == failed, "not written over IN_PROGRESS"
+    _the_call_comes_in(ctx, PLACEHOLDER)                 # the result frame, over it
+    await b.placed()
+    assert json.loads(_tool_content(ctx)) == failed, _tool_content(ctx)
+    assert b._landing == {}, "held after it replaced the placeholder"
+    _the_call_comes_in(ctx, "something later")           # nothing writes it again
+    b.place_landed()
+    assert _tool_content(ctx) == "something later"
+
+
+async def test_a_render_places_a_landing_its_placeholder_came_after():
+    """The run a landing asks can render before the placeholder's on_context_updated has
+    run: the render places it first, so no request goes out with "nothing has come back
+    yet" beside a note saying it failed."""
+    b, ctx, _ = book(msgs=tool_round()[:2])
+    b.dispatch("call-hn", HN_REQ)
+    rec = b.land(HN_REQ, None, "call-hn", failure="timeout")
+    _the_call_comes_in(ctx, PLACEHOLDER)
+    view, keys = await b.view(ctx, owed.RUN, ("call-hn",))
+    tool = next(m for m in view.get_messages() if m.get("role") == "tool")
+    assert json.loads(tool["content"]) == {"status": "timeout", "error": rec.outcome}
+    assert keys == ("call-hn",) and b._landing == {}
+
+
+async def test_a_landing_after_its_placeholder_is_written_at_once():
+    """The slow landing, as before: the placeholder is in, and the rewrite is final."""
+    b, ctx, _ = book()
+    b.dispatch("call-hn", HN_REQ)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    assert json.loads(_tool_content(ctx))["status"] == "complete" and b._landing == {}
+
+
 async def test_a_landing_with_a_caller_request_to_render_asks_no_run():
     """Owed.tla Land: their request carries the note; the re-offer is armed instead."""
     b, _, gate = book(pending=True)
