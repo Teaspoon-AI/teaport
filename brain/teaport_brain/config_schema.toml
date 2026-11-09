@@ -1457,6 +1457,19 @@ tier = "tuning"
 help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI lane of sessions without a relay (room, phone, Discord). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
 
 [[settings]]
+name = "TEAPORT_BROWSER_IDLE_STOP_SECS"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 0
+default = 600
+read = "startup"
+tier = "tuning"
+help = "Stop OpenClaw's browser (Chromium, often several hundred MB) after it has been idle this long: no consult running or ended, no agent session running or updated (a Control UI chat, Talk, a scheduled job), and no change in its open pages. OpenClaw starts it again, with its logins, the next time the agent browses. 0 = never stop it."
+note = "Looked at every two minutes, so the stop comes up to two minutes after this. A page the agent left open is closed with the browser."
+
+[[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
 store = "brain_env"
 group = "agent"

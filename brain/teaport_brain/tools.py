@@ -75,6 +75,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain.conversation_log import quoted
+from teaport_brain import browser_idle
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
@@ -841,9 +842,12 @@ def _count_consult(gate, delta: int) -> None:
     """The session's own count of consults running (FollowupGate.consults_running), async
     and agent-first alike: while one runs, a no-wake room session is not idle
     (gateway_server.room_idle) and a Talk session asks the plugin about each final, which
-    the relay's spoken run control may take (run_control.py)."""
+    the relay's spoken run control may take (run_control.py). The brain's count too
+    (browser_idle.MONITOR), session or none."""
     if gate is not None:
         gate.consults_running = max(0, getattr(gate, "consults_running", 0) + delta)
+    # And the brain's: OpenClaw's browser is not stopped while one runs (browser_idle).
+    browser_idle.MONITOR.consult(delta)
 
 
 async def _run_to_its_end(consult):

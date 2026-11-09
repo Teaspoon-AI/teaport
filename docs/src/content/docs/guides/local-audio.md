@@ -45,19 +45,19 @@ You can also say "that's all" or "goodnight"; the agent says a short goodbye and
 
 All of this works only while wake words are set, and only on the device's own microphone: a Talk session has no sleep, and a phone call ends when you hang up.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1744#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-65#8cdaa5bc; brain/teaport_brain/goodbye.py:73-86#044607b4; brain/teaport_brain/goodbye.py:437#ffd4f075; brain/teaport_brain/agent_session.py:949-954#0a35e83a -->
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1757#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-65#8cdaa5bc; brain/teaport_brain/goodbye.py:73-86#044607b4; brain/teaport_brain/goodbye.py:437#ffd4f075; brain/teaport_brain/agent_session.py:949-954#0a35e83a -->
 
 ## The ring during a phone call
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1613-1624#d37a478f; brain/teaport_brain/config_schema.toml:1881-1893#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1613-1624#d37a478f; brain/teaport_brain/config_schema.toml:1894-1906#44d773d1 -->
 
 ## Echo
 
 The XVF3800 cancels echo in hardware. The bridge replaces the chip's automatic gain with a fixed gain, and sets the chip's echo suppression to remove the device's own voice from the microphone while still letting your voice through when you talk over it. `LOCAL_AUDIO_ECHO_CONTROL` and `LOCAL_AUDIO_MIC_GAIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2637-2644,2657-2667#208b84d6 -->
+<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2650-2657,2670-2680#208b84d6 -->
 
 ## What's next
 

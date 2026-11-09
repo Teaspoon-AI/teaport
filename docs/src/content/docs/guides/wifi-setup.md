@@ -33,7 +33,7 @@ you plug in a network cable, it leaves setup mode by itself.
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1780-1787#389fa64a; brain/teaport_brain/wifi_voice.py:954-958#e2d218b7 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1793-1800#389fa64a; brain/teaport_brain/wifi_voice.py:954-958#e2d218b7 -->
 
 ## Join the setup network
 
