@@ -238,10 +238,44 @@ def test_one_consult_call_reaches_the_relay_with_openclaws_name_and_arguments():
              if getattr(f, "message", {}).get("type") == "tool_call"]
     assert len(calls) == 1, calls
     assert calls[0]["name"] == "openclaw_agent_consult"
-    assert calls[0]["args"] == {"question": "what's on today?", "context": "at home"}
+    # The model's context first, then the brain's note on how to look things up (#388).
+    assert calls[0]["args"] == {"question": "what's on today?",
+                                "context": "at home\n\n" + tools._CONSULT_LOOKUP_NOTE}
     assert results and results[0]["status"] == "working_in_background"
     from teaport_brain import consult_bridge
     consult_bridge.cancel(calls[0]["call_id"])
+
+
+def test_every_lane_asks_the_agent_to_search_before_it_browses(monkeypatch):
+    """#388: the agent answered plain lookups with its browser, which is slow on the box
+    and shared by consults that run at once. The note goes in `context` on every lane: the
+    relay's call (above), and the gateway/CLI lane's message, with or without a context of
+    the model's."""
+    note = tools._CONSULT_LOOKUP_NOTE
+    assert "web_search" in note and "web_fetch" in note and "browser" in note
+    asked = []
+
+    async def consult(message, **kw):
+        asked.append(message)
+        return tools.oc.ConsultOutcome("an answer", None, None)
+
+    monkeypatch.setattr(tools.oc, "agent_consult", consult)
+
+    def run(arguments):
+        results = []
+
+        async def cb(result, **kw):
+            results.append(result)
+
+        params = SimpleNamespace(llm=SimpleNamespace(), tool_call_id="tc-1",
+                                 result_callback=cb, arguments=arguments)
+        asyncio.run(tools._openclaw_agent_consult(params))   # no owed book: the sync lane
+        return results
+
+    assert run({"question": "toy stores on Main Street"}) == [{"answer": "an answer"}]
+    assert run({"question": "q", "context": "c", "responseStyle": "s"})
+    assert asked == ["toy stores on Main Street\n\nContext:\n" + note,
+                     "q\n\nContext:\nc\n\n" + note + "\n\nSpoken style:\ns"]
 
 
 # ------------------------------------------------------------------ the prompt

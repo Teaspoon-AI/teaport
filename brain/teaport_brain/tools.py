@@ -1048,6 +1048,31 @@ def _consult_args(arguments) -> dict | None:
     return args
 
 
+# What the agent is asked, on every lane, about how to look things up (#388). Left to
+# itself it often answers a plain lookup ("toy stores on <road>", opening hours, a price)
+# with its browser tool: about a third of the room's web lookups from 10-20 to 11-09, at
+# a median of ~80 s against ~12 s for the ones that used web_search and web_fetch. The
+# browser is one Chromium with one profile, so two consults that browse at once share it,
+# and can share a tab, and both run out the ceiling; it is also the box's largest
+# resident cost after the voice stack (#385). The agent keeps the browser for a page that
+# needs it. Sent in `context`, the one free-text field OpenClaw passes on from the call
+# on every lane (the relay's chat message and prompt, and _consult_message here), after
+# the model's own context, which stays first.
+_CONSULT_LOOKUP_NOTE = (
+    "Lookups: for a plain lookup (a place, opening hours, a price, a fact), use "
+    "web_search and web_fetch. Open the browser only when a page needs clicking, typing "
+    "or signing in, or when search and fetch could not answer: it is slow on this "
+    "device, and another request may be using it.")
+
+
+def _for_the_agent(args: dict) -> dict:
+    """`args` (_consult_args) as the agent is sent them: with _CONSULT_LOOKUP_NOTE at the
+    end of `context`."""
+    context = args.get("context")
+    return {**args, "context": (f"{context}\n\n{_CONSULT_LOOKUP_NOTE}" if context
+                                else _CONSULT_LOOKUP_NOTE)}
+
+
 def _consult_message(args: dict) -> str:
     """The consult as one plain message, for the CLI lane: OpenClaw's own rendering for a
     chat-forwarded consult (buildRealtimeVoiceAgentConsultChatMessage)."""
@@ -1091,6 +1116,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             properties=no_inference())
         return
 
+    # From here on the call is the agent's: the relay's and the CLI lane's (_for_the_agent).
+    args = _for_the_agent(args)
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     # Called as its session ends (#122): the completion that called it was still streaming
     # when the session's EndFrame reached the LLM, behind it. Nothing goes to the relay:
