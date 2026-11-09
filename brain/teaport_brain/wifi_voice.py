@@ -186,11 +186,14 @@ PATTERNS = {
                 + _THANKS + r")\b)*" + _TO_THE_END,
     # "go to sleep" (goodbye.SleepPhrase): the room goes back to sleep, said as a request
     # on its own, the same way -- "okay, go to sleep", "you can go back to sleep now",
-    # "can you go to sleep?" -- and "no" or a goodbye may lead in ("No, go to sleep.",
-    # "Good night, go to sleep."). Talk about sleep is not it: "how do I make you go to
-    # sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep mode".
+    # "can you go to sleep?", "stop listening" -- and "no" or a goodbye may lead in ("No,
+    # go to sleep.", "Good night, go to sleep."). Talk about sleep is not it: "how do I
+    # make you go to sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep
+    # mode", "stop listening to me". (A turn that is only a goodbye -- "Good night." --
+    # is the phrase too: goodbye.SleepPhrase hears it with the backstop's matcher.)
     "sleep": _lead_in(r"|no|yes|yeah|just|thanks|thank you|good ?night|bye")
-             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?go (?:back )?to sleep"
+             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?"
+             r"(?:go (?:back )?to sleep|stop listening)"
              r"(?:[\s,]+(?:now|please|then|for now|again|" + _THANKS + r")\b)*" + _TO_THE_END,
 }
 

@@ -571,8 +571,8 @@ msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|wel
 msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti)\\W+){0,3}(?:(?:mi |ci )?(?:puoi|potresti|può|potrebbe)(?: (?:mi|ci))? )?(?:apri(?:re|rmi|mi)?|apra|mostra(?:re|rmi|mi)?|mostri|fammi vedere|fai vedere|vai|andiamo|portami|mi porti)(?: (?:a|alle|nelle|sulle|in))?(?: (?:le|la|i))?(?: (?:mie|tue|sue|mia|tua))? (?:pagina (?:delle |di )?)?(?:impostazioni|settings|configurazioni)(?: (?:mie|tue|di teaport))?(?:[\\s,،]+(?:teaport|grazie mille|per favore|per piacere|grazie|adesso|ora|subito|pagina|pure)\\b)*[\\s.,!?;:…]*$"
 
 msgctxt "pattern"
-msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?go (?:back )?to sleep(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
-msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|ehi|e|per favore|senti|no|s[iì]|va bene|buonanotte|grazie)\\W+){0,3}(?:(?:puoi|potresti|può|potrebbe|ora puoi) )?(?:(?:vai|vada|andare|torna|torni|tornare|ritorna|ritornare) a dormire|mettiti a dormire)(?:[\\s,،]+(?:teaport|grazie mille|per favore|per piacere|grazie|adesso|ora|subito|pure)\\b)*[\\s.,!?;:…]*$"
+msgid "^\\W*(?:(?:um+|uh+|uhm|er+m?|eh|hm+|ok|okay|hey|so|now|please|teaport|well|alright|right|no|yes|yeah|just|thanks|thank you|good ?night|bye)\\W+){0,3}(?:(?:can|could|would|will) you(?: please)? |you can )?(?:please )?(?:just )?(?:go (?:back )?to sleep|stop listening)(?:[\\s,]+(?:now|please|then|for now|again|thanks a lot|thank you (?:so |very )?much|thanks|thank you|cheers|ok(?:ay)?|teaport)\\b)*[\\s.,!?;:…]*$"
+msgstr "^\\W*(?:(?:ehm|eh|uhm|mah|mm+|teaport|ok|okay|allora|dai|su|forza|ehi|e|per favore|senti|no|s[iì]|va bene|buonanotte|buona notte|a domani|grazie)\\W+){0,3}(?:(?:puoi|potresti|può|potrebbe|ora puoi) )?(?:(?:vai|va'?|vada|andare|torna|torni|tornare|ritorna|ritornare) a (?:dormire|nanna)|(?:mettiti|si metta) a dormire|(?:ora |adesso )?a (?:dormire|nanna)|(?:vai|va'?|vada) a letto|dormi pure|(?:smetti|smetta|smettila|smettere) di ascoltar(?:e|mi))(?:[\\s,،]+(?:teaport|grazie mille|per favore|per piacere|grazie|adesso|ora|subito|pure)\\b)*[\\s.,!?;:…]*$"
 
 msgctxt "spell"
 msgid "slash"
@@ -762,3 +762,51 @@ msgstr "Scusa, ho perso il filo. Puoi ripetere?"
 # The room's answer to "go to sleep" before it sleeps (goodbye.SleepPhrase).
 msgid "Okay, going to sleep."
 msgstr "Va bene, vado a dormire."
+
+# The room's goodbyes (goodbye.PATTERNS, #320): the model's goodbye that sends the room to sleep, and the caller's own.
+# This language's own words.
+
+#. Translators: goodbye.PATTERNS["bye"]: one whole clause that is a goodbye (Python regex, matched lower case with punctuation gone). Your language's own goodbyes, both registers; never a word that is also a greeting.
+msgctxt "pattern"
+msgid "(?:(?:a )?(?:very )?(?:good ?-?night|g'night)(?: to you(?: all)?| to (?:you )?all| everyone| everybody| all| folks)?(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:night(?:[ -]night)?|nighty[ -]night|nite(?: nite)?)|(?:(?:good ?-?)?bye(?:[ -]bye)?(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*|farewell)|(?:(?:sleep (?:well|tight|soundly)|(?:wishing you |i wish you )?sweet dreams|rest (?:well|easy))(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:(?:i hope you |hope you )?(?:have|enjoy) (?:a|the rest of your|your) (?:\\w+ )?(?:night|night's sleep|night's rest|evening|rest|sleep|day|weekend|morning|one)(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:(?:see|catch) (?:you|ya)(?: (?:later|soon|tomorrow|tomorrow morning|in the morning|next time|around|then|again))*)|(?:(?:talk|speak) (?:to you |with you )?(?:later|soon|tomorrow|again)(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*|until (?:next time|tomorrow|later|then)|till (?:next time|tomorrow|then))|(?:take care(?: of yourself)?(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)"
+msgstr "(?:(?:buona ?notte(?: a (?:te|tutti|tutte|voi|lei))?|notte notte|notte)|(?:ciao ciao|arrivederci|arrivederla|addio|bye(?: bye)?)|(?:a (?:domani|dopo|pi[uù] tardi|presto|stasera|stanotte|domattina|domani mattina|luned[iì]|la prossima)|alla prossima(?: volta)?)|(?:ci (?:vediamo|sentiamo|risentiamo)(?: (?:domani|dopo|presto|pi[uù] tardi|stasera|la prossima volta|allora))*|a risentirci|ci si vede|ci si sente)|(?:sogni d'oro|(?:fai |fate )?(?:bei|dolci) sogni|(?:dormi|dorma|dormite) bene|(?:riposa|riposi|riposate|riposati|si riposi)(?: bene)?|buon riposo)|(?:(?:buona|buon) (?:serata|giornata|fine settimana|weekend|domenica|continuazione|proseguimento|nottata)|(?:passa|passi|trascorri) una (?:buona|bella|serena) (?:serata|notte|giornata))|(?:stammi bene|mi stia bene|statemi bene|stia bene|abbi cura di te|si abbia cura|prenditi cura di te))(?: (?:allora|ancora|adesso|ora|pure|per ora|per oggi|per stasera|per stanotte|di nuovo))*"
+
+#. Translators: goodbye.PATTERNS["sleep"]: one whole clause that says the speaker goes to sleep or stops listening.
+msgctxt "pattern"
+msgid "(?:(?:i'm |i am |i'll be )?(?:going|heading|headed|off) (?:back )?to sleep(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:(?:i'll |i will |let me |time to |time for me to )?(?:go|head) (?:back )?to sleep(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:(?:i'll |i will )?sleep now|(?:i'm )?sleeping(?: now)?|(?:going )?back to sleep(?: now| i go)?|off (?:i go|to sleep)(?: now)?|time (?:for me )?to sleep)|(?:(?:i'll |i will |i'm going to |i am going to )?stop listening(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*|(?:i'm |i am )?(?:no longer|done) listening(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)|(?:(?:i'm |i am )?signing off(?: (?:now|then|again|too|for now|tonight|for tonight|for the night))*)"
+msgstr "(?:(?:(?:io )?(?:allora )?(?:ora |adesso )?(?:vado|torno|me ne vado|me ne torno) a (?:dormire|nanna|riposare|letto)|sto andando a dormire|mi metto a dormire)|(?:a (?:dormire|nanna)|mi addormento|sto dormendo|(?:è |e )?ora di (?:dormire|andare a dormire|nanna))|(?:mi spengo|vado in (?:standby|stand-by|pausa)|smetto di ascoltar(?:e|ti|la)|non (?:ti |la )?ascolto pi[uù]))(?: (?:allora|ancora|adesso|ora|pure|per ora|per oggi|per stasera|per stanotte|di nuovo))*"
+
+#. Translators: goodbye.PATTERNS["around"]: small talk a goodbye comes with (okay, thanks, you too), nothing on its own; words that greet as well as part go here.
+msgctxt "pattern"
+msgid "(?:ok(?:ay)?|okey dokey|alright|all right|sure(?: thing)?|of course|absolutely|certainly|got it|you got it|gotcha|will do|no problem|no worries|sounds good|perfect|great|understood|right|yes|yeah|yep|well|so|oh|ah|aw+|mhm|hmm)|(?:(?:thanks|thank you)(?: so much| very much| a lot)?(?: too| as well)?(?: for (?:the|our|this|a) (?:\\w+ )?(?:chat|talk|conversation|evening)| for (?:chatting|talking)(?: with me)?)?)|(?:you too|and you|same to you|likewise|you're welcome|anytime|any time|my pleasure)|(?:stay safe)|(?:(?:oh )?(?:sorry|oops|my apologies|apologies)(?: about that| for that)?|my bad|you're right)|(?:(?:i'm )?(?:glad|happy) (?:i could|to|i was able to) help|(?:i'm )?(?:glad|happy) to be of (?:help|service))|(?:(?:it was )?(?:nice|lovely|great|good|fun|a pleasure) (?:talking|chatting|speaking) (?:to|with) you)|(?:(?:i'll be |i'm |i am )?(?:always |right )*here(?: (?:if|when|whenever) you need (?:me|anything|something)(?: else)?)?)|(?:if you need (?:me|anything|something)(?: else)?)|(?:(?:just )?(?:say|use) (?:my name|the wake word|my wake word|the word)(?: (?:if|when|whenever) you need (?:me|anything|something)(?: else)?)?)|(?:(?:just )?(?:wake me|call me|call on me|let me know)(?: up)?(?: (?:if|when|whenever) you need (?:me|anything|something)(?: else)?)?)|(?:feel free to (?:call|wake|ask) (?:me|on me)(?: up)?(?: (?:any ?time|again|whenever(?: you like| you want)?|later))?)"
+msgstr "(?:ok(?:ay|ei)?|va bene|d'accordo|certo|certamente|sicuro|perfetto|benissimo|bene|ottimo|capito|ricevuto|inteso|s[iì]|eh|ah|oh|mah|beh|be'|allora|dai|ecco|mm+|hm+|niente|vabb[eè]|va be'?)|(?:salve)|(?:grazie(?: mille| tante| infinite| di tutto| di cuore| a te| a lei| a voi)?(?: per (?:la chiacchierata|la conversazione|questa chiacchierata|questa conversazione|aver parlato con me|l'aiuto|tutto))?(?: anche a te)?)|(?:anche a te|anche a lei|anche a voi|altrettanto|prego|di niente|di nulla|figurati|si figuri|(?:è stato )?un piacere|piacere mio|(?:è stato )?bello (?:parlare|chiacchierare) con te)|(?:scusa(?:mi)?|mi scusi|scusate|chiedo scusa|hai ragione|ha ragione)|(?:(?:sono )?(?:felice|contento|contenta|lieto|lieta) di (?:esserti|esserle|averti|averle) (?:stato |stata )?(?:utile|aiutato|aiutata)|(?:sono )?(?:felice|contento|contenta|lieto|lieta) di aiutar(?:ti|la))|(?:(?:io )?(?:sono|sarò|saro|resto) (?:sempre )?qui(?: (?:se|quando) (?:hai|avrai|ha|avrà) bisogno(?: di me| di qualcosa)?| per qualsiasi cosa)?|(?:se|quando) (?:hai|avrai|ha|avrà) bisogno(?: di me| di qualcosa)?|quando vuoi|quando vuole|per qualsiasi cosa)|(?:(?:basta |ti basta )?(?:dire|chiamare|pronunciare) il mio nome|(?:chiamami|svegliami|fammi sapere|mi chiami|mi faccia sapere)(?: (?:quando vuoi|se hai bisogno|quando hai bisogno|se ti serve qualcosa))?)"
+
+#. Translators: goodbye.PATTERNS["greets"]: a whole clause that greets as well as parts (Spanish "buenas noches", Italian "ciao"): a goodbye, except as the caller's first words.
+msgctxt "pattern"
+msgid "(?!)"
+msgstr "ciao(?: a tutti| a te)?"
+
+#. Translators: goodbye.PATTERNS["anyone"]: a word for the person beside a goodbye (my friend, everyone).
+msgctxt "pattern"
+msgid "(?:my )?(?:friend|dear)|buddy|pal|you two|you all|y'all|teaport"
+msgstr "(?:mi[oa] )?(?:car[oa]|amic[oa]|tesoro)|car[ie]|amic[ie]|ragazz[ie]|a tutti|a tutte|tutti|tutte|teaport"
+
+#. Translators: goodbye.PATTERNS["and"]: the word for "and" that joins two clauses.
+msgctxt "pattern"
+msgid "and"
+msgstr "e|ed"
+
+#. Translators: goodbye.PATTERNS["asks"]: the start of a question (searched), without its question mark.
+msgctxt "pattern"
+msgid "^\\W*(?:(?:okay|ok|so|and|but|well|hey|oh|um+|uh+|hmm+)\\W+)*(?:(?:what|what's|whats|who|who's|whom|whose|which|when|where|why|how)\\b|(?:can|could|will|would|shall|should|may|might|do|does|did|is|are|was|were|am|can't|won't|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|couldn't|wouldn't|shouldn't)\\s+(?:i|you|we|they|he|she|it|that|this|there|your|my|the)\\b)"
+msgstr "^\\W*(?:(?:ok|allora|e|ma|senti|senta|ehi|beh|dai|scusa)\\W+)*(?:(?:che (?:cosa|ore|ora|tempo|giorno)|cosa|come mai|come si|quando|dove|perch[eé]|chi|quale|quali|quanto|quanta|quanti|quante)\\b|(?:mi )?(?:puoi|potresti|pu[oò]|potrebbe|sai|sa|mi dici|mi dice)\\s)"
+
+#. Translators: goodbye.PATTERNS["asks_for_a_word"]: asking for a word (translate, synonym, how do you say).
+msgctxt "pattern"
+msgid "\\btranslat\\w*|\\bin english\\b|\\bword for\\b|\\bsynonym\\w*|\\bopposite of\\b|\\bmeaning of\\b|\\bway to say\\b|\\bspell\\w*|\\brepeat after me\\b|\\bname a word\\b|\\bwords? that means?\\b|\\b(?:does|do|did) \\S+ mean\\b|\\bhow (?:do|would|should|can|could) (?:you|i|we) say\\b|\\bwhat (?:does|did|do) .{1,40}\\bmean\\b|\\b(?:is it|which is(?: right| correct)?|should i (?:say|write))\\b[^.!?]*\\bor\\b"
+msgstr "\\btradu\\w*|\\bin (?:inglese|italiano|spagnolo|francese|tedesco)\\b|\\bparola (?:per|che)\\b|\\bsinonim\\w*|\\bcontrari[oa] di\\b|\\bopposto di\\b|\\bsignifica\\w*|\\bcome si (?:dice|scrive|pronuncia)\\b|\\bcompit(?:a|are|ami|alo|ala)\\b|\\bripeti dopo di me\\b|\\b(?:che|cosa) vuol dire\\b"
+
+#. Translators: goodbye.PATTERNS["asks_to_go"]: asking the box to sleep, stop listening or be quiet.
+msgctxt "pattern"
+msgid "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
+msgstr "\\b(?:(?:andare|vai|va'?|vada|torni|tornare|torna) (?:già )?a (?:dormire|nanna|letto)|a dormire|a nanna|smettere di ascoltare|smetti di ascoltare|(?:sei|è) ancora svegli[oa]|ancora svegli[oa]|stai ancora ascoltando|(?:è|e) tutto|basta così|basta cosi|stai zitt[oa]|zitt[oa]|silenzio)\\b"
