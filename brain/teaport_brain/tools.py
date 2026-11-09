@@ -873,9 +873,14 @@ def _run_detached(consult) -> None:
 
 
 def _held(consult) -> asyncio.Task:
+    """The agent's run `consult`, held in _BG until it ends, and counted meanwhile as the
+    brain's use of the agent (browser_idle): it goes on past its session's wait, and one
+    called as its session ended has no wait at all (_run_detached)."""
     run = asyncio.ensure_future(consult)
     _BG.add(run)
     run.add_done_callback(_BG.discard)
+    browser_idle.MONITOR.consult(1)
+    run.add_done_callback(lambda _run: browser_idle.MONITOR.consult(-1))
     return run
 
 

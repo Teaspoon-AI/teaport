@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2830#4bf225ea -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2830#15f1c91b -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -176,7 +176,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_NATIVE_CONSULT_TIMEOUT` | **45** s (≥ 5) | How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves. |
 | `TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT` | **55** s (≥ 5) | The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only. |
 | `TEAPORT_ASYNC_CONSULT_TIMEOUT` | **130** s (≥ 5) | Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI lane of sessions without a relay (room, phone, Discord). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a "that took too long" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive. |
-| `TEAPORT_BROWSER_IDLE_STOP_SECS` | **600** s (≥ 0) | Stop OpenClaw's browser (Chromium, often several hundred MB) after it has been idle this long: no consult running or ended, no agent session running or updated (a Control UI chat, Talk, a scheduled job), and no change in its open pages. OpenClaw starts it again, with its logins, the next time the agent browses. 0 = never stop it. Looked at every two minutes, so the stop comes up to two minutes after this. A page the agent left open is closed with the browser. |
+| `TEAPORT_BROWSER_IDLE_STOP_SECS` | **600** s (≥ 0) | Stop OpenClaw's browser (Chromium, often several hundred MB) after it has been idle this long: no consult running or ended, no agent session running or updated (a Control UI chat, Talk, a scheduled job), and no change in its open pages. OpenClaw starts it again, with its logins, the next time the agent browses. 0 = never stop it. Looked at every two minutes, so the stop comes up to two minutes after this. A page the agent left open is closed with the browser. Whatever cannot be told counts as in use (no stop while the gateway's sessions cannot be read, or are listed only in part, as for a sandboxed agent). A run of a second OpenClaw agent is not seen: on a device where another agent browses, raise this or set 0. |
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
