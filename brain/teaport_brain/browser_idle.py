@@ -14,34 +14,34 @@
 #     start and end of each consult);
 #   - an agent run the brain started still going (tools._held: one called as its session
 #     ended, or one that outlived its session's wait);
-#   - an agent session of the gateway's running, or updated (sessions_list: every agent
-#     run, whoever started it -- a Control UI chat, Talk, a cron job -- marks its session
-#     running when it starts and stamps it when it ends; the brain cannot see the
-#     browser's users any other way). A run may go on for hours (OpenClaw's agent timeout
-#     is 48 h), so a "running" row is a live run unless it predates the gateway that is
-#     running now, which a run cannot outlive;
+#   - an agent run of the gateway's going, whoever started it -- a Control UI chat, Talk,
+#     a cron job (sessions_list with activeOnly: the gateway's live run state, not the
+#     sessions' stored status, which a run stamps only when it starts and ends, and a run
+#     may go 48 h) -- or an agent session stamped since (sessions_list's newest row). The
+#     brain cannot see the browser's users any other way;
 #   - the browser starting (a new Chromium process: whoever started it is using it);
 #   - a change in the browser's open pages (their CDP target list: ids and addresses).
 # Whatever cannot be told is a use: the cost of a browser held is memory, the cost of a
-# wrong stop a killed run. So no stop while the gateway's sessions cannot be read, while
-# its listing is restricted (a sandboxed agent's "tree" or "spawned" visibility), or
-# while it may not reach back to the gateway's start. What sessions_list cannot show at
-# all is a run of ANOTHER agent (it lists the default agent's sessions unless agent-to-
-# agent access is on): on a box with a second agent that browses, raise the setting or
-# set it to 0.
+# wrong stop a killed run. So no stop while the gateway's sessions cannot be read, or while
+# they are listed only in part: OpenClaw's tools.sessions.visibility set to anything but
+# "all" (the listing then says so). What sessions_list cannot show at all is a run of
+# ANOTHER agent (it lists the default agent's sessions unless agent-to-agent access is
+# on): on a box with a second agent that browses, raise the setting or set it to 0. A
+# browser held for a reason that can last (a consult, a run, an unknown) is logged once,
+# when it starts being held for it.
 # OpenClaw exposes no browser "last used" time of its own: its per-session tab registry is
 # in-process, and its sweeper loses track of tabs ("ownership mismatch", #385).
 #
 # What it costs: a timer, and every POLL_SECS one loopback request to the gateway (the
-# browser tool's status, ~0.2 s) -- two more only while Chromium runs. Not the CLI: one
-# `openclaw browser status` is ~10 s of CPU on the box. The stop is the browser tool's own
-# (POST /stop on OpenClaw's browser control, what the CLI's stop calls), over /tools/invoke.
-# Nothing in a turn. Runs in teaport-brain's loop (gateway_server's lifespan), which serves
-# the room, Talk and the phone line alike, so every consult of the box's is counted here.
+# browser tool's status, ~0.2 s) -- three more, small, only while Chromium runs. Not the
+# CLI: one `openclaw browser status` is ~10 s of CPU on the box. The stop is the browser
+# tool's own (POST /stop on OpenClaw's browser control, what the CLI's stop calls), over
+# /tools/invoke. Nothing in a turn. Runs in teaport-brain's loop (gateway_server's
+# lifespan), which serves the room, Talk and the phone line alike, so every consult of the
+# box's is counted here.
 #
 import asyncio
 import json
-import os
 import time
 import urllib.request
 from urllib.parse import urlparse
@@ -56,17 +56,14 @@ IDLE_SECS = setting("TEAPORT_BROWSER_IDLE_STOP_SECS")
 # How often the browser is looked at: the stop comes up to this much later than IDLE_SECS
 # after the last use.
 POLL_SECS = 120.0
-# Agent sessions asked for, newest first: OpenClaw's own cap. A run's session is stamped
-# when it starts and when it ends, not in between (OpenClaw's session-lifecycle-state.ts),
-# so a running one sorts by its start, and the cap is applied before the visibility
-# filter. A listing with more past it must reach back past the gateway's start, or a run
-# older than its oldest row could be missed (the box's 200 rows went back 200 h, 11-09).
-SESSIONS_LOOKED_AT = 200
-# A "running" row stamped this close before the gateway's start is still its run (the
-# clocks are read apart).
-_START_SLACK_SECS = 60.0
 # OpenClaw's own stop waits up to 15 s for Chromium to exit.
 _STOP_TIMEOUT_SECS = 20.0
+# The longest a consult of the brain's can be in flight: the longest of its ceilings, and
+# a margin for the agent's run to wind down after it. Counted past this, a start was
+# never matched by its end (a leak), which holds the browser for good: said once.
+_CONSULT_CEILING_SECS = max(setting("TEAPORT_ASYNC_CONSULT_TIMEOUT"),
+                            setting("TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT"),
+                            setting("TEAPORT_CONSULT_TIMEOUT")) + 300.0
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
@@ -87,28 +84,6 @@ def _page_list(cdp_url: str, timeout: float = 3.0) -> list | None:
                   for t in targets if isinstance(t, dict) and t.get("type") == "page")
 
 
-def _gateway_start(browser_pid) -> float | None:
-    """When the gateway that runs the browser started (wall clock), or None when that
-    cannot be told. Chromium is the gateway's child: its parent's start, from /proc."""
-    if not isinstance(browser_pid, int) or browser_pid <= 0:
-        return None
-    try:
-        with open(f"/proc/{browser_pid}/stat") as f:
-            ppid = int(f.read().rsplit(") ", 1)[1].split()[1])
-        with open(f"/proc/{ppid}/cmdline", "rb") as f:
-            cmdline = f.read()
-        with open("/proc/stat") as f:
-            btime = next(int(line.split()[1]) for line in f if line.startswith("btime "))
-        ticks = os.sysconf("SC_CLK_TCK")
-    except (OSError, IndexError, ValueError, StopIteration):
-        return None
-    argv = cmdline.split(b"\0")
-    if b"gateway" not in argv or not any(b"openclaw" in a for a in argv):
-        return None           # not the gateway's own child (an attached or sandboxed browser)
-    start = oc._proc_start(ppid)
-    return btime + start / ticks if start is not None and ticks > 0 else None
-
-
 def _tree_rss_mb(pid) -> int | None:
     """Resident memory of process `pid` and its children, in MB (for the log line)."""
     if not isinstance(pid, int) or pid <= 0:
@@ -123,23 +98,34 @@ def _tree_rss_mb(pid) -> int | None:
     return total * 4096 // (1 << 20) if total else None
 
 
-class Monitor:
-    """`invoke(tool, args, timeout)` is oc.invoke_ok, `pages(cdp_url)` _page_list and
-    `gateway_start(pid)` _gateway_start, replaced in tests; `clock` is wall time (the
-    gateway's updatedAt is wall-clock milliseconds)."""
+def _listed(ok: bool, details: dict) -> list | None:
+    """A sessions_list answer's rows, or None when it cannot be taken as the whole
+    picture: the call failed, or OpenClaw listed only part (it adds `visibility` to a
+    listing whose tools.sessions.visibility is not "all")."""
+    if not ok or details.get("visibility") is not None:
+        return None
+    rows = details.get("sessions")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else None
 
-    def __init__(self, clock=time.time, invoke=None, pages=None, gateway_start=None,
-                 idle_secs=None):
+
+class Monitor:
+    """`invoke(tool, args, timeout=...)` is oc.invoke_ok and `pages(cdp_url)` _page_list,
+    replaced in tests; `clock` is wall time (the gateway's updatedAt is wall-clock
+    milliseconds)."""
+
+    def __init__(self, clock=time.time, invoke=None, pages=None, idle_secs=None):
         self._clock = clock
         self._invoke = invoke or (lambda tool, args, timeout=5.0:
                                   oc.invoke_ok(tool, args, timeout=timeout))
         self._pages = pages or (lambda url: asyncio.to_thread(_page_list, url))
-        self._gateway_start = gateway_start or _gateway_start
         self._idle_secs = float(IDLE_SECS if idle_secs is None else idle_secs)
         self._consults = 0
+        self._busy_since = None        # when the consult count last left 0
+        self._leak_told = False
         self._last_use = clock()       # the brain's start counts as a use: a full wait first
         self._seen_pages = None
         self._seen_pid = None
+        self._held_for = None          # the reason last logged for holding the browser
 
     # -- the consults (tools._count_consult) and the agent runs the brain started
     #    (tools._held)
@@ -147,27 +133,49 @@ class Monitor:
         """A consult or an agent run of this brain's started (+1) or ended (-1). Either
         is a use."""
         self._consults = max(0, self._consults + delta)
-        self._last_use = max(self._last_use, self._clock())
+        now = self._clock()
+        self._last_use = max(self._last_use, now)
+        if not self._consults:
+            self._busy_since, self._leak_told = None, False
+        elif self._busy_since is None:
+            self._busy_since = now
 
     def _used(self, at: float) -> None:
         self._last_use = max(self._last_use, min(at, self._clock()))
 
+    def _held(self, reason: str | None) -> None:
+        """Log `reason` for holding the browser when it is a new one (None: no reason that
+        can last, the browser was only used lately)."""
+        if reason is not None and reason != self._held_for:
+            logger.info(f"browser idle stop: leaving OpenClaw's browser running: {reason}")
+        self._held_for = reason
+
     async def check(self) -> str:
         """One look, and the stop when it is due. What it found, for the log and tests:
-        off, consult, not-running, unknown, in-use, stopped or stop-failed."""
+        off, consult, not-running, unknown, running, in-use, stopped or stop-failed."""
         if self._idle_secs <= 0:
             return "off"
         if self._consults:
-            self._used(self._clock())
+            now = self._clock()
+            self._used(now)
+            if (not self._leak_told and self._busy_since is not None
+                    and now - self._busy_since > _CONSULT_CEILING_SECS):
+                self._leak_told = True
+                logger.warning(f"browser idle stop: a consult has been counted as running "
+                               f"for {(now - self._busy_since) / 60:.0f} min, past any "
+                               f"consult's ceiling: a start without its end? The browser "
+                               f"is not stopped while it counts")
             return "consult"
         # The default profile's browser (OpenClaw's browser.defaultProfile): the one the
         # agent's browser tool uses unless told otherwise. A run that names another
-        # profile still shows as a running session below.
+        # profile still shows as a live run below.
         ok, status = await self._invoke("browser", {"action": "status"})
         if not ok:
+            self._held(None)
             return "unknown"           # no gateway, or no browser tool: nothing to stop
         if not status.get("running"):
             self._seen_pages = self._seen_pid = None
+            self._held(None)
             return "not-running"
         pid = status.get("pid")
         if pid != self._seen_pid:      # started since the last look (or a first look)
@@ -179,33 +187,30 @@ class Monitor:
                 if self._seen_pages is not None:
                     self._used(self._clock())
                 self._seen_pages = pages
-        ok, listed = await self._invoke("sessions_list", {"limit": SESSIONS_LOOKED_AT})
-        if not ok or listed.get("visibility") is not None:
-            # The agent's activity is unknown, or only partly shown (OpenClaw adds
-            # `visibility` to a listing restricted to a sandboxed agent's own sessions):
-            # never a stop on it.
-            self._used(self._clock())
-            return "unknown"
+        # Any agent run going now, by the gateway's live run state (2026.9.7 and later;
+        # an older gateway refuses activeOnly, which is unknown).
+        active = _listed(*await self._invoke("sessions_list",
+                                             {"activeOnly": True, "limit": 1}))
+        # The newest stamp of any session: the rows come newest first.
+        newest = _listed(*await self._invoke("sessions_list", {"limit": 1}))
         now = self._clock()
-        started = self._gateway_start(pid)
-        oldest = None
-        for s in listed.get("sessions") or ():
-            if not isinstance(s, dict) or not isinstance(s.get("updatedAt"), (int, float)):
-                continue
-            updated = s["updatedAt"] / 1000.0
-            oldest = updated if oldest is None else min(oldest, updated)
-            if s.get("status") == "running" and (
-                    started is None or updated >= started - _START_SLACK_SECS):
-                self._used(now)        # a live run: stamped by the gateway running now
-            else:
-                self._used(updated)
-        if listed.get("hasMore") and (started is None or oldest is None or oldest > started):
-            self._used(now)            # a run older than the listing's end may be missed
+        if active is None or newest is None:
+            self._used(now)
+            self._held("can't tell whether an agent is using it (the gateway's sessions "
+                       "could not be read in full)")
             return "unknown"
+        if active:
+            self._used(now)
+            self._held("an agent run is going")
+            return "running"
+        for row in newest:
+            if isinstance(row.get("updatedAt"), (int, float)):
+                self._used(row["updatedAt"] / 1000.0)
+        self._held(None)
         idle = now - self._last_use
         if idle < self._idle_secs or self._consults:
             return "in-use"
-        rss = _tree_rss_mb(status.get("pid"))
+        rss = _tree_rss_mb(pid)
         args = {"action": "stop"}
         if isinstance(status.get("profile"), str) and status["profile"]:
             args["profile"] = status["profile"]

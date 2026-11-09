@@ -1467,7 +1467,7 @@ default = 600
 read = "startup"
 tier = "tuning"
 help = "Stop OpenClaw's browser (Chromium, often several hundred MB) after it has been idle this long: no consult running or ended, no agent session running or updated (a Control UI chat, Talk, a scheduled job), and no change in its open pages. OpenClaw starts it again, with its logins, the next time the agent browses. 0 = never stop it."
-note = "Looked at every two minutes, so the stop comes up to two minutes after this. A page the agent left open is closed with the browser. Whatever cannot be told counts as in use (no stop while the gateway's sessions cannot be read, or are listed only in part, as for a sandboxed agent). A run of a second OpenClaw agent is not seen: on a device where another agent browses, raise this or set 0."
+note = "Looked at every two minutes, so the stop comes up to two minutes after this. A page the agent left open is closed with the browser. Whatever cannot be told counts as in use: no stop while the gateway's sessions cannot be read, or are listed only in part (OpenClaw's tools.sessions.visibility set to anything but \"all\"), and the journal says so when it starts holding the browser for that. A run of a second OpenClaw agent is not seen: on a device where another agent browses, raise this or set 0."
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"

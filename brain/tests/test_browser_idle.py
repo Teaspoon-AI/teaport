@@ -3,29 +3,31 @@
 #
 # What has to hold:
 #   - The browser is stopped once nothing has used it for the idle time: no consult of the
-#     brain's, no agent session running or updated, no change in its open pages.
+#     brain's, no agent run going, no agent session stamped since, no browser start, no
+#     change in its open pages.
 #   - Never while a consult runs, nor before the idle time has passed since one ended.
-#   - Never while an agent session runs (a Control UI chat the brain knows nothing of),
-#     however long ago it started, unless it predates the gateway running now; a recent
-#     update counts as a use. A gateway whose start cannot be told: every run is live.
-#   - The browser starting is a use, and so is a change in its open pages.
-#   - Unknown is not idle: a sessions read that fails, a listing restricted to a
-#     sandbox's own sessions, or one that may not reach back to the gateway's start never
-#     leads to a stop.
-#   - An agent run the brain started counts until it ends (tools._held), one called as
-#     its session ended included.
-#   - Not running, no gateway, or the setting 0: nothing is asked to stop.
-#   - The stop names the browser's profile, and a stop that did not take is retried only
-#     after another full idle time.
-#   - tools._count_consult feeds the brain's count.
+#   - Never while the gateway has an agent run going (a Control UI chat the brain knows
+#     nothing of), however long ago it started: its live run state, not a stored status.
+#   - Unknown is not idle: a sessions read that fails (activeOnly refused by an older
+#     gateway included), or a listing OpenClaw says is partial, never leads to a stop.
+#   - A browser held for a reason that can last (a run, an unknown) is logged once when
+#     the reason starts; a consult counted past any ceiling is warned about once.
+#   - Not running, no gateway, no token, or the setting 0: nothing is asked to stop.
+#   - The stop names the browser's profile and gets longer than a status read; a stop
+#     that did not take is retried only after another full idle time.
+#   - tools._count_consult and tools._held (agent runs the brain started, one called as
+#     its session ended included) feed the brain's count.
 #
 # A fake gateway and clock; nothing is reached.
 #
 # Run: python test_browser_idle.py   (or via pytest)
 #
 import asyncio
+import contextlib
 
 import appliance
+
+from loguru import logger
 
 from teaport_brain import browser_idle
 
@@ -33,14 +35,14 @@ IDLE = 600.0
 
 
 class Gateway:
-    def __init__(self, sessions=(), running=True, sessions_ok=True, stop_takes=True,
-                 started=0.0):
-        self.sessions = list(sessions)
+    def __init__(self, sessions=(), running=True, sessions_ok=True, stop_takes=True):
+        self.sessions = list(sessions)  # the stored rows, newest first
+        self.active = []                # the rows with a live run (activeOnly)
         self.running = running
         self.sessions_ok = sessions_ok
+        self.active_ok = True           # an older gateway refuses activeOnly
         self.stop_takes = stop_takes
-        self.started = started          # the gateway's start (wall clock), None: unknown
-        self.extra = {}                 # more of the sessions listing (hasMore, visibility)
+        self.extra = {}                 # more of each sessions listing (visibility)
         self.pid = 4242
         self.calls = []
         self.timeouts = {}
@@ -58,13 +60,11 @@ class Gateway:
                 self.running = False
             return True, {"running": self.running}
         if tool == "sessions_list":
-            return ((True, {"sessions": self.sessions, **self.extra}) if self.sessions_ok
-                    else (False, {}))
+            if not self.sessions_ok or (args.get("activeOnly") and not self.active_ok):
+                return False, {}
+            rows = self.active if args.get("activeOnly") else self.sessions
+            return True, {"sessions": rows[:args.get("limit", 100)], **self.extra}
         raise AssertionError(tool)
-
-    def gateway_start(self, pid):
-        assert pid == self.pid
-        return self.started
 
     async def list_pages(self, url):
         assert url == "http://127.0.0.1:18800"
@@ -84,25 +84,29 @@ class Clock:
 
 def _monitor(gw, clock, idle=IDLE):
     return browser_idle.Monitor(clock=clock, invoke=gw.invoke, pages=gw.list_pages,
-                                gateway_start=gw.gateway_start, idle_secs=idle)
-
-
-def _seen(gw, clock, idle=IDLE):
-    """A monitor that has had its first look at the browser, at the brain's start."""
-    m = _monitor(gw, clock, idle)
-    if gw.running and idle > 0:
-        check(m)
-    return m
+                                idle_secs=idle)
 
 
 def check(m):
     return asyncio.run(m.check())
 
 
+@contextlib.contextmanager
+def _logged():
+    lines = []
+    sink = logger.add(lambda msg: lines.append((msg.record["level"].name,
+                                                msg.record["message"])),
+                      filter=lambda r: r["name"] == "teaport_brain.browser_idle")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink)
+
+
 def test_an_idle_browser_is_stopped_after_the_idle_time_and_not_before():
     gw, clock = Gateway(), Clock()
     m = _monitor(gw, clock)
-    assert check(m) == "in-use"           # the brain's start counts as a use
+    assert check(m) == "in-use"           # the brain's start, and the browser seen
     clock.t += IDLE - 1
     assert check(m) == "in-use" and not gw.stops()
     clock.t += 2
@@ -115,8 +119,12 @@ def test_an_idle_browser_is_stopped_after_the_idle_time_and_not_before():
 
 
 def test_never_while_a_consult_runs_nor_until_the_idle_time_after_it():
+    """Built as the first version was (no argument of the later reviews'), so this case
+    reads the same on every version of the monitor."""
     gw, clock = Gateway(), Clock()
-    m = _seen(gw, clock)
+    m = browser_idle.Monitor(clock=clock, invoke=gw.invoke, pages=gw.list_pages,
+                             idle_secs=IDLE)
+    check(m)
     asked = len(gw.calls)
     m.consult(1)
     clock.t += 10 * IDLE
@@ -130,92 +138,146 @@ def test_never_while_a_consult_runs_nor_until_the_idle_time_after_it():
     assert check(m) == "stopped"
 
 
-def test_an_agent_session_running_or_recently_updated_holds_it():
+def test_a_run_going_holds_it_however_long_ago_it_started():
+    """OpenClaw lets a run go 48 h, and its stored row is stamped only when it starts and
+    ends: the gateway's live run state (activeOnly) is what says it is going."""
     clock = Clock()
-    # A Control UI chat the brain knows nothing of, still running.
-    running = {"key": "agent:main:main", "status": "running",
-               "updatedAt": (clock.t - 3 * IDLE) * 1000}
-    gw = Gateway(sessions=[running])
+    run = {"key": "agent:main:main", "status": "running",
+           "updatedAt": (clock.t - 30 * 3600) * 1000}
+    gw = Gateway(sessions=[run])
+    gw.active = [run]
     m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    running["updatedAt"] = (clock.t - 3 * IDLE) * 1000
-    assert check(m) == "in-use" and not gw.stops()
-    # It finished: the wait counts from when it was last seen running.
-    running.update(status="done", updatedAt=(clock.t - 60) * 1000)
-    clock.t += IDLE - 1
-    assert check(m) == "in-use" and not gw.stops()
-    clock.t += 2
+    for _ in range(5):
+        clock.t += 10 * IDLE
+        assert check(m) == "running" and not gw.stops()
+    # It ended, stamped now: a full wait from its end.
+    gw.active = []
+    run.update(status="done", updatedAt=clock.t * 1000)
+    clock.t += 60
+    assert check(m) == "in-use"
+    clock.t += IDLE - 60 + 1
     assert check(m) == "stopped"
-    # A session updated a minute ago and done: the wait counts from that update.
-    gw = Gateway(sessions=[{"key": "agent:main:openai:x", "status": "done",
-                            "updatedAt": (clock.t + 10 * IDLE - 60) * 1000}])
-    m = _seen(gw, clock)
+
+
+def test_a_stored_running_status_without_a_live_run_is_no_use():
+    """A row a gateway restart left "running" holds nothing: only the live state does."""
+    clock = Clock()
+    dead = {"key": "agent:main:cron:x", "status": "running",
+            "updatedAt": (clock.t - 30 * 3600) * 1000}
+    gw = Gateway(sessions=[dead])
+    m = _monitor(gw, clock)
+    check(m)
+    clock.t += IDLE + 1
+    assert check(m) == "stopped"
+
+
+def test_a_session_stamped_lately_holds_it_from_its_stamp():
+    clock = Clock()
+    done = {"key": "agent:main:openai:x", "status": "done",
+            "updatedAt": (clock.t + 10 * IDLE - 60) * 1000}
+    gw = Gateway(sessions=[done])
+    m = _monitor(gw, clock)
+    check(m)
     clock.t += 10 * IDLE
     assert check(m) == "in-use"
     clock.t += IDLE - 60 + 1
     assert check(m) == "stopped"
 
 
-def test_a_run_hours_long_holds_it_and_one_from_before_the_gateway_does_not():
-    """OpenClaw lets a run go 48 h, and its row is stamped only when it starts and ends:
-    a "running" row is live unless it predates the gateway running now."""
+def test_however_long_the_gateway_has_run_the_newest_stamp_is_enough():
+    """Round 2 of the review: a listing that had to reach back to the gateway's start
+    stopped nothing once 200 rows post-dated it. Only the newest row is read now."""
     clock = Clock()
-    gw_start = clock.t - 3 * 86400.0
-    long_run = {"key": "agent:main:main", "status": "running",
-                "updatedAt": (gw_start + 3600) * 1000}
-    gw = Gateway(sessions=[long_run], started=gw_start)
+    rows = [{"key": f"agent:main:openai:{i}", "status": "done",
+             "updatedAt": (clock.t - 3600 * (i + 1)) * 1000} for i in range(500)]
+    gw = Gateway(sessions=rows)
+    gw.extra = {"hasMore": True}
     m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    assert check(m) == "in-use" and not gw.stops()
-    # A row left "running" by a gateway that has since restarted is no run.
-    gw = Gateway(sessions=[dict(long_run, updatedAt=(gw_start - 3600) * 1000)],
-                 started=gw_start)
-    m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    assert check(m) == "in-use"           # the browser's first look: a use
+    check(m)
     clock.t += IDLE + 1
     assert check(m) == "stopped"
-    # The gateway's start cannot be told: every running row is a live run.
-    gw = Gateway(sessions=[dict(long_run, updatedAt=0)], started=None)
-    m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    check(m)
-    clock.t += 10 * IDLE
-    assert check(m) == "in-use" and not gw.stops()
+    asked = [a for t, a in gw.calls if t == "sessions_list"]
+    assert all(a.get("limit") == 1 for a in asked), asked
 
 
-def test_a_listing_that_may_not_reach_the_gateways_start_is_unknown():
+def test_an_update_stamped_in_the_future_is_now_not_later():
     clock = Clock()
-    gw_start = clock.t - 86400.0
-    done = {"key": "agent:main:openai:x", "status": "done",
-            "updatedAt": (gw_start - 10) * 1000}
-    gw = Gateway(sessions=[done], started=gw_start)
-    gw.extra = {"hasMore": True}
+    ahead = {"key": "agent:main:main", "status": "done", "updatedAt": (clock.t + 1e6) * 1000}
+    gw = Gateway(sessions=[ahead])
     m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    check(m)
+    assert check(m) == "in-use"
     clock.t += IDLE + 1
-    assert check(m) == "stopped"          # its end is past the gateway's start: complete
-    gw = Gateway(sessions=[dict(done, updatedAt=(gw_start + 10) * 1000)], started=gw_start)
-    gw.extra = {"hasMore": True}
+    ahead["updatedAt"] = 0
+    assert check(m) == "stopped"
+
+
+def test_unknown_is_not_idle():
+    # The sessions cannot be read.
+    gw, clock = Gateway(sessions_ok=False), Clock()
     m = _monitor(gw, clock)
-    for _ in range(5):
+    for _ in range(3):
         clock.t += 10 * IDLE
         assert check(m) == "unknown" and not gw.stops()
-    gw.started = None                     # nor when the gateway's start is unknown
-    clock.t += 10 * IDLE
-    assert check(m) == "unknown" and not gw.stops()
-
-
-def test_a_listing_restricted_to_a_sandbox_is_unknown():
-    """OpenClaw adds `visibility` to a listing that leaves sessions out (a sandboxed
-    agent's "tree" or "spawned" view): what it leaves out could be browsing."""
+    gw.sessions_ok = True
+    assert check(m) == "in-use" and not gw.stops()   # the failed read counted as a use
+    clock.t += IDLE + 1
+    assert check(m) == "stopped"
+    # A gateway that refuses activeOnly (older than 2026.9.7): its live runs are unknown.
+    gw, clock = Gateway(), Clock()
+    gw.active_ok = False
+    m = _monitor(gw, clock)
+    for _ in range(3):
+        clock.t += 10 * IDLE
+        assert check(m) == "unknown" and not gw.stops()
+    # A listing OpenClaw marks partial (tools.sessions.visibility not "all").
     gw, clock = Gateway(), Clock()
     gw.extra = {"visibility": {"mode": "tree", "warning": "restricted"}}
     m = _monitor(gw, clock)
-    for _ in range(5):
+    for _ in range(3):
         clock.t += 10 * IDLE
         assert check(m) == "unknown" and not gw.stops()
+
+
+def test_a_lasting_reason_is_logged_once_when_it_starts():
+    gw, clock = Gateway(sessions_ok=False), Clock()
+    m = _monitor(gw, clock)
+    with _logged() as lines:
+        for _ in range(4):
+            clock.t += 10 * IDLE
+            check(m)
+        gw.sessions_ok, gw.active = True, [{"key": "agent:main:main", "updatedAt": 0}]
+        for _ in range(3):
+            clock.t += 10 * IDLE
+            check(m)
+        gw.active = []                    # the run ended: a recent use, no lasting reason
+        clock.t += 60
+        check(m)
+        gw.sessions_ok = False            # unknown again: said again
+        clock.t += 60
+        check(m)
+    held = [text for level, text in lines if "leaving OpenClaw's browser running" in text]
+    assert len(held) == 3, held
+    assert "can't tell" in held[0] and "agent run is going" in held[1] and "can't tell" in held[2]
+
+
+def test_a_consult_counted_past_any_ceiling_is_warned_about_once():
+    gw, clock = Gateway(), Clock()
+    m = _monitor(gw, clock)
+    m.consult(1)
+    with _logged() as lines:
+        clock.t += browser_idle._CONSULT_CEILING_SECS - 1
+        check(m)
+        assert not [t for lvl, t in lines if lvl == "WARNING"]
+        for _ in range(3):
+            clock.t += 120
+            assert check(m) == "consult"
+        m.consult(-1)
+        m.consult(1)                      # a new stretch: its own clock
+        clock.t += 120
+        check(m)
+    warned = [t for lvl, t in lines if lvl == "WARNING"]
+    assert len(warned) == 1 and "past any consult's ceiling" in warned[0], warned
+    assert not gw.stops()
 
 
 def test_the_browser_starting_is_a_use():
@@ -237,38 +299,15 @@ def test_the_browser_starting_is_a_use():
     assert check(m) == "in-use" and len(gw.stops()) == 1
 
 
-def test_an_update_stamped_in_the_future_is_now_not_later():
-    clock = Clock()
-    ahead = {"key": "agent:main:main", "status": "done", "updatedAt": (clock.t + 1e6) * 1000}
-    gw = Gateway(sessions=[ahead])
-    m = _monitor(gw, clock)
-    assert check(m) == "in-use"
-    clock.t += IDLE + 1
-    ahead["updatedAt"] = 0
-    assert check(m) == "stopped"
-
-
 def test_a_change_in_the_open_pages_is_a_use():
     gw, clock = Gateway(), Clock()
     m = _monitor(gw, clock)
-    clock.t += IDLE - 10
     assert check(m) == "in-use"           # the browser's first look: a use, now
     clock.t += IDLE - 10
     assert check(m) == "in-use"           # the same pages: no use
     gw.pages = [("p1", "https://example.com/next")]
     clock.t += 20                         # past the idle time since the first look...
     assert check(m) == "in-use" and not gw.stops()   # ...but the page just changed
-    clock.t += IDLE + 1
-    assert check(m) == "stopped"
-
-
-def test_unknown_is_not_idle():
-    gw, clock = Gateway(sessions_ok=False), Clock()
-    m = _monitor(gw, clock)
-    clock.t += 10 * IDLE
-    assert check(m) == "unknown" and not gw.stops()
-    gw.sessions_ok = True
-    assert check(m) == "in-use" and not gw.stops()   # the failed read counted as a use
     clock.t += IDLE + 1
     assert check(m) == "stopped"
 
@@ -293,7 +332,8 @@ def test_nothing_is_stopped_when_off_not_running_or_without_a_gateway():
 
 def test_a_stop_that_did_not_take_waits_a_full_idle_time():
     gw, clock = Gateway(stop_takes=False), Clock()
-    m = _seen(gw, clock)
+    m = _monitor(gw, clock)
+    check(m)
     clock.t += IDLE + 1
     assert check(m) == "stop-failed" and len(gw.stops()) == 1
     clock.t += IDLE - 1
@@ -326,7 +366,6 @@ def test_the_consult_count_feeds_the_brains():
         browser_idle.MONITOR = saved
 
 
-
 def test_an_agent_run_the_brain_started_counts_until_it_ends():
     """tools._held: a run called as its session ended (_run_detached) has no wait that
     _count_consult sees, and one that outlives its wait (_run_to_its_end) runs on."""
@@ -353,33 +392,14 @@ def test_an_agent_run_the_brain_started_counts_until_it_ends():
             raise RuntimeError("the agent failed")
         held = tools._held(fails())
         await asyncio.sleep(0.01)
-        assert held.done() and m._consults == 0
+        assert held.done() and isinstance(held.exception(), RuntimeError) and m._consults == 0
     try:
         asyncio.run(scenario())
     finally:
         browser_idle.MONITOR = saved
 
 
-def test_the_gateways_start_is_the_browsers_parents():
-    import subprocess
-    import time as _time
-    # A stand-in gateway (its command line names it) with a stand-in browser under it.
-    gw = subprocess.Popen(["sh", "-c", "sleep 30 & echo $!; wait", "openclaw", "gateway"],
-                          stdout=subprocess.PIPE, text=True)
-    try:
-        child = int(gw.stdout.readline())
-        started = browser_idle._gateway_start(child)
-        assert started is not None and abs(started - _time.time()) < 5, started
-    finally:
-        gw.kill()
-        gw.wait()
-    # A parent that is not the gateway (this test's runner): unknown.
-    import os
-    assert browser_idle._gateway_start(os.getpid()) is None
-    assert browser_idle._gateway_start(None) is None
-
-
-def test_no_gateway_token_is_asked_nothing_and_said_nothing(monkeypatch=None):
+def test_no_gateway_token_is_asked_nothing_and_said_nothing():
     from teaport_brain import openclaw_client as oc
     gw, clock = Gateway(), Clock()
     m = _monitor(gw, clock)
@@ -397,6 +417,7 @@ def test_no_gateway_token_is_asked_nothing_and_said_nothing(monkeypatch=None):
     finally:
         browser_idle.POLL_SECS, browser_idle.HAS_AGENT, oc._token = saved
     assert gw.calls == []
+
 
 if __name__ == "__main__":
     appliance.run_tests([fn for name, fn in list(globals().items()) if name.startswith("test_")])
