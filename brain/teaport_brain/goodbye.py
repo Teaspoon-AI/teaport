@@ -65,14 +65,20 @@
 # language's are its own words, not a translation: English, Spanish and Italian (the
 # release languages) have theirs; the other catalogs carry the English pattern until
 # someone who speaks the language writes one, so their sessions hear English goodbyes
-# alone (a model's "Bonne nuit" there still waits for the keep-alive). A word that greets
-# as well as parts -- Spanish "buenas noches" (good evening), Italian "ciao" -- is a goodbye
-# in a reply, but not as the caller's first words (PATTERNS["greets"], SleepPhrase).
+# alone (a model's "Bonne nuit" there still waits for the keep-alive). A clause may
+# carry its small talk unpunctuated, as an STT writes it ("okay bye", "buonanotte
+# grazie"), and a name after it ("good night Sam"). A word that greets as well as parts --
+# Spanish "buenas noches" (good evening), Italian "ciao" -- is a goodbye, but not as the
+# caller's first words in the session (PATTERNS["greets"], SleepPhrase), nor in a reply
+# to a caller's turn that was only such words: "Ciao! Sono qui." answers a hello.
 #
 # The caller's own goodbye (#221's option 1). A turn that is only a goodbye -- "Good
 # night.", "Okay, bye!", "Hasta mañana.", "Buonanotte!" -- is the sleep phrase too
-# (SleepPhrase, THE SLEEP PHRASE below), matched by goodbye_kind as the model's is, and
-# stood down as the backstop is while an answer is owed (owed_reason).
+# (SleepPhrase, THE SLEEP PHRASE below), matched by goodbye_kind as the model's is. It
+# stands down as the backstop does while an answer is owed (owed_reason), and while a
+# reply is still on its way (it would play after the line), and on a single word that
+# is the box's own last one, just said (PhraseVoice.tail_echo: likely its echo); its
+# words then go to the model as any others.
 #
 # Rooms only (agent_session.py builds it where end_conversation is offered: the room's
 # bridge with wake words). A phone call has no sleep to go back to, and hanging one up
@@ -273,9 +279,17 @@ class _Words:
                     logger.warning(f"goodbye: bad {t.lang} pattern for {meaning!r} -- "
                                    "fix its .po entry; English alone meanwhile")
             return re.compile(english, re.I)
-        self.bye, self.sleep, self.around = both("bye"), both("sleep"), both("around")
-        self.greets = both("greets")
-        self.anyone = both("anyone")
+        bye, sleep, around = both("bye").pattern, both("sleep").pattern, both("around").pattern
+        greets, anyone = both("greets").pattern, both("anyone").pattern
+        # A clause: the goodbye, with small talk unpunctuated before and after it ("okay
+        # bye", "buonanotte grazie", as an STT writes them) and a word for anyone after
+        # it ("good night everyone"); or small talk alone.
+        lead, tail = f"(?:(?:{around}) ){{0,3}}", f"(?: (?:{around})){{0,3}}"
+        self.bye = re.compile(f"{lead}(?:{bye})(?: (?:{anyone}))?{tail}", re.I)
+        self.greets = re.compile(f"{lead}(?:{greets})(?: (?:{anyone}))?{tail}", re.I)
+        self.sleep = re.compile(f"{lead}(?:{sleep}){tail}", re.I)
+        self.small = re.compile(f"(?:(?:{around}|{greets}) ){{0,3}}(?:{around}|{greets})", re.I)
+        self.anyone = re.compile(anyone, re.I)
         self.clauses = re.compile(r"(,|\b(?:" + both("and").pattern + r")\b)", re.I)
         self.asks, self.for_a_word = both("asks"), both("asks_for_a_word")
         self.to_go = both("asks_to_go")
@@ -303,6 +317,22 @@ def _clauses(sentence: str, words: _Words) -> list:
     return out
 
 
+def _clause_kind(written: str, folded: str, words: _Words, greets_part: bool):
+    """SLEEP, BYE or None for one clause (as written, and folded): the goodbye with its
+    small talk (_Words), or a goodbye and a name after it unpunctuated ("good night
+    Sam": its last word or two, written with capitals, _named)."""
+    if words.sleep.fullmatch(folded):
+        return SLEEP
+    bye = (lambda f: words.bye.fullmatch(f) or greets_part and words.greets.fullmatch(f))
+    if bye(folded):
+        return BYE
+    parts = written.split()
+    for n in (1, 2):
+        if len(parts) > n and _named(" ".join(parts[-n:])) and bye(" ".join(parts[:-n]).casefold()):
+            return BYE
+    return None
+
+
 def goodbye_kind(text: str, t: i18n.T | None = None, *, greets_part: bool = True):
     """What `text`, a whole reply, is (the module note): SLEEP when it is only a goodbye
     and says the box goes to sleep, BYE when it is only a goodbye, else None. In English
@@ -320,12 +350,10 @@ def goodbye_kind(text: str, t: i18n.T | None = None, *, greets_part: bool = True
     kinds = set()
     for sentence in _SENTENCES.split(s):
         clauses = _clauses(sentence, words)
-        said = [SLEEP if words.sleep.fullmatch(f) else BYE if words.bye.fullmatch(f)
-                or greets_part and words.greets.fullmatch(f) else None
-                for _, f, _ in clauses]
+        said = [_clause_kind(w, f, words, greets_part) for w, f, _ in clauses]
         named = False
         for i, (written, folded, after_and) in enumerate(clauses):
-            if said[i] or words.around.fullmatch(folded) or words.greets.fullmatch(folded):
+            if said[i] or words.small.fullmatch(folded):
                 continue
             # A name: after a comma, right after a goodbye, once.
             if (named or after_and or i == 0 or not said[i - 1]
@@ -351,6 +379,13 @@ def asks(said: str, t: i18n.T | None = None) -> bool:
     if words.to_go.search(said) or goodbye_kind(_QUESTION.sub(".", said), t):
         return False                       # the box asked to go, or a goodbye of theirs
     return bool(_QUESTION.search(said) or words.asks.search(said))
+
+
+def greets_only(said: str, t: i18n.T | None = None) -> bool:
+    """Is the caller's turn a goodbye only by words that greet as well -- a bare "Ciao",
+    "Buenas noches" -- and so their hello as much as their goodbye?"""
+    return (goodbye_kind(said, t) is not None
+            and goodbye_kind(said, t, greets_part=False) is None)
 
 
 def signed_off(said: str, t: i18n.T) -> bool:
@@ -475,10 +510,13 @@ class GoodbyeSleep:
             return "not a reply to the caller", None
         if cut or not audio or not (heard or "").strip() or not text:
             return "not heard out", None
-        kind = goodbye_kind(text, i18n.for_espeak(self._lang_fn()))
+        t = i18n.for_espeak(self._lang_fn())
+        called, said = _turn(self._context.get_messages(), TOOL)
+        # "Ciao!" back to the caller's "Ciao" is a hello back, not a goodbye: words that
+        # greet as well as part count in the reply only when the caller's turn did more.
+        kind = goodbye_kind(text, t, greets_part=not (said and greets_only(said, t)))
         if kind is None:
             return "not a goodbye", None
-        called, said = _turn(self._context.get_messages(), TOOL)
         if called:
             return f"its turn called {TOOL}", None     # its own call armed the bridge
         if said is None:
@@ -520,9 +558,10 @@ class SleepPhrase:
     Two ways to ask, one phrase: the request ("go to sleep", "stop listening":
     wifi_voice.request_heard), which wins over anything owed; and a turn that is only a
     goodbye ("Good night.", "Okay, bye!", "Buonanotte!": goodbye_kind, the backstop's
-    own matcher, on the caller's words -- #221's option 1, #320), which stands down as
-    the backstop does while an answer is still owed (owed_reason), its words then going
-    to the model as any others. `gate` and `owed` (the session's FollowupGate and
+    own matcher, on the caller's words -- #221's option 1, #320), which stands down
+    while an answer is still owed (owed_reason), a reply is on its way, or it may be the
+    box's own last word heard back (the module note), its words then going to the model
+    as any others. `gate` and `owed` (the session's FollowupGate and
     owed.Owed) are set by agent_session; without them nothing stands it down.
 
     `sent`: the room was sent to sleep (once per session); `decisions`, newest last: what
@@ -533,21 +572,31 @@ class SleepPhrase:
         self._going: asyncio.Task | None = None   # the line said, the sleep to send
         self.decisions: collections.deque = collections.deque(maxlen=8)
         self.gate = self.owed = None
-        # The caller has said something in this session (one per wake): "buenas noches"
-        # as their first words is hello, after that goodbye (PATTERNS["greets"]).
-        self._spoken = False
 
-    def _asked(self, text: str, t: i18n.T) -> bool:
+    def _asked(self, text: str, voice) -> bool:
         """Is `text` the caller asking the room to sleep, and may it now? The request
-        always; a goodbye of theirs only with nothing owed (logged when it may not)."""
+        always; a goodbye of theirs only with nothing owed and no reply on its way
+        (logged when it may not). Words that greet as well as part ("buenas noches") are
+        no goodbye as the caller's first words in the session (voice.caller_spoke: one
+        session per wake): there they are hello."""
+        t = voice.t
         if wifi_voice.request_heard("sleep", text, t):
             return True
-        if goodbye_kind(text, t, greets_part=self._spoken) is None:
+        if goodbye_kind(text, t, greets_part=voice.caller_spoke) is None:
             return False
         if self.sent or self._going is not None and not self._going.done():
             return True                            # on its way already
-        why = (owed_reason(self.gate, self.owed, signed=True)
-               if self.gate is not None and self.owed is not None else None)
+        why = None
+        if voice.tail_echo(text):
+            # "Ciao" just after the box's "…alle otto. Ciao!": likely its own voice.
+            why = "it may be the box's own last word heard back"
+        if self.gate is not None and self.owed is not None:
+            why = why or owed_reason(self.gate, self.owed, signed=True)
+            if why is None and self.gate.turn_in_flight:
+                # A completion streaming, or its answering one to come: the model's reply
+                # would play after the line. The model hears the goodbye instead, and the
+                # backstop sleeps on its own goodbye.
+                why = "a reply is still on its way"
         if why is not None:
             self.decisions.append(why)
             logger.info(f"SLEEP: {quoted(text)} is a goodbye, but {why} -- the model "
@@ -556,8 +605,7 @@ class SleepPhrase:
         return True
 
     async def heard(self, voice, text: str) -> bool:
-        asked = self._asked(text, voice.t)
-        self._spoken = self._spoken or bool(text.strip())
+        asked = self._asked(text, voice)
         if self.sent:
             return asked                           # asked again: it is on its way
         going = self._going is not None and not self._going.done()

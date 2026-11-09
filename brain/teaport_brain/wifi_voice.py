@@ -414,6 +414,12 @@ class PhraseVoice(FrameProcessor):
         self.bot_starts = 0  # the box's speech started so far (heard_out)
         self.cuts = 0        # ... and cut by the user while it played (heard_out)
         self._start_cuts = 0  # cuts when the box's speech last started
+        # The room's echo guard's record of what the speaker played (echo_guard.BotWords),
+        # where the session has one (agent_session): the model's words, for _echo.
+        self.bot_words = None
+        # The user has said something in this session (a final heard here, the box's
+        # own voice aside): a phrase may read whether these are their first words.
+        self.caller_spoke = False
 
     @property
     def t(self) -> i18n.T:
@@ -447,6 +453,26 @@ class PhraseVoice(FrameProcessor):
         else:
             return False
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
+
+    def tail_echo(self, text: str) -> bool:
+        """Might `text` be the box's own last word heard back: one word, the last of its
+        newest line or of anything the speaker played (bot_words: the model's reply),
+        heard while it speaks or just after (ECHO_TAIL_SECS)? "…es a las ocho. Chao."
+        comes back as "Chao". Too short to call echo and drop (_echo's runs: "No." over
+        "Say yes or no." is the user's answer, as the room's echo guard keeps one short
+        word), but no ground to act on alone: the sleep phrase does not sleep on it."""
+        now = self._clock()
+        if not (self._bot_speaking or now - self._quiet_since <= ECHO_TAIL_SECS):
+            return False
+        word = _norm(text)
+        if not word or len(word.split()) != 1:
+            return False
+        if self._said:
+            when, line = self._said[-1]
+            if now - when <= ECHO_LINES_SECS and line.split()[-1:] == [word]:
+                return True
+        last = self.bot_words.last() if self.bot_words is not None else None
+        return last is not None and _norm(last[1]) == word
 
     async def heard_out(self, starts: int) -> bool:
         """Until a line say() started has played to its end (`starts`: bot_starts read
@@ -487,6 +513,12 @@ class PhraseVoice(FrameProcessor):
         if self._echo(text):
             logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
             return True
+        try:
+            return await self._hear(text)
+        finally:
+            self.caller_spoke = self.caller_spoke or bool(text.strip())
+
+    async def _hear(self, text: str) -> bool:
         if self.idle():
             for phrase in self.phrases:
                 if await phrase.heard(self, text):

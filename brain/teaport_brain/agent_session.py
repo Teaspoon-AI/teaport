@@ -1356,6 +1356,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     if sleep_phrase is not None:
         # A goodbye of the caller's own stands down while an answer is owed (goodbye.py).
         sleep_phrase.gate, sleep_phrase.owed = followup_gate, owed
+    if phrases is not None and guard is not None:
+        # What the speaker played: a goodbye heard back alone is no sleep (tail_echo).
+        phrases.bot_words = guard.bot
     # Retires ClientNotes' reaction order at the completion that reads it. Must sit
     # directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger() if context_notes else None

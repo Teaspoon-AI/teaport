@@ -36,6 +36,7 @@ MODEL = {
            ("¡Que tengas una buena noche!", BYE), ("Chao, chao.", BYE),
            ("Hasta la próxima.", BYE), ("Que duermas bien.", BYE), ("Que le vaya bien.", BYE),
            ("Cuídese, hasta pronto.", BYE), ("Buen descanso y dulces sueños.", BYE),
+           ("Ciao, hasta mañana.", BYE),                    # how an STT writes "chao"
            ("Vale, me voy a dormir.", SLEEP), ("De acuerdo, dejo de escuchar. ¡Hasta luego!", SLEEP),
            ("Me alegra haberte ayudado. ¡Que descanses!", BYE)],
     "it": [("Buonanotte!", BYE), ("Buonanotte, Marco!", BYE), ("Sogni d'oro.", BYE),
@@ -98,9 +99,11 @@ def test_a_word_that_greets_too_is_a_goodbye_only_once_the_conversation_is_under
 # that the box go (whose answer is a goodbye).
 ASKS = {
     "es": ["¿Cómo se dice adiós en inglés?", "Traduce buenas noches al inglés.",
-           "Qué hora es", "Dime el contrario de hola.", "¿Puedes recordármelo mañana?"],
+           "Qué hora es", "Dime el contrario de hola.", "¿Puedes recordármelo mañana?",
+           "sigues ahí", "qué tal", "me oyes"],
     "it": ["Come si dice buonanotte in inglese?", "Traduci arrivederci in inglese.",
-           "Che ore sono", "Dimmi il contrario di ciao.", "Puoi ricordarmelo domani?"],
+           "Che ore sono", "Dimmi il contrario di ciao.", "Puoi ricordarmelo domani?",
+           "come stai", "come va", "come faccio a spegnerti", "ci sei"],
 }
 ASKS_NOT = {
     "es": ["¿Puedes irte a dormir?", "¿Por qué sigues despierto?", "Bueno, buenas noches.",
@@ -121,24 +124,34 @@ def test_what_counts_as_the_caller_asking_in_each_release_language():
 CALLER = {
     "en": ["Good night.", "Okay, good night!", "Goodnight", "Bye!", "Thanks, bye.",
            "Stop listening.", "Okay, go to sleep.", "I'm going to sleep now.",
-           "See you tomorrow."],
+           "See you tomorrow.",
+           # as an STT writes them, unpunctuated (review round 1)
+           "okay bye", "thanks bye", "alright good night", "good night thanks", "good night Sam"],
     "es": ["Buenas noches.", "Bueno, buenas noches.", "Hasta mañana.", "Adiós, gracias.",
            "Vale, chao.", "A dormir.", "Vete a dormir.", "Vete a la cama.", "Deja de escucharme.",
            "Me voy a dormir.", "Venga, a dormir.", "Duérmase, por favor.", "Hasta luego, Teaport.",
-           "Buenas noches, que descanses."],
+           "Buenas noches, que descanses.",
+           "vale adiós", "bueno hasta mañana", "gracias hasta luego", "pues nada hasta mañana",
+           "adiós gracias", "ciao", "buenas noches María"],
     "it": ["Buonanotte.", "Va bene, buonanotte!", "A domani.", "Ciao ciao.", "Grazie, ciao!",
            "Vai a dormire.", "Va' a dormire.", "A nanna!", "Vai a nanna.", "Smetti di ascoltare.",
-           "Vado a dormire.", "Ci sentiamo domani.", "Dai, vai a letto.", "Notte, teaport."],
+           "Vado a dormire.", "Ci sentiamo domani.", "Dai, vai a letto.", "Notte, teaport.",
+           "ok buonanotte", "va bene buonanotte", "grazie ciao", "buonanotte grazie",
+           "va bene a domani", "buonanotte Marco"],
 }
 NOT_CALLER = {
     "en": ["Good night?", "How do I say good night in French?", "I said good night to the kids.",
-           "Good night, and remind me at seven.", "Stop listening to me."],
+           "Good night, and remind me at seven.", "Stop listening to me.",
+           "ok bye so what's the weather tomorrow", "bye the way what's the time"],
     "es": ["¿Buenas noches?", "¿Ya te vas a dormir?", "Les dije buenas noches a los niños.",
            "Buenas noches, ¿qué tiempo hará mañana?", "Hasta mañana a las siete, pon la alarma.",
-           "“Adiós” se dice goodbye.", "No te vayas a dormir."],
+           "“Adiós” se dice goodbye.", "No te vayas a dormir.",
+           "hasta mañana si quieres", "me duermo tarde siempre", "hasta luego me dijo"],
     "it": ["Buonanotte?", "Vai già a dormire?", "Ho detto buonanotte ai bambini.",
            "Buonanotte, che tempo fa domani?", "A domani alle sette, metti la sveglia.",
-           "\"Ciao\" si dice hello.", "Non andare a dormire."],
+           "\"Ciao\" si dice hello.", "Non andare a dormire.",
+           "a dopo ti chiamo", "ci vediamo al cinema", "vado a dormire tardi stasera",
+           "a la prossima"],
 }
 
 
@@ -158,7 +171,7 @@ def _takes(lang, text, *, first=False, book=None):
 
 class _Gate:
     consults_running = 0
-    calls_out = held = False
+    calls_out = held = turn_in_flight = False
 
 
 def test_the_callers_own_goodbye_sends_the_room_to_sleep():
@@ -203,6 +216,90 @@ def test_the_callers_goodbye_stands_down_while_an_answer_is_owed():
         assert list(v.sleep.decisions) == ["an answer is still owed"], v.sleep.decisions
         assert _takes(lang, bye, book=_Owed(["error"]))[0], (lang, "a failure owed")
         assert _takes(lang, request, book=_Owed(["the weather"]))[0], (lang, request)
+
+
+def test_a_greeting_back_is_no_goodbye_for_the_backstop():
+    """Review round 1, the BLOCKER: woken with "Ciao" (hello, which the sleep phrase
+    leaves to the model), the model's "Ciao! Sono qui." is a hello back. Words that
+    greet as well as part count in the reply only when the caller's turn did more."""
+    from test_goodbye import _sent, _turn
+    for lang, caller, reply in (("it", "Ciao", "Ciao! Sono qui."),
+                                ("it", "Ciao.", "Ciao, sono qui se hai bisogno."),
+                                ("es", "Buenas noches.", "¡Buenas noches! Aquí estoy para lo que necesites."),
+                                ("es", "Buenas noches", "¡Muy buenas noches! Estoy aquí si me necesitas.")):
+        assert goodbye.greets_only(caller, i18n.get(lang)), caller
+        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller))
+        assert sent == [] and sleep.decisions[-1] == "not a goodbye", (caller, reply, sleep.decisions)
+    # A caller who did say goodbye: the same words back are one.
+    for lang, caller, reply in (("it", "Va bene, a domani.", "Ciao!"),
+                                ("es", "Bueno, hasta mañana.", "¡Buenas noches!")):
+        assert not goodbye.greets_only(caller, i18n.get(lang)), caller
+        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller))
+        assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, reply, sleep.decisions)
+
+
+def test_the_boxs_last_word_heard_back_alone_does_not_sleep():
+    """Review round 1: "Certo, è alle otto. Ciao!" heard back as "Ciao" while the box
+    speaks, or just after, is likely its own voice: no sleep -- nor dropped, since one
+    short word is the user's as often (the words go to the model as usual). Once it is
+    quiet, the same word is the caller's goodbye."""
+    from teaport_brain.echo_guard import BotWords
+
+    async def run():
+        v = _Voice("it")
+        v.bot_words = BotWords()
+        await v._heard("che ore sono")
+        v.bot_words.played("Certo, è alle otto. Ciao!")
+        v._bot_speaking = True
+        assert not await v._heard("Ciao")
+        assert v.said() == [] and list(v.sleep.decisions) == [
+            "it may be the box's own last word heard back"]
+        v._bot_speaking, v._quiet_since = False, v._clock() - wifi_voice.ECHO_TAIL_SECS - 1
+        assert await v._heard("Ciao")
+        assert v.said() == [i18n.get("it")._(goodbye.SLEEP_TEXT)]
+        # Its own line's last word the same way ("Va bene, vado a dormire." -> "dormire"
+        # is no goodbye; a line ending "a domani" is).
+        v = _Voice("it")
+        await v._heard("che ore sono")
+        v.note_said("Ti richiamo, a domani")
+        v._bot_speaking = True
+        assert v.tail_echo("domani") and not v.tail_echo("buonanotte")
+    asyncio.run(run())
+
+
+def test_the_first_words_are_the_sessions_whatever_took_them():
+    """Review round 1: a first turn another phrase took ("open my settings") still makes
+    the next "buenas noches" a goodbye, not a hello."""
+    class Settings:
+        async def heard(self, voice, text):
+            return text == "abre los ajustes"
+
+    async def run():
+        v = _Voice("es")
+        v.phrases.insert(0, Settings())
+        assert await v._heard("abre los ajustes")
+        assert v.caller_spoke
+        assert await v._heard("Buenas noches.")
+        assert v.said() == [i18n.get("es")._(goodbye.SLEEP_TEXT)]
+    asyncio.run(run())
+
+
+def test_a_goodbye_while_a_reply_is_on_its_way_goes_to_the_model():
+    """Review round 1: a completion still streaming (no consult out yet) would play its
+    reply after the line: the goodbye goes to the model, whose own goodbye the backstop
+    sleeps on. The request still wins."""
+    gate = _Gate()
+    gate.turn_in_flight = True
+    for lang, bye, request in (("en", "Good night.", "Go to sleep."),
+                               ("it", "Buonanotte.", "Vai a dormire.")):
+        async def run(text):
+            v = _Voice(lang)
+            v.sleep.gate, v.sleep.owed = gate, _Owed()
+            await v._heard("one thing")
+            return await v._heard(text), v
+        took, v = asyncio.run(run(bye))
+        assert not took and list(v.sleep.decisions) == ["a reply is still on its way"], lang
+        assert asyncio.run(run(request))[0], (lang, request)
 
 
 def test_every_catalog_has_the_goodbye_patterns_and_only_es_and_it_their_own():
