@@ -406,9 +406,9 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   would speak -- counted with the TTS's own test (`tts_text.has_speech`), so a reply of
   zero-width spaces (#70) is silent -- and called nothing. What it cannot see: text the
   LLM pushed that a processor below it then swallowed without a word in its place. The
-  guard speaks its recovery line for anything it empties; `MoodTag` alone could take a
-  reply that is only a mood tag, and that run's turn would stay set until the next
-  interruption.
+  guard speaks its recovery line for anything it empties; `MoodTag`, which takes a reply
+  that is only a mood tag (the face shows it, #383), pushes the `RunSilentFrame` itself
+  when nothing went ahead of it, so no such turn stays set until the next interruption.
 - **A caller's reply that came back empty is asked once more** (#15,
   `BoundedOpenAILLMService._recover_nothing`), inside the same completion: one reply, one
   `Issue`, one render. The model has one rendered request per reply, and the retry keeps

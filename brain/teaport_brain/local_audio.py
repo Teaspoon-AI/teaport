@@ -568,8 +568,8 @@ class FaceTap:
         first words. It arrives as the reply starts, ahead of its audio, so it waits until
         a reply that starts with those words is heard (assistant), and is kept up while it
         speaks. With no words (a reply of only the mood, #383: "show me an angry face")
-        there is no reply to wait for: it is shown at once, and the avatar holds it for its
-        usual time. Only to an avatar that lists moods in its features (an older one would
+        there is no reply to wait for: it is shown at once, on an idle face unless another
+        reply is speaking, and the avatar holds it for its usual time. Only to an avatar that lists moods in its features (an older one would
         not know it)."""
         if name and self._mood_source == "tag" and self.takes("moods"):
             self._activity()
@@ -577,6 +577,10 @@ class FaceTap:
             if words:
                 self._moods.append((name, words, self._clock()))
             else:
+                if self._state != "speaking":
+                    # Nothing will speak for it: the face leaves "thinking" (its gaze is
+                    # layered over the mood) and shows the mood as the answer it is.
+                    self.state("idle")
                 self._emit({"mood": self._mood_name(name)})
 
     def mouth(self, level: float, hiss: float | None = None) -> None:

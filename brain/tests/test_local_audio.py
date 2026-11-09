@@ -2403,8 +2403,12 @@ def test_a_mood_with_no_words_is_shown_at_once():
     # words to be heard by: the face shows it now, and the avatar holds it its usual time.
     face, sent, _ = _mood_face(features={"moods": ["sad", "angry"]})
     face.user("show me an angry face", True)
+    assert [e["state"] for e in sent if "state" in e] == ["thinking"]
     face.mood("angry", [])
     assert _moods(sent) == ["angry"]
+    # nothing will speak for it: the thinking gaze is not left over the angry eyes
+    assert [e["state"] for e in sent if "state" in e] == ["thinking", "idle"]
+    assert sent.index({"state": "idle"}) < sent.index({"mood": "angry"})
     face.assistant("Done.", True, "u2")                # the next reply is its own:
     assert _moods(sent) == ["angry", "neutral"]        # scored, not given the shown mood
     old, old_sent, _ = _mood_face(features={"screen": 1})
@@ -2412,6 +2416,11 @@ def test_a_mood_with_no_words_is_shown_at_once():
     text, text_sent, _ = _mood_face("text")
     text.mood("sad", [])                                # nor with the model's moods off
     assert _moods(old_sent) == [] and _moods(text_sent) == []
+    talking, talking_sent, _ = _mood_face(features={"moods": ["sad", "angry"]})
+    talking.assistant("Well, let me", False, "u1")      # a reply is speaking: its state stays
+    talking.mood("angry", [])
+    assert [e["state"] for e in talking_sent if "state" in e] == ["speaking"]
+    assert _moods(talking_sent)[-1] == "angry"
 
 
 def test_the_models_mood_follows_the_reply_it_was_tagged_for():

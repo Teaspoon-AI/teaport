@@ -14,8 +14,8 @@
 # or until what came is plainly not one (then the held deltas go on untouched). A tag
 # with a name the avatar does not know is stripped and sent nowhere.
 #
-# A reply that is only a known tag ("show me an angry face" answered with just 😠, #383)
-# is an answer, not dead air: its mood goes with no first words (starts: []), which the
+# A reply that is only a known tag ("show me an angry face" answered with just 😠, #383),
+# or a tag and nothing the TTS would speak after it ("😠."), is an answer, not dead air: its mood goes with no first words (starts: []), which the
 # client shows at once, and nothing is spoken -- as services._dealt_with takes a reply of
 # only a face. The TTS opens no context for a reply with no text and holds its End, so
 # the turn is ended here (RunSilentFrame), as a run that says nothing is. A tag alone
@@ -42,6 +42,7 @@ from teaport_brain.followup_gate import RunSilentFrame
 from teaport_brain.llm_text_guard import recovery_text
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
+from teaport_brain.tts_text import has_speech
 
 # TEAPORT_FACE_MOOD: "tag" lets the model tag a reply's mood (this module); "text" and "off"
 # do not, and the client is told which (gateway_server's hello): the local audio bridge
@@ -135,8 +136,15 @@ class MoodTag(FrameProcessor):
         # A tag took the whole reply, and nothing since (a tool call, a word) has
         # answered. At the End a known mood is the answer, shown at once (_send_mood);
         # an unknown one is dead air -- no face, no words -- and is apologised for as the
-        # guard does.
+        # guard does. "Words" as the TTS reads them (tts_text.has_speech): what comes
+        # after the tag with nothing to speak (".", "...", a zero-width space) is held in
+        # _unsaid, and goes on only ahead of words; with none it is dropped, or the guard
+        # would be handed text it cannot speak and say its own line at the End.
         self._bare = False
+        self._unsaid = []
+        # The LLM service has told the gate this completion says nothing already (a run
+        # of ours: services._run_said_nothing): one RunSilentFrame is the whole of it.
+        self._told_silent = False
         # A tag was read and its mood waits for the reply's first words: the face matches
         # a mood to the reply it hears by them. (mood, the text that followed the tag)
         self._mood = None
@@ -163,10 +171,20 @@ class MoodTag(FrameProcessor):
         self._held, self._deciding = [], False
         if name:
             self._mood = (name, rest)
-        if rest.strip():
+        if has_speech(rest):
             await self.push_frame(LLMTextFrame(text=rest), direction)
         else:
             self._bare = True
+            self._hold_unsaid(LLMTextFrame(text=rest))
+
+    def _hold_unsaid(self, frame):
+        if frame.text:
+            self._unsaid.append(frame)
+
+    async def _flush_unsaid(self, direction):
+        unsaid, self._unsaid = self._unsaid, []
+        for frame in unsaid:
+            await self.push_frame(frame, direction)
 
     async def _release(self, direction):
         held, self._held, self._deciding = self._held, [], False
@@ -180,6 +198,7 @@ class MoodTag(FrameProcessor):
             self._reset()
         elif isinstance(frame, InterruptionFrame):
             self._held, self._deciding, self._bare, self._mood = [], False, False, None
+            self._unsaid = []
         elif isinstance(frame, LLMTextFrame) and self._deciding:
             if frame.text:
                 self._held.append((frame, frame.text))
@@ -195,35 +214,52 @@ class MoodTag(FrameProcessor):
                 self._mood = (name, rest)
             else:
                 logger.info("mood tag with an unknown name, stripped")
-            if rest.strip():       # the rest rides the delta that closed the tag
-                frame.text = rest
+            frame.text = rest      # the rest rides the delta that closed the tag
+            if has_speech(rest):
                 await self.push_frame(frame, direction)
                 if self._mood and len(lead_words(rest)) >= LEAD_WORDS:
                     await self._send_mood(direction)
             else:
                 self._bare = True
+                self._hold_unsaid(frame)
             return
-        elif isinstance(frame, LLMTextFrame) and frame.text.strip():
-            self._bare = False
+        elif isinstance(frame, LLMTextFrame) and self._bare:
+            if not has_speech(frame.text):
+                self._hold_unsaid(frame)
+                return
+            self._bare = False     # words: what was held goes on ahead of them
+            await self._flush_unsaid(direction)
             if self._mood:
                 self._mood = (self._mood[0], self._mood[1] + frame.text)
                 if len(lead_words(self._mood[1])) >= LEAD_WORDS:
                     await self.push_frame(frame, direction)
                     await self._send_mood(direction)
                     return
+        elif isinstance(frame, LLMTextFrame) and frame.text.strip():
+            if self._mood:
+                self._mood = (self._mood[0], self._mood[1] + frame.text)
+                if len(lead_words(self._mood[1])) >= LEAD_WORDS:
+                    await self.push_frame(frame, direction)
+                    await self._send_mood(direction)
+                    return
+        elif isinstance(frame, RunSilentFrame):
+            self._told_silent = True
         elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)):
             await self._settle(direction)
-            self._bare = False     # the call is the answer
+            self._bare = False     # the call is the answer (what was held says nothing)
+            self._unsaid = []
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self._settle(direction)
             await self._release(direction)
             bare, shown, self._bare = self._bare, self._mood is not None, False
+            self._unsaid = []      # (only a tag's: nothing to speak in it)
             if self._mood:       # a short reply: the words it had (none: shown now)
                 await self._send_mood(direction)
             if bare and shown:
                 # The face was the answer (#383), and there is nothing to speak: the turn
                 # is over here, not when a later context frees the End the TTS holds.
-                await self.push_frame(RunSilentFrame(), direction)
+                if not self._told_silent:
+                    await self.push_frame(RunSilentFrame(), direction)
             elif bare:
                 logger.warning("mood: a reply of only a tag the face does not know; "
                                "speaking the recovery line")

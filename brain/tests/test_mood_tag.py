@@ -205,6 +205,23 @@ def test_a_reply_of_only_a_known_mood_shows_it_and_is_not_apologised_for():
     assert run.starts == [["grr", "like", "this"]] and run.silent == 0
 
 
+def test_a_tag_and_only_text_with_nothing_to_speak_is_a_mood_alone():
+    # Review round 1 (#393): "words" are what the TTS would speak (tts_text.has_speech).
+    # Punctuation, an ellipsis or a zero-width space after the tag is not forwarded:
+    # handed to the guard, it says its own line at the End over the face.
+    for deltas in (["😠."], ["😠", " ..."], ["😠", "\u200b"], ["😠", " !"], ["😠", "\xa0"],
+                   ["[mood: angry]."], ["[mood: angry]", " …"]):
+        text, moods = run(deltas)
+        assert (text, moods, run.starts, run.silent) == ("", ["angry"], [[]], 1), deltas
+    # ...and when words do come, what was held goes on ahead of them, in order
+    text, moods = run(["😠", "...", " Grr", " like this?"])
+    assert text == "... Grr like this?" and moods == ["angry"] and run.silent == 0
+    assert run.starts == [["grr", "like", "this"]]
+    # an unknown tag with nothing to speak after it: the recovery line, once, and only it
+    from teaport_brain.llm_text_guard import RECOVERY_TEXT
+    assert run(["[mood: grumpy]."]) == (RECOVERY_TEXT, []) and run.silent == 0
+
+
 def test_a_reply_of_only_an_unknown_tag_is_not_left_silent():
     # a name the face does not know showed nothing and said nothing: the recovery line
     from teaport_brain.llm_text_guard import RECOVERY_TEXT
