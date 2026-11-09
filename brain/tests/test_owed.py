@@ -249,53 +249,20 @@ def test_a_failure_for_credit_says_the_account_ran_out():
     assert "billing" in bare and "run out of credit" not in bare
     _, limited = owed.failure_outcome("error", "403 Key limit exceeded (total limit)")
     assert "credit" not in limited and "billing" not in limited, limited
-    status, outcome = owed.failure_outcome("error", CREDIT_402, settings=True)
-    rec = Record.make("k", CAL_REQ, outcome, failure=status)
-    assert rec.terms == {"credit"}, rec.terms
-    told = "I couldn't check that: your AI account has run out of credit."
-    assert rec.about(told) and rec.tells(told)
-    assert not rec.about("Want me to open your settings?")
 
 
-def test_a_failure_is_about_what_it_was_asked_for():
-    """A failure's terms are its statement's own (Owed.tla OUTCOME = "failure"): a reply
-    about it shares the request or them; an unrelated one nothing. The hedge rides along
-    as an instruction and names nothing of what happened."""
-    status, outcome = owed.failure_outcome("timeout")
-    rec = Record.make("k", HN_REQ, outcome, failure=status)
-    assert not rec.terms & {"message", "poll", "visible", "failed"}, rec.terms
-    assert rec.about("Sorry, that Hacker News lookup ran out of time before it finished.")
-    assert not rec.about("It's eleven twenty-two at night.")
-    assert not rec.about("The upload failed.")
-    assert not rec.about("No, I could not find that.")
+
+def test_a_failure_has_no_terms_its_tellings_are_judged():
+    """#380: no word list says what a failure's telling is -- the four English words of
+    formal audit C1 matched no telling in Spanish or Italian. Every kind's record has no
+    terms; the failure judge reads the reply (Owed._failed)."""
+    for kind, detail in (("timeout", ""), ("empty", ""), ("error", "boom"),
+                         ("error", "HTTP 402"), ("error", CREDIT_402), ("unknown", "")):
+        status, outcome = owed.failure_outcome(kind, detail, settings=True)
+        assert Record.make("k", CAL_REQ, outcome, failure=status).terms == frozenset()
 
 
 BILLING_REPLY = "I couldn't do that because of a billing problem. Want me to open your settings?"
-
-
-def test_a_billing_failure_is_about_its_own_words():
-    """Formal audit C1 (11-05): a reply telling a billing failure in its own words, with
-    none of the request's, is about it and a telling of it; the settings hint and the
-    hedge are not its terms."""
-    status, outcome = owed.failure_outcome("error", "HTTP 402", settings=True)
-    rec = Record.make("k", CAL_REQ, outcome, failure=status)
-    assert rec.terms == {"billing", "credit"}, rec.terms
-    assert rec.about(BILLING_REPLY) and rec.tells(BILLING_REPLY)
-    assert rec.about("Your AI account is out of credit.")
-    for other in ("Want me to open your settings?", "It's eleven twenty-two at night.",
-                  "The upload failed.", "No, I could not find that.",
-                  "As an AI, I don't have feelings, but thanks for asking!",
-                  "Customer service is open until five."):
-        assert not rec.about(other), other
-    # The other kinds: what names them, and the words any reply says do not.
-    for kind, named, other in (("error", "That hit an error, sorry.", "That song was a hit."),
-                               ("empty", "It came back empty.", "Sure, I can do that."),
-                               ("timeout", None, "I ran the numbers: about forty dollars."),
-                               ("unknown", None, "Sure, I can do that.")):
-        status, outcome = owed.failure_outcome(kind)
-        rec = Record.make("k", CAL_REQ, outcome, failure=status)
-        assert not rec.about(other), (kind, other)
-        assert named is None or rec.about(named), (kind, named)
 
 
 # =============================================================== the note
@@ -626,10 +593,11 @@ async def test_a_failure_the_callers_turn_told_is_not_reoffered():
     """Fable's final review (Owed.tla ow_failure_runOnly): the consult fails while the
     caller is mid-turn, so no landing run; their turn tells it in full. Closed, and the
     lull has nothing to say."""
-    b, _, gate = book(pending=True, reoffer_quiet_s=0.05)
+    b, _, gate = book(pending=True, reoffer_quiet_s=0.05, failure_judge=FakeFailureJudge())
     b.land(HN_REQ, None, "call-hn", failure="timeout")
     b.settle(noted_reply(b, "caller"), "Sorry, that Hacker News lookup ran out of time, so "
              "I don't have an answer.", cut=False, audio=True)
+    await judged(b)
     assert b.record("call-hn").state == CLOSED
     gate.quiet = 1.0
     await asyncio.sleep(0.3)
@@ -640,10 +608,12 @@ async def test_a_billing_failure_the_callers_turn_told_is_closed():
     """Formal audit C1: a 402 lands (settings offered) while the caller is mid-turn; their
     turn tells it in billing words that name nothing of the request. Closed, and the lull
     has nothing to say."""
-    b, _, gate = book(pending=True, reoffer_quiet_s=0.05, settings=True)
+    b, _, gate = book(pending=True, reoffer_quiet_s=0.05, settings=True,
+                      failure_judge=FakeFailureJudge())
     b.land(CAL_REQ, None, "call-cal", failure="error", detail="HTTP 402 Payment Required")
     assert "open_settings" in b.record("call-cal").outcome
     b.settle(noted_reply(b, "caller", ("call-cal",)), BILLING_REPLY, cut=False, audio=True)
+    await judged(b)
     assert b.record("call-cal").state == CLOSED
     gate.quiet = 1.0
     await asyncio.sleep(0.3)
@@ -655,7 +625,8 @@ async def test_a_cut_billing_telling_counts_and_reads_a_dismissal():
     the decline check is due, and the dismissal ends the record."""
     decline = FakeDecline(True)
     b, ctx, _ = book(pending=True, settings=True, judge=FakeJudge(False),
-                     gist=FakeGist(True), decline=decline)
+                     gist=FakeGist(True), decline=decline,
+                     failure_judge=FakeFailureJudge(False))
     b.land(CAL_REQ, None, "call-cal", failure="error", detail="HTTP 402 Payment Required")
     heard = "I couldn't do that because of a billing"
     cut(b, noted_reply(b, "caller", ("call-cal",)), heard, BILLING_REPLY)
@@ -2648,9 +2619,20 @@ def test_the_decline_checks_request_is_the_measured_one():
 
 class FakeFailureJudge(FakeJudge):
     """The failure judge (Owed.failure_judge), scripted as FakeJudge: called with
-    (question, outcome, heard, rest)."""
+    (question, outcome, heard, rest) on a cut (`verdict`, recorded in `calls`), and with
+    no rest on a reply's whole text (`whole`: a verdict, or a function of the text;
+    recorded in `wholes`)."""
 
-    async def __call__(self, question, outcome, heard, rest):
+    def __init__(self, verdict=True, error=None, release=None, whole=True):
+        super().__init__(verdict, error, release)
+        self.whole, self.wholes = whole, []
+
+    async def __call__(self, question, outcome, heard, rest=None):
+        if rest is None:
+            self.wholes.append(heard)
+            if self.error is not None:
+                raise self.error
+            return self.whole(heard) if callable(self.whole) else self.whole
         self.calls.append((question, outcome, heard, rest))
         if self.error is not None:
             raise self.error
@@ -2691,6 +2673,18 @@ def test_the_failure_judges_request_is_the_measured_one():
                                   'The rest, which they did not hear:\n"rest"')
 
 
+def test_a_whole_reply_goes_to_the_told_judge_without_the_no_answer_lead():
+    """#380: a reply heard to its end (no rest) is asked whether it tells them it failed
+    (FAILURE_TOLD_JUDGE_PROMPT), shown what happened without failure_outcome's "No answer:"
+    lead -- which a reply that only has nothing to give matched."""
+    _, outcome = owed.failure_outcome("timeout")
+    msgs = owed.failure_cut_judge_messages("Q?", owed.failure_core(outcome), "heard")
+    assert msgs[0]["content"] == owed.FAILURE_TOLD_JUDGE_PROMPT
+    assert msgs[1]["content"] == ('What they asked: Q?\n\nWhat happened: It ran out of time '
+                                  'before it finished.\n\nWhat they heard:\n"heard"\n\n'
+                                  'They heard all of it.'), msgs[1]["content"]
+
+
 def test_a_failures_core_is_its_statement_without_the_instructions():
     """failure_core: what the failure judge is shown, and the words its terms come from."""
     _, outcome = owed.failure_outcome("error", "out of credit", settings=True)
@@ -2711,6 +2705,7 @@ async def test_a_cut_failure_is_judged_against_its_own_statement():
     rec = b.record("call-cal")
     rest = _unheard(CREDIT_REPLY, CREDIT_CUT)
     assert judge.calls == [], "the cut judge was asked about a failure"
+    assert fj.wholes == [CREDIT_REPLY], "its whole text: a telling of it at all?"
     assert fj.calls == [(rec.asked, owed.failure_core(rec.outcome), CREDIT_CUT, rest)], fj.calls
     assert "open_settings" not in fj.calls[0][1], "the settings hint is no part of what happened"
     assert rec.state == OWED and rec.cuts == 1, (rec.state, rec.cuts)
@@ -2741,6 +2736,7 @@ async def test_a_cut_failure_owed_is_retold_with_what_they_missed_and_closed_whe
     status = owed.PART_HEARD.format(quote=CREDIT_CUT)
     assert f"   {status}\n   They did not hear: \"{rest}\"\n" in note, note
     b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False, audio=True)
+    await judged(b)
     assert rec.state == CLOSED and rec.unheard == "", (rec.state, rec.unheard)
 
 
@@ -2777,16 +2773,85 @@ async def test_a_failure_told_and_cut_twice_is_dropped():
     assert b.record("call-cal").state == owed.DROPPED and len(fj.calls) == 2
 
 
-async def test_a_cut_failure_with_no_failure_judge_goes_to_the_cut_judge():
-    """Nothing wired (a test's book): the cut judge, as before."""
-    judge = FakeJudge(False)
-    b, _, _ = credit_cut(None, judge)
+async def test_a_cut_failure_with_no_verdict_stays_owed_and_uncounted():
+    """No failure judge, or one that errs: no verdict that the reply told it -- owed, not a
+    cut telling of it (the cut judge, which looks for a name or a number, is never asked
+    about a failure)."""
+    for fj in (None, FakeFailureJudge(error=RuntimeError("x"))):
+        judge = FakeJudge(True)
+        b, _, _ = credit_cut(fj, judge)
+        await judged(b)
+        rec = b.record("call-cal")
+        assert rec.state == OWED and rec.cuts == 0 and judge.calls == [], (fj, rec.cuts)
+        assert rec.heard_quote == "" and not b.decline_due()
+
+
+# =============================================================== a failure, judged (#380)
+
+ES_TOLD = ("Lo siento, no pude mirar tu calendario porque la cuenta de IA se quedó sin "
+           "crédito. ¿Abro los ajustes?")
+NOT_YET = "I don't have your calendar for tomorrow yet. Want me to look it up?"
+
+
+def failure_book(fj, **kw):
+    b, ctx, gate = book(pending=True, settings=True, failure_judge=fj, **kw)
+    b.land(CAL_REQ, None, "call-cal", failure="error", detail=CREDIT_402)
+    return b, ctx, gate
+
+
+async def test_a_failure_told_in_spanish_closes_on_the_judge():
+    """#380: a telling in Spanish shares no word with the request or the four English
+    words that stood for a failure; the judge reads it, and a played-through HEARD
+    closes the record."""
+    fj = FakeFailureJudge(whole=lambda heard: "crédito" in heard)
+    b, _, _ = failure_book(fj)
+    reply = noted_reply(b, "caller", ("call-cal",))
+    b.reply_text(reply, ES_TOLD)                    # asked at the stream's end
+    assert "call-cal" in reply.gist, "the failure judge was not asked at the stream's end"
+    b.settle(reply, ES_TOLD, cut=False, audio=True, text=ES_TOLD)
     await judged(b)
-    assert len(judge.calls) == 1 and b.record("call-cal").state == OWED
-    fj = FakeFailureJudge(error=RuntimeError("x"))
-    b, _, _ = credit_cut(fj, FakeJudge(True))
+    assert b.record("call-cal").state == CLOSED and fj.wholes == [ES_TOLD]
+
+
+async def test_a_played_through_reply_that_does_not_tell_the_failure_keeps_it_owed():
+    """#387's optional item: "I don't have it yet" names the request and, by its words,
+    closed a timed-out lookup as heard. The judge's OWED keeps it owed; the note says so
+    on the next turn."""
+    fj = FakeFailureJudge(whole=lambda heard: "credit" in heard)
+    b, ctx, _ = failure_book(fj)
+    b.settle(noted_reply(b, "caller", ("call-cal",)), NOT_YET, cut=False, audio=True,
+             text=NOT_YET)
     await judged(b)
-    assert len(fj.calls) == 1 and b.record("call-cal").state == OWED, "an error errs owed"
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.heard == [], rec.heard
+    says(ctx, "Okay, and what about tomorrow?")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ("call-cal",)
+
+
+async def test_a_failures_own_run_closes_on_no_verdict_a_caller_reply_does_not():
+    """No verdict (the judge errs or is not wired): the failure's own run, which tells it
+    by its line (FAILURE_RUN_LINE), closes it played through; any other reply leaves it
+    owed."""
+    for kind, closes in ((owed.RUN, True), ("caller", False)):
+        b, _, _ = failure_book(FakeFailureJudge(error=RuntimeError("down")))
+        b.settle(noted_reply(b, kind, ("call-cal",)), CREDIT_REPLY, cut=False, audio=True,
+                 text=CREDIT_REPLY)
+        await judged(b)
+        assert (b.record("call-cal").state == CLOSED) is closes, kind
+
+
+async def test_a_cut_reply_that_tells_nothing_of_the_failure_is_no_cut_telling():
+    """A cut reply on something else -- its whole text judged no telling -- neither counts
+    toward the two cuts that drop the record nor is quoted as what they heard of it, and
+    the cut's prefix is never asked."""
+    other = "Tomorrow looks sunny, with a high around seventy."
+    fj = FakeFailureJudge(True, whole=False)
+    b, _, _ = failure_book(fj)
+    cut(b, noted_reply(b, "caller", ("call-cal",)), "Tomorrow looks sunny,", other)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.cuts == 0 and rec.heard_quote == "" and fj.calls == []
+    assert not b.decline_due()
 
 
 async def test_an_answer_cut_keeps_the_cut_judge_and_its_measured_note():

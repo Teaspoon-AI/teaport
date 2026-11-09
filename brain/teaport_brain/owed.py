@@ -28,10 +28,11 @@
 #                   what they heard of the record so far -- or on no verdict; the
 #                   second such reply closes it whatever the verdict (the backstop). A
 #                   cut one only on the gist judge's HEARD for its whole text AND the
-#                   cut judge's for the rest they did not hear. A failure is one
-#                   statement: a reply about it heard to its end, or cut on the
-#                   failure judge's HEARD -- shown what happened, does what they
-#                   heard get it across? -- with no gate. Only a reply whose
+#                   cut judge's for the rest they did not hear. A failure is
+#                   judged, not read by its words (#380): the failure judge -- shown
+#                   what happened, does what they heard get it across, in any words
+#                   or language? -- on any noted reply, its whole text first (a
+#                   telling of it at all), then a cut's prefix. Only a reply whose
 #                   request carried the note counts. ClosedOnEvidence, RetellOnce;
 #                   ow_gist_*, ow_fraction (1/3 of the words, #203), ow_ledgerMax.
 #   the DECLINE  -- the caller's words when they cut a telling of a record: read by the
@@ -239,9 +240,49 @@ FAILURE_CUT_JUDGE_PROMPT = (
     "answer OWED. Reply with exactly one word: HEARD or OWED.")
 
 
-def failure_cut_judge_messages(question: str, outcome: str, heard: str, rest: str) -> list:
-    """The failure judge's request, as the eval asked it. `outcome`: the failure's plain
-    statement (failure_core), without the instructions riding with it."""
+# The same judge on a reply heard to its END (#380): is it a telling of the failure at all?
+# Played through, it closes the record; cut, it decides whether the cut counts as a telling
+# (the prompt above then reads the prefix). The cut prompt, asked of whole replies, read
+# "I don't have the bookshop results yet" and "Both of those searches are still running"
+# as getting across a timeout -- 29/61 false closes on vague tellings the model gave under
+# the texts before #387 (tests/test_failure_judge_eval.py, gpt-oss-120b, majority of 3,
+# 2026-11-09), where the words alone (a term of the request, or billing/credit/error/
+# empty) had 33/61; framed on the failure, with "still running" and "nothing to give" as
+# OWED, and what happened said without the outcome's "No answer:" lead (which "I didn't
+# get an answer" matched), 9/61, and 0/102 false owes on tellings that said it.
+FAILURE_TOLD_JUDGE_PROMPT = (
+    "A voice assistant was telling someone on a phone call what happened with something "
+    "they asked for: it failed. You see what they asked, what happened (the assistant's "
+    "own record of it), what they actually heard, and, if they cut it off, the rest "
+    "they did not hear. Decide whether what they heard tells them it failed -- that it "
+    "is over and was not done: it couldn't be done, ran out of time, hit an error -- in "
+    "any words or language. Being told it is still running, still being worked on or "
+    "not back yet is the opposite of that: OWED. Having nothing to give them does not "
+    "tell them it failed either: \"I don't have the results\", \"there's no answer\", \"I "
+    "didn't find any\" are OWED, and so is anything about something else. If what they "
+    "heard tells them it failed, answer HEARD: whatever follows is extra, even an offer "
+    "to try again, a question, an apology or a repeat. Reply with exactly one word: "
+    "HEARD or OWED.")
+
+
+def _what_happened(outcome: str) -> str:
+    """A failure's statement for the told judge: without failure_outcome's "No answer:"
+    lead, which a reply that only has nothing to give ("I didn't get an answer") matches."""
+    said = re.sub(r"^No answer:\s*", "", outcome)
+    return said[:1].upper() + said[1:]
+
+
+def failure_cut_judge_messages(question: str, outcome: str, heard: str,
+                               rest: Optional[str] = None) -> list:
+    """The failure judge's request, as the evals asked it. `outcome`: the failure's plain
+    statement (failure_core), without the instructions riding with it. `rest`: what a cut
+    left unheard -- FAILURE_CUT_JUDGE_PROMPT; None for a reply heard to its end, or a cut
+    one's whole text -- FAILURE_TOLD_JUDGE_PROMPT."""
+    if rest is None:
+        return [{"role": "system", "content": FAILURE_TOLD_JUDGE_PROMPT},
+                {"role": "user", "content": f"What they asked: {question}\n\nWhat happened: "
+                                            f"{_what_happened(outcome)}\n\nWhat they heard:"
+                                            f"\n\"{heard}\"\n\nThey heard all of it."}]
     return [{"role": "system", "content": FAILURE_CUT_JUDGE_PROMPT},
             {"role": "user", "content": f"What they asked: {question}\n\nWhat happened: "
                                         f"{outcome}\n\nWhat they heard:\n\"{heard}\"\n\nThe "
@@ -579,26 +620,13 @@ def terms_of(item: str, request: str) -> frozenset:
 _POLARITY = frozenset({"yes", "no", "not"})
 
 
-# The words of a failure's statement that name what failed (failure_outcome): its terms.
-# Its other words are ones any reply says ("ai", "service", "ran", "hit": "Are you an
-# AI?" would close an owed billing failure, unjudged), and the hedge and the settings
-# hint are instructions riding with it.
-_FAILURE_TERMS = frozenset({"billing", "credit", "error", "empty"})
-
-
 def _terms(outcome: str, request: str, failure: Optional[str]) -> frozenset:
-    """A record's terms (Record.terms). A failure's are the words of its statement that
-    name what failed (_FAILURE_TERMS): without them a reply that tells a failure in its
-    own words ("a billing problem, want me to open your settings?") shared nothing with
-    a record of no terms, so it never closed it nor counted a cut, and the note rode
-    every turn (formal audit C1, 11-05). A timeout or an unknown outcome names none, and
-    a telling of any failure in other words ("something went wrong") none of them: those
-    lean on the request's words and the record's own run, as before. The words can come
-    up by chance ("your credit card statement"): such a reply is about it, as one
-    sharing a word with the request always was."""
-    if not failure:
-        return terms_of(outcome, request)
-    return terms_of(failure_core(outcome), request) & _FAILURE_TERMS
+    """A record's terms (Record.terms): its result's, beyond the request's. A failure has
+    none: whether a reply tells it is the failure judge's to read (Owed._failed, #380).
+    The four English words that stood in for that (billing, credit, error, empty: formal
+    audit C1) matched no telling in Spanish or Italian, nor "it timed out", and the
+    request's words alone closed a timed-out lookup on "I don't have those results yet"."""
+    return frozenset() if failure else terms_of(outcome, request)
 
 
 # ------------------------------------------------------------------------- the record
@@ -663,8 +691,8 @@ class Record:
         its question, or one term by chance ("sunny days" in how a heat pump works, with
         a forecast owed), is no telling of it -- the judges, which read about(), keep it
         owed, but a cut counted or a dismissal of that reply read against it would end it
-        unheard. A failure is one statement, so a reply about it tells all of it (Owed.tla
-        PlayGot "tell"), and a result with no terms falls back on about() as well."""
+        unheard. A result with no terms falls back on about(). A failure's tellings are
+        judged, not read here (Owed._failed)."""
         terms = self.terms - _POLARITY
         if self.failure or not terms:
             return self.about(text)
@@ -1371,21 +1399,37 @@ class Owed:
         on what the caller will have heard of it with this reply -- so its verdict is in
         by the time the reply has played (p50 0.56 s against seconds of audio), and the
         next render does not wait for it. The same verdict gates the cut judge if the
-        reply is cut (settle)."""
-        if reply is None or reply.settled or self.gist is None or not has_speech(text):
+        reply is cut (settle). A failure's is the failure judge's, on every noted reply
+        (#380): whether a reply tells a failure is the model's to read, in any words or
+        language -- what tells an answer is its result's terms, and a failure has none."""
+        if reply is None or reply.settled or not has_speech(text):
             return
         for key in reply.noted:
             rec = self._records.get(key)
-            if (rec is not None and rec.state == OWED and not rec.failure
-                    and key not in reply.gist and (key in reply.keys or rec.about(text))):
+            if rec is None or rec.state != OWED or key in reply.gist:
+                continue
+            if (self.failure_judge is not None if rec.failure else
+                    self.gist is not None and (key in reply.keys or rec.about(text))):
                 reply.gist[key] = self._gist_task(rec, rec.heard_with(text))
 
     def _gist_task(self, rec: Record, heard: str):
+        """The verdict on `heard` as all they heard of `rec`: the gist judge's, or for a
+        failure the failure judge's (did it get across what happened?)."""
         try:
             return asyncio.get_running_loop().create_task(
-                self._ask_gist(rec.asked, rec.outcome, heard))
+                self._ask_failure(rec, heard) if rec.failure
+                else self._ask_gist(rec.asked, rec.outcome, heard))
         except RuntimeError:
             return None
+
+    async def _ask_failure(self, rec: Record, heard: str) -> Optional[bool]:
+        """The failure judge on `heard`, heard to its end; None with no judge or on an
+        error (never raises: it may go unawaited)."""
+        if self.failure_judge is None:
+            return None
+        return await _verdict(self.failure_judge(rec.asked, failure_core(rec.outcome), heard),
+                              lambda v: f"failure judge {_said(v)}",
+                              f"{quoted(rec.asked[:50])}: heard {quoted(heard[-60:])}")
 
     async def _ask_gist(self, question: str, outcome: str, heard: str,
                         what: str = "gist") -> Optional[bool]:
@@ -1446,21 +1490,43 @@ class Owed:
         """A reply about `rec` cut while it played: (close?, why). The gist judge on its
         whole text -- would it have given them the answer? -- and the cut judge on the rest
         they did not hear, both on what was heard of the record so far; no verdict errs
-        owed. A failure needs no gate: it is one statement, and the reply was about it. Its
-        rest goes to the failure judge, shown what happened (failure_core): the cut judge
-        looks for a name, number or place of an answer, and a failure has none
-        (FAILURE_CUT_JUDGE_PROMPT)."""
-        gate = asyncio.sleep(0, result=True) if rec.failure else self._gist(rec, reply, whole_all)
-        if rec.failure and self.failure_judge is not None:
-            what, call = "failure judge", functools.partial(
-                self.failure_judge, rec.asked, failure_core(rec.outcome), heard_all, rest)
-        else:
-            what, call = "cut judge", (functools.partial(self.judge, rec.asked, heard_all, rest)
-                                       if self.judge is not None else None)
+        owed. A failure's: _failed."""
+        call = (functools.partial(self.judge, rec.asked, heard_all, rest)
+                if self.judge is not None else None)
         passed, verdict = await asyncio.gather(
-            gate, self._judge(call, rec.asked, heard_all, rest, what))
+            self._gist(rec, reply, whole_all), self._judge(call, rec.asked, heard_all, rest))
         return (verdict is True and passed is True,
-                f"gist {_said(passed)}, {what} {_said(verdict)}")
+                f"gist {_said(passed)}, cut judge {_said(verdict)}")
+
+    async def _failed(self, rec: Record, reply: Reply, heard_all: str,
+                      whole_all: Optional[str], rest: Optional[str], *, cut: bool,
+                      mine: bool) -> tuple:
+        """A noted reply ended while the failure `rec` is owed (#380): (close?, why, told?).
+        Whether it is a telling of the failure at all is the failure judge's verdict on its
+        whole text, as all they would have heard of the record (`whole_all`, asked at the
+        stream's end: reply_text; FAILURE_TOLD_JUDGE_PROMPT): does it tell them it failed,
+        in any words or language? Before, the reply's words decided -- one shared with the request or with
+        four English words that name a failure (billing, credit, error, empty) -- and "I
+        don't have the bookshop results yet" closed a timed-out lookup (#387), while one
+        told in Spanish or Italian was about nothing. `told`: it was (or it is the
+        failure's own run, FAILURE_RUN_LINE): a cut one counts as a cut telling.
+          - played to its end: closed on HEARD; on no verdict only if it was the run;
+          - cut: closed only if it was a telling and what they heard of it got across what
+            happened -- the failure judge again, on the prefix and the rest they did not
+            hear (FAILURE_CUT_JUDGE_PROMPT's measured form). A cut before its stream ended
+            (no whole text) or unaligned (no rest) errs owed."""
+        whole = await self._gist(rec, reply, whole_all) if whole_all else None
+        told = whole is True or mine
+        if not cut:
+            return (whole is True or (whole is None and mine), f"failure judge {_said(whole)}",
+                    told)
+        if rest is None or not told:
+            return False, f"failure judge {_said(whole)} on its whole text", told
+        call = (functools.partial(self.failure_judge, rec.asked, failure_core(rec.outcome),
+                                  heard_all, rest) if self.failure_judge is not None else None)
+        verdict = await self._judge(call, rec.asked, heard_all, rest, "failure judge")
+        return (verdict is True, f"failure judge {_said(whole)} on its whole text, "
+                f"{_said(verdict)} on what they heard", told)
 
     def settle(self, reply: Optional[Reply], heard: Optional[str], *, cut: bool,
                audio: bool, text: Optional[str] = None, rest: Optional[str] = None) -> None:
@@ -1492,6 +1558,7 @@ class Owed:
         judgeable = (cut and audio and bool(heard and heard.strip()) and bool(text)
                      and rest is not None)
         missed, asks, defaults, drops = [], {}, {}, set()
+        fcuts: dict = {}                 # failure key -> the heard prefix of a cut that may count
         # A reply that is a fresh answer's telling -- by position (_resolve's rule) and
         # about it (a term shared with what was asked for it) -- is that answer's, not a
         # cut telling of an older record it shares a term with by chance. Position alone
@@ -1515,10 +1582,27 @@ class Owed:
             if rec is None or rec.state != OWED:
                 continue
             mine = key in reply.keys            # a run of ours for this record
+            if rec.failure:
+                # Judged, not read by its words (_failed, #380): every noted reply that
+                # played audio. A cut telling of it counts, and its quote and rest go in
+                # the note, once the verdict says it was one (_apply).
+                if audio and heard and heard.strip() and (whole or cut):
+                    asks[key] = self._failed(
+                        rec, reply, rec.heard_with(heard),
+                        rec.heard_with(text) if text else (rec.heard_with(heard) if whole
+                                                           else None),
+                        rest if judgeable else None, cut=cut, mine=mine)
+                    defaults[key] = whole and mine
+                    if cut and mark is not None and key in reply.noted:
+                        fcuts[key] = heard.strip()
+                if run or (cut and audio):
+                    missed.append(rec)
+                logger.info(f"OWED: {key} still owed after the {reply.kind} reply "
+                            f"({'cut' if cut else 'played through' if audio else 'no audio'}"
+                            f"{', for the failure judge' if key in asks else ''}; "
+                            f"heard {quoted((heard or '')[:60])})")
+                continue
             if whole and (mine or rec.about(heard)):
-                if rec.failure:
-                    self._close(rec, reply, cut, heard, "a failure heard to its end")
-                    continue
                 heard_all = rec.heard_with(heard)
                 rec.heard.append(heard.strip())
                 rec.told += 1
@@ -1560,8 +1644,6 @@ class Owed:
             # quoted a clarifying question as the answer (test_owed_corpus.py).
             if cut and heard and heard.strip() and (mine or rec.about(heard)):
                 rec.heard_quote = heard.strip()
-                if rec.failure:
-                    rec.unheard = (rest or "").strip()
             if run or (cut and audio):
                 # A run that ended without closing (no audio, partial) and an audible cut
                 # both arm the re-offer: REOFFER = "anyMiss".
@@ -1574,7 +1656,7 @@ class Owed:
         ids, request = self._resolve(reply, heard, cut=cut, audio=audio, text=text)
         question = (self._answers[ids[-1]].question or request) if ids else ""
         sync = judgeable and bool(ids) and bool(request) and self.judge is not None
-        cutting = (mark, rest, drops)
+        cutting = (mark, rest, drops, fcuts)
         if not asks and not sync:
             self._apply(reply, {}, ids, request, heard, text, cut, None, cutting=cutting)
             return
@@ -1666,7 +1748,7 @@ class Owed:
 
     def _apply(self, reply, decisions: dict, ids, request, heard, text, cut,
                sync: Optional[bool], answered: Optional[bool] = None, *,
-               cutting=(None, None, frozenset())) -> None:
+               cutting=(None, None, frozenset(), None)) -> None:
         """The verdicts on the LIVE book: a record still owed closes on its decision (a
         late verdict never closes what another reply already did, nor reopens); the sync
         answers still open are told on the cut judge's HEARD, else made the record
@@ -1676,9 +1758,22 @@ class Owed:
         cut's mark (None: the brain's own cut), its rest, and the records it was the second
         cut telling of. A record made of the cut is its first cut telling (Owed.tla ORIGIN
         "cut"): its words are read too."""
-        mark, rest, drops = cutting
-        for key, (close, why) in decisions.items():
+        mark, rest, drops, fcuts = cutting
+        for key, (close, why, *told) in decisions.items():
             rec = self._records.get(key)
+            if rec is not None and rec.state == OWED and rec.failure and told and told[0]:
+                # A telling of the failure (_failed): what they heard of it, and a cut one
+                # quoted with the rest the note says they did not hear; it counts, and the
+                # second ends it unless this one closed it (#231).
+                if heard and heard.strip():
+                    rec.heard.append(heard.strip())
+                if cut and heard and heard.strip():
+                    rec.heard_quote, rec.unheard = heard.strip(), (rest or "").strip()
+                if not close and fcuts and key in fcuts:
+                    self._cut_telling(rec, mark, fcuts[key], rest)
+                    if rec.cuts >= 2:
+                        self._drop(rec, f"told and cut {rec.cuts} times; {why}")
+                        continue
             if rec is not None and rec.state == OWED:
                 if close:
                     self._close(rec, reply, cut, heard, why)

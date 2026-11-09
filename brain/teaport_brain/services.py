@@ -1173,7 +1173,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
         anything else. The caller bounds the time."""
         return await self._judge(owed_mod.cut_judge_messages(question, heard, rest))
 
-    async def judge_failure_cut(self, question: str, outcome: str, heard: str, rest: str):
+    async def judge_failure_cut(self, question: str, outcome: str, heard: str,
+                                rest: str | None = None):
         """The failure judge owed.Owed asks in place of judge_cut on a cut telling of a
         consult's failure (Owed._cut): whether what the caller heard got across what
         happened (`outcome`, the failure's own statement). As judge_cut."""
