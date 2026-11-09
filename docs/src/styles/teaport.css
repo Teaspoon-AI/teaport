@@ -1,0 +1,298 @@
+/*
+ * Teaport docs theme. Follows the Teaport pages of the marketing site
+ * (marketing-site: src/layouts/TeaportLayout.astro, src/styles/tokens.css,
+ * src/styles/shared-tokens.css): Teaspoon design-system slate grounds, cyan
+ * highlight, navy primary buttons, DM Sans body, Archivo 700 display headings,
+ * and a dark terminal ground for code.
+ *
+ * Values are copied from those files rather than imported, because the two
+ * sites live in different repos. When the marketing tokens change, update the
+ * matching line here.
+ */
+
+:root {
+	/* Design-system tokens used below (tokens.css, light). */
+	--tp-navy: #023176; /* light/button/primary, color-primary-600 */
+	--tp-navy-deep: #001b41; /* color-primary-800 */
+	--tp-navy-wash: #d9e8ff; /* color-primary-100 */
+	--tp-term-bg: #101417; /* TeaportLayout --term-bg */
+	--tp-mint: #82ffb6; /* highlight-accent */
+	--tp-openclaw: #ea580c; /* special-openclaw */
+	--tp-control-radius: 8px; /* TeaportLayout --control-radius */
+	--tp-btn-radius: 0.375rem; /* shared-tokens --btn-radius */
+	--tp-display: 'Archivo', 'DM Sans', system-ui, sans-serif;
+
+	--sl-font: 'DM Sans';
+	--sl-font-mono: ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas;
+	--sl-line-height: 1.7;
+
+	/* Dark mode: the tokens.css .dark set (slate grounds, cyan.400 highlight). */
+	--sl-color-white: #f8fafc; /* slate.50 */
+	--sl-color-gray-1: #e2e8f0; /* slate.200 */
+	--sl-color-gray-2: #cbd5e1; /* slate.300, text-secondary */
+	--sl-color-gray-3: #94a3b8; /* slate.400, text-tertiary */
+	--sl-color-gray-4: #64748b; /* slate.500 */
+	--sl-color-gray-5: #334155; /* slate.700, bg-tertiary */
+	--sl-color-gray-6: #1e293b; /* slate.800 */
+	--sl-color-black: #020617; /* slate.950, bg-secondary */
+
+	--sl-color-accent-low: #083344; /* cyan.950 */
+	--sl-color-accent: #22d3ee; /* cyan.400, highlight-primary */
+	--sl-color-accent-high: #67e8f9; /* cyan.300, highlight-secondary */
+
+	--sl-color-bg-nav: #0f172a; /* slate.900, bg-primary */
+	--sl-color-bg-sidebar: var(--sl-color-black);
+	--tp-surface: #0f172a; /* cards: bg-primary */
+	--tp-btn-bg: #f8fafc; /* secondary button on a dark ground */
+	--tp-btn-fg: var(--tp-navy);
+	--tp-heading: var(--sl-color-white);
+}
+
+:root[data-theme='light'] {
+	/* Light mode: the Teaport page palette (tokens.css light). The page is
+	   bg-tertiary, the nav and cards bg-primary, one step lighter. */
+	--sl-color-white: #020617; /* slate.950, text-primary */
+	--sl-color-gray-1: #1e293b; /* slate.800 */
+	--sl-color-gray-2: #334155; /* slate.700 */
+	--sl-color-gray-3: #475569; /* slate.600, text-secondary */
+	--sl-color-gray-4: #64748b; /* slate.500, text-tertiary */
+	--sl-color-gray-5: #cbd5e1; /* slate.300, semantic-border */
+	--sl-color-gray-6: #e2e8f0; /* slate.200, semantic-neutral-hover */
+	--sl-color-gray-7: #f8fafc; /* slate.50, bg-primary */
+	--sl-color-black: #f1f5f9; /* slate.100, bg-tertiary: the page */
+
+	--sl-color-accent-low: #cffafe; /* cyan.100 */
+	--sl-color-accent: #0891b2; /* cyan.600, highlight-primary */
+	--sl-color-accent-high: #0e7490; /* cyan.700, highlight-secondary */
+	--sl-color-text-accent: var(--sl-color-accent-high);
+
+	--sl-color-bg-nav: #f8fafc; /* bg-primary */
+	--sl-color-bg-sidebar: var(--sl-color-bg);
+	--sl-color-bg-inline-code: #e2e8f0;
+	--sl-color-hairline-light: #e2e8f0;
+	--sl-color-hairline: #e2e8f0;
+	--sl-color-hairline-shade: #e2e8f0;
+
+	--tp-surface: #f8fafc;
+	--tp-btn-bg: var(--tp-navy);
+	--tp-btn-fg: #f8fafc;
+	--tp-heading: var(--sl-color-white);
+
+	/* TeaportLayout --shadow. */
+	--sl-shadow-md: 0 1px 2px rgba(28, 27, 24, 0.05), 0 18px 40px -24px rgba(28, 27, 24, 0.28);
+}
+
+/* The marketing nav is 81px tall around a 48px logo. */
+@media (min-width: 50em) {
+	:root {
+		--sl-nav-height: 4.5rem;
+	}
+}
+
+body {
+	letter-spacing: 0.01em;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* Header: the marketing nav band, opaque on bg-primary; Starlight draws
+   the hairline under it. */
+.site-title img {
+	height: calc(var(--sl-nav-height) - 2 * var(--sl-nav-pad-y));
+}
+
+/* Display headings: Archivo 700 at -1%, as on the Teaport pages. h3 and
+   below take DM Sans 600, the marketing card-title step. */
+h1,
+.sl-markdown-content :is(h2),
+.hero h1 {
+	font-family: var(--tp-display);
+	font-weight: 700;
+	letter-spacing: -0.01em;
+	color: var(--tp-heading);
+}
+h1 {
+	line-height: 1.05;
+	text-wrap: balance;
+}
+.sl-markdown-content :is(h3, h4, h5, h6) {
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+/* Links: highlight-secondary ink, as on the marketing pages. */
+.sl-markdown-content a:not(.sl-link-button, .card a) {
+	color: var(--sl-color-text-accent);
+	text-underline-offset: 3px;
+}
+
+/* Sidebar group headings are the marketing eyebrow: small, uppercase,
+   tracked, bold, highlight-coloured. */
+.sidebar-content .group-label .large {
+	font-family: var(--__sl-font);
+	font-size: var(--sl-text-sm);
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	text-transform: uppercase;
+	color: var(--sl-color-accent);
+}
+.sidebar-content a[aria-current='page'] {
+	background-color: var(--sl-color-accent-low);
+	color: var(--sl-color-white);
+	font-weight: 600;
+	border-radius: var(--tp-btn-radius);
+}
+.sidebar-content a {
+	border-radius: var(--tp-btn-radius);
+}
+.sidebar-content a:not([aria-current='page']):hover {
+	background-color: var(--sl-color-gray-6);
+}
+
+/* Buttons: the standardised Primary Button (navy fill, 48px, 8px radius,
+   bold label) and the Ghost Button (no fill, underlined label). */
+.sl-link-button {
+	border-radius: var(--tp-control-radius);
+	font-weight: 700;
+}
+.sl-link-button.primary {
+	background: var(--tp-btn-bg);
+	border-color: transparent;
+	color: var(--tp-btn-fg);
+	transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease;
+}
+.sl-link-button.primary:hover {
+	color: var(--tp-btn-fg);
+	box-shadow: 0 10px 24px rgba(2, 49, 118, 0.22);
+}
+:root[data-theme='light'] .sl-link-button.primary:hover {
+	background: var(--tp-navy-deep);
+}
+.sl-link-button.minimal {
+	color: var(--sl-color-white);
+	text-decoration-line: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 4px;
+}
+@media (min-width: 50rem) {
+	.sl-link-button {
+		min-height: 48px;
+		padding: 0.75rem 1rem;
+	}
+	.sl-link-button.minimal {
+		padding-inline: 1rem;
+	}
+}
+
+/* Cards: the marketing card, bg-primary on the tertiary page, with a soft
+   shadow; one icon tile treatment instead of Starlight's rotating colours. */
+.card {
+	--sl-card-border: transparent;
+	--sl-card-bg: var(--tp-navy-wash);
+	background-color: var(--tp-surface);
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: var(--tp-control-radius);
+	box-shadow: var(--sl-shadow-md);
+}
+.card .icon {
+	color: var(--tp-navy);
+	border-radius: 0.25rem;
+}
+:root:not([data-theme='light']) .card {
+	--sl-card-bg: var(--tp-navy);
+}
+:root:not([data-theme='light']) .card .icon {
+	color: #f8fafc;
+}
+.card .title {
+	font-family: var(--__sl-font);
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+/* Inline code: rounded chip on the neutral wash. */
+.sl-markdown-content :not(pre) > code {
+	border-radius: 4px;
+	padding: 0.1em 0.35em;
+}
+
+/* Asides: map Starlight's note/tip/caution/danger hues onto the design
+   system's semantic colours. */
+:root {
+	--sl-color-blue-low: #0c2a4f;
+	--sl-color-blue: #22d3ee;
+	--sl-color-blue-high: #a5f3fc;
+	--sl-color-green-low: #0b3b22;
+	--sl-color-green: #1faa59;
+	--sl-color-green-high: #9ae6b4;
+	--sl-color-orange-low: #43200a;
+	--sl-color-orange: var(--tp-openclaw);
+	--sl-color-orange-high: #fdba74;
+	--sl-color-red-low: #450a0a;
+	--sl-color-red: #ef4444;
+	--sl-color-red-high: #fca5a5;
+}
+:root[data-theme='light'] {
+	--sl-color-blue-low: #ecfeff;
+	--sl-color-blue: #0891b2;
+	--sl-color-blue-high: #0e7490;
+	--sl-color-green-low: #ecfdf3;
+	--sl-color-green: #1faa59;
+	--sl-color-green-high: #178347; /* semantic-success-dark */
+	--sl-color-orange-low: #fff7ed;
+	--sl-color-orange: var(--tp-openclaw);
+	--sl-color-orange-high: #9a3412;
+	--sl-color-red-low: #fef2f2;
+	--sl-color-red: #dc2626;
+	--sl-color-red-high: #b91c1c; /* semantic-error-dark */
+}
+.starlight-aside {
+	border-radius: var(--tp-control-radius);
+	border-inline-start-width: 4px;
+}
+
+/* Splash page hero: Teaport's h1 scale and lede. */
+.hero h1 {
+	font-size: clamp(2.25rem, 5vw, 3.75rem);
+}
+.hero .tagline {
+	color: var(--sl-color-gray-3);
+	font-size: clamp(1.0625rem, 2.2vw, 1.25rem);
+}
+
+/* Keyboard focus ring in the highlight colour. */
+:focus-visible {
+	outline: 2px solid var(--sl-color-accent);
+	outline-offset: 2px;
+}
+
+/* Wide screens: give the content column the room the viewport has, up to
+   64rem, so reference tables are not squeezed into the 45rem prose
+   measure while hundreds of pixels sit empty either side. Starlight sizes
+   the table of contents from this width, so it shrinks to match. Running
+   text stays at the 45rem reading measure; tables and code blocks take the
+   full column. */
+@media (min-width: 72rem) {
+	:root {
+		--sl-content-width: clamp(45rem, calc(100vw - 2 * var(--sl-sidebar-width)), 64rem);
+	}
+	.sl-markdown-content > :is(p, ul, ol, dl, blockquote, .starlight-aside) {
+		max-width: 45rem;
+	}
+}
+
+/* Reference tables. A setting name never breaks, and the closing
+   description column of a three-or-more column table keeps a readable
+   width instead of letting long cells to its left take the room. Where the
+   column cannot hold all of that, the table scrolls sideways (Starlight's
+   default) rather than overflowing the column. */
+.sl-markdown-content td:first-child code {
+	white-space: nowrap;
+}
+.sl-markdown-content tr > :last-child:nth-child(n + 3) {
+	min-width: 20rem;
+}
+@media (min-width: 100rem) {
+	.sl-markdown-content tr > :last-child:nth-child(n + 3) {
+		min-width: 28rem;
+	}
+}

@@ -1,7 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import starlightThemeFlexoki from 'starlight-theme-flexoki';
 
 // https://astro.build/config
 export default defineConfig({
@@ -10,10 +9,45 @@ export default defineConfig({
 		starlight({
 			title: 'Teaport',
 			description: 'Docs for teaport, a local voice assistant for the NVIDIA Jetson Orin.',
-			plugins: [starlightThemeFlexoki({ accentColor: 'blue' })],
+			// Styled after the Teaport pages of the marketing site; see the
+			// header of src/styles/teaport.css for the files it follows.
+			customCss: ['./src/styles/teaport.css'],
+			head: [
+				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
+				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
+				{
+					tag: 'link',
+					attrs: {
+						rel: 'stylesheet',
+						href: 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Archivo:wght@700&display=swap',
+					},
+				},
+			],
 			logo: {
-				dark: './src/assets/teaport-mark-dark-bg.svg',
-				light: './src/assets/teaport-mark-light-bg.svg',
+				dark: './src/assets/teaport-logo-dark-bg.svg',
+				light: './src/assets/teaport-logo-light-bg.svg',
+				replacesTitle: true,
+			},
+			// Code sits on the marketing site's terminal ground in both themes.
+			expressiveCode: {
+				themes: ['github-dark-default'],
+				useStarlightUiThemeColors: false,
+				styleOverrides: {
+					borderRadius: '8px',
+					borderColor: 'transparent',
+					codeBackground: '#101417',
+					codeFontFamily: "ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace",
+					uiFontFamily: "'DM Sans', system-ui, sans-serif",
+					frames: {
+						editorTabBarBackground: '#181e22',
+						editorActiveTabBackground: '#101417',
+						editorActiveTabIndicatorTopColor: '#82ffb6',
+						terminalTitlebarBackground: '#181e22',
+						terminalBackground: '#101417',
+						terminalTitlebarBorderBottomColor: 'transparent',
+						frameBoxShadowCssValue: '0 1px 2px rgba(28,27,24,.05), 0 18px 40px -24px rgba(28,27,24,.28)',
+					},
+				},
 			},
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/Teaspoon-AI/teaport' },
