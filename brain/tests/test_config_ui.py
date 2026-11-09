@@ -145,7 +145,7 @@ def setup():
 
     app = FastAPI()
     app.include_router(config_ui.router)
-    return TestClient(app, client=("127.0.0.1", 50000)), etc, home, calls  # on the box: _on_box_or_settings
+    return TestClient(app, client=("127.0.0.1", 50000), base_url="http://127.0.0.1:7861"), etc, home, calls  # on the box: _on_box_or_settings
 
 
 H = {"authorization": "Bearer t0k3n"}

@@ -436,6 +436,8 @@ async def start_route(request: Request):
     callback = await asyncio.to_thread(ready)
     answer = JSONResponse({"url": start(callback), "page": callback is not None},
                           headers=pairing.NO_STORE)
+    # Also for a caller with only the operator's token: a session is less than the token
+    # (Settings only, an hour, ends when the token changes), so this upgrades nothing.
     return settings_access.keep_session(answer)
 
 

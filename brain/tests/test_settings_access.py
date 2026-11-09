@@ -150,7 +150,8 @@ def _setup(host=HOST, port=PORT):
     return home, check, checks
 
 
-def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fetch_site=None):
+def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fetch_site=None,
+            host=HOST):
     """Through the Settings site as Caddy is one: a loopback peer saying https, with the
     browser's Host (the Settings port) passed on."""
     app = FastAPI()
@@ -159,7 +160,7 @@ def _client(proto="https", origin=ORIGIN, cookie=None, lang=None, port=PORT, fet
     app.include_router(settings_access.router)
     app.add_middleware(settings_access.SettingsGuard)
     headers = {"X-Forwarded-Proto": proto} if proto else {}
-    headers["Host"] = f"{HOST}:{port}" if port != 443 else HOST
+    headers["Host"] = f"{host}:{port}" if port != 443 else host
     if fetch_site:
         headers["Sec-Fetch-Site"] = fetch_site
     if origin:
@@ -220,8 +221,8 @@ def test_the_phrase_shows_a_code_and_the_phone_gets_settings_without_the_token()
                                                             "values": {"LLM_API_KEY": FAKE_KEY}})
             assert put.status_code == 200, put.text
             assert (await c.get("/settings")).headers["location"] == "/settings/config"
-        # The token keeps working, on the brain's own port too.
-        async with _client(proto=None, origin=None) as c:
+        # The token keeps working, on the brain's own port too (from the box itself).
+        async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
             assert (await c.get("/api/config", headers={"authorization": f"Bearer {TOKEN}"})).status_code == 200
     asyncio.run(run())
 
@@ -312,7 +313,7 @@ def test_a_key_is_checked_before_it_is_saved():
         key_file = os.path.join(home, "llm_key")
         put = {"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}}
         auth = {"authorization": f"Bearer {TOKEN}"}
-        async with _client(proto=None, origin=None, lang="es-MX,es;q=0.9") as c:
+        async with _client(proto=None, origin=None, lang="es-MX,es;q=0.9", port=7861, host="127.0.0.1") as c:
             check.answer = ai_account.Check(ai_account.REFUSED, "User not found", ours=False)
             r = await c.put("/api/config", json=put, headers=auth)
             assert r.status_code == 400 and r.json()["key_check"] == {
@@ -490,7 +491,7 @@ def test_a_key_on_an_account_with_no_credit_is_saved_and_said():
             config_ui.check_key = ai_account.check_key  # the real check, its requests faked
             ai_account._get = Provider({"/key": key, "/credits": empty})
             auth = {"authorization": f"Bearer {TOKEN}"}
-            async with _client(proto=None, origin=None, port=7861) as c:
+            async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
                 r = await c.put("/api/config", headers=auth,
                                 json={"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}})
             assert r.status_code == 200, r.text
@@ -560,7 +561,7 @@ def test_a_key_whose_effective_budget_is_used_up_is_not_saved():
         config_ui.check_key = ai_account.check_key  # the real check, its request faked
         ai_account._get = Provider((200, record(spent)))
         auth = {"authorization": f"Bearer {TOKEN}"}
-        async with _client(proto=None, origin=None, port=7861) as c:
+        async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
             r = await c.put("/api/config", headers=auth,
                             json={"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}})
         assert r.status_code == 400 and r.json()["key_check"] == {
@@ -640,7 +641,7 @@ def test_no_token_does_not_open_the_front_door():
             assert (await c.put("/settings/api/config", json=body)).status_code == 401
             assert (await c.post("/settings/api/restart", json={"unit": "teaport-brain"})).status_code == 401
             assert (await c.post("/settings/api/wifi/connect", json={"ssid": "x"})).status_code == 401
-        async with _client(proto=None, origin=None, port=7861) as c:
+        async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
             assert (await c.get("/api/config")).status_code == 200  # the box itself, open
         screen = Screen()
         await Voice(screen)._heard("open my settings")
@@ -696,7 +697,7 @@ def test_the_operator_page_answers_only_the_box_itself():
 
         def peer(host, **headers):
             return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(host, 40000)),
-                                     base_url="http://box:7861", headers=headers)
+                                     base_url="http://127.0.0.1:7861", headers=headers)
         auth = {"authorization": f"Bearer {TOKEN}"}
         async with peer("127.0.0.1") as box, peer("::1") as box6:
             assert (await box.get("/config")).status_code == 200
@@ -708,6 +709,12 @@ def test_the_operator_page_answers_only_the_box_itself():
             assert r.status_code == 403, r.text
             assert (await lan.post("/api/restart", headers=auth, json={"unit": "teaport-brain"})).status_code == 403
             assert (await lan.get("/talk/status", headers=auth)).status_code == 200
+        async with peer("127.0.0.1", Host="localhost:7861") as box, peer("::1", Host="[::1]:7861") as box6:
+            assert (await box.get("/api/config", headers=auth)).status_code == 200
+            assert (await box6.get("/api/config", headers=auth)).status_code == 200
+        # A name rebound to 127.0.0.1 by a page in a browser on the box (DNS rebinding).
+        async with peer("127.0.0.1", Host="evil.example:7861") as rebound:
+            assert (await rebound.get("/api/config", headers=auth)).status_code == 403
         # A loopback peer a proxy forwarded is not the box itself.
         async with peer("127.0.0.1", **{"X-Forwarded-For": "192.168.1.50"}) as fwd:
             assert (await fwd.get("/api/config", headers=auth)).status_code == 403
@@ -787,7 +794,7 @@ def test_a_key_in_the_environment_is_handled_the_same_on_both_pages():
         os.environ["LLM_API_KEY"] = "sk-old-made-up"
         auth = {"authorization": f"Bearer {TOKEN}"}
         put = {"store": "brain_env", "values": {"LLM_API_KEY": FAKE_KEY}}
-        async with _client(proto=None, origin=None, port=7861) as c:
+        async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
             r = await c.put("/api/config", json=put, headers=auth)
             assert r.status_code == 200 and r.json()["superseded"] == ["LLM_API_KEY"]
             assert "LLM_API_KEY" not in os.environ
@@ -853,7 +860,7 @@ def test_nothing_may_frame_settings():
                       await c.get("/settings/config")):
                 assert r.headers["content-security-policy"] == "frame-ancestors 'none'", r.url
                 assert r.headers["x-frame-options"] == "DENY", r.url
-        async with _client(proto=None, origin=None, port=7861) as c:
+        async with _client(proto=None, origin=None, port=7861, host="127.0.0.1") as c:
             r = await c.get("/config")
             assert "x-frame-options" not in r.headers
     asyncio.run(run())

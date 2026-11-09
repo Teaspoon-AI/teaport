@@ -106,7 +106,7 @@ def _setup(page=(200, PAGE)):
 _REAL_SAVE = ai_account.save_key
 
 
-def _client(cookie=None, origin=sa.ORIGIN, fetch_site=None, proto="https"):
+def _client(cookie=None, origin=sa.ORIGIN, fetch_site=None, proto="https", host=f"{sa.HOST}:{sa.PORT}"):
     """Through the Settings site as Caddy is one, with this module's routes mounted as
     gateway_server mounts them: before Settings' /settings/<code>."""
     app = FastAPI()
@@ -115,7 +115,7 @@ def _client(cookie=None, origin=sa.ORIGIN, fetch_site=None, proto="https"):
     app.include_router(openrouter_connect.router)
     app.include_router(settings_access.router)
     app.add_middleware(settings_access.SettingsGuard)
-    headers = {"Host": f"{sa.HOST}:{sa.PORT}"}
+    headers = {"Host": host}
     if proto:
         headers["X-Forwarded-Proto"] = proto
     if origin:
@@ -309,7 +309,7 @@ def test_where_a_key_from_the_sign_in_could_not_be_saved_it_is_not_offered():
     async def run():
         _home, _c, _cs, fetched, _ex = _setup()
         # The operator's /config (the token, the brain's own port): not offered, nothing asked.
-        async with _client(origin=None, proto=None) as c:
+        async with _client(origin=None, proto=None, host="127.0.0.1:7861") as c:
             got = await c.get("/api/account", headers={"authorization": f"Bearer {sa.TOKEN}"})
             assert got.status_code == 200 and got.json()["connect"]["offered"] is False
         assert fetched == []

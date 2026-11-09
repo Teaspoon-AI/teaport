@@ -223,10 +223,14 @@ def on_box(request: Request) -> bool:
     proxy forwarded (Caddy, the only one, always adds X-Forwarded-For). The operator's
     plain-HTTP config page answers only this (config_ui._on_box_or_settings): the token
     it asks for would otherwise cross the LAN in cleartext. From elsewhere: the Settings
-    site, or an SSH tunnel to the port."""
+    site, or an SSH tunnel to the port. The Host must name loopback too: a page in a
+    browser on the box (the agent's) could otherwise rebind a name of its own to
+    127.0.0.1 and reach the page with that name as its Host (DNS rebinding)."""
     peer = request.client.host if request.client else None
+    host = (request.headers.get("host") or "").strip().lower()
+    name = host[1:].partition("]")[0] if host.startswith("[") else host.partition(":")[0]
     return (pairing._is_loopback(peer) and "x-forwarded-for" not in request.headers
-            and "x-forwarded-proto" not in request.headers)
+            and "x-forwarded-proto" not in request.headers and pairing._is_loopback(name))
 
 
 def token_matches(got: str | None, want: str | None) -> bool:
