@@ -248,13 +248,16 @@
 (* result frame (Place), and Land rewrites it to the outcome. A consult     *)
 (* that fails within milliseconds lands FIRST, while the frames are still   *)
 (* on their way: the design holds the landing and writes it over the        *)
-(* placeholder when it comes in (owed.Owed.place_landed, at the             *)
+(* placeholder when it comes in (Placed: owed.Owed.place_landed, at the     *)
 (* placeholder's on_context_updated and at every render), so the context    *)
 (* ends up as after a slow landing. NoStaleResult: no request is rendered   *)
 (* with the placeholder after the record exists.                           *)
 (*   "rewriteOnce" (MUT) -- the code before #386: the landing rewrites the  *)
 (*                     tool result once, and finds nothing when it lands    *)
 (*                     first; the placeholder that comes in after stays.    *)
+(*   "noRenderPlace" (MUT) -- only the placeholder's on_context_updated     *)
+(*                     task places a held landing, not the render: a run    *)
+(*                     rendered before that task has run reads it stale.    *)
 (*                                                                          *)
 (* adoptDropsKeys (MUT) -- the commit that adopts a speculative reply's     *)
 (*   stream does not register the keys its note carried (the note was in    *)
@@ -550,7 +553,8 @@ Ask(k) ==
 \* The consult lands (tools._consult_and_land -> Owed.land): the placeholder tool
 \* result is rewritten to the cleaned outcome (the code from agent_session.py:331-345,
 \* moved) -- or, when it lands before the placeholder is in the context, held for it
-\* (Place, #386: Land does not assume the placeholder is in) -- the record is owed, and the landing run is asked -- unless a caller request
+\* (Place, Placed, #386: Land does not assume the placeholder is in) -- the record is
+\* owed, and the landing run is asked -- unless a caller request
 \* is still to be RENDERED (their turn is open, or committed and not yet asked): that
 \* request carries the note, and the run would speak over or before it. A caller request
 \* already rendered (in flight without the note) does not stop the run: it waits behind.
@@ -560,7 +564,7 @@ Ask(k) ==
 Land ==
     /\ ~ended /\ st = "none" /\ ORIGIN = "consult"
     /\ st' = "owed"
-    \* The rewrite: over the placeholder if it is in; else held for it (Place).
+    \* The rewrite: over the placeholder if it is in; else held for it (Placed).
     /\ tr' = IF tr = "ph" THEN "out" ELSE tr
     /\ UNCHANGED staleRes
     /\ IF turn \/ q = "caller"
@@ -572,14 +576,25 @@ Land ==
 
 \* The consult's placeholder goes into the context: the assistant aggregator takes its
 \* FunctionCallResultFrame (tools._openclaw_agent_consult's result_callback) and writes it
-\* over IN_PROGRESS. A landing that came first replaces it (owed.Owed.placed, pipecat's
-\* on_context_updated; and every render, owed.Owed.view, since a run can render before
-\* the aggregator has taken the frame: in the model the render reads "out" either way).
-\* rewriteOnce: the landing found nothing, and the placeholder stays.
+\* over IN_PROGRESS, whether or not the consult has landed.
 Place ==
     /\ tr = "none"
-    /\ tr' = IF st = "none" \/ Mut("rewriteOnce") THEN "ph" ELSE "out"
+    /\ tr' = "ph"
     /\ UNCHANGED <<rec, heard, decl, repeat, line, door, reply, ended, mons, staleRes>>
+
+\* A landing that came first replaces the placeholder, in a step of its own: the
+\* placeholder's on_context_updated task (owed.Owed.placed). Every render places it too
+\* (owed.Owed.view -> place_landed: RenderTr, in RunGo and Issue), since a run can render
+\* before that task has run. rewriteOnce: the landing found nothing, and nothing writes it.
+Placed ==
+    /\ tr = "ph" /\ st # "none" /\ ~Mut("rewriteOnce")
+    /\ tr' = "out"
+    /\ UNCHANGED <<rec, heard, decl, repeat, line, door, reply, ended, mons, staleRes>>
+
+\* The tool result a render reads: placed first (Owed.view), unless noRenderPlace (only the
+\* on_context_updated task places it) or rewriteOnce (nothing does).
+RenderTr == IF tr = "ph" /\ st # "none" /\ ~Mut("noRenderPlace") /\ ~Mut("rewriteOnce")
+              THEN "out" ELSE tr
 
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
 \* evidence. Its own step, so a reader that does not wait for it reads a stale record.
@@ -660,7 +675,8 @@ RunGo ==
          THEN /\ req' = rk /\ rst' = st /\ noted' = Noted(st) /\ nreg' = Noted(st)
               /\ ph' = "gen"
               /\ UNCHANGED say
-              /\ staleRes'  = (staleRes \/ (st # "none" /\ tr = "ph"))
+              /\ tr' = RenderTr
+              /\ staleRes'  = (staleRes \/ (st # "none" /\ RenderTr = "ph"))
               /\ runUnder'   = (runUnder \/ vad \/ pend)
               /\ runMid'     = (runMid \/ turn \/ q # "none" \/ tres)
               /\ staleNote'  = (staleNote \/ (Noted(st) /\ st = "closed"))
@@ -668,9 +684,9 @@ RunGo ==
               /\ staleHeard' = (staleHeard \/ (Noted(st) /\ heard))
               /\ staleDecl'  = (staleDecl \/ (Noted(st) /\ decl))
          ELSE UNCHANGED <<reply, runUnder, runMid, staleNote, noNote, staleHeard, staleDecl,
-                          staleRes>>
+                          staleRes, tr>>
     /\ UNCHANGED <<rec, heard, decl, repeat, line, q, hPost, tres, tend, mark, gtool, ended,
-                   displaced, relook, retell, got, tellings, tr>>
+                   displaced, relook, retell, got, tellings>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S) on a held run: DROPPED, never released (room
 \* TV noise holds it forever otherwise; §4). A timer: never forced (not in FairSpec).
@@ -745,11 +761,12 @@ Issue ==
          /\ noNote'     = (noNote \/ (st = "owed" /\ ~n))
          /\ staleHeard' = (staleHeard \/ (n /\ heard))
          /\ staleDecl'  = (staleDecl \/ (n /\ decl))
-    /\ staleRes' = (staleRes \/ (st # "none" /\ tr = "ph"))
+    /\ tr' = RenderTr
+    /\ staleRes' = (staleRes \/ (st # "none" /\ RenderTr = "ph"))
     \* staleFlag: any completion's start clears the one flag (LLMFullResponseStartFrame).
     /\ gtool' = IF Mut("staleFlag") THEN FALSE ELSE gtool
     /\ UNCHANGED <<say, rec, heard, decl, repeat, line, hPost, rloc, rk, tres, tend, mark, ended,
-                   runUnder, runMid, displaced, relook, retell, got, tellings, tr>>
+                   runUnder, runMid, displaced, relook, retell, got, tellings>>
 
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
@@ -875,7 +892,7 @@ SessionEnd ==
     /\ UNCHANGED <<rec, heard, decl, repeat, line, door, reply, mons, ctx>>
 
 Next ==
-    \/ Land \/ Place \/ Settle \/ Decline \/ Lull
+    \/ Land \/ Place \/ Placed \/ Settle \/ Decline \/ Lull
     \/ RunGo \/ Cap \/ GateQuiet \/ ToolResult \/ Mark
     \/ Issue \/ Say \/ Played
     \/ VadStart \/ VadStop \/ TurnStart \/ Commit \/ SessionEnd
@@ -893,6 +910,7 @@ FairSpec ==
     /\ WF_vars(Settle) /\ WF_vars(Decline) /\ WF_vars(Lull) /\ WF_vars(RunGo) /\ WF_vars(GateQuiet)
     /\ WF_vars(ToolResult) /\ WF_vars(Issue) /\ WF_vars(Say) /\ WF_vars(Played)
     /\ WF_vars(VadStop) /\ WF_vars(Commit) /\ WF_vars(Mark) /\ WF_vars(Place)
+    /\ WF_vars(Placed)
 
 (* ============================ properties ============================ *)
 
@@ -993,7 +1011,7 @@ TypeOK ==
                       "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
                       "declineWrong", "cutsUncounted", "cutRecordUnread",
-                      "failNotAbout", "rewriteOnce"}
+                      "failNotAbout", "rewriteOnce", "noRenderPlace"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
     /\ tr \in {"none", "ph", "out"} /\ staleRes \in BOOLEAN

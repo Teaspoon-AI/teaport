@@ -110,8 +110,11 @@ async def _fails_before(held) -> tuple:
             assert hold.holding.is_set(), "the call's frames were not held"
             hold.release.set()
             await _marked(run, below)
-            # The placeholder's on_context_updated runs in a task of the aggregator's.
-            await _until(lambda: not book._landing)
+            # The placeholder's on_context_updated runs in a task of the aggregator's: wait
+            # for the tool result to settle on something other than IN_PROGRESS and the
+            # placeholder (before #386 it settles on the placeholder, and the checks fail).
+            await _until(lambda: (c := _tool(context)) is not None and c != "IN_PROGRESS"
+                         and "working_in_background" not in c)
             return _tool(context), book, gate, at_landing
     finally:
         tools._ASYNC_CONSULT_TIMEOUT, oc._token = saved
@@ -141,7 +144,7 @@ async def test_a_consult_that_fails_before_its_placeholder_is_in_the_context():
     """The landing comes between the frames: it writes over IN_PROGRESS, and the
     placeholder's result frame writes over that."""
     content, book, _, at_landing = await _fails_before((FunctionCallResultFrame,))
-    assert at_landing is not None and at_landing != owed_mod.IN_PROGRESS, (
+    assert at_landing is not None and at_landing != "IN_PROGRESS", (
         "the landing was not written over IN_PROGRESS")
     _is_the_failure(content, book)
 

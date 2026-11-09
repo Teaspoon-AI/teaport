@@ -486,8 +486,7 @@ async def test_a_landing_before_its_placeholder_replaces_it_when_it_comes_in():
     _the_call_comes_in(ctx, PLACEHOLDER)                 # the result frame, over it
     await b.placed()
     assert json.loads(_tool_content(ctx)) == failed, _tool_content(ctx)
-    assert b._landing == {}, "held after it replaced the placeholder"
-    _the_call_comes_in(ctx, "something later")           # nothing writes it again
+    _the_call_comes_in(ctx, "something later")           # let go: nothing writes it again
     b.place_landed()
     assert _tool_content(ctx) == "something later"
 
@@ -503,7 +502,7 @@ async def test_a_render_places_a_landing_its_placeholder_came_after():
     view, keys = await b.view(ctx, owed.RUN, ("call-hn",))
     tool = next(m for m in view.get_messages() if m.get("role") == "tool")
     assert json.loads(tool["content"]) == {"status": "timeout", "error": rec.outcome}
-    assert keys == ("call-hn",) and b._landing == {}
+    assert keys == ("call-hn",)
 
 
 async def test_a_landing_after_its_placeholder_is_written_at_once():
@@ -511,7 +510,10 @@ async def test_a_landing_after_its_placeholder_is_written_at_once():
     b, ctx, _ = book()
     b.dispatch("call-hn", HN_REQ)
     b.land(HN_REQ, HN_RAW, "call-hn")
-    assert json.loads(_tool_content(ctx))["status"] == "complete" and b._landing == {}
+    assert json.loads(_tool_content(ctx))["status"] == "complete"
+    _the_call_comes_in(ctx, "something later")           # final: not held for anything
+    await b.view(ctx, "caller")
+    assert _tool_content(ctx) == "something later"
 
 
 async def test_a_landing_with_a_caller_request_to_render_asks_no_run():
