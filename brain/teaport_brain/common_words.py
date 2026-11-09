@@ -105,6 +105,10 @@ momento tempo
 _CJK = "的了是在我你他她它们这那有不就也都和吗呢吧啊个一上下说好要会对着没很还想"
 _JA = "のはがをにでとへもやかなねよだですますたいるうえおこそあ"
 
-COMMON: frozenset = frozenset(
-    w for block in (_EN, _ES, _FR, _IT, _PT) for w in block.split()
-) | frozenset(_CJK) | frozenset(_JA)
+# Each spaced language's own, by catalog language: tools._status_phrase reads a phrase
+# that ends on one of these as stopping mid-thought ("buscando tiendas en la").
+BY_LANGUAGE: dict[str, frozenset] = {
+    lang: frozenset(block.split())
+    for lang, block in (("en", _EN), ("es", _ES), ("fr", _FR), ("it", _IT), ("pt_BR", _PT))}
+
+COMMON: frozenset = frozenset().union(*BY_LANGUAGE.values()) | frozenset(_CJK) | frozenset(_JA)

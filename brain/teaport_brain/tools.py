@@ -75,6 +75,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain.conversation_log import quoted
+from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
@@ -627,7 +628,20 @@ _NOT_GERUNDS = frozenset(
     # a verb, and the slip is one odd line, as for "meeting".
     + "wyoming beijing nanjing chongqing kunming peking boeing viking sterling stirling "
       "lansing redding fleming ewing corning irving kipling darjeeling kettering woking "
-      "ealing epping".split())
+      "ealing epping".split()
+    # Spanish and Italian words that end as a gerund does: words that open a clause,
+    # and names.
+    + "cuando quando mando comando orlando fernando armando rolando".split())
+# The verb form a status phrase starts with, in each language whose frames take one
+# (#300): the English -ing word ("Sure — looking up ..."), and the gerund the Spanish
+# and Italian frames put after "estoy" / "sigo" and "sto" / "sto ancora" ("Claro, estoy
+# buscando ...", "Sto ancora cercando ..."), a pronoun joined on included ("buscándolo",
+# "cercandolo"). Another language gets the plain lines.
+_GERUND = {
+    "en": re.compile(r"[a-z]+(?:-[a-z]+)*ing"),
+    "es": re.compile(r"[a-záéíóúüñ]+(?:[aá]ndo|i[eé]ndo|y[eé]ndo)(?:l[oa]s?|les?|me|te|se|nos)?"),
+    "it": re.compile(r"[a-zàèéìíòóù]+(?:ando|endo)(?:l[oaie]|gli|mi|ti|si|ci|vi|ne)?"),
+}
 # A quote is taken off only as a pair around the whole phrase: one closing a quotation
 # inside it stays ('searching for "best tacos"', which goes out as a caption on Talk).
 _STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
@@ -670,12 +684,15 @@ _LISTENER_AS_A_NAME = (
 # names the agent, OpenClaw or the model is written for the agent, as a tool's name is
 # ("running web_search", refused as not prose by its underscore).
 _ABOUT_THE_MACHINERY = re.compile(
-    r"\b(?:agents?|subagents?|openclaw|llm|gateway|relay|tool\s+calls?)\b", re.I)
+    r"\b(?:agents?|agentes?|agenti|subagents?|openclaw|llm|gateway|relay|tool\s+calls?)\b",
+    re.I)
 _ABOUT_THE_LISTENER = re.compile(
     r"\b(?:giving|showing|sending|telling|emailing|texting|messaging|asking)\s+the\s+"
     r"(?:user|caller)s?\b"
     r"|\bthe\s+(?:user|caller)s?\b(?!\s+(?:" + "|".join(_LISTENER_AS_A_NAME.split())
-    + r")\b)", re.I)
+    + r")\b)"
+    # Spanish and Italian: the user named at all ("para el usuario", "per l'utente").
+    r"|\busuari[oa]s?\b|\butent[ei]\b", re.I)
 
 
 def _dangling(before: str, last: str) -> bool:
@@ -716,19 +733,20 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     stop the frames add, and the first capital. A phrase that stops where a word should
     follow ("Looking up…", "looking up the…") is plain lines too.
 
-    English only (#300). The -ing test is what tells a phrase that fits "Sure — ..." and
-    "Still ..." from one that does not, and only in English is a test that cheap. In
-    another language the model's phrase has its own word order and verb form, and
-    nothing as cheap tells whether it is in the session's language at all: the consult's
-    `question` is usually English there (#300), and an English fragment inside a
-    translated sentence is what #290 took out of these lines. So another language gets
-    the plain lines, which its catalog translates, until a check for that language and
-    a native review of its frames exist (the frames are translated already)."""
+    English, Spanish and Italian (#300): the verb form first (_GERUND) is what tells a
+    phrase that fits the frames from one that does not, and it is also what tells a
+    phrase in the session's language from one in English (an English fragment inside a
+    translated sentence is what #290 took out of these lines). In Spanish and Italian a
+    phrase that ends on one of the language's function words (common_words.BY_LANGUAGE)
+    stops mid-thought; English has its own finer test (_dangling). Another language gets
+    the plain lines, which its catalog translates, until a check for that language and a
+    native review of its frames exist."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return "", "none"
     if not isinstance(value, str):
         return "", "not text"
-    if lang != i18n.SOURCE_LANG:
+    gerund = _GERUND.get(lang)
+    if gerund is None:
         return "", f"a {lang} session"
     text = _unquoted(" ".join(value.split()))
     words = text.split()
@@ -739,13 +757,15 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     if len(words) > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS:
         return "", "too long"
     first = words[0].rstrip(",;:")
-    if (not re.fullmatch(r"[a-z]+(?:-[a-z]+)*ing", first.lower()) or len(first) < 5
+    if (not gerund.fullmatch(first.lower()) or len(first) < 5
             or first.lower() in _NOT_GERUNDS):
-        return "", "no -ing word first"
+        return "", "no -ing word first" if lang == i18n.SOURCE_LANG else "no gerund first"
     # A one-word phrase is a gerund ("checking"), whole; anything longer may stop short.
-    if len(words) >= 2 and _dangling(*(w.lower().strip(_STATUS_QUOTE_MARKS)
-                                       for w in words[-2:])):
-        return "", "ends mid-thought"
+    if len(words) >= 2:
+        before, last = (w.lower().strip(_STATUS_QUOTE_MARKS) for w in words[-2:])
+        if (_dangling(before, last) if lang == i18n.SOURCE_LANG
+                else last in common_words.BY_LANGUAGE[lang]):
+            return "", "ends mid-thought"
     if _ABOUT_THE_LISTENER.search(text) or _ABOUT_THE_MACHINERY.search(text):
         return "", "not said to the listener"
     # The gerund opens a sentence's second half ("Sure — looking ..."): lowercased when
@@ -2046,8 +2066,16 @@ def _args_summary(args: dict, cap: int = 60) -> str:
 def _fallback_line(name: str, args: dict, t) -> str | None:
     """Deterministic-but-contextual 'working on it' line, per tool; `t` is i18n.T."""
     if name == "web_search":
-        q = _args_summary(args, cap=40)
-        return t._("Looking up {q}.").format(q=q) if q else None
+        # The query said whole or not at all, as the status phrase is: it was cut at 40
+        # characters with "...", and the voice said "... la biblioteca centr....". The
+        # model writes it in the session's language (#300: all but one Spanish and
+        # Italian query of the eval), as keywords, which "Looking up" frames as they are.
+        q = " ".join(_args_summary(args, cap=10_000).split()).rstrip(_STATUS_STOPS)
+        if not q:
+            return None
+        if len(q.split()) > _STATUS_MAX_WORDS or len(q) > _STATUS_MAX_CHARS:
+            return t._("On it.")
+        return t._("Looking up {q}.").format(q=q)
     if name == "web_fetch":
         return t._("Opening that page.")
     if name == "openclaw_agent_consult":

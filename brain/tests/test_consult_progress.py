@@ -318,8 +318,8 @@ async def test_the_second_line_claims_nothing():
 
 
 async def test_another_language_gets_the_plain_lines_not_the_phrase():
-    """#290/#300: the -ing check is English, and the model's phrase in another session
-    may be English or may not fit the frames, so neither is said there."""
+    """#290/#300: a language without a gerund check (tools._GERUND) gets the plain lines,
+    whatever the phrase: it may be English, or may not fit the frames."""
     fr = i18n.get("fr")
     for phrase in (PHRASE, "je cherche des pâtisseries sur Burnet Road"):
         assert _ack(phrase, fr) == "Je m'en occupe.", _ack(phrase, fr)
@@ -327,6 +327,75 @@ async def test_another_language_gets_the_plain_lines_not_the_phrase():
         assert "—" not in tools._progress_line(phrase, 1, fr)
         assert tools._status_phrase(phrase, "fr") == ("", "a fr session")
     assert tools._progress_line(PHRASE, 1, fr) == "Cette demande prend un peu plus de temps."
+
+
+async def test_spanish_and_italian_say_the_models_phrase_in_their_own_frames():
+    """#300: the model writes the phrase in the session's language, as a gerund (measured
+    with gpt-oss-120b: every Spanish and Italian consult of the eval), and the frames take
+    it after "estoy"/"sigo" and "sto"/"sto ancora"."""
+    es, it = i18n.get("es"), i18n.get("it")
+    phrase = "buscando jugueterías en la calle Real"
+    assert _ack(phrase, es) == "Claro, estoy buscando jugueterías en la calle Real."
+    assert tools._progress_line(phrase, 0, es) == "Sigo buscando jugueterías en la calle Real."
+    phrase = "Cercando negozi di giocattoli in via Garibaldi."
+    assert _ack(phrase, it) == "Certo, sto cercando negozi di giocattoli in via Garibaldi."
+    assert tools._progress_line(phrase, 0, it) == (
+        "Sto ancora cercando negozi di giocattoli in via Garibaldi.")
+    # The other gerunds: -iendo, -yendo, a pronoun joined on; Italian -endo.
+    for whole, lang in (("resumiendo los correos de hoy", "es"),
+                        ("leyendo las noticias", "es"),
+                        ("buscándolo en el mapa", "es"),
+                        ("consultando tu calendario para mañana", "es"),
+                        ("riassumendo le email di oggi", "it"),
+                        ("controllando il tuo calendario per domani", "it"),
+                        ("cercandolo sulla mappa", "it")):
+        assert tools._status_phrase(whole, lang) == (whole, ""), (whole, lang)
+
+
+async def test_spanish_and_italian_refuse_what_their_frames_cannot_say():
+    """English in a Spanish or Italian session (#300: the English fragment #290 took out),
+    no gerund first, a phrase that stops on a function word, and words for the agent."""
+    for phrase, lang, why in (
+            (PHRASE, "es", "no gerund first"),
+            (PHRASE, "it", "no gerund first"),
+            ("busco jugueterías", "es", "no gerund first"),
+            ("cuando termine la búsqueda", "es", "no gerund first"),
+            ("quando arriva il treno", "it", "no gerund first"),
+            ("Orlando tiempo esta semana", "es", "no gerund first"),
+            ("cerco negozi", "it", "no gerund first"),
+            ("buscando jugueterías en la", "es", "ends mid-thought"),
+            ("buscando jugueterías en", "es", "ends mid-thought"),
+            ("cercando negozi di", "it", "ends mid-thought"),
+            ("cercando negozi in via della", "it", "ends mid-thought"),
+            ("resumiendo los correos para el usuario", "es", "not said to the listener"),
+            ("riassumendo le email per l'utente", "it", "not said to the listener"),
+            ("preguntando al agente", "es", "not said to the listener"),
+            ("chiedendo agli agenti", "it", "not said to the listener")):
+        assert tools._status_phrase(phrase, lang) == ("", why), (phrase, lang)
+        t = i18n.get(lang)
+        assert _ack(phrase, t) == t._("On it.")
+        assert tools._progress_line(phrase, 0, t) == t._("Still on it.")
+
+
+async def test_the_search_query_is_said_whole_or_not_at_all():
+    """It was cut at 40 characters with "...", which the voice said mid-word. Said as
+    written, in the session's frame (#300: the model writes it in the session's
+    language), or a plain line when too long."""
+    es, it = i18n.get("es"), i18n.get("it")
+
+    def ack(query, t=EN):
+        return tools._fallback_line("web_search", {"query": query}, t)
+    assert ack("best pastry shops austin") == "Looking up best pastry shops austin."
+    assert ack("  who won last night?  ") == "Looking up who won last night."
+    assert ack("mejores pastelerías cerca de la calle Mayor", es) == (
+        "Buscando mejores pastelerías cerca de la calle Mayor.")
+    assert ack("orario di chiusura biblioteca comunale oggi", it) == (
+        "Cerco orario di chiusura biblioteca comunale oggi.")
+    long = "hora de cierre de la biblioteca central del barrio hoy"
+    assert len(long) > 40 and ack(long, es) == f"Buscando {long}."
+    assert ack(long + " y los festivos", es) == es._("On it.")
+    assert ack(" ".join(["word"] * 13)) == "On it."
+    assert ack("") is None and tools._fallback_line("web_search", {}, EN) is None
 
 
 async def test_agent_first_still_says_no_acknowledgement():
