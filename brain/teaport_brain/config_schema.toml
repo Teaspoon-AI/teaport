@@ -231,7 +231,7 @@ type = "url"
 required = true
 read = "session"
 tier = "setup"
-help = "Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server."
+help = "Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, or http://127.0.0.1:8182/v1 for a local server. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes stops in the middle of a reply."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
 
 [[settings]]
@@ -300,7 +300,7 @@ group = "llm"
 type = "json"
 read = "session"
 tier = "tuning"
-help = "Optional JSON object merged into the request extra_body. OpenRouter routing example: {\"provider\":{\"order\":[\"Groq\"],\"allow_fallbacks\":true}}."
+help = "Optional JSON object merged into the request extra_body. With OpenRouter it picks who serves the model. For gpt-oss-120b: {\"provider\":{\"order\":[\"BaseTen\",\"Groq\"],\"allow_fallbacks\":false}}. Avoid putting Groq or Cerebras first for that model: there it sometimes stops in the middle of a reply, and the device says it lost its train of thought."
 
 [[settings]]
 name = "TEAPORT_LLM_TEXT_GUARD"

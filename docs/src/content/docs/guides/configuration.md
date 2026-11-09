@@ -160,7 +160,21 @@ On the configuration page, the restart runs the same command two seconds later. 
 
 Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model, `gpt-oss-120b` by default. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`; for a server on the device itself, `http://127.0.0.1:8182/v1`.
 
-<!-- source: brain/teaport_brain/config_schema.toml:226-257#cdd4a315 -->
+<!-- source: brain/teaport_brain/config_schema.toml:226-257#3d494d96 -->
+
+:::caution[gpt-oss-120b: pick who serves it]
+On Groq and on Cerebras, `gpt-oss-120b` sometimes stops in the middle of a reply, most often right after it looked something up, and the device says it lost its train of thought. BaseTen serves the same model without that. Use OpenRouter as the endpoint, `openai/gpt-oss-120b` as the model, and send OpenRouter to BaseTen first with `LLM_EXTRA_BODY`:
+
+```ini
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=openai/gpt-oss-120b
+LLM_EXTRA_BODY={"provider":{"order":["BaseTen","Groq"],"allow_fallbacks":false}}
+```
+
+Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `brain.env` exactly as shown, on one line.
+:::
+
+<!-- source: brain/teaport_brain/config_schema.toml:296-303#8997c670 -->
 
 ### With the configuration page
 
