@@ -349,10 +349,15 @@ def _session(plays=True, recording=None):
     s.recording = recording
     s.muted_while_queued = []
     s._OWN_LINE_SETTLE_S = 0.0
+    s.barge_pauser = None
     deliveries = []
 
     class _Gate:
         interruptions = 0        # own_line's interruption reaches it as it is queued
+        ended = False            # the session runs on (AgentSession._hold_line)
+
+        async def until_ended(self):
+            await asyncio.Event().wait()
 
         def watch_delivery(self):
             deliveries.append(Delivery())

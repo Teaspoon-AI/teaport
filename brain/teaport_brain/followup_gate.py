@@ -189,8 +189,9 @@ class RunFrame(LLMContextFrame):
 
 @dataclass
 class RunSilentFrame(ControlFrame):
-    """A run's completion that will say nothing (it called stay_silent, or it came back
-    empty): pushed down by the LLM service so the gate ends the turn it opened. The TTS
+    """A completion that will say nothing: a run's (it called stay_silent, or it came back
+    empty), pushed down by the LLM service, or a reply of only a mood the face shows,
+    pushed by MoodTag (#383); so the gate ends the turn it opened. The TTS
     holds the End of a completion with no text until a later context ends
     (test_pipecat_premises.py), so without this the gate would read a turn in flight
     until the next interruption. A ControlFrame, not a SystemFrame: it must reach the
@@ -409,6 +410,14 @@ class FollowupGate(FrameProcessor):
         return self._llm or self._turn
 
     @property
+    def replying(self) -> bool:
+        """The bot is speaking -- a reply paused by a barge-in included, which holds
+        back its stop (barge_pause.py) -- or a reply is on its way: a completion
+        streaming, a turn's answering completion still to come, a committed turn not
+        yet asked. What a fixed phrase's answer stops first (AgentSession.say_in_place)."""
+        return self._bot or self._llm or self._turn or self._commit_unrendered
+
+    @property
     def caller_speaking(self) -> bool:
         """Caller speech is pending at the VAD level (_vad, _speech_pending): they are
         talking, or stopped too short a while ago for their words to have come. No turn
@@ -534,6 +543,11 @@ class FollowupGate(FrameProcessor):
             await self._interrupted.wait()
         return True
 
+    async def until_ended(self) -> None:
+        """Until the session is ending or over (ended): what holds a line of its own
+        (AgentSession._hold_line) does not outlive it."""
+        await self._ended_event.wait()
+
     def _end_interruption_waits(self) -> None:
         """The pipeline is over: what waits in interrupted_since goes on, and so does a
         wait on the caller's speech (speech_over)."""
@@ -645,8 +659,8 @@ class FollowupGate(FrameProcessor):
             self.release_claim()
             self._refresh()
         elif isinstance(frame, (LLMFullResponseEndFrame, RunSilentFrame)):
-            # RunSilentFrame: a run's completion that says nothing (stay_silent, or
-            # empty); its End is held at the TTS (RunSilentFrame's docstring).
+            # RunSilentFrame: a completion that says nothing (a run's stay_silent or
+            # empty one, a mood shown alone); its End is held at the TTS (its docstring).
             self._llm = False
             self._turn = False
             self._refresh()

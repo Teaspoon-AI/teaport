@@ -675,6 +675,36 @@ def test_a_one_word_answer_over_its_voice_counts(fast):
     assert asyncio.run(run()).calls == ["restart"]
 
 
+def test_an_answer_over_the_box_talking_goes_in_its_place(fast):
+    """#389, in the one place every phrase speaks (PhraseVoice.say): setup's answer to
+    words heard while the box is talking -- "repeat" over its instructions -- goes in
+    place of what is playing (say_in_place), not behind it. A line nobody asked for (the
+    unit's news) never does, and with nothing to stop the answer is said as usual."""
+    path = _path()
+
+    async def run():
+        v = Voice(path)
+        await _running(v, path)
+        placed, replying = [], [True]
+
+        async def in_place(text, max_secs):
+            placed.append(text)
+            return replying[0]
+        v.say_in_place = in_place
+        n = len(v.said)
+        assert await v._heard("repeat")
+        assert len(placed) == 1 and "four, seven" in placed[0] and len(v.said) == n
+        replying[0] = False
+        assert await v._heard("repeat")
+        assert len(placed) == 2 and len(v.said) == n + 1
+        # The unit's own news, said unasked: never in place of anything.
+        _write(path, phase="connected", ssid="Home")
+        await asyncio.sleep(0.1)
+        assert len(placed) == 2 and len(v.said) > n + 1
+        v._poller.cancel()
+    asyncio.run(run())
+
+
 # ------------------------------------------------------------------ spelling
 
 def test_capitals_are_said_whenever_there_are_any():

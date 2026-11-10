@@ -443,13 +443,17 @@ async def test_the_plugins_query_gives_its_session_a_relay_and_the_phone_none():
     assert not await _talk_relay("client=discord")
 
 
+# What the agent is asked: the question, then the brain's lookup note (#388).
+_ASKED = "what is on at the cinema tonight?\n\nContext:\n" + tools._CONSULT_LOOKUP_NOTE
+
+
 async def test_a_session_without_a_relay_never_waits_on_an_ack():
     """Async (the room, the phone): no tool_call goes out, and the agent is asked at
     once -- with an ack timeout far longer than the test, any wait on it would show."""
     for features in (frozenset({"local", "volume", "typing"}), frozenset()):
         llm, params, asked, took, log = await _consult(_owed_ctx(features), ack=30.0)
         assert llm.calls() == [], llm.calls()
-        assert asked == ["what is on at the cinema tonight?"], asked
+        assert asked == [_ASKED], asked
         assert took < 2.0, took
         assert params.results[0]["status"] == "working_in_background", params.results
         assert "relay never acked" not in log and "no relay on this session" in log, log
@@ -471,9 +475,10 @@ async def test_a_talk_session_still_goes_through_the_relay_first():
         llm, params, asked, took, log = await _consult(ctx, ack=0.12)
         [call] = llm.calls()
         assert call["name"] == "openclaw_agent_consult", call
-        assert call["args"] == {"question": "what is on at the cinema tonight?"}, call
+        assert call["args"] == {"question": "what is on at the cinema tonight?",
+                                "context": tools._CONSULT_LOOKUP_NOTE}, call
         assert took >= 0.12, took
-        assert asked == ["what is on at the cinema tonight?"], asked
+        assert asked == [_ASKED], asked
         assert "relay never acked in 0.1s" in log, log
 
 

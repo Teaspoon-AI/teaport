@@ -98,8 +98,13 @@
 # owed -- the caller asked -- which stays owed for the next wake. So does "stop
 # listening". A turn that is only a goodbye is heard the same way, except that it stands
 # down while an answer is still owed (above). Not if the caller cut the line or went on
-# talking before it ended: that is the conversation going on. Where the backstop is:
-# rooms with wake words, end_conversation on (agent_session.py).
+# talking before it ended: that is the conversation going on. Asked again while the line
+# plays is not going on: a cut that follows says the line again (#389). Heard over a
+# reply -- playing, or paused by the barge-in pauser over these very words -- the line
+# goes in the reply's place, which stops as for a barge-in (PhraseVoice.say): queued
+# behind it, the pauser found no turn in the words the phrase took and resumed the
+# reply, and the line waited for the rest of it. Where the backstop is: rooms with wake
+# words, end_conversation on (agent_session.py).
 #
 import asyncio
 import collections
@@ -580,6 +585,9 @@ class SleepPhrase:
     def __init__(self):
         self.sent = False
         self._going: asyncio.Task | None = None   # the line said, the sleep to send
+        # Asked again while the line was on its way: a cut of it is no reason to stay
+        # awake (_sleep).
+        self._again = False
         self.decisions: collections.deque = collections.deque(maxlen=8)
         self.gate = self.owed = None
 
@@ -628,9 +636,13 @@ class SleepPhrase:
                             "awake")
             return False
         if going:
-            return True                            # asked again while the line plays
+            # Asked again while the line plays: the same request, still on its way.
+            self._again = True
+            return True
         logger.info(f"SLEEP: {quoted(text)} -- the room goes back to sleep, no model asked")
+        self._again = False
         starts = voice.bot_starts
+        # Over a reply, the line goes in its place: the reply stops (PhraseVoice.say).
         await voice.say(voice.t._(SLEEP_TEXT))
         self._going = voice._spawn(self._sleep(voice, starts))
         return True
@@ -638,11 +650,18 @@ class SleepPhrase:
     async def _sleep(self, voice, starts: int) -> None:
         """Once the line has played out, end_conversation on the bridge with "said": true
         (the goodbye has played: the bridge sleeps once its speaker is quiet,
-        local_audio.Restart) -- not if the caller cut it."""
-        if not await voice.heard_out(starts):
-            self.decisions.append("the caller cut the line")
-            logger.info("SLEEP: the caller cut the line -- the room stays awake")
-            return
+        local_audio.Restart) -- not if the caller cut it. A cut that follows the caller
+        asking again is that request's, not the conversation going on: the line is said
+        again (words that are not the phrase cancel this, heard())."""
+        while not await voice.heard_out(starts):
+            if not self._again:
+                self.decisions.append("the caller cut the line")
+                logger.info("SLEEP: the caller cut the line -- the room stays awake")
+                return
+            self._again = False
+            logger.info("SLEEP: asked again over the line, which was cut -- saying it again")
+            starts = voice.bot_starts
+            await voice.say(voice.t._(SLEEP_TEXT))
         self.sent = True
         self.decisions.append(SENT)
         logger.info(f"SLEEP: the line played out -- sending the room back to sleep ({TOOL})")
