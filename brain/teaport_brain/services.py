@@ -54,7 +54,8 @@ TEAPORT_URL = setting("TEAPORT_URL")
 # 0.18-0.34s vs 0.5s+) with no quality loss on short replies. Sent as a top-level
 # `extra` kwarg; set LLM_REASONING_EFFORT="" for models that don't support it.
 # LLM_EXTRA_BODY (JSON) rides `extra_body` for provider-specific routing — e.g.
-# OpenRouter's {"provider": {"order": ["Groq"], "allow_fallbacks": true}}.
+# OpenRouter's {"provider": {"order": ["BaseTen", "Groq"], "allow_fallbacks": false}}
+# (for gpt-oss-120b: on Groq and Cerebras it now and then breaks down mid-reply, #384).
 def _reasoning_effort() -> str:
     return setting("LLM_REASONING_EFFORT")
 
@@ -469,8 +470,11 @@ def _shows_a_face(text: str) -> bool:
     (U+1F000-U+1FAFF: the faces, hands, hearts and flags), a symbol given emoji
     presentation (U+FE0F after it: "❤️"), or one of _BMP_EMOJI? A reply that is only one
     has no speech (tts_text.has_speech), but it is not nothing: the guard keeps it whole
-    (#15). History gets nothing of it: the TTS yields no word frames for a face, and the
-    assistant aggregator commits those. Not any symbol: U+FFFD (a garbled
+    and history keeps what the model wrote (#15) -- the TTS force-completes a context
+    that played no audio, so its text is committed all the same
+    (test_pipecat_premises.py, check_a_reply_with_no_audio_still_commits_its_text). A
+    mood emoji MoodTag took is not among them: none of its text reached the TTS. Not any
+    symbol: U+FFFD (a garbled
     stream), "♪♪", "°" or "✓" alone says nothing, and is asked again."""
     if _EMOTICON.search(text) or _BMP_EMOJI.search(text):
         return True
@@ -869,8 +873,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
         completion, before its End: downstream sees one reply.
 
         A reply that is only a face -- an emoticon (":)") or an emoji -- said that
-        (_shows_a_face): the guard forwards it whole (history gets nothing of it: no word
-        frames), it is not asked again, and no line is glued onto it (":):)Sorry, ..." when it was). A mood
+        (_shows_a_face): the guard forwards it whole and history keeps it (the TTS
+        force-completes its text), so it is not asked again, and no line is glued onto it (":):)Sorry, ..." when it was). A mood
         tag alone agrees (MoodTag, #383): the emoji is a face here, and the bracketed
         "[mood: sad]" has letters, so it is speech here and never reaches this; either
         way MoodTag strips the tag, shows a known mood at once and says nothing, and
