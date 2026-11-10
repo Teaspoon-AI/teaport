@@ -28,7 +28,13 @@
 # Measured 2026-11-09 (reasoning low), collapses / requests: OpenRouter -> Groq, lead 3/96,
 # leadmem 1/96, long 7/96 (11/288). OpenRouter -> BaseTen served the same synthetic turns
 # behind the box's own host prompt with no collapse in 288 (#384's spike; Groq there: 17/288).
-# It fails at 2% of the requests or more.
+#
+# THE VERDICT, over the requests the provider answered (a refused one has no reply to
+# judge): it fails at 6 collapses or more in 288 answered. That tells a provider that
+# collapses about 4% of the time (Groq, measured 3.8%: fails 96% of runs; at 4%, 98%)
+# from a clean one (0%: never fails); at a true 2% it fails about half the runs, at 1%
+# 7%. More than 5% of the requests refused (a bad key, a spent limit, a routing the
+# provider rejects) fails too, loudly: the rate would mean nothing.
 #
 # Tried and rejected (#384, PR #401): rendering each request with one system message (the
 # starting run joined, later notes as tagged user messages). It took "lead" to 0/96 but
@@ -39,7 +45,6 @@
 import asyncio
 import json
 import os
-import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -230,15 +235,34 @@ async def complete(messages: list) -> str:
                 await asyncio.sleep(2)
 
 
+REFUSED_MAX = 0.05     # of the requests: more, and the run measured nothing
+COLLAPSE_MAX = 0.02    # of the answered: at 288, 6 collapses or more fail
+
+
+def verdict(texts: list) -> tuple[int, str]:
+    """(exit code, why) for the completions of a run (complete()'s texts): the collapse
+    rate over the answered ones, unless too many were refused to judge."""
+    refused = sum(t.startswith("<error") for t in texts)
+    answered = len(texts) - refused
+    bad = sum(is_degenerate(t) for t in texts if not t.startswith("<error"))
+    if texts and refused > REFUSED_MAX * len(texts):
+        return 1, (f"FAIL: the provider refused {refused} of {len(texts)} requests -- check "
+                   "the key, its credit limit and LLM_EXTRA_BODY's routing; no collapse rate "
+                   "can be read from this run")
+    if answered and bad >= COLLAPSE_MAX * answered:
+        return 1, (f"FAIL: {bad} collapses in {answered} answered: this provider collapses "
+                   "too often for gpt-oss-120b")
+    return 0, f"ALL PASS ({bad} collapses in {answered} answered, {refused} refused)"
+
+
 async def main() -> int:
-    random.seed(384)
-    bad_all = total = 0
+    every = []
     for shape in SHAPES:
         n = TRIALS * len(SCENARIOS)
         texts = await asyncio.gather(*(complete(shaped(k, shape)) for k in range(n)))
         bad = [t for t in texts if is_degenerate(t)]
         errors = sum(t.startswith("<error") for t in texts)
-        print(f"collapse {shape:8s} {len(bad)}/{n}"
+        print(f"collapse {shape:8s} {len(bad)}/{n - errors}"
               + (f" ({errors} refused by the provider)" if errors else ""))
         for t in bad[:2]:
             print(f"    e.g. {t[:60]!r}")
@@ -249,14 +273,10 @@ async def main() -> int:
                 by[name] = by.get(name, 0) + 1
         if by:
             print(f"    by scenario: {by}")
-        bad_all += len(bad)
-        total += n
-    print(f"collapses: {bad_all}/{total}")
-    if total and bad_all >= 0.02 * total:
-        print("FAIL: this provider collapses too often for gpt-oss-120b")
-        return 1
-    print("ALL PASS")
-    return 0
+        every += texts
+    code, why = verdict(every)
+    print(why)
+    return code
 
 
 if __name__ == "__main__":
