@@ -647,7 +647,7 @@ _NOT_GERUNDS = frozenset(
     + "entiendo atiendo extiendo tiendo defiendo enciendo desciendo recomiendo".split()
     + "attendo comprendo prendo intendo vendo spendo pretendo rendo scendo accendo tendo "
       "difendo offendo dipendo sospendo appendo stendo estendo sorprendo riprendo "
-      "apprendo".split())
+      "apprendo domando raccomando rimando tremendo nintendo".split())
 # The verb form a status phrase starts with, in each language whose frames take one
 # (#300): the English -ing word ("Sure — looking up ..."), and the gerund the Spanish
 # and Italian frames put after "estoy" / "sigo" and "sto" / "sto ancora" ("Claro, estoy

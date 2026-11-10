@@ -81,11 +81,10 @@ continue continuing pause understand understood
 # pronouns): tools._status_phrase reads a status phrase ending on one as stopping
 # mid-thought ("buscando vuelos a", "cercando nel"). The second is the rest: auxiliaries,
 # adverbs, the fillers of a deferral, words that end a phrase well ("comprobando el
-# tiempo", "controllando adesso"). owed reads both, as one list.
+# tiempo", "controllando adesso"). owed reads both, as one list (COMMON).
 _ES_CUT = """
 el la los las un una unos unas de del al a y o pero que en con por para sin sobre
-hacia hasta desde entre durante según tras esta este estos estas ese esa su sus lo
-le les me te se mi tu nos si
+esta este estos estas ese esa su sus lo le les me te se mi tu nos si
 """
 _ES_REST = """
 es son era fue ser estar esto eso hay muy mas más ya no sí ahora aquí bueno vale claro
@@ -101,13 +100,21 @@ déjà oui non bien merci maintenant voilà bon d'accord attendre attends prêt 
 temps
 """
 _IT_CUT = """
-il lo la i gli le un una uno di del della dei e o ma che in con per su da questa
-questi quella se si mi ti ci vi ne al alla a ai agli alle allo dello delle degli nel
-nella nei nelle sul sulla sui sulle dal dalla dai dalle tra fra
+il lo la i gli le un una uno di del della dei e o ma che in con per su da questo
+questa questi quello quella se si mi ti ci vi ne al alla
 """
 _IT_REST = """
-è sono era essere avere ha hanno questo quello non più molto già sì ora adesso bene
-grazie aspetta pronto momento tempo
+è sono era essere avere ha hanno non più molto già sì ora adesso bene grazie aspetta
+pronto momento tempo
+"""
+# More words a status phrase cannot end on, for it alone: prepositions and articles
+# joined to them. Not in COMMON: owed folds English inflections against that list, and
+# "dalla", "dai" and "nel" would take "dallas", "daily" and "nelly" out of what a reply
+# is about.
+_ES_CUT_MORE = "a hacia hasta desde entre durante según tras"
+_IT_CUT_MORE = """
+a ai agli alle allo dello delle degli nel nella nei nelle sul sulla sui sulle dal dalla
+dai dalle tra fra
 """
 _PT_CUT = """
 o a os as um uma uns umas de do da dos das e ou mas que em no na nos nas com por para
@@ -125,7 +132,8 @@ _JA = "のはがをにでとへもやかなねよだですますたいるうえ�
 # English has its own finer test there, tools._dangling).
 BY_LANGUAGE: dict[str, frozenset] = {
     lang: frozenset(block.split())
-    for lang, block in (("es", _ES_CUT), ("fr", _FR_CUT), ("it", _IT_CUT), ("pt_BR", _PT_CUT))}
+    for lang, block in (("es", _ES_CUT + _ES_CUT_MORE), ("fr", _FR_CUT),
+                        ("it", _IT_CUT + _IT_CUT_MORE), ("pt_BR", _PT_CUT))}
 
 COMMON: frozenset = frozenset(
     w for block in (_EN, _ES_CUT, _ES_REST, _FR_CUT, _FR_REST, _IT_CUT, _IT_REST, _PT_CUT,

@@ -419,7 +419,8 @@ async def test_spanish_and_italian_phrases_cut_at_a_preposition_or_article_are_r
                          ("cercando voli a", "it"), ("cercando ristoranti vicino a", "it"),
                          ("cercando nel", "it"), ("cercando sulla", "it"),
                          ("cercando l'", "it"), ("cercando informazioni dell'", "it"),
-                         ("cercando qualcosa all\u2019", "it")):
+                         ("cercando qualcosa all\u2019", "it"),
+                         ("controllando questo", "it"), ("controllando quello", "it")):
         assert tools._status_phrase(phrase, lang) == ("", "ends mid-thought"), phrase
 
 
@@ -442,6 +443,9 @@ async def test_first_persons_and_accented_openers_are_no_gerund():
                          ("pretendo una risposta", "it"),
                          ("entiendo tu pregunta", "es"), ("atiendo la llamada", "es"),
                          ("recomiendo este sitio", "es"),
+                         ("domando il prezzo", "it"), ("raccomando questo", "it"),
+                         ("rimando la chiamata", "it"), ("tremendo traffico", "it"),
+                         ("Nintendo Switch prices", "it"),
                          ("cuándo abre la tienda", "es"), ("Cuándo abre", "es")):
         assert tools._status_phrase(phrase, lang) == ("", "no gerund first"), phrase
     # Their gerunds still pass, and two pronouns joined on.
@@ -453,17 +457,28 @@ async def test_first_persons_and_accented_openers_are_no_gerund():
 
 async def test_the_lists_split_for_the_status_phrase_are_still_owed_s_one_list():
     """common_words: each language's words in two parts, those a phrase cannot end on and
-    the rest; owed reads them as one (COMMON)."""
+    the rest; owed reads them as one (COMMON), exactly the list it had before #300: the
+    words only a status phrase needs (_ES_CUT_MORE, _IT_CUT_MORE) stay out of it, or owed's
+    English fold would read "dallas" as "dalla" and "daily" as "dai"."""
+    import hashlib
+
     from teaport_brain import common_words as cw
+    from teaport_brain import owed
+    words = sorted(cw.COMMON)
+    assert (len(words), hashlib.sha256("\n".join(words).encode()).hexdigest()[:16]) == (
+        829, "f5dd5146bef02fd9")
     parts = (cw._EN, cw._ES_CUT, cw._ES_REST, cw._FR_CUT, cw._FR_REST, cw._IT_CUT,
              cw._IT_REST, cw._PT_CUT, cw._PT_REST)
     assert cw.COMMON == (frozenset(w for p in parts for w in p.split())
                          | frozenset(cw._CJK) | frozenset(cw._JA))
-    for lang, cut, rest in (("es", cw._ES_CUT, cw._ES_REST), ("it", cw._IT_CUT, cw._IT_REST)):
-        assert cw.BY_LANGUAGE[lang] == frozenset(cut.split())
-        assert not frozenset(cut.split()) & frozenset(rest.split()), lang
+    for lang, cut, more, rest in (("es", cw._ES_CUT, cw._ES_CUT_MORE, cw._ES_REST),
+                                  ("it", cw._IT_CUT, cw._IT_CUT_MORE, cw._IT_REST)):
+        assert cw.BY_LANGUAGE[lang] == frozenset(cut.split()) | frozenset(more.split())
+        assert not cw.BY_LANGUAGE[lang] & frozenset(rest.split()), lang
     assert {"tiempo", "ahora", "aquí", "momento"} <= frozenset(cw._ES_REST.split())
     assert {"tempo", "ora", "adesso", "momento"} <= frozenset(cw._IT_REST.split())
+    for word in ("dallas", "daily", "nelly", "sully", "dally"):
+        assert not owed._is_common(word), word
 
 
 async def test_agent_first_still_says_no_acknowledgement():
