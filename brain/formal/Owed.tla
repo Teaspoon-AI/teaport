@@ -460,7 +460,7 @@ PtVerdicts(g) ==
 \* reply -- does it tell them it failed, in any words or language? HEARD on a telling
 \* ("all"), OWED on anything else, a vague "I don't have it yet" ("mention") included; the
 \* residuals: PTOWES (a telling judged OWED: 0/22 and 0/84 measured), gistWrong (a vague
-\* one judged HEARD: 0/30 on the eval's cases, 12/37 on the model's own), NOVERDICT (none:
+\* one judged HEARD: 0/30 on the eval's cases, 7/37 on the model's own), NOVERDICT (none:
 \* closes only the failure's own run). A telling cut before its stream ended is judged on
 \* what was heard of it (owed.Owed._failed): told, and counted, only if that already tells
 \* it.

@@ -10,6 +10,8 @@
 #
 # [TEAPORT_EVAL_TRIALS=3] [TEAPORT_EVAL_CONCURRENCY=8] [TEAPORT_EVAL_PLAYED_ONLY=1: no cuts]
 # [TEAPORT_EVAL_FAILURE_REPLIES=x.jsonl: more played-through tellings, kept out of the repo]
+# [TEAPORT_EVAL_PREFIX_CUTS=1: also a cut before its stream ended -- every prefix of the
+#  replies that tell nothing, to the told judge; a HEARD is a miscount (at most a tenth)]
 #
 # Before #380 a reply was ABOUT a failure record by its words: a term shared with the
 # request or the caller's question, or one of four English words that name what failed
@@ -43,28 +45,30 @@
 # beat the rule before, both ways, played and cut. The extra tellings are reported apart.
 #
 # Measured 2026-11-09 (gpt-oss-120b on Groq, majority of 3; the cases here -- 54 played,
-# 22 told, 30 owed, 2 arguable; 588 cuts -- plus 135 tellings the model gave in
-# test_owed_note_eval.py's cases, before and after #387, kept out of the repo and labelled
-# by that eval's classes, reported apart: 84 told, 37 owed, 14 arguable):
+# 22 told, 30 owed, 2 arguable; 588 cuts; 211 prefixes -- plus 135 tellings the model gave
+# in test_owed_note_eval.py's cases, before and after #387, kept out of the repo and
+# labelled by that eval's classes, reported apart: 84 told, 37 owed, 14 arguable):
 #                                  the words (before)   the judge
 #   played, false closes              23/30               0/30
 #   played, false owes                 5/22               0/22   (the 4 "unknown" tellings
 #                                                                  included)
-#   cut, false closes                 53/411             47/411  (most: a told reply cut
-#                                                                  after "I couldn't",
-#                                                                  before why)
-#   cut, false owes                   72/177             22/177
+#   cut, false closes              50-53/411          39-47/411  (two runs; most: a told
+#                                                                  reply cut after "I
+#                                                                  couldn't", before why)
+#   cut, false owes                72-78/177          22-32/177
 #   cuts counted that told nothing   156                  0
 #   tellings not counted              83                  0
-#   extra played, false closes        16/37              12/37   ("non ho ricevuto una
+#   prefix cut counted, told nothing  --                  1/211  (a lone "No")
+#   extra played, false closes        16/37               7/37   ("non ho ricevuto una
 #                                                                  risposta": "I didn't
 #                                                                  get an answer")
 #   extra played, false owes          36/84               0/84
 # The cut prompt asked of whole replies instead (one prompt for both) closed 29/61 vague
 # ones; framed on "it failed" for cuts too, the existing cut sets (test_cut_judge_eval.py,
 # failures / multi) went from 1/43 and 4/66 false closes to 21/43 and 35/66: a cut needs
-# the reason heard, a whole reply what happened. The told prompt before it spelled out a
-# consult that never reported back judged every such telling OWED (4/4).
+# the reason heard, a whole reply what happened. Of the told prompt's wordings for a
+# consult that never reported back, one judged every such telling OWED (4/4), and one not
+# tied to what happened took 12/37 of the model's vague tellings as told.
 #
 import asyncio
 import collections
@@ -349,6 +353,22 @@ async def main():
                 t[f"count_{rule}_false"] += 1
             elif not gate and label == "told":
                 t[f"count_{rule}_missed"] += 1
+    # A cut before its stream ended has no whole text: the told judge reads what they
+    # heard of it, "all of it" (Owed._failed). Opt-in (TEAPORT_EVAL_PREFIX_CUTS=1): every
+    # prefix of the replies that tell nothing; a HEARD would count it as a telling.
+    prefixes = []
+    if os.getenv("TEAPORT_EVAL_PREFIX_CUTS"):
+        for name, lang, text, label, _ in REPLIES:
+            if label == "owed":
+                q, r, o = recs[(name, lang)]
+                prefixes += [(lang, h, q, o) for h, _, _ in cuts(text, None)]
+    prefix_verdicts = await asyncio.gather(*(majority(q, failure_core(o), h, None)
+                                             for _, h, q, o in prefixes))
+    for (lang, heard, _, _), (v, none) in zip(prefixes, prefix_verdicts):
+        t["none"] += none
+        if v:
+            t["prefix_judge_miscount"] += 1
+            wrong.append(("judge", "prefix", lang, heard))
     lat.sort() if lat else lat.append(0.0)
     print(f"model={setting('LLM_MODEL')} trials={TRIALS} replies={len(REPLIES)} "
           f"({t['played_told']} told, {t['played_owed']} owed, {t['played_?']} arguable), "
@@ -364,6 +384,9 @@ async def main():
               f"counted {t[f'count_{rule}_missed']}; extra false closes "
               f"{t[f'extra_{rule}_false_close']}/{t['extra_owed']}, false owes "
               f"{t[f'extra_{rule}_false_owe']}/{t['extra_told']}")
+    if prefixes:
+        print(f"prefix cuts (before the stream ended) of replies that tell nothing, counted "
+              f"as a telling: {t['prefix_judge_miscount']}/{len(prefixes)}")
     print(f"arguable (told, no why): judge HEARD {t['played_?_judge_heard']}, OWED "
           f"{t['played_?_judge_owed']}")
     print(f"no verdict: {t['none']}; latency p50 {lat[len(lat) // 2]:.2f}s "
@@ -377,9 +400,11 @@ async def main():
     assert t["played_judge_false_owe"] * 10 <= t["played_told"], t
     assert t["count_judge_false"] == 0 and t["count_judge_missed"] == 0, t
     # ...and the judge beats the words it replaced, both ways, played and cut.
-    for where in ("played", "cut"):
+    for where in ("played", "cut") if jobs else ("played",):
         assert t[f"{where}_judge_false_close"] < t[f"{where}_before_false_close"], t
         assert t[f"{where}_judge_false_owe"] < t[f"{where}_before_false_owe"], t
+    if prefixes:
+        assert t["prefix_judge_miscount"] * 10 <= len(prefixes), t
     print("ALL PASS")
 
 

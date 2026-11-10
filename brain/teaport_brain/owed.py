@@ -253,9 +253,12 @@ FAILURE_CUT_JUDGE_PROMPT = (
 # of 3, 2026-11-09). Framed on what happened, with "still running" and "nothing to give"
 # as OWED, what happened said without the outcome's "No answer:" lead (which "I didn't
 # get an answer" matched), and a consult that never reported back told as "nobody knows
-# whether it was done" (an earlier wording judged every such telling OWED, 4/4): on the
-# eval's cases 0/30 false closes and 0/22 false owes, where the words alone had 23/30 and
-# 5/22; on 135 tellings the model gave, 12/37 and 0/84, where the words had 16/37, 36/84.
+# whether it was done" -- only when what happened says so (an earlier wording judged
+# every such telling OWED, 4/4; one not tied to what happened, 12/37 false closes below):
+# on the eval's cases 0/30 false closes and 0/22 false owes, where the words alone had
+# 23/30 and 5/22; on 135 tellings the model gave, 7/37 and 0/84, where the words had
+# 16/37 and 36/84. A cut's prefix read as all they heard (a cut before its stream ended)
+# took a reply that tells nothing for a telling 1/211.
 FAILURE_TOLD_JUDGE_PROMPT = (
     "A voice assistant was telling someone on a phone call what happened with something "
     "they asked for: it failed, or it never reported back. You see what they asked, "
@@ -265,13 +268,14 @@ FAILURE_TOLD_JUDGE_PROMPT = (
     "telling them it is over and was not done: it couldn't be done, ran out of time, "
     "hit an error. If it never reported back, that means telling them nobody knows "
     "whether it was done: it may or may not have gone through, or it never confirmed -- "
-    "and that is HEARD. Being told it is still running, still being worked on or not "
-    "back yet is the opposite of either: OWED. Having nothing to give them does not "
-    "tell them what happened either: \"I don't have the results\", \"there's no answer\", "
-    "\"I didn't find any\" are OWED, and so is anything about something else, or saying "
-    "it was done. If what they heard tells them what happened, answer HEARD: whatever "
-    "follows is extra, even an offer to try again, a question, an apology or a repeat. "
-    "Reply with exactly one word: HEARD or OWED.")
+    "and that is HEARD, but only when what happened says it never reported back. Being "
+    "told it is still running, still being worked on or not back yet is the opposite of "
+    "either: OWED. Having nothing to give them does not tell them what happened either: "
+    "\"I don't have the results\", \"there's no answer\", \"I didn't find any\" are OWED, and "
+    "so is anything about something else, or saying it was done. If what they heard "
+    "tells them what happened, answer HEARD: whatever follows is extra, even an offer "
+    "to try again, a question, an apology or a repeat. Reply with exactly one word: "
+    "HEARD or OWED.")
 
 
 def _what_happened(outcome: str) -> str:
