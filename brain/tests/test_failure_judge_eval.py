@@ -11,7 +11,9 @@
 # [TEAPORT_EVAL_TRIALS=3] [TEAPORT_EVAL_CONCURRENCY=8] [TEAPORT_EVAL_PLAYED_ONLY=1: no cuts]
 # [TEAPORT_EVAL_FAILURE_REPLIES=x.jsonl: more played-through tellings, kept out of the repo]
 # [TEAPORT_EVAL_PREFIX_CUTS=1: also a cut before its stream ended -- every prefix of the
-#  replies that tell nothing, to the told judge; a HEARD is a miscount (at most a tenth)]
+#  replies that tell nothing, to the told judge; a HEARD is a miscount (at most a tenth);
+#  and, reported only, the prefixes of tellings cut before what happened was heard, which
+#  a HEARD counts as a telling early -- unmeasured so far]
 #
 # Before #380 a reply was ABOUT a failure record by its words: a term shared with the
 # request or the caller's question, or one of four English words that name what failed
@@ -41,8 +43,9 @@
 # It reports, for the rule before and the judge now: false closes (a record closed on a
 # reply that did not tell it), false owes (a telling that leaves it owed), and for cuts the
 # tellings counted wrongly. It fails past ceilings near the measured levels (played: one
-# false close, a tenth false owes; cut: no telling miscounted), or if the judge does not
-# beat the rule before, both ways, played and cut. The extra tellings are reported apart.
+# false close, a tenth false owes; cut: false closes 15% of the owed cuts, no telling
+# miscounted), or if the judge does not beat the rule before -- played both ways, cut on
+# false owes. The extra tellings are reported apart.
 #
 # Measured 2026-11-09 (gpt-oss-120b on Groq, majority of 3; the cases here -- 54 played,
 # 22 told, 30 owed, 2 arguable; 588 cuts; 211 prefixes -- plus 135 tellings the model gave
@@ -59,6 +62,7 @@
 #   cuts counted that told nothing   156                  0
 #   tellings not counted              83                  0
 #   prefix cut counted, told nothing  --                  1/211  (a lone "No")
+#   prefix of a telling before what happened, counted early: unmeasured (report only)
 #   extra played, false closes        16/37               7/37   ("non ho ricevuto una
 #                                                                  risposta": "I didn't
 #                                                                  get an answer")
@@ -357,18 +361,23 @@ async def main():
     # heard of it, "all of it" (Owed._failed). Opt-in (TEAPORT_EVAL_PREFIX_CUTS=1): every
     # prefix of the replies that tell nothing; a HEARD would count it as a telling.
     prefixes = []
+    # Reported, not gated: the prefixes of the replies that DO tell it, cut before their
+    # marker (what happened not yet heard) -- a HEARD there counts a telling early.
     if os.getenv("TEAPORT_EVAL_PREFIX_CUTS"):
-        for name, lang, text, label, _ in REPLIES:
-            if label == "owed":
+        for name, lang, text, label, marker in REPLIES:
+            if label in ("owed", "told"):
                 q, r, o = recs[(name, lang)]
-                prefixes += [(lang, h, q, o) for h, _, _ in cuts(text, None)]
+                prefixes += [(label, lang, h, q, o) for h, _, cl in cuts(text, marker)
+                             if label == "owed" or cl == "owed"]
     prefix_verdicts = await asyncio.gather(*(majority(q, failure_core(o), h, None)
-                                             for _, h, q, o in prefixes))
-    for (lang, heard, _, _), (v, none) in zip(prefixes, prefix_verdicts):
+                                             for _, _, h, q, o in prefixes))
+    for (label, lang, heard, _, _), (v, none) in zip(prefixes, prefix_verdicts):
         t["none"] += none
+        t[f"prefix_{label}"] += 1
         if v:
-            t["prefix_judge_miscount"] += 1
-            wrong.append(("judge", "prefix", lang, heard))
+            t["prefix_judge_miscount" if label == "owed" else "prefix_judge_early"] += 1
+            if label == "owed":
+                wrong.append(("judge", "prefix", lang, heard))
     lat.sort() if lat else lat.append(0.0)
     print(f"model={setting('LLM_MODEL')} trials={TRIALS} replies={len(REPLIES)} "
           f"({t['played_told']} told, {t['played_owed']} owed, {t['played_?']} arguable), "
@@ -386,7 +395,9 @@ async def main():
               f"{t[f'extra_{rule}_false_owe']}/{t['extra_told']}")
     if prefixes:
         print(f"prefix cuts (before the stream ended) of replies that tell nothing, counted "
-              f"as a telling: {t['prefix_judge_miscount']}/{len(prefixes)}")
+              f"as a telling: {t['prefix_judge_miscount']}/{t['prefix_owed']}; of tellings "
+              f"cut before what happened was heard, counted early (not gated): "
+              f"{t['prefix_judge_early']}/{t['prefix_told']}")
     print(f"arguable (told, no why): judge HEARD {t['played_?_judge_heard']}, OWED "
           f"{t['played_?_judge_owed']}")
     print(f"no verdict: {t['none']}; latency p50 {lat[len(lat) // 2]:.2f}s "
@@ -400,11 +411,15 @@ async def main():
     assert t["played_judge_false_owe"] * 10 <= t["played_told"], t
     assert t["count_judge_false"] == 0 and t["count_judge_missed"] == 0, t
     # ...and the judge beats the words it replaced, both ways, played and cut.
-    for where in ("played", "cut") if jobs else ("played",):
-        assert t[f"{where}_judge_false_close"] < t[f"{where}_before_false_close"], t
-        assert t[f"{where}_judge_false_owe"] < t[f"{where}_before_false_owe"], t
+    assert t["played_judge_false_close"] < t["played_before_false_close"], t
+    assert t["played_judge_false_owe"] < t["played_before_false_owe"], t
+    if jobs:
+        # Cut false closes: a ceiling, not the comparison -- their margin over the words
+        # (3-11 of 411) is inside the run-to-run swing; the false owes' is not.
+        assert t["cut_judge_false_close"] * 100 <= 15 * t["cut_owed"], t
+        assert t["cut_judge_false_owe"] < t["cut_before_false_owe"], t
     if prefixes:
-        assert t["prefix_judge_miscount"] * 10 <= len(prefixes), t
+        assert t["prefix_judge_miscount"] * 10 <= t["prefix_owed"], t
     print("ALL PASS")
 
 
