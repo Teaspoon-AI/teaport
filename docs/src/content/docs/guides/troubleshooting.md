@@ -603,7 +603,7 @@ and teaport tells you that the AI account has run out of credit.
 On the device's included trial credit, teaport says instead that its trial credit has
 run out, and asks you to connect your own account.
 
-<!-- source: brain/teaport_brain/llm_error_speaker.py:155-171#83953e0c; brain/teaport_brain/llm_error_speaker.py:433-438#6694ea6f; brain/teaport_brain/owed.py:320-326#d2fd4910 -->
+<!-- source: brain/teaport_brain/llm_error_speaker.py:155-171#83953e0c; brain/teaport_brain/llm_error_speaker.py:433-438#6694ea6f; brain/teaport_brain/owed.py:373-379#d2fd4910 -->
 
 **Fix**
 

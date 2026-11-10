@@ -67,9 +67,11 @@ MEASURED_FOOTER = (
     "in yourself, and never read out web addresses. Don't look up again what a result "
     "already answers. If they're busy with something else or asked you to wait, don't push "
     "it.")
+# #387 replaced round 5's "Lead with the answer, then say what it answers (\"<answer> is …\")",
+# which was read out ("That answers your request."): test_owed_note_eval.py, 2026-11-09.
 MEASURED_FIRST = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-                  "Lead with the answer, then say what it answers (\"<answer> is …\"), not "
-                  "the other way round.")
+                  "Start with the answer itself, in a full sentence, not with their question, "
+                  "and don't talk about your reply or their request.")
 MEASURED_REOFFER = (
     "They haven't heard this yet and the conversation has gone quiet. If their last words asked "
     "you to wait and they haven't come back to you, call stay_silent. Otherwise mention it once "
@@ -521,6 +523,65 @@ async def test_a_landing_with_a_caller_request_to_render_asks_no_run():
     b, _, gate = book(pending=True)
     b.land(HN_REQ, HN_RAW, "call-hn")
     assert gate.asked == [] and b.record("call-hn").missed
+
+
+def _failure_record(kind="timeout", key="call-hn", detail=""):
+    status, outcome = owed.failure_outcome(kind, detail)
+    return Record.make(key, HN_REQ, outcome, failure=status)
+
+
+def test_a_failures_note_says_it_is_over_and_its_run_says_why():
+    """#387 (test_owed_note_eval.py): a failure has no answer to lead with -- told to lead
+    with one, the model said "No results are available", as if nothing existed. Its run
+    says to tell that it couldn't be done and why, every note says under its result that
+    it is over (not "still waiting", not "nothing was found"), and its re-offer has the
+    failure's own line. An answer keeps the answer lines; a note with both kinds the
+    answer's run line, the failure keeping its own line under its result."""
+    fail, answer = _failure_record(), hn_record()
+    run = owed.note_text([fail], owed.RUN)
+    assert run.split("\n")[1] == owed.FAILURE_RUN_LINE, run
+    assert owed.RUN_LINE not in run and owed.FAILED_LINE in run
+    for purpose in ("caller", owed.REOFFER):
+        assert owed.FAILED_LINE in owed.note_text([fail], purpose)
+    assert owed.note_text([fail], owed.REOFFER).endswith(owed.FAILURE_REOFFER_LINE)
+    plain = owed.note_text([answer], owed.RUN)
+    assert plain.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE not in plain
+    assert owed.note_text([answer], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    both = owed.note_text([answer, fail], owed.RUN)
+    assert both.split("\n")[1] == owed.RUN_LINE and both.count(owed.FAILED_LINE) == 1
+
+
+def test_a_consult_that_never_reported_back_is_over_not_failed():
+    """#398 review: a consult the session's end cut off lands "unknown" -- it may have been
+    done (Owed.close_session) -- so its note says it is over and brought no answer
+    (ENDED_LINE), never that it "did not get done", and its run and re-offer are the
+    answer's lines, not the failure's "you couldn't do it"."""
+    rec = _failure_record("unknown")
+    for purpose in (owed.RUN, "caller", owed.REOFFER):
+        note = owed.note_text([rec], purpose)
+        assert owed.ENDED_LINE in note and owed.FAILED_LINE not in note, (purpose, note)
+    assert owed.note_text([rec], owed.RUN).split("\n")[1] == owed.RUN_LINE
+    # Its re-offer has neither an answer to give nor a failure to tell (#398 round 2).
+    assert owed.note_text([rec], owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([_failure_record("timeout", key="t"), rec],
+                          owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([hn_record(), rec], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    both = owed.note_text([_failure_record("timeout", key="t"), rec], owed.RUN)
+    assert both.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE in both
+
+
+def test_a_failures_outcome_never_says_not_to_say_it_failed():
+    """#387: the hedge for an action that may have gone through rode on every failure as
+    "ask them to check rather than saying it failed", and lookups were told as "I don't
+    have the results yet". It is the action's alone now, and failure_core still drops it
+    (what the judges are shown, and the failure's terms)."""
+    for kind, detail in (("timeout", ""), ("empty", ""), ("error", "boom"),
+                         ("error", "HTTP 402: insufficient credits"), ("unknown", "")):
+        _, outcome = owed.failure_outcome(kind, detail)
+        assert "rather than saying it failed" not in outcome, outcome
+        assert owed._ACTION_HEDGE in outcome
+        core = owed.failure_core(outcome)
+        assert "send, post or change" not in core and core.startswith("No answer:"), core
 
 
 async def test_a_failure_lands_as_its_record():
