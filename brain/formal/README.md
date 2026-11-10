@@ -288,7 +288,7 @@ answer. The trigger was retired as "already given", and "I'm ready." got a secon
 |---|---|---|
 | the **record** | what the caller is still owed, outside the conversation: `none` (consult running) → `owed` → `closed` (heard), `declined` (they don't want it, #231) or `dropped` (told and cut twice, #231; or evicted unheard: not modelled) | `owed.Record`, kept by `owed.Owed` (one per session) |
 | the **note** | rendered into every request from the record while it is owed, never stored | `owed.render(messages, records, purpose)`, called by the render hook in `BoundedOpenAILLMService._open_stream` through `Owed.view` |
-| the **evidence** | the caller heard the **gist** -- the answer to what they asked (#210); a failure, by a reply about it heard to its end. A reply about the record played to its end closes it if the gist judge, shown the caller's words, the result and what was heard of the record, answers HEARD -- or gives no verdict; the second such reply closes it whatever the verdict (the backstop). A cut closes it only if the gist judge passes the reply's whole text and the cut judge, shown the question, the heard prefix and the unheard rest, answers HEARD. Both judges read what was heard of the record so far, not the one reply | `Owed.settle`, `Owed._judge` (the cut judge), the gist judge beside it, fed by the settle feed |
+| the **evidence** | the caller heard the **gist** -- the answer to what they asked (#210); a failure, by a reply the failure judge finds tells it (#380). A reply about the record played to its end closes it if the gist judge, shown the caller's words, the result and what was heard of the record, answers HEARD -- or gives no verdict; the second such reply closes it whatever the verdict (the backstop). A cut closes it only if the gist judge passes the reply's whole text and the cut judge, shown the question, the heard prefix and the unheard rest, answers HEARD. Both judges read what was heard of the record so far, not the one reply | `Owed.settle`, `Owed._judge` (the cut judge), the gist judge beside it, fed by the settle feed |
 | the **decline** (#231) | the caller's words when they cut a telling of the record, read before anything renders again: the decline check, shown their question, what they heard, the rest and their words, answers DECLINED on a dismissal or a correction ("No, I mean the one on Elm Street") and the record ends `declined`. A telling cut after its audio began counts, and the second ends it `dropped`, as the backstop bounds the ones played through | `Owed.declines_read` (every reader), `services.BoundedOpenAILLMService.judge_decline`, `Record.cuts` |
 
 A sync tool's answer (web_search, web_fetch) joins the same book as a record when a
@@ -501,10 +501,12 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
 | `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
 | `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
-| `ow_failure` | `OUTCOME = "failure"` (one item: what the failure states), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 265,154 states |
+| `ow_failure` | `OUTCOME = "failure"` (one item: what the failure states), the design since #380 (`RUNCLOSE = "judge"`): a noted reply heard to its end closes it on the failure judge's HEARD, or with no verdict if it is the record's own run; vague replies that tell nothing of it (`MENTION`) included | holds, every safety property | 517,874 states |
 | `ow_noRenderPlace` | a held landing placed only by the placeholder's `on_context_updated` task, not by the render | ✗ `NoStaleResult` | the consult fails before its placeholder is in; the placeholder comes in, and the landing run renders before the task has placed the failure (4 steps): why `Owed.view` calls `place_landed` |
 | `ow_rewriteOnce` | the landing rewrites the tool result once (the code before #386), a failure | ✗ `NoStaleResult` | the consult fails before its placeholder is in the context; the rewrite finds nothing, the placeholder comes in, and the landing run is rendered with "nothing has come back yet" beside a note saying it failed (4 steps). Live 2026-11-09: "I don't have those results yet" for lookups that had timed out |
-| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 200,086 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 376,448 states |
+| `ow_failure_aboutVague` | a failure closed by a reply ABOUT it by its words (`RUNCLOSE = "about"`, the code before #380), with vague replies (`MENTION`) | ✗ `ClosedOnEvidence` | a noted reply says only "I don't have the bookshop results yet" -- it names the request -- and plays to its end; the record closes, the caller never told it failed (10 states) |
+| `ow_failure_judgeWrong` | the failure judge answers HEARD on a vague reply (`gistWrong` under `"judge"`): the measured residual, 0/30 on the eval's cases and 7/37 on the model's own tellings | ✗ `ClosedOnEvidence` | the landing run says only that there is nothing yet, judged HEARD (5 states) |
 | `ow_failNotAbout` | a failure record with no terms (`owed.py` 9349e35 until the formal audit's C1): a telling that names nothing of the request is about it only when it is the record's own run | ✗ `NoStaleNote` | the failure lands mid-turn; the caller's reply tells it in its own words ("a billing problem, want me to open your settings?") and plays through; the record stays owed, and the lull's re-offer says NOT heard (11 steps) |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
@@ -737,6 +739,25 @@ The model was written to lead the design, and it found these:
    other side of the four words: a reply on another subject that says one of them
    ("your credit card statement", "an error in that article") is about the record, and
    closes it played through, unjudged, or counts as a cut telling.
+
+   **Superseded by #380 (`RUNCLOSE = "judge"`).** The four words matched no telling in
+   Spanish or Italian -- this row's trace again, in every language but English -- and the
+   request's words alone made a vague "I don't have the bookshop results yet" about the
+   record, which closed it unheard (`ow_failure_aboutVague`). A failure has no terms now;
+   the failure judge reads every noted reply (`owed.Owed._failed`): its whole text, on
+   `owed.FAILURE_TOLD_JUDGE_PROMPT` -- does it tell them it failed? -- closes it played
+   through and decides whether a cut counts as a telling; a cut's prefix and rest then go
+   to `owed.FAILURE_CUT_JUDGE_PROMPT` as before. No verdict closes only the record's own
+   run. A telling cut before its stream ended (no whole text) is judged on what was
+   heard of it: it counts only if that prefix already tells it. Measured
+   (`tests/test_failure_judge_eval.py`, gpt-oss-120b, majority of 3, en/es/it, a consult
+   that never reported back included, 2026-11-09): played through, false closes 23/30 ->
+   0/30 and false owes 5/22 -> 0/22 (on 135 tellings the model gave, 16/37 -> 7/37 and
+   36/84 -> 0/84); cut, false closes 50-53/411 -> 39-47/411 and false owes 72-78/177 ->
+   22-32/177 (two runs); cuts counted that told nothing 156 -> 0, tellings not counted
+   83 -> 0; a cut before its stream ended, judged on its prefix, counted as a telling of
+   a reply that told nothing 1/211. The residual, a
+   vague reply judged HEARD, is `ow_failure_judgeWrong`.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a

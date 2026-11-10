@@ -133,21 +133,25 @@
 (*              with the request or the failure's own statement:            *)
 (*              owed.Record.about) -- the failure the caller's own turn     *)
 (*              told in full is not re-offered (Fable's review).            *)
+(*   "judge" -- a failure (#380): any noted reply heard to its end closes it *)
+(*              on the failure judge's HEARD -- does it tell them it failed, *)
+(*              in any words or language? -- or, with no verdict, if it is   *)
+(*              the record's own run (FailVerdicts). "about" read a reply's  *)
+(*              words, and a vague "I don't have it yet" (MENTION, for a     *)
+(*              failure too) closed it unheard: ow_failure_aboutVague.       *)
 (*                                                                          *)
 (* OUTCOME: "items" -- two items with terms (a two-story list); "failure"   *)
 (*   -- one item the consult's failure states (no answer). The lexical      *)
 (*   premise for the latter: every telling of it is about it, and a reply   *)
 (*   about the record heard to its end told it -- a failure is one          *)
 (*   statement, told whole or not at all (no "part"), and the telling is    *)
-(*   the reply (a question after it, cut, reads owed). The code makes the   *)
-(*   first half true for a telling that names what failed, by giving the    *)
-(*   record those words as terms (owed._terms: "billing", "credit",         *)
-(*   "error", "empty"): one naming nothing of the request is about it       *)
-(*   (formal audit C1, 2026-11-05). A telling in other words ("it timed     *)
-(*   out", "something went wrong") still is not: the residual. As           *)
-(*   failNotAbout shows, it keeps the record owed after it was heard, and   *)
-(*   later turns carrying the note may tell it again (RetellOnce falls      *)
-(*   too), until the record's run, its eviction or the conversation's end.  *)
+(*   the reply (a question after it, cut, reads owed). Since #380 the code  *)
+(*   reads it with the failure judge, not words (RUNCLOSE "judge"): before  *)
+(*   it, C1 gave the record four English words as terms ("billing",        *)
+(*   "credit", "error", "empty"), and a telling in other words or another   *)
+(*   language was about nothing -- failNotAbout's shape, left in Spanish    *)
+(*   and Italian -- while a vague reply naming the request was about it and *)
+(*   closed it (ow_failure_aboutVague).                                    *)
 (*   "failNotAbout" (MUT) -- before C1: the record has no terms, and a      *)
 (*                  telling that names nothing of the request is about it  *)
 (*                  only when it is the record's own run (`mine`): such a  *)
@@ -271,7 +275,7 @@ EXTENDS Naturals
 CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           MUT,         \* the mutations switched on (see the header); {} = the design
           REOFFER,     \* "cutOrTurn" | "anyMiss"
-          RUNCLOSE,    \* "uncut" | "terms" | "about" (see the header)
+          RUNCLOSE,    \* "uncut" | "terms" | "about" | "judge" (see the header)
           OUTCOME,     \* "items" | "failure" (see the header)
           FLAKY,       \* a request carrying the note may still re-look-up
           PARTIAL,     \* a telling run may carry only some of the items
@@ -401,7 +405,7 @@ Init ==
 PlayGot(s) == CASE s = "tell" -> {"all"}
                 [] s = "part" -> {"some"}
                 [] s \in {"defer", "other"}
-                       -> {"filler"} \cup Opt(MENTION /\ OUTCOME = "items", "mention")
+                       -> {"filler"} \cup Opt(MENTION, "mention")
                 [] OTHER      -> {"filler"}        \* lookup's ack, a line before a call
 \* "words": a cut after every item's content words but before its facts were all out --
 \* "a high around seventy-five" before the low, "the developer kit at two hundred" before
@@ -452,6 +456,19 @@ PtVerdicts(g) ==
           ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
          \cup Opt(NOVERDICT, "none")
 
+\* A failure played to its end, RUNCLOSE "judge" (#380): the failure judge on the whole
+\* reply -- does it tell them it failed, in any words or language? HEARD on a telling
+\* ("all"), OWED on anything else, a vague "I don't have it yet" ("mention") included; the
+\* residuals: PTOWES (a telling judged OWED: 0/22 and 0/84 measured), gistWrong (a vague
+\* one judged HEARD: 0/30 on the eval's cases, 7/37 on the model's own), NOVERDICT (none:
+\* closes only the failure's own run). A telling cut before its stream ended is judged on
+\* what was heard of it (owed.Owed._failed): told, and counted, only if that already tells
+\* it.
+FailVerdicts(g) ==
+    (IF g = "all" THEN {"heard"} \cup Opt(PTOWES, "owed")
+     ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
+    \cup Opt(NOVERDICT, "none")
+
 \* A cut, "gist": once what was heard of the record holds the answer, the gate passes and
 \* the judge reads all of it.
 CutVerdicts(s, r) ==
@@ -483,7 +500,8 @@ Closes(p, n, cut, g, v) ==
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
        ELSE IF OUTCOME = "failure"
-            THEN IF RUNCLOSE = "about" THEN g = "all" /\ (p \in Runs \/ ~Mut("failNotAbout"))
+            THEN IF RUNCLOSE = "judge" THEN v = "heard" \/ (v = "none" /\ p \in Runs)
+                 ELSE IF RUNCLOSE = "about" THEN About(g) /\ (p \in Runs \/ ~Mut("failNotAbout"))
                  ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
        ELSE \* the design: an uncut run, the verdict, or the backstop
             RunUncut(p, cut, g) \/ v \in {"heard", "none"} \/ Backstop(cut, g)
@@ -513,7 +531,8 @@ Reads(cut, g) ==
 Finish(cut, g, arm, mk) ==
     \E r \in Reads(cut, g) :
     \E v \in (IF cut THEN CutVerdicts(say, r)
-              ELSE IF OUTCOME = "items" THEN PtVerdicts(r) ELSE {"skip"}) :
+              ELSE IF OUTCOME = "items" THEN PtVerdicts(r)
+              ELSE IF RUNCLOSE = "judge" THEN FailVerdicts(r) ELSE {"skip"}) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
           c  == Closes(req, nreg, cut, r, v) \/ (Mut("countSettle") /\ u = 2)
@@ -1012,7 +1031,7 @@ TypeOK ==
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
                       "declineWrong", "cutsUncounted", "cutRecordUnread",
                       "failNotAbout", "rewriteOnce", "noRenderPlace"}
-    /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
+    /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about", "judge"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
     /\ tr \in {"none", "ph", "out"} /\ staleRes \in BOOLEAN
 =============================================================================

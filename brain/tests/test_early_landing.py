@@ -156,6 +156,9 @@ async def test_the_early_failure_closes_on_a_reply_that_tells_it():
     reply = Reply(owed_mod.RUN, ("call-1",))
     book.noted(reply, ("call-1",), book.context.get_messages())
     book.settle(reply, TOLD, cut=False, audio=True, text=TOLD)
+    # The failure judge's verdict (none here: no judge wired) lands on the book (#380);
+    # the failure's own run closes it on no verdict.
+    await _until(lambda: book.record("call-1").state == CLOSED)
     assert book.record("call-1").state == CLOSED and book.owed() == []
 
 
