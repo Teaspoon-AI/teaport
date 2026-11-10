@@ -401,7 +401,8 @@ async def test_nothing_pauses_the_question_while_it_is_asked():
     def hold(on):
         seen.append(("hold", on))
         at[on] = time.monotonic()
-    session.barge_pauser = SimpleNamespace(hold_off=hold)
+    session.barge_pauser = SimpleNamespace(hold_off=hold,
+                                           own_cut=lambda on: seen.append(("own cut", on)))
     queue = session.task.queue_frames
 
     async def watched(frames):
@@ -416,7 +417,10 @@ async def test_nothing_pauses_the_question_while_it_is_asked():
         while ("hold", False) not in seen:
             await asyncio.sleep(0.02)
     await asyncio.wait_for(lifted(), 5)
-    assert seen == [("hold", True), "TTSSpeakFrame", ("hold", False)], (
+    # And the pauser hears the cut is the box's own until its interruption has gone
+    # through, before the question goes in (#389 review).
+    assert seen == [("hold", True), ("own cut", True), ("own cut", False), "TTSSpeakFrame",
+                    ("hold", False)], (
         "held off from before the question goes in until it has been said", seen)
     # The fake line plays for 1 s: a stall only makes the gap longer.
     assert at[False] - at["said"] >= 0.9, ("held through its playing, not its queueing",

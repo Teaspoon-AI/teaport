@@ -36,9 +36,9 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 ## Open the settings from your phone
 
-On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual, which, with a model set up, answers it in words. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
+On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual, which, with a model set up, answers it in words. Said while the assistant is talking, the phrase stops the answer, and the device shows the code and tells you so straight away, at the device and in Talk. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/agent_session.py:944-948#abcad8a7; brain/teaport_brain/wifi_voice.py:264-273#58fd5ac9 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/wifi_voice.py:441-459#9d2a2a28; brain/teaport_brain/agent_session.py:1006-1010#abcad8a7; brain/teaport_brain/wifi_voice.py:265-274#58fd5ac9 -->
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
