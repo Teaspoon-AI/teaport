@@ -37,6 +37,7 @@
 # never a password.
 #
 import asyncio
+import contextvars
 import json
 import math
 import os
@@ -186,11 +187,14 @@ PATTERNS = {
                 + _THANKS + r")\b)*" + _TO_THE_END,
     # "go to sleep" (goodbye.SleepPhrase): the room goes back to sleep, said as a request
     # on its own, the same way -- "okay, go to sleep", "you can go back to sleep now",
-    # "can you go to sleep?" -- and "no" or a goodbye may lead in ("No, go to sleep.",
-    # "Good night, go to sleep."). Talk about sleep is not it: "how do I make you go to
-    # sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep mode".
+    # "can you go to sleep?", "stop listening" -- and "no" or a goodbye may lead in ("No,
+    # go to sleep.", "Good night, go to sleep."). Talk about sleep is not it: "how do I
+    # make you go to sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep
+    # mode", "stop listening to me". (A turn that is only a goodbye -- "Good night." --
+    # is the phrase too: goodbye.SleepPhrase hears it with the backstop's matcher.)
     "sleep": _lead_in(r"|no|yes|yeah|just|thanks|thank you|good ?night|bye")
-             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?go (?:back )?to sleep"
+             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?"
+             r"(?:go (?:back )?to sleep|stop listening)"
              r"(?:[\s,]+(?:now|please|then|for now|again|" + _THANKS + r")\b)*" + _TO_THE_END,
 }
 
@@ -380,6 +384,23 @@ def instructions(status: dict, t: i18n.T, spelled: bool = False) -> str:
         ssid=spell(ssid, t), password=spell(password, t), url=url)
 
 
+class _Answer:
+    """The answer to one transcript a phrase is hearing (PhraseVoice._heard): open until
+    its first line is said, or the hearing is over."""
+
+    __slots__ = ("voice", "open")
+
+    def __init__(self, voice):
+        self.voice, self.open = voice, True
+
+
+# The answer being given in this task, and in the tasks it starts (asyncio copies the
+# context into each): a line said elsewhere -- the setup poller's news, a line said again
+# after a cut, started before or outside the hearing -- answers nothing (PhraseVoice.say).
+_ANSWERING: contextvars.ContextVar = contextvars.ContextVar("teaport_phrase_answer",
+                                                            default=None)
+
+
 class PhraseVoice(FrameProcessor):
     """The session's fixed phrases, between the user's transcript and the LLM: what the
     box hears and answers itself, without the model, in the session's language (catalog
@@ -411,6 +432,16 @@ class PhraseVoice(FrameProcessor):
         self.bot_starts = 0  # the box's speech started so far (heard_out)
         self.cuts = 0        # ... and cut by the user while it played (heard_out)
         self._start_cuts = 0  # cuts when the box's speech last started
+        # The room's echo guard's record of what the speaker played (echo_guard.BotWords),
+        # where the session has one (agent_session): the model's words, for _echo.
+        self.bot_words = None
+        # The user has said something in this session (a final heard here, the box's
+        # own voice aside): a phrase may read whether these are their first words.
+        self.caller_spoke = False
+        self._first = None    # their first words, normalized (first_words)
+        # AgentSession.say_in_place, where the session wires it: an answer to the user's
+        # words said while the bot is replying stops that reply first (say()).
+        self.say_in_place = None
 
     @property
     def t(self) -> i18n.T:
@@ -418,8 +449,23 @@ class PhraseVoice(FrameProcessor):
 
     # -- speaking
     async def say(self, text: str) -> None:
+        """Say `text`. The first line of an answer to the user's words (_heard), said
+        while the bot is replying -- speaking, paused over those very words, or about to
+        -- goes in place of that reply, which stops as for a barge-in (say_in_place):
+        the user asked for something else. Queued behind it instead, the barge-in pauser
+        found no turn in words a phrase took and resumed the reply, and the answer waited
+        for the rest of it (#389). One place for every phrase: "go to sleep", "open my
+        settings", Wi-Fi setup's. Only a line said by the hearing itself (or a task it
+        started, _ANSWERING): one said meanwhile by anything else answers nothing."""
         self.says += 1
         self.note_said(text)
+        answer = _ANSWERING.get()
+        answering = answer is not None and answer.open and answer.voice is self
+        if answering:
+            answer.open = False
+        if (answering and self.say_in_place is not None
+                and await self.say_in_place(text, LINE_START_SECS + LINE_MAX_SECS)):
+            return
         await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
 
     def note_said(self, text: str) -> None:
@@ -444,6 +490,26 @@ class PhraseVoice(FrameProcessor):
         else:
             return False
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
+
+    def tail_echo(self, text: str) -> bool:
+        """Might `text` be the box's own last word heard back: one word, the last of its
+        newest line or of anything the speaker played (bot_words: the model's reply),
+        heard while it speaks or just after (ECHO_TAIL_SECS)? "…es a las ocho. Chao."
+        comes back as "Chao". Too short to call echo and drop (_echo's runs: "No." over
+        "Say yes or no." is the user's answer, as the room's echo guard keeps one short
+        word), but no ground to act on alone: the sleep phrase does not sleep on it."""
+        now = self._clock()
+        if not (self._bot_speaking or now - self._quiet_since <= ECHO_TAIL_SECS):
+            return False
+        word = _norm(text)
+        if not word or len(word.split()) != 1:
+            return False
+        if self._said:
+            when, line = self._said[-1]
+            if now - when <= ECHO_LINES_SECS and line.split()[-1:] == [word]:
+                return True
+        last = self.bot_words.last() if self.bot_words is not None else None
+        return last is not None and _norm(last[1]) == word
 
     async def heard_out(self, starts: int) -> bool:
         """Until a line say() started has played to its end (`starts`: bot_starts read
@@ -484,11 +550,32 @@ class PhraseVoice(FrameProcessor):
         if self._echo(text):
             logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
             return True
-        if self.idle():
-            for phrase in self.phrases:
-                if await phrase.heard(self, text):
-                    return True
-        return await self._own(text)
+        try:
+            return await self._hear(text)
+        finally:
+            if text.strip():
+                # Their first words, while that turn is the latest: the same words said
+                # again later are no hello.
+                first = not self.caller_spoke
+                self.caller_spoke, self._first = True, _norm(text) if first else None
+
+    def first_words(self, said: str) -> bool:
+        """Are `said` (the user's words, as committed) their first in this session, and
+        still their latest?"""
+        return self._first is not None and _norm(said) == self._first
+
+    async def _hear(self, text: str) -> bool:
+        answer = _Answer(self)
+        reset = _ANSWERING.set(answer)
+        try:
+            if self.idle():
+                for phrase in self.phrases:
+                    if await phrase.heard(self, text):
+                        return True
+            return await self._own(text)
+        finally:
+            answer.open = False
+            _ANSWERING.reset(reset)
 
     async def _own(self, text: str) -> bool:
         """A subclass's own phrases and answers: none here."""
@@ -512,7 +599,15 @@ class PhraseVoice(FrameProcessor):
             await self._ending()
         elif (isinstance(frame, TranscriptionFrame) and direction == FrameDirection.DOWNSTREAM
               and not is_taken(frame)):
-            if await self._heard(frame.text or ""):
+            # Not dropped mid-decision by the interruption a phrase's own answer sends
+            # (say_in_place, from the pipeline's top): the STT's finals never are
+            # (stt.FinalTranscriptionFrame); any other is held to the same while here.
+            was, frame.interruptible = frame.interruptible, False
+            try:
+                took = await self._heard(frame.text or "")
+            finally:
+                frame.interruptible = was
+            if took:
                 if self.taken_words is not None:
                     await self.taken_words.took(frame.text, self.TAKEN_BY)
                 await self.push_frame(taken(frame), direction)  # ours: no words go on
@@ -655,9 +750,11 @@ class WifiSetupVoice(PhraseVoice):
             logger.debug(f"wifi setup: could not tell the client ({e!r})")
 
     async def _shielded(self, coro) -> None:
-        """Run a unit operation to its end even if the frame that asked for it is
-        interrupted: a barge-in cancels the frame being processed, and half a start (the
-        unit asked to start, nobody following it) or half a cancel is worse than either."""
+        """Run a unit operation to its end even if the task that asked for it is
+        cancelled -- a session ending under it, a pipeline torn down mid-frame (a final
+        is not dropped by an interruption any more: process_frame holds it while the
+        phrases decide) -- since half a start (the unit asked to start, nobody following
+        it) or half a cancel is worse than either."""
         await asyncio.shield(self._spawn(coro))
 
     async def _start(self, welcome: bool = False) -> None:

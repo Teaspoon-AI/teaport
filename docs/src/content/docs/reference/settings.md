@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2830#bd720889 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2830#4cb41ef4 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -33,13 +33,13 @@ In `/etc/teaport/brain.env`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
+| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, or http://127.0.0.1:8182/v1 for a local server. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
 | `LLM_API_KEY` | file `~/.config/teaport/llm_key` | The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local. Prefer the file; the env var, if set, wins over it. |
 | `LLM_MODEL` | `gpt-oss-120b` | The served model name. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL). |
 | `LLM_REASONING_EFFORT` | `low` | Reasoning effort for models that support it. Set "" to disable for models that do not. One of `low`, `medium`, `high`, `""`. low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default. |
 | `LLM_MAX_TOKENS` | by `LLM_REASONING_EFFORT`: 1024 at `low`, 3072 at `medium`, 8192 at `high`, 4096 at `""` | Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint. |
 | `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this, plus up to 2 s when an empty answer that came quickly is asked again. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
-| `LLM_EXTRA_BODY` | — | Optional JSON object merged into the request extra_body. OpenRouter routing example: {"provider":{"order":["Groq"],"allow_fallbacks":true}}. |
+| `LLM_EXTRA_BODY` | — | Optional JSON object merged into the request extra_body. With OpenRouter it picks who serves the model. For gpt-oss-120b: {"provider":{"order":["BaseTen","Groq"],"allow_fallbacks":false}}. Avoid putting Groq or Cerebras first for that model: there it sometimes breaks down in the middle of a reply, most often after it uses a tool, and the device says it lost its train of thought. |
 | `TEAPORT_LLM_TEXT_GUARD` | **on** | Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse. |
 | `TEAPORT_FACE_MOOD` | `tag` | Where the OLED face's mood comes from. tag: the model begins a reply with a mood tag ([mood: sad], never spoken) when it has a clear feeling, and the reply's words are scored (VADER) when it gave none. text: the words only, no tag. off: the face is given no mood. One of `tag`, `text`, `off`. |
 | `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips, and when the model answers what the caller said with nothing (no words, no tool call): after one quick retry, or straight away when there is no time to retry. Empty = the line in the session's voice language; an override is spoken as written, in every language and after every voice switch. |

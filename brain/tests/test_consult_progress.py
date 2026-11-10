@@ -368,6 +368,9 @@ async def test_the_consult_hands_its_phrase_to_the_narrator():
         def dispatch(self, tool_call_id, request):
             return None
 
+        async def placed(self):             # the placeholder's on_context_updated (#386)
+            pass
+
     class _Llm:
         tasks = []
 

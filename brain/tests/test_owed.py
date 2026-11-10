@@ -67,9 +67,11 @@ MEASURED_FOOTER = (
     "in yourself, and never read out web addresses. Don't look up again what a result "
     "already answers. If they're busy with something else or asked you to wait, don't push "
     "it.")
+# #387 replaced round 5's "Lead with the answer, then say what it answers (\"<answer> is …\")",
+# which was read out ("That answers your request."): test_owed_note_eval.py, 2026-11-09.
 MEASURED_FIRST = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-                  "Lead with the answer, then say what it answers (\"<answer> is …\"), not "
-                  "the other way round.")
+                  "Start with the answer itself, in a full sentence, not with their question, "
+                  "and don't talk about your reply or their request.")
 MEASURED_REOFFER = (
     "They haven't heard this yet and the conversation has gone quiet. If their last words asked "
     "you to wait and they haven't come back to you, call stay_silent. Otherwise mention it once "
@@ -449,11 +451,137 @@ async def test_landing_rewrites_the_placeholder_once_and_asks_the_run():
     assert b.record("call-hn").state == OWED and gate.asked == [(["call-hn"], "run")]
 
 
+def _tool_content(ctx, key="call-hn"):
+    return next(m["content"] for m in ctx.get_messages()
+                if m.get("role") == "tool" and m.get("tool_call_id") == key)
+
+
+def _the_call_comes_in(ctx, content):
+    """What the assistant aggregator writes for the consult's call: the call and pipecat's
+    IN_PROGRESS at its FunctionCallInProgressFrame (`content` "IN_PROGRESS"), or the
+    placeholder over it at its FunctionCallResultFrame."""
+    msgs = ctx.get_messages()
+    tool = next((m for m in msgs if m.get("role") == "tool"), None)
+    if tool is None:
+        ctx.add_messages(tool_round()[2:])
+        tool = ctx.get_messages()[-1]
+    tool["content"] = content
+
+
+PLACEHOLDER = json.dumps({"status": "working_in_background"})
+
+
+async def test_a_landing_before_its_placeholder_replaces_it_when_it_comes_in():
+    """#386 (Owed.tla Place, ow_rewriteOnce): a consult that fails within milliseconds
+    lands before the aggregator has taken its call. The landing is held: written over
+    IN_PROGRESS and held on (the placeholder's result frame writes over that), and once
+    the placeholder is in (its on_context_updated: Owed.placed) it replaces it for good.
+    The context ends up as after a slow landing."""
+    b, ctx, gate = book(msgs=tool_round()[:2])          # the question; no call in it yet
+    assert b.dispatch("call-hn", HN_REQ) is None
+    rec = b.land(HN_REQ, None, "call-hn", failure="timeout")
+    assert rec.state == OWED and gate.asked == [(["call-hn"], "run")]
+    failed = {"status": "timeout", "error": rec.outcome}
+    _the_call_comes_in(ctx, owed.IN_PROGRESS)
+    b.place_landed()
+    assert json.loads(_tool_content(ctx)) == failed, "not written over IN_PROGRESS"
+    _the_call_comes_in(ctx, PLACEHOLDER)                 # the result frame, over it
+    await b.placed()
+    assert json.loads(_tool_content(ctx)) == failed, _tool_content(ctx)
+    _the_call_comes_in(ctx, "something later")           # let go: nothing writes it again
+    b.place_landed()
+    assert _tool_content(ctx) == "something later"
+
+
+async def test_a_render_places_a_landing_its_placeholder_came_after():
+    """The run a landing asks can render before the placeholder's on_context_updated has
+    run: the render places it first, so no request goes out with "nothing has come back
+    yet" beside a note saying it failed."""
+    b, ctx, _ = book(msgs=tool_round()[:2])
+    b.dispatch("call-hn", HN_REQ)
+    rec = b.land(HN_REQ, None, "call-hn", failure="timeout")
+    _the_call_comes_in(ctx, PLACEHOLDER)
+    view, keys = await b.view(ctx, owed.RUN, ("call-hn",))
+    tool = next(m for m in view.get_messages() if m.get("role") == "tool")
+    assert json.loads(tool["content"]) == {"status": "timeout", "error": rec.outcome}
+    assert keys == ("call-hn",)
+
+
+async def test_a_landing_after_its_placeholder_is_written_at_once():
+    """The slow landing, as before: the placeholder is in, and the rewrite is final."""
+    b, ctx, _ = book()
+    b.dispatch("call-hn", HN_REQ)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    assert json.loads(_tool_content(ctx))["status"] == "complete"
+    _the_call_comes_in(ctx, "something later")           # final: not held for anything
+    await b.view(ctx, "caller")
+    assert _tool_content(ctx) == "something later"
+
+
 async def test_a_landing_with_a_caller_request_to_render_asks_no_run():
     """Owed.tla Land: their request carries the note; the re-offer is armed instead."""
     b, _, gate = book(pending=True)
     b.land(HN_REQ, HN_RAW, "call-hn")
     assert gate.asked == [] and b.record("call-hn").missed
+
+
+def _failure_record(kind="timeout", key="call-hn", detail=""):
+    status, outcome = owed.failure_outcome(kind, detail)
+    return Record.make(key, HN_REQ, outcome, failure=status)
+
+
+def test_a_failures_note_says_it_is_over_and_its_run_says_why():
+    """#387 (test_owed_note_eval.py): a failure has no answer to lead with -- told to lead
+    with one, the model said "No results are available", as if nothing existed. Its run
+    says to tell that it couldn't be done and why, every note says under its result that
+    it is over (not "still waiting", not "nothing was found"), and its re-offer has the
+    failure's own line. An answer keeps the answer lines; a note with both kinds the
+    answer's run line, the failure keeping its own line under its result."""
+    fail, answer = _failure_record(), hn_record()
+    run = owed.note_text([fail], owed.RUN)
+    assert run.split("\n")[1] == owed.FAILURE_RUN_LINE, run
+    assert owed.RUN_LINE not in run and owed.FAILED_LINE in run
+    for purpose in ("caller", owed.REOFFER):
+        assert owed.FAILED_LINE in owed.note_text([fail], purpose)
+    assert owed.note_text([fail], owed.REOFFER).endswith(owed.FAILURE_REOFFER_LINE)
+    plain = owed.note_text([answer], owed.RUN)
+    assert plain.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE not in plain
+    assert owed.note_text([answer], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    both = owed.note_text([answer, fail], owed.RUN)
+    assert both.split("\n")[1] == owed.RUN_LINE and both.count(owed.FAILED_LINE) == 1
+
+
+def test_a_consult_that_never_reported_back_is_over_not_failed():
+    """#398 review: a consult the session's end cut off lands "unknown" -- it may have been
+    done (Owed.close_session) -- so its note says it is over and brought no answer
+    (ENDED_LINE), never that it "did not get done", and its run and re-offer are the
+    answer's lines, not the failure's "you couldn't do it"."""
+    rec = _failure_record("unknown")
+    for purpose in (owed.RUN, "caller", owed.REOFFER):
+        note = owed.note_text([rec], purpose)
+        assert owed.ENDED_LINE in note and owed.FAILED_LINE not in note, (purpose, note)
+    assert owed.note_text([rec], owed.RUN).split("\n")[1] == owed.RUN_LINE
+    # Its re-offer has neither an answer to give nor a failure to tell (#398 round 2).
+    assert owed.note_text([rec], owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([_failure_record("timeout", key="t"), rec],
+                          owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([hn_record(), rec], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    both = owed.note_text([_failure_record("timeout", key="t"), rec], owed.RUN)
+    assert both.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE in both
+
+
+def test_a_failures_outcome_never_says_not_to_say_it_failed():
+    """#387: the hedge for an action that may have gone through rode on every failure as
+    "ask them to check rather than saying it failed", and lookups were told as "I don't
+    have the results yet". It is the action's alone now, and failure_core still drops it
+    (what the judges are shown, and the failure's terms)."""
+    for kind, detail in (("timeout", ""), ("empty", ""), ("error", "boom"),
+                         ("error", "HTTP 402: insufficient credits"), ("unknown", "")):
+        _, outcome = owed.failure_outcome(kind, detail)
+        assert "rather than saying it failed" not in outcome, outcome
+        assert owed._ACTION_HEDGE in outcome
+        core = owed.failure_core(outcome)
+        assert "send, post or change" not in core and core.startswith("No answer:"), core
 
 
 async def test_a_failure_lands_as_its_record():
