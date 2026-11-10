@@ -51,7 +51,7 @@ from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, barge_pause, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import agent_key, ai_account, conversation_log, credit, first_boot, host_context
 from teaport_brain import openrouter_connect, pairing, settings_access
-from teaport_brain import run_control, updates
+from teaport_brain import browser_idle, run_control, updates
 from teaport_brain import sip_server
 from teaport_brain.tasks import cancel_and_wait
 from teaport_brain import session_arbiter as arb
@@ -669,6 +669,9 @@ async def _lifespan(_app):
     monitor = asyncio.create_task(credit.MONITOR.run())
     # Whether a newer release is out (updates.py): one small read a day, never in a turn.
     updater = asyncio.create_task(updates.MONITOR.run())
+    # OpenClaw's browser, stopped once idle (browser_idle.py, #385): a look every few
+    # minutes, never in a turn.
+    browser = asyncio.create_task(browser_idle.MONITOR.run())
     # OpenClaw's restart for a key it was given, and the first look at whether it already
     # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
     # the engine counts as live already.
@@ -680,6 +683,7 @@ async def _lifespan(_app):
     finally:
         for name, t in (("busy lamp", lamp), ("first-boot watcher", watcher),
                         ("credit monitor", monitor), ("update check", updater),
+                        ("browser idle stop", browser),
                         ("agent key restarter", restarter)):
             err = await cancel_and_wait(t)
             if err is not None:  # it had ended on its own, with this

@@ -139,7 +139,7 @@ the call at the gateway, which hands it to the restarted brain, and the caller
 hears a short "sorry, I lost you for a moment". The brain picks up a restarted
 gateway within a couple of seconds.
 
-<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1980-1989#52b15746 -->
+<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
 
 To restart the gateway, for example after editing its configuration by hand:
 
@@ -203,7 +203,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1942-1952#a986d676; cli/teaport:1459-1461#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1955-1965#a986d676; cli/teaport:1459-1461#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — Ann Smith. Should I step away
@@ -241,13 +241,13 @@ applies. The waiting time still counts from the ring, so with the question
 asked twice and nobody answering, the call is picked up about 16 to 18 seconds
 after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1955-1977#1d703178 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1968-1990#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1747-1754#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,554-557#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1760-1767#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,554-557#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
@@ -276,7 +276,7 @@ sound through the wait. A phone call plays none unless you turn the typing on
 for calls with `SIP_THINKING_SOUND`. To change the setting and apply it, see
 [Configure teaport](/guides/configuration/).
 
-<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1505-1514#d88774b0 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1518-1527#d88774b0 -->
 
 Three other settings decide the typing on calls as well:
 
@@ -296,7 +296,7 @@ there the brain doesn't hear the caller while the typing plays, the same as
 while the agent speaks. An OLED face on the device doesn't type along to a
 call.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1516-1526#82e31268; brain/teaport_brain/config_schema.toml:1904-1912#ac57e09d; brain/teaport_brain/sip_server.py:219-221,244-246#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1529-1539#82e31268; brain/teaport_brain/config_schema.toml:1917-1925#ac57e09d; brain/teaport_brain/sip_server.py:219-221,244-246#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
 
 Before you turn the typing on for calls, listen to it on a call. The typing is
 made at 24 kHz, and a phone line carries 8 kHz audio, which keeps little of the
@@ -324,7 +324,7 @@ consent of one party to the call, California and about a dozen others need every
 other countries have their own rules. You choose the setting and are
 responsible for it; this page is not legal advice.
 
-<!-- source: brain/teaport_brain/call_recording.py:4-9#26b6c6b3; brain/teaport_brain/config_schema.toml:1994-2047#285b81c9 -->
+<!-- source: brain/teaport_brain/call_recording.py:4-9#26b6c6b3; brain/teaport_brain/config_schema.toml:2007-2060#285b81c9 -->
 
 Each call's files are named by the time the call started and its call id, for
 example `20261102-141503-abc123.wav`, in `TEAPORT_CALL_RECORDING_DIR`
@@ -365,7 +365,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,256#de2d5741; brain/teaport_brain/config_schema.toml:1980-1989#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:17#3f95ac55; brain/teaport_brain/sip_server.py:5-7,256#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -463,7 +463,7 @@ fake refuses to bind a path that something already listens on, compares real
 paths, so a symlink such as `/var/run` does not pass, and without
 `--allow-live-path` it refuses the default path as well.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1980-1989#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
+<!-- source: brain/teaport_brain/config_schema.toml:1993-2002#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
 
 Any 16-bit WAV works as the caller's audio; other sample rates and stereo are
 converted to the 16 kHz mono the gateway speaks. For a call that exercises a
