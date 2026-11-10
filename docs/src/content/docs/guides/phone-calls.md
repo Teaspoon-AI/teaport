@@ -287,7 +287,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1447-1449#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1456-1458#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the
