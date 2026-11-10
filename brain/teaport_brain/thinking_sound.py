@@ -598,7 +598,7 @@ class ThinkingSound(FrameProcessor):
             self._reply_t = now if isinstance(frame, LLMFullResponseStartFrame) else None
         elif isinstance(frame, (InterruptionFrame, FunctionCallsStartedFrame, RunSilentFrame)):
             # A response with no words of its own (cut, a tool call, a run that said
-            # nothing) has its End held at the TTS until a later context ends: it is not
+            # nothing, a mood shown alone) has its End held at the TTS until a later context ends: it is not
             # a reply on its way.
             self._reply_t = None
         elif not isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)):
