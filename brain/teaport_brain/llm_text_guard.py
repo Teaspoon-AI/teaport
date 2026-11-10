@@ -187,7 +187,7 @@ _MAX_HOLDBACK = 4
 # Not into an emoticon: a reply of ":)" lost its colon and went out as ")" -- to the
 # speaker (nothing) and to history, which then held a stray bracket where the model had
 # smiled (probe 2026-10-14). An emoticon is kept whole, as an emoji is: the TTS has
-# nothing to say for either, and a reply with words keeps it as written. A closer counts only
+# nothing to say for either, and history keeps what the model wrote. A closer counts only
 # when no word goes on right behind it: ":D" and ":(" are faces, ":Done." and ":(laughs)"
 # a colon before "Done." and "(laughs)" (":D'accord" one before "D'accord"). Without
 # that, ":Peru's capital is Lima." kept its colon -- the text a #15 retry streams when

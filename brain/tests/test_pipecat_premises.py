@@ -1356,8 +1356,15 @@ async def check_a_reply_with_no_audio_still_commits_its_text():
     HeardContextCorrector._resolve count such a reply's message as there.
 
     If it goes: a failed reply's text is never committed, so the corrector counts one
-    message too many and its cut lands on the reply before it -- one the caller heard."""
-    text = "Hello there my friend."
+    message too many and its cut lands on the reply before it -- one the caller heard.
+
+    A reply with nothing to synthesize at all -- only a face, ":)" or an emoji -- is
+    committed the same way: services._shows_a_face says history keeps it."""
+    for text in ("Hello there my friend.", ":)", "\U0001F622"):
+        await _commits_with_no_audio(text)
+
+
+async def _commits_with_no_audio(text):
     context = LLMContext([{"role": "user", "content": "hi"}])
     tts, probe = _tts(_no_audio), Probe()
     async with Run(tts, probe, LLMContextAggregatorPair(context).assistant()) as run:
