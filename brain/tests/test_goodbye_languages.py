@@ -76,6 +76,15 @@ def test_the_models_goodbyes_in_each_release_language():
 
 
 def test_a_name_beside_the_goodbye_but_no_other_clause():
+    # Unpunctuated, one capitalised word or a word for anyone; after a comma, one or two.
+    en, it_ = i18n.get("en"), i18n.get("it")
+    for text in ("good night Sam", "good night Teaport", "good night everyone",
+                 "good night, Sam Smith", "buonanotte Marco", "buonanotte, Marco Rossi",
+                 "good night sleep well", "buonanotte sogni d'oro"):
+        assert goodbye_kind(text, it_) == BYE, text
+    for text in ("good night Alarm Set", "Good night Door Locked", "good night alarm set",
+                 "buonanotte Sveglia Impostata", "good night Sam Smith"):
+        assert goodbye_kind(text, it_) is None and goodbye_kind(text, en) is None, text
     es, it = i18n.get("es"), i18n.get("it")
     assert goodbye_kind("¡Buenas noches, Lucía!", es) == BYE
     assert goodbye_kind("Hasta mañana, la alarma está puesta.", es) is None
@@ -221,20 +230,43 @@ def test_the_callers_goodbye_stands_down_while_an_answer_is_owed():
 def test_a_greeting_back_is_no_goodbye_for_the_backstop():
     """Review round 1, the BLOCKER: woken with "Ciao" (hello, which the sleep phrase
     leaves to the model), the model's "Ciao! Sono qui." is a hello back. Words that
-    greet as well as part count in the reply only when the caller's turn did more."""
+    greet as well as part count in the reply unless the caller's turn was only such
+    words, as their first in the session."""
     from test_goodbye import _sent, _turn
     for lang, caller, reply in (("it", "Ciao", "Ciao! Sono qui."),
                                 ("it", "Ciao.", "Ciao, sono qui se hai bisogno."),
                                 ("es", "Buenas noches.", "¡Buenas noches! Aquí estoy para lo que necesites."),
                                 ("es", "Buenas noches", "¡Muy buenas noches! Estoy aquí si me necesitas.")):
         assert goodbye.greets_only(caller, i18n.get(lang)), caller
-        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller))
+        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller), first=True)
         assert sent == [] and sleep.decisions[-1] == "not a goodbye", (caller, reply, sleep.decisions)
     # A caller who did say goodbye: the same words back are one.
     for lang, caller, reply in (("it", "Va bene, a domani.", "Ciao!"),
                                 ("es", "Bueno, hasta mañana.", "¡Buenas noches!")):
         assert not goodbye.greets_only(caller, i18n.get(lang)), caller
-        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller))
+        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller), first=True)
+        assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, reply, sleep.decisions)
+
+
+def test_a_ciao_later_in_the_session_answered_with_ciao_sleeps():
+    """Review round 2: the box ends "…alle otto. Ciao!", the caller answers "Ciao" at
+    once (the sleep phrase stands down: maybe its echo), and the model says a bare
+    "Ciao!": not their first words, so a goodbye -- the backstop sleeps."""
+    from test_goodbye import _sent, _turn
+    from teaport_brain.echo_guard import BotWords
+
+    async def phrase():
+        v = _Voice("it")
+        v.bot_words = BotWords()
+        await v._heard("che ore sono")
+        v.bot_words.played("Certo, è alle otto. Ciao!")
+        v._bot_speaking = True
+        return await v._heard("Ciao"), v
+    took, v = asyncio.run(phrase())
+    assert not took and not v.first_words("Ciao") and v.first_words("che ore sono")
+    for lang, caller, reply in (("it", "Ciao", "Ciao!"), ("it", "Ciao", "Ciao! A presto!"),
+                                ("es", "Chao", "¡Chao!"), ("es", "Buenas noches", "¡Buenas noches!")):
+        sent, sleep = _sent(reply, lang=lang, messages=_turn(caller), first=False)
         assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, reply, sleep.decisions)
 
 

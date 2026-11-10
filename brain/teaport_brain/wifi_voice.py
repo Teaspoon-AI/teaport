@@ -420,6 +420,7 @@ class PhraseVoice(FrameProcessor):
         # The user has said something in this session (a final heard here, the box's
         # own voice aside): a phrase may read whether these are their first words.
         self.caller_spoke = False
+        self._first = None    # their first words, normalized (first_words)
 
     @property
     def t(self) -> i18n.T:
@@ -516,7 +517,12 @@ class PhraseVoice(FrameProcessor):
         try:
             return await self._hear(text)
         finally:
-            self.caller_spoke = self.caller_spoke or bool(text.strip())
+            if text.strip() and not self.caller_spoke:
+                self.caller_spoke, self._first = True, _norm(text)
+
+    def first_words(self, said: str) -> bool:
+        """Are `said` (the user's words, as committed) their first in this session?"""
+        return self._first is not None and _norm(said) == self._first
 
     async def _hear(self, text: str) -> bool:
         if self.idle():

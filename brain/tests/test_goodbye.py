@@ -294,14 +294,17 @@ def _reply(kind=owed.COMMIT, calls=0):
 
 
 def _sent(text, *, messages=None, reply=None, gate=None, book=None, lang="en-us",
-          heard=None, cut=False, audio=True, again=None):
+          heard=None, cut=False, audio=True, again=None, first=None):
     """Feed one reply end to a backstop, answer the call as the bridge would, and return
-    the messages it sent (and the backstop)."""
+    the messages it sent (and the backstop). `first`: the caller's turn was (True) or was
+    not their first words in the session (PhraseVoice.first_words); None, unknown."""
     async def run():
         llm = _LLM()
         sleep = GoodbyeSleep(context=_Context(messages or _turn(TURNS[0][0])),
                              owed=book or _Owed(), gate=gate or _Gate(),
                              lang_fn=lambda: lang, llm=llm)
+        if first is not None:
+            sleep.first_words = lambda said: first
         for t in [text] + ([again] if again else []):
             sleep.reply_end(reply or _reply(), t if heard is None else heard, cut=cut,
                             audio=audio, text=t)

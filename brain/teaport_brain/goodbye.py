@@ -281,11 +281,12 @@ class _Words:
             return re.compile(english, re.I)
         bye, sleep, around = both("bye").pattern, both("sleep").pattern, both("around").pattern
         greets, anyone = both("greets").pattern, both("anyone").pattern
-        # A clause: the goodbye, with small talk unpunctuated before and after it ("okay
-        # bye", "buonanotte grazie", as an STT writes them) and a word for anyone after
-        # it ("good night everyone"); or small talk alone.
+        # A clause: the goodbye -- or two, unpunctuated ("good night sleep well") --
+        # with small talk unpunctuated before and after it ("okay bye", "buonanotte
+        # grazie", as an STT writes them) and a word for anyone after it ("good night
+        # everyone"); or small talk alone.
         lead, tail = f"(?:(?:{around}) ){{0,3}}", f"(?: (?:{around})){{0,3}}"
-        self.bye = re.compile(f"{lead}(?:{bye})(?: (?:{anyone}))?{tail}", re.I)
+        self.bye = re.compile(f"{lead}(?:{bye})(?: (?:{bye}))?(?: (?:{anyone}))?{tail}", re.I)
         self.greets = re.compile(f"{lead}(?:{greets})(?: (?:{anyone}))?{tail}", re.I)
         self.sleep = re.compile(f"{lead}(?:{sleep}){tail}", re.I)
         self.small = re.compile(f"(?:(?:{around}|{greets}) ){{0,3}}(?:{around}|{greets})", re.I)
@@ -320,16 +321,16 @@ def _clauses(sentence: str, words: _Words) -> list:
 def _clause_kind(written: str, folded: str, words: _Words, greets_part: bool):
     """SLEEP, BYE or None for one clause (as written, and folded): the goodbye with its
     small talk (_Words), or a goodbye and a name after it unpunctuated ("good night
-    Sam": its last word or two, written with capitals, _named)."""
+    Sam": one last word, written with a capital -- two would take "good night Alarm
+    Set"; after a comma a name may be two, goodbye_kind)."""
     if words.sleep.fullmatch(folded):
         return SLEEP
     bye = (lambda f: words.bye.fullmatch(f) or greets_part and words.greets.fullmatch(f))
     if bye(folded):
         return BYE
     parts = written.split()
-    for n in (1, 2):
-        if len(parts) > n and _named(" ".join(parts[-n:])) and bye(" ".join(parts[:-n]).casefold()):
-            return BYE
+    if len(parts) > 1 and _named(parts[-1]) and bye(" ".join(parts[:-1]).casefold()):
+        return BYE
     return None
 
 
@@ -452,6 +453,9 @@ class GoodbyeSleep:
         self._lang_fn, self._llm = lang_fn, llm
         self.sent = False          # the room was sent to sleep (once per session)
         self.holding = False       # a goodbye's sleep waits for the caller's speech
+        # Are these words the caller's first in the session (wifi_voice.PhraseVoice
+        # .first_words, set by agent_session)? Unset: never (nothing is a hello).
+        self.first_words = None
         self.decisions: collections.deque = collections.deque(maxlen=32)
 
     def reply_end(self, reply, heard, *, cut: bool, audio: bool, text=None, rest=None) -> None:
@@ -512,9 +516,12 @@ class GoodbyeSleep:
             return "not heard out", None
         t = i18n.for_espeak(self._lang_fn())
         called, said = _turn(self._context.get_messages(), TOOL)
-        # "Ciao!" back to the caller's "Ciao" is a hello back, not a goodbye: words that
-        # greet as well as part count in the reply only when the caller's turn did more.
-        kind = goodbye_kind(text, t, greets_part=not (said and greets_only(said, t)))
+        # "Ciao!" back to the caller's first-words "Ciao" is a hello back, not a goodbye:
+        # words that greet as well as part count in the reply unless the caller's turn
+        # was only such words, as their first in the session (the sleep phrase's hello).
+        hello = (said and self.first_words is not None and self.first_words(said)
+                 and greets_only(said, t))
+        kind = goodbye_kind(text, t, greets_part=not hello)
         if kind is None:
             return "not a goodbye", None
         if called:

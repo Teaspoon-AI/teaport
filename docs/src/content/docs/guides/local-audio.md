@@ -47,7 +47,7 @@ You can also say "that's all"; the agent says a short goodbye and the microphone
 
 All of this works only while wake words are set, and only on the device's own microphone: a Talk session has no sleep, and a phone call ends when you hang up.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1744#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-81#4363c977; brain/teaport_brain/goodbye.py:87-102#7b8a0910; brain/teaport_brain/goodbye.py:550#ffd4f075; brain/teaport_brain/agent_session.py:949-954#0a35e83a -->
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1744#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-81#4363c977; brain/teaport_brain/goodbye.py:87-102#7b8a0910; brain/teaport_brain/goodbye.py:557#ffd4f075; brain/teaport_brain/agent_session.py:949-954#0a35e83a -->
 
 ## The ring during a phone call
 

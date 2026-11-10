@@ -1356,6 +1356,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     if sleep_phrase is not None:
         # A goodbye of the caller's own stands down while an answer is owed (goodbye.py).
         sleep_phrase.gate, sleep_phrase.owed = followup_gate, owed
+    if goodbye_sleep is not None and phrases is not None:
+        # A greeting back to the caller's first-words hello is no goodbye (goodbye.py).
+        goodbye_sleep.first_words = phrases.first_words
     if phrases is not None and guard is not None:
         # What the speaker played: a goodbye heard back alone is no sleep (tail_echo).
         phrases.bot_words = guard.bot
