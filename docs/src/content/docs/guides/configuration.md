@@ -38,7 +38,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual, which, with a model set up, answers it in words. Said while the assistant is talking, the phrase stops the answer, and the device shows the code and tells you so straight away, at the device and in Talk. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/wifi_voice.py:441-459#9d2a2a28; brain/teaport_brain/agent_session.py:1006-1010#abcad8a7; brain/teaport_brain/wifi_voice.py:265-274#58fd5ac9 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/wifi_voice.py:451-469#9d2a2a28; brain/teaport_brain/agent_session.py:1006-1010#abcad8a7; brain/teaport_brain/wifi_voice.py:268-277#58fd5ac9 -->
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
@@ -160,7 +160,21 @@ On the configuration page, the restart runs the same command two seconds later. 
 
 Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model, `gpt-oss-120b` by default. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`; for a server on the device itself, `http://127.0.0.1:8182/v1`.
 
-<!-- source: brain/teaport_brain/config_schema.toml:226-257#cdd4a315 -->
+<!-- source: brain/teaport_brain/config_schema.toml:226-257#a558cd9c -->
+
+:::caution[gpt-oss-120b: pick who serves it]
+On Groq and on Cerebras, `gpt-oss-120b` sometimes breaks down in the middle of a reply, most often right after it used a tool (looked something up, checked the time), and the device says it lost its train of thought. BaseTen serves the same model without that. Use OpenRouter as the endpoint, `openai/gpt-oss-120b` as the model, and send OpenRouter to BaseTen first with `LLM_EXTRA_BODY`:
+
+```ini
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=openai/gpt-oss-120b
+LLM_EXTRA_BODY={"provider":{"order":["BaseTen","Groq"],"allow_fallbacks":false}}
+```
+
+Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `brain.env` exactly as shown, on one line.
+:::
+
+<!-- source: brain/teaport_brain/config_schema.toml:296-303#bd725c65 -->
 
 ### With the configuration page
 
@@ -222,7 +236,7 @@ The first two are said one time, at the start of a conversation in the room or i
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1395-1399#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1398-1402#1508a36d -->
 
 ## One key for OpenClaw too
 
