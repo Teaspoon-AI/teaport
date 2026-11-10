@@ -72,6 +72,7 @@ def _run_eval(mode: str):
         return proc.returncode, proc.stdout
     finally:
         server.shutdown()
+        server.server_close()
 
 
 def test_a_provider_that_refuses_every_request_fails_loudly():
