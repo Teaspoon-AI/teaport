@@ -76,39 +76,58 @@ yeah year years yep yesterday yet you your yours yourself yourselves
 continue continuing pause understand understood
 """
 
-# Spanish, French, Italian, Portuguese: articles, prepositions, pronouns, auxiliaries,
-# the fillers of a deferral.
-_ES = """
-el la los las un una unos unas de del al y o pero que en con por para sin sobre es
-son era fue ser estar esta este esto estos estas eso ese esa hay muy mas más ya no
-sí si se su sus lo le les me te mi tu nos ahora aquí bueno vale claro gracias
-tiempo espera esperar listo hola momento
+# Spanish, French, Italian, Portuguese, each in two parts. The first is the words a
+# phrase cannot end on (articles, prepositions, conjunctions, determiners, unstressed
+# pronouns): tools._status_phrase reads a status phrase ending on one as stopping
+# mid-thought ("buscando vuelos a", "cercando nel"). The second is the rest: auxiliaries,
+# adverbs, the fillers of a deferral, words that end a phrase well ("comprobando el
+# tiempo", "controllando adesso"). owed reads both, as one list.
+_ES_CUT = """
+el la los las un una unos unas de del al a y o pero que en con por para sin sobre
+hacia hasta desde entre durante según tras esta este estos estas ese esa su sus lo
+le les me te se mi tu nos si
 """
-_FR = """
-le la les un une des de du et ou mais que qui en dans avec par pour sans sur est
-sont était être avoir a ont ce cette ces cet il elle ils elles on je tu nous vous
-se sa son ses leur leurs ne pas plus très déjà oui non si au aux bien merci
-maintenant voilà bon d'accord attendre attends prêt moment temps
+_ES_REST = """
+es son era fue ser estar esto eso hay muy mas más ya no sí ahora aquí bueno vale claro
+gracias tiempo espera esperar listo hola momento
 """
-_IT = """
-il lo la i gli le un una uno di del della dei e o ma che in con per su da è sono
-era essere avere ha hanno questo questa questi quello quella non più molto già sì
-se si mi ti ci vi ne al alla ora adesso bene grazie aspetta pronto momento tempo
+_FR_CUT = """
+le la les un une des de du et ou mais que qui en dans avec par pour sans sur ce cette
+ces cet se sa son ses leur leurs ne au aux si
 """
-_PT = """
-o a os as um uma uns umas de do da dos das e ou mas que em no na nos nas com por
-para sem sobre é são era ser estar está este esta isto esse essa isso há muito mais
-já não sim se seu sua me te lhe agora aqui bem obrigado obrigada espera pronto
-momento tempo
+_FR_REST = """
+est sont était être avoir a ont il elle ils elles on je tu nous vous pas plus très
+déjà oui non bien merci maintenant voilà bon d'accord attendre attends prêt moment
+temps
+"""
+_IT_CUT = """
+il lo la i gli le un una uno di del della dei e o ma che in con per su da questa
+questi quella se si mi ti ci vi ne al alla a ai agli alle allo dello delle degli nel
+nella nei nelle sul sulla sui sulle dal dalla dai dalle tra fra
+"""
+_IT_REST = """
+è sono era essere avere ha hanno questo quello non più molto già sì ora adesso bene
+grazie aspetta pronto momento tempo
+"""
+_PT_CUT = """
+o a os as um uma uns umas de do da dos das e ou mas que em no na nos nas com por para
+sem sobre este esta esse essa seu sua me te lhe se
+"""
+_PT_REST = """
+é são era ser estar está isto isso há muito mais já não sim agora aqui bem obrigado
+obrigada espera pronto momento tempo
 """
 # Scripts without spaces: one token per character (owed.spoken_tokens).
 _CJK = "的了是在我你他她它们这那有不就也都和吗呢吧啊个一上下说好要会对着没很还想"
 _JA = "のはがをにでとへもやかなねよだですますたいるうえおこそあ"
 
-# Each spaced language's own, by catalog language: tools._status_phrase reads a phrase
-# that ends on one of these as stopping mid-thought ("buscando tiendas en la").
+# The words a status phrase cannot end on, by catalog language (tools._status_phrase;
+# English has its own finer test there, tools._dangling).
 BY_LANGUAGE: dict[str, frozenset] = {
     lang: frozenset(block.split())
-    for lang, block in (("en", _EN), ("es", _ES), ("fr", _FR), ("it", _IT), ("pt_BR", _PT))}
+    for lang, block in (("es", _ES_CUT), ("fr", _FR_CUT), ("it", _IT_CUT), ("pt_BR", _PT_CUT))}
 
-COMMON: frozenset = frozenset().union(*BY_LANGUAGE.values()) | frozenset(_CJK) | frozenset(_JA)
+COMMON: frozenset = frozenset(
+    w for block in (_EN, _ES_CUT, _ES_REST, _FR_CUT, _FR_REST, _IT_CUT, _IT_REST, _PT_CUT,
+                    _PT_REST) for w in block.split()
+) | frozenset(_CJK) | frozenset(_JA)

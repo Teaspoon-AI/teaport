@@ -56,6 +56,7 @@ import functools
 import os
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable
@@ -630,18 +631,46 @@ _NOT_GERUNDS = frozenset(
       "lansing redding fleming ewing corning irving kipling darjeeling kettering woking "
       "ealing epping".split()
     # Spanish and Italian words that end as a gerund does: words that open a clause,
-    # and names.
-    + "cuando quando mando comando orlando fernando armando rolando".split())
+    # names, and first persons of the present ("Claro, estoy entiendo ...": Spanish
+    # e>ie verbs, Italian -endere verbs). Looked up with the accents taken off
+    # ("cuándo").
+    + "cuando quando mando comando orlando fernando armando rolando".split()
+    + "entiendo atiendo extiendo tiendo defiendo enciendo desciendo recomiendo".split()
+    + "attendo comprendo prendo intendo vendo spendo pretendo rendo scendo accendo tendo "
+      "difendo offendo dipendo sospendo appendo stendo estendo sorprendo riprendo "
+      "apprendo".split())
 # The verb form a status phrase starts with, in each language whose frames take one
 # (#300): the English -ing word ("Sure — looking up ..."), and the gerund the Spanish
 # and Italian frames put after "estoy" / "sigo" and "sto" / "sto ancora" ("Claro, estoy
-# buscando ...", "Sto ancora cercando ..."), a pronoun joined on included ("buscándolo",
-# "cercandolo"). Another language gets the plain lines.
+# buscando ...", "Sto ancora cercando ..."), up to two pronouns joined on included
+# ("buscándoselo", "cercandoglielo"). Another language gets the plain lines.
 _GERUND = {
     "en": re.compile(r"[a-z]+(?:-[a-z]+)*ing"),
-    "es": re.compile(r"[a-záéíóúüñ]+(?:[aá]ndo|i[eé]ndo|y[eé]ndo)(?:l[oa]s?|les?|me|te|se|nos)?"),
-    "it": re.compile(r"[a-zàèéìíòóù]+(?:ando|endo)(?:l[oaie]|gli|mi|ti|si|ci|vi|ne)?"),
+    "es": re.compile(r"[a-záéíóúüñ]+(?:[aá]ndo|i[eé]ndo|y[eé]ndo)"
+                     r"(?:me|te|se|nos|os|l[eoa]s?){0,2}"),
+    "it": re.compile(r"[a-zàèéìíòóù]+(?:ando|endo)"
+                     r"(?:(?:me|te|se|ce|ve|glie)(?:l[oaie]|ne)|mi|ti|si|ci|vi|ne|l[oaie]|gli)?"),
 }
+
+
+def _unaccented(word: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", word)
+                   if not unicodedata.combining(c))
+
+
+# Not prose: a URL, markup or code, or a search operator ("site:example.com"). Neither a
+# status phrase nor a search query like that is said aloud.
+_NOT_PROSE = re.compile(r"://|[{}\[\]<>=`*#|\\_]|\b[a-z]+:\S", re.I)
+# Scripts written without spaces (Chinese, Japanese): each character is about a word's
+# worth of speech, so a phrase in them is counted by characters.
+_UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def _too_long(text: str) -> bool:
+    """Longer than a status phrase or a search query is said: _STATUS_MAX_WORDS words (a
+    character of an unspaced script counting as one), or _STATUS_MAX_CHARS characters."""
+    words = len(_UNSPACED.sub(" ", text).split()) + len(_UNSPACED.findall(text))
+    return words > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS
 # A quote is taken off only as a pair around the whole phrase: one closing a quotation
 # inside it stays ('searching for "best tacos"', which goes out as a caption on Talk).
 _STATUS_QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019",
@@ -752,19 +781,25 @@ def _status_phrase(value, lang: str) -> tuple[str, str]:
     words = text.split()
     if not words:
         return "", "none"
-    if "://" in text or any(c in text for c in "{}[]<>=`*#|\\_"):
+    if _NOT_PROSE.search(text):
         return "", "not prose"
-    if len(words) > _STATUS_MAX_WORDS or len(text) > _STATUS_MAX_CHARS:
+    if _too_long(text):
         return "", "too long"
     first = words[0].rstrip(",;:")
     if (not gerund.fullmatch(first.lower()) or len(first) < 5
-            or first.lower() in _NOT_GERUNDS):
+            or _unaccented(first.lower()) in _NOT_GERUNDS):
         return "", "no -ing word first" if lang == i18n.SOURCE_LANG else "no gerund first"
     # A one-word phrase is a gerund ("checking"), whole; anything longer may stop short.
     if len(words) >= 2:
         before, last = (w.lower().strip(_STATUS_QUOTE_MARKS) for w in words[-2:])
-        if (_dangling(before, last) if lang == i18n.SOURCE_LANG
-                else last in common_words.BY_LANGUAGE[lang]):
+        if lang == i18n.SOURCE_LANG:
+            cut = _dangling(before, last)
+        else:
+            # Or an article cut short before the noun it joins ("cercando l'", "dell'").
+            # Not "po'" ("un po'", a word cut short that ends a phrase well).
+            cut = (last in common_words.BY_LANGUAGE[lang]
+                   or (words[-1].endswith(("'", "\u2019")) and last != "po"))
+        if cut:
             return "", "ends mid-thought"
     if _ABOUT_THE_LISTENER.search(text) or _ABOUT_THE_MACHINERY.search(text):
         return "", "not said to the listener"
@@ -2070,10 +2105,12 @@ def _fallback_line(name: str, args: dict, t) -> str | None:
         # characters with "...", and the voice said "... la biblioteca centr....". The
         # model writes it in the session's language (#300: all but one Spanish and
         # Italian query of the eval), as keywords, which "Looking up" frames as they are.
-        q = " ".join(_args_summary(args, cap=10_000).split()).rstrip(_STATUS_STOPS)
+        # Not a URL or an operator ("site:"), which no one would say aloud either.
+        q = " ".join(str((args or {}).get("query") or "").split()).strip(
+            _STATUS_STOPS + "¿¡")
         if not q:
             return None
-        if len(q.split()) > _STATUS_MAX_WORDS or len(q) > _STATUS_MAX_CHARS:
+        if _NOT_PROSE.search(q) or _too_long(q):
             return t._("On it.")
         return t._("Looking up {q}.").format(q=q)
     if name == "web_fetch":
