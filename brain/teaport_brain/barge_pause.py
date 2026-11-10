@@ -412,10 +412,14 @@ class BargeInPauser(FrameProcessor):
         self._cap_held = False
         # Held off (hold_off): the box's own urgent line plays -- nothing pauses it.
         self._held_off = 0
+        # The box is cutting what it says for a line of its own (own_cut): the
+        # interruption that ends a pause now is that line's, not the caller's words.
+        self._own_cutting = 0
         # Tallies, for the log and the tests.
         self.pauses = 0
         self.resumes = 0
         self.cancels = 0
+        self.own_cuts = 0
         self.skipped_near_end = 0
         self.skipped_noisy = 0
         self.skipped_held = 0
@@ -568,6 +572,16 @@ class BargeInPauser(FrameProcessor):
         elif not on and not self._held_off:
             logger.info("BARGE-PAUSE: pausing again (done saying a line nothing may pause)")
 
+    def own_cut(self, on: bool):
+        """The box cuts what it is saying for a line of its own (AgentSession.own_line:
+        the session's last line, the call question, a fixed phrase's answer said in place
+        of a reply, #389), until its interruption has gone through. A pause that
+        interruption ends is the box's own cut, not a barge-in. Counted, as hold_off is."""
+        if not on and not self._own_cutting:
+            logger.warning("BARGE-PAUSE: own cut lifted with none marked")
+            return
+        self._own_cutting += 1 if on else -1
+
     def _may_pause(self, source: str) -> bool:
         if self._paused or not self._bot_speaking or not self._reply_audio:
             return False
@@ -627,10 +641,15 @@ class BargeInPauser(FrameProcessor):
             # The words came: the barge-in cancels the reply. The transport drops its
             # pause with the queued audio when the interruption reaches it.
             if self._paused:
-                self.cancels += 1
-                logger.info(f"BARGE-PAUSE: cancelled after "
-                            f"{asyncio.get_running_loop().time() - self._pause_t0:.2f}s -- "
-                            "the caller's words take the turn")
+                held = asyncio.get_running_loop().time() - self._pause_t0
+                if self._own_cutting:
+                    self.own_cuts += 1
+                    logger.info(f"BARGE-PAUSE: cancelled after {held:.2f}s -- the box's "
+                                "own line takes its place")
+                else:
+                    self.cancels += 1
+                    logger.info(f"BARGE-PAUSE: cancelled after {held:.2f}s -- the caller's "
+                                "words take the turn")
             self._end()
         elif isinstance(frame, (EndFrame, CancelFrame)):
             self._end()
@@ -727,7 +746,8 @@ class BargeInPauser(FrameProcessor):
         self._end()
         if self.pauses or self.skipped_held:
             logger.info(f"BARGE-PAUSE summary: {self.pauses} pause(s): {self.cancels} "
-                        f"cancelled by words, {self.resumes} resumed with none; skipped "
+                        f"cancelled by words, {self.own_cuts} by the box's own line, "
+                        f"{self.resumes} resumed with none; skipped "
                         f"{self.skipped_near_end} near a reply's end, "
                         f"{self.skipped_noisy} past the limit on pauses with no words, "
                         f"{self.skipped_held} over a line nothing may pause")

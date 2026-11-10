@@ -1056,6 +1056,23 @@ def _consult_args(arguments) -> dict | None:
     return args
 
 
+# Asked of the agent on every lane (#388): plain lookups browsed are slow and RAM-heavy, and
+# parallel consults share one browser. In `context`, the one free text every lane passes on.
+_CONSULT_LOOKUP_NOTE = (
+    "Lookups: for a plain lookup (a place, opening hours, a price, a fact), use "
+    "web_search and web_fetch. Open the browser only when a page needs clicking, typing "
+    "or signing in, or when search and fetch could not answer: it is slow on this "
+    "device.")
+
+
+def _for_the_agent(args: dict) -> dict:
+    """`args` (_consult_args) as the agent is sent them: with _CONSULT_LOOKUP_NOTE at the
+    end of `context`."""
+    context = args.get("context")
+    return {**args, "context": (f"{context}\n\n{_CONSULT_LOOKUP_NOTE}" if context
+                                else _CONSULT_LOOKUP_NOTE)}
+
+
 def _consult_message(args: dict) -> str:
     """The consult as one plain message, for the CLI lane: OpenClaw's own rendering for a
     chat-forwarded consult (buildRealtimeVoiceAgentConsultChatMessage)."""
@@ -1100,6 +1117,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             properties=placeholder_properties(owed))
         return
 
+    # From here on the call is the agent's: the relay's and the CLI lane's (_for_the_agent).
+    args = _for_the_agent(args)
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     # Called as its session ends (#122): the completion that called it was still streaming
     # when the session's EndFrame reached the LLM, behind it. Nothing goes to the relay:
