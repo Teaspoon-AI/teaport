@@ -546,8 +546,8 @@ class Rig:
     the bridge answers it."""
 
     def __init__(self, replies, front_end="room", features=("sleep",), top=LLMUserAggregator,
-                 fails=None):
-        transport = TalkTransport()
+                 fails=None, transport=None):
+        transport = transport or TalkTransport()
         session = build_agent_session(transport, front_end=front_end,
                                       client_features=frozenset(features))
         self.session = session
@@ -596,6 +596,7 @@ class Rig:
         output.send_message = send_message
         self.task = PipelineTask(Pipeline(self.procs), observers=[session.ledger],
                                  cancel_on_idle_timeout=False)
+        session.task = self.task   # the session's own lines go in here (own_line)
         self.started = asyncio.Event()
 
         @self.task.event_handler("on_pipeline_started")
@@ -893,6 +894,116 @@ def test_the_caller_cutting_the_line_or_going_on_keeps_the_room_awake():
     asyncio.run(run())
 
 
+def test_asked_again_over_the_line_the_room_still_sleeps():
+    """#389: "go to sleep" again while the line plays is the same request, not the
+    caller going on: a cut of the line that follows it (the repeat's own words, judged
+    over the line) says the line again, and the room sleeps. Only other words keep it
+    awake."""
+    async def run():
+        # Asked again, then the line is cut: said again, and it sleeps.
+        v = _Voice()
+        assert await v._heard("go to sleep")
+        assert await v._heard("Go to sleep.")
+        await v.speak(cut=True)
+        await until(lambda: len(v.said()) == 2, timeout=2.0)
+        assert v.said() == [goodbye.SLEEP_TEXT] * 2 and v.sent() == []
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+        assert v.sleep.sent and list(v.sleep.decisions) == [SENT]
+        # The repeat's words cut the line before their final came: asked again after the
+        # cut, it starts over, and sleeps.
+        v = _Voice()
+        assert await v._heard("go to sleep")
+        await v.speak(cut=True)
+        await until(lambda: v.sleep.decisions, timeout=2.0)
+        assert await v._heard("go to sleep")
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+        # Asked again, then other words before the line ends: the conversation goes on.
+        v = _Voice()
+        assert await v._heard("go to sleep") and await v._heard("go to sleep")
+        assert not await v._heard("actually, one more thing")
+        await v.speak(cut=True)
+        await asyncio.sleep(0.2)
+        assert v.sent() == [] and list(v.sleep.decisions) == ["the caller went on"]
+        assert len(v.said()) == 1
+    asyncio.run(run())
+
+
+def test_an_answer_over_a_reply_goes_in_its_place():
+    """#389: a phrase's answer to words heard while the bot replies goes in place of the
+    reply (say_in_place: the session stops it as for a barge-in), not queued behind it.
+    Only the answer's first line, and only where there is something to stop."""
+    async def run():
+        placed, replying = [], [True]
+
+        async def in_place(text, max_secs):
+            placed.append(text)
+            return replying[0]
+        v = _Voice()
+        v.say_in_place = in_place
+        assert await v._heard("go to sleep")
+        assert placed == [goodbye.SLEEP_TEXT] and v.said() == [], "queued behind the reply"
+        await v.speak()
+        await until(lambda: v.sent(), timeout=2.0)
+        # Nothing to stop: said as usual.
+        placed.clear()
+        replying[0] = False
+        v = _Voice()
+        v.say_in_place = in_place
+        assert await v._heard("go to sleep")
+        assert placed == [goodbye.SLEEP_TEXT] and v.said() == [goodbye.SLEEP_TEXT]
+        # A line that answers nothing just heard (the line said again after a cut) is
+        # never put in place of anything.
+        placed.clear()
+        replying[0] = True
+        assert await v._heard("go to sleep")              # the repeat
+        await v.speak(cut=True)
+        await until(lambda: len(v.said()) == 2, timeout=2.0)
+        assert placed == []
+    asyncio.run(run())
+
+
+def test_only_the_hearings_own_line_goes_in_place():
+    """#389 review: a line something else says while a phrase is still deciding (the
+    setup poller's news, started before) answers nothing and is said as usual; the
+    phrase's own answer, after its wait, goes in place of the reply."""
+    async def run():
+        placed = []
+
+        async def in_place(text, max_secs):
+            placed.append(text)
+            return True
+
+        class Slow:
+            go = asyncio.Event()
+
+            async def heard(self, voice, text):
+                if text != "open the pod bay doors":
+                    return False
+                await self.go.wait()                     # e.g. a network check
+                await voice.say("the answer")
+                return True
+        v = _Voice()
+        v.say_in_place = in_place
+        v.phrases.insert(0, Slow())
+        news = asyncio.Event()
+
+        async def poller():
+            await news.wait()
+            await v.say("the news")
+        background = asyncio.get_running_loop().create_task(poller())
+        hearing = asyncio.get_running_loop().create_task(v._heard("open the pod bay doors"))
+        await asyncio.sleep(0.02)
+        news.set()
+        await background
+        assert placed == [] and v.said() == ["the news"], (placed, v.said())
+        Slow.go.set()
+        assert await hearing
+        assert placed == ["the answer"] and v.said() == ["the news"], (placed, v.said())
+    asyncio.run(run())
+
+
 def _without_a_model():
     """The environment of a box with no model (test_no_model_session.py): no endpoint,
     no key, a HOME with no key file. Returns what to put back."""
@@ -957,6 +1068,86 @@ async def test_the_phrase_wins_over_an_owed_failure_which_stays_owed():
         await _sleeps_on_the_phrase(rig)
         assert [r.key for r in rig.owed.owed()] == ["call-1"]
         assert [d["key"] for d in rig.owed.snapshot()] == ["call-1"]
+
+
+async def test_a_line_that_cannot_go_in_place_is_said_as_usual():
+    """#389 review: own_line failing before the line is queued is no line placed --
+    say_in_place says False, the phrase says it the usual way, and the failure is
+    logged, not left in a task nobody reads."""
+    import contextlib
+    session = build_agent_session(TalkTransport(), front_end="room",
+                                  client_features=frozenset({"sleep"}))
+    session.followup_gate._bot = True                    # a reply is playing
+
+    @contextlib.asynccontextmanager
+    async def broken(line, **kw):
+        raise RuntimeError("the pipeline is gone")
+        yield  # noqa: unreachable -- an async generator
+    session.own_line = broken
+    assert await session.say_in_place("Okay, going to sleep.", 1.0) is False
+    await asyncio.sleep(0)
+    assert not session._lines
+    v = _Voice()
+    v.say_in_place = session.say_in_place
+    assert await v._heard("go to sleep")
+    assert v.said() == [goodbye.SLEEP_TEXT], "the line was lost"
+
+
+async def test_a_line_held_in_place_ends_with_the_session():
+    """#389 review: the hold on a line said in place (the brain's own cut) does not
+    outlive the session: its end settles it at once."""
+    import contextlib
+    from teaport_brain.followup_gate import Delivery
+    session = build_agent_session(TalkTransport(), front_end="room",
+                                  client_features=frozenset({"sleep"}))
+    gate = session.followup_gate
+    gate._bot = True
+
+    @contextlib.asynccontextmanager
+    async def queued(line, **kw):
+        yield Delivery()                              # queued, never played
+    session.own_line = queued
+    assert await session.say_in_place("Okay, going to sleep.", 20.0)
+    (task,) = session._lines
+    gate._end_interruption_waits()                    # the session ends
+    assert await asyncio.wait_for(task, 1.0) is False
+    assert not session._lines
+
+
+# A long reply: about 14 s of synthesized speech (WORD_SECS a word).
+STORY = " ".join(["Once upon a time a small fox walked through the quiet woods."] * 4)
+
+
+async def test_389_go_to_sleep_over_a_paused_reply_stops_it_and_sleeps():
+    """#389: "go to sleep" over a story the barge-in pauser paused for those very words.
+    The phrase takes the words, so the pauser finds no turn in them -- it used to resume
+    the story, with the sleep line queued behind the rest of it. Now the story is cut as
+    for a barge-in, the line plays at once, and the room sleeps once it has played."""
+    from test_talk_barge_pause import _Socket, _talk_transport
+    async with Rig([STORY], top=wifi_voice.PhraseVoice,
+                   transport=_talk_transport(_Socket())) as rig:
+        pauser = rig.session.barge_pauser
+        assert pauser is not None, "no barge-in pauser on a pausable transport"
+        await rig.say("Tell me a story.")
+        await until(lambda: len(rig.played) >= 3)            # the story is playing
+        await pauser.on_onset(True)                           # the caller talks over it
+        assert pauser.paused
+        await pauser.on_onset(False)
+        await rig.final("Go to sleep.")
+        await until(lambda: rig.calls(), timeout=6.0)
+        (m, stops, played), = rig.calls()
+        assert m["name"] == "end_conversation" and m["said"] is True and m["args"] == {}, m
+        story = wifi_voice._norm(STORY)
+        heard = wifi_voice._norm(" ".join(played))
+        assert heard.endswith(wifi_voice._norm(goodbye.SLEEP_TEXT)), played
+        told = heard[:-len(wifi_voice._norm(goodbye.SLEEP_TEXT))].strip()
+        assert told and story.startswith(told) and len(told) < len(story) / 2, (
+            f"the story was not cut: {told!r}")
+        assert len(rig.provider.requests) == 1, "a model was asked about the phrase"
+        assert rig.session.sleep_phrase.sent
+        assert list(rig.session.sleep_phrase.decisions) == [SENT]
+        # The pause was ended by the box's own line, not counted as the caller's barge-in.
+        assert (pauser.own_cuts, pauser.cancels) == (1, 0), (pauser.own_cuts, pauser.cancels)
 
 
 async def test_the_backstop_sleeps_on_a_sign_off_with_only_a_failure_owed():

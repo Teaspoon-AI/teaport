@@ -532,7 +532,7 @@ class FaceTap:
             hits = []
             for i, (_, starts, _) in enumerate(self._moods):
                 k = min(len(words), len(starts))
-                if not starts or (k and words[:k] == starts[:k]):
+                if k and words[:k] == starts[:k]:
                     hits.append((len(starts) != len(words), -k, i))
             # One or two words fit a stale entry as well as the right one: wait for more of
             # the reply to tell them apart. With all four, or when the reply is over (it was
@@ -567,12 +567,21 @@ class FaceTap:
         """The model's own mood for the reply it is giving (mood_tag.py), with that reply's
         first words. It arrives as the reply starts, ahead of its audio, so it waits until
         a reply that starts with those words is heard (assistant), and is kept up while it
-        speaks. Only to an avatar that lists moods in its features (an older one would not
-        know it)."""
+        speaks. With no words (a reply of only the mood, #383: "show me an angry face")
+        there is no reply to wait for: it is shown at once, on an idle face unless another
+        reply is speaking, and the avatar holds it for its usual time. Only to an avatar that lists moods in its features (an older one would
+        not know it)."""
         if name and self._mood_source == "tag" and self.takes("moods"):
             self._activity()
             words = [w for w in (starts or []) if isinstance(w, str)][:LEAD_WORDS]
-            self._moods.append((name, words, self._clock()))
+            if words:
+                self._moods.append((name, words, self._clock()))
+            else:
+                if self._state != "speaking":
+                    # Nothing will speak for it: the face leaves "thinking" (its gaze is
+                    # layered over the mood) and shows the mood as the answer it is.
+                    self.state("idle")
+                self._emit({"mood": self._mood_name(name)})
 
     def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
