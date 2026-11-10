@@ -538,8 +538,8 @@ msgstr "죄송해요, 지금은 음성 인식이 안 돼요. 잠시 후 다시 �
 
 #. Translators: {phrase} is the model's own few words, in this language, on what is
 #. being done for the user (in English: "looking up pastry shops on Burnet Road").
-#. Only an English session says the {phrase} lines today (tools._status_phrase);
-#. another says the plain ones (#120).
+#. English, Spanish and Italian sessions say the {phrase} lines (tools._status_phrase,
+#. #300); another says the plain ones (#120).
 msgid "Sure — {phrase}."
 msgstr "네 — {phrase}."
 

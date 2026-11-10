@@ -318,8 +318,8 @@ async def test_the_second_line_claims_nothing():
 
 
 async def test_another_language_gets_the_plain_lines_not_the_phrase():
-    """#290/#300: the -ing check is English, and the model's phrase in another session
-    may be English or may not fit the frames, so neither is said there."""
+    """#290/#300: a language without a gerund check (tools._GERUND) gets the plain lines,
+    whatever the phrase: it may be English, or may not fit the frames."""
     fr = i18n.get("fr")
     for phrase in (PHRASE, "je cherche des pâtisseries sur Burnet Road"):
         assert _ack(phrase, fr) == "Je m'en occupe.", _ack(phrase, fr)
@@ -327,6 +327,158 @@ async def test_another_language_gets_the_plain_lines_not_the_phrase():
         assert "—" not in tools._progress_line(phrase, 1, fr)
         assert tools._status_phrase(phrase, "fr") == ("", "a fr session")
     assert tools._progress_line(PHRASE, 1, fr) == "Cette demande prend un peu plus de temps."
+
+
+async def test_spanish_and_italian_say_the_models_phrase_in_their_own_frames():
+    """#300: the model writes the phrase in the session's language, as a gerund (measured
+    with gpt-oss-120b: every Spanish and Italian consult of the eval), and the frames take
+    it after "estoy"/"sigo" and "sto"/"sto ancora"."""
+    es, it = i18n.get("es"), i18n.get("it")
+    phrase = "buscando jugueterías en la calle Real"
+    assert _ack(phrase, es) == "Claro, estoy buscando jugueterías en la calle Real."
+    assert tools._progress_line(phrase, 0, es) == "Sigo buscando jugueterías en la calle Real."
+    phrase = "Cercando negozi di giocattoli in via Garibaldi."
+    assert _ack(phrase, it) == "Certo, sto cercando negozi di giocattoli in via Garibaldi."
+    assert tools._progress_line(phrase, 0, it) == (
+        "Sto ancora cercando negozi di giocattoli in via Garibaldi.")
+    # The other gerunds: -iendo, -yendo, a pronoun joined on; Italian -endo.
+    for whole, lang in (("resumiendo los correos de hoy", "es"),
+                        ("leyendo las noticias", "es"),
+                        ("buscándolo en el mapa", "es"),
+                        ("consultando tu calendario para mañana", "es"),
+                        ("riassumendo le email di oggi", "it"),
+                        ("controllando il tuo calendario per domani", "it"),
+                        ("cercandolo sulla mappa", "it")):
+        assert tools._status_phrase(whole, lang) == (whole, ""), (whole, lang)
+
+
+async def test_spanish_and_italian_refuse_what_their_frames_cannot_say():
+    """English in a Spanish or Italian session (#300: the English fragment #290 took out),
+    no gerund first, a phrase that stops on a function word, and words for the agent."""
+    for phrase, lang, why in (
+            (PHRASE, "es", "no gerund first"),
+            (PHRASE, "it", "no gerund first"),
+            ("busco jugueterías", "es", "no gerund first"),
+            ("cuando termine la búsqueda", "es", "no gerund first"),
+            ("quando arriva il treno", "it", "no gerund first"),
+            ("Orlando tiempo esta semana", "es", "no gerund first"),
+            ("cerco negozi", "it", "no gerund first"),
+            ("buscando jugueterías en la", "es", "ends mid-thought"),
+            ("buscando jugueterías en", "es", "ends mid-thought"),
+            ("cercando negozi di", "it", "ends mid-thought"),
+            ("cercando negozi in via della", "it", "ends mid-thought"),
+            ("resumiendo los correos para el usuario", "es", "not said to the listener"),
+            ("riassumendo le email per l'utente", "it", "not said to the listener"),
+            ("preguntando al agente", "es", "not said to the listener"),
+            ("chiedendo agli agenti", "it", "not said to the listener")):
+        assert tools._status_phrase(phrase, lang) == ("", why), (phrase, lang)
+        t = i18n.get(lang)
+        assert _ack(phrase, t) == t._("On it.")
+        assert tools._progress_line(phrase, 0, t) == t._("Still on it.")
+
+
+async def test_the_search_query_is_said_whole_or_not_at_all():
+    """It was cut at 40 characters with "...", which the voice said mid-word. Said as
+    written, in the session's frame (#300: the model writes it in the session's
+    language), or a plain line when too long."""
+    es, it = i18n.get("es"), i18n.get("it")
+
+    def ack(query, t=EN):
+        return tools._fallback_line("web_search", {"query": query}, t)
+    assert ack("best pastry shops austin") == "Looking up best pastry shops austin."
+    assert ack("  who won last night?  ") == "Looking up who won last night."
+    assert ack("mejores pastelerías cerca de la calle Mayor", es) == (
+        "Buscando mejores pastelerías cerca de la calle Mayor.")
+    assert ack("orario di chiusura biblioteca comunale oggi", it) == (
+        "Cerco orario di chiusura biblioteca comunale oggi.")
+    long = "hora de cierre de la biblioteca central del barrio hoy"
+    assert len(long) > 40 and ack(long, es) == f"Buscando {long}."
+    assert ack(long + " y los festivos", es) == es._("On it.")
+    assert ack(" ".join(["word"] * 13)) == "On it."
+    assert ack("") is None and tools._fallback_line("web_search", {}, EN) is None
+    # Spanish opening marks go with the closing ones.
+    assert ack("¿quién ganó anoche?", es) == "Buscando quién ganó anoche."
+    assert ack("¡ofertas de hoy!", es) == "Buscando ofertas de hoy."
+    # A URL or a search operator is not read out.
+    for query in ("https://example.com/menu", "site:example.com opening hours",
+                  "pastry shops filetype:pdf", "weather_api"):
+        assert ack(query) == "On it.", query
+    # The query, not the first argument whatever it is.
+    assert tools._fallback_line("web_search", {"count": 5, "query": "tide times"},
+                                EN) == "Looking up tide times."
+    # An unspaced script counts by characters: twelve are a sentence, not one word.
+    zh = i18n.get("zh")
+    assert ack("北京天气", zh) == zh._("Looking up {q}.").format(q="北京天气")
+    assert ack("北京明天下午三点到五点的天气预报和空气质量", zh) == zh._("On it.")
+
+
+async def test_spanish_and_italian_phrases_cut_at_a_preposition_or_article_are_refused():
+    """Review of #402: prepositions and contracted articles end nothing."""
+    for phrase, lang in (("buscando vuelos a", "es"), ("buscando hoteles hacia", "es"),
+                         ("buscando desde", "es"), ("buscando vuelos hasta", "es"),
+                         ("cercando voli a", "it"), ("cercando ristoranti vicino a", "it"),
+                         ("cercando nel", "it"), ("cercando sulla", "it"),
+                         ("cercando l'", "it"), ("cercando informazioni dell'", "it"),
+                         ("cercando qualcosa all\u2019", "it"),
+                         ("controllando questo", "it"), ("controllando quello", "it")):
+        assert tools._status_phrase(phrase, lang) == ("", "ends mid-thought"), phrase
+
+
+async def test_spanish_and_italian_phrases_ending_on_a_filler_word_are_said():
+    """Review of #402: the weather, now, here end a phrase well; only the words a phrase
+    cannot end on are refused there (common_words.BY_LANGUAGE)."""
+    for whole, lang in (("comprobando el tiempo", "es"), ("revisando el correo ahora", "es"),
+                        ("buscando tiendas abiertas aquí", "es"),
+                        ("controllando il tempo", "it"), ("cercando un taxi adesso", "it"),
+                        ("controllando le email ora", "it"),
+                        ("aspettando ancora un po'", "it")):
+        assert tools._status_phrase(whole, lang) == (whole, ""), (whole, lang)
+
+
+async def test_first_persons_and_accented_openers_are_no_gerund():
+    """Review of #402: "Certo, sto attendo ...", "Claro, estoy entiendo ..."."""
+    for phrase, lang in (("attendo la risposta", "it"), ("comprendo la domanda", "it"),
+                         ("prendo nota", "it"), ("intendo controllare", "it"),
+                         ("vendo la bici", "it"), ("spendo poco", "it"),
+                         ("pretendo una risposta", "it"),
+                         ("entiendo tu pregunta", "es"), ("atiendo la llamada", "es"),
+                         ("recomiendo este sitio", "es"),
+                         ("domando il prezzo", "it"), ("raccomando questo", "it"),
+                         ("rimando la chiamata", "it"), ("tremendo traffico", "it"),
+                         ("Nintendo Switch prices", "it"),
+                         ("cuándo abre la tienda", "es"), ("Cuándo abre", "es")):
+        assert tools._status_phrase(phrase, lang) == ("", "no gerund first"), phrase
+    # Their gerunds still pass, and two pronouns joined on.
+    for whole, lang in (("attendendo la risposta", "it"), ("prendendo nota", "it"),
+                        ("entendiendo tu pregunta", "es"), ("atendiendo la llamada", "es"),
+                        ("buscándoselo ahora", "es"), ("cercandoglielo subito", "it")):
+        assert tools._status_phrase(whole, lang) == (whole, ""), (whole, lang)
+
+
+async def test_the_lists_split_for_the_status_phrase_are_still_owed_s_one_list():
+    """common_words: each language's words in two parts, those a phrase cannot end on and
+    the rest; owed reads them as one (COMMON), exactly the list it had before #300: the
+    words only a status phrase needs (_ES_CUT_MORE, _IT_CUT_MORE) stay out of it, or owed's
+    English fold would read "dallas" as "dalla" and "daily" as "dai"."""
+    import hashlib
+
+    from teaport_brain import common_words as cw
+    from teaport_brain import owed
+    words = sorted(cw.COMMON)
+    assert (len(words), hashlib.sha256("\n".join(words).encode()).hexdigest()[:16]) == (
+        829, "f5dd5146bef02fd9")
+    parts = (cw._EN, cw._ES_CUT, cw._ES_REST, cw._FR_CUT, cw._FR_REST, cw._IT_CUT,
+             cw._IT_REST, cw._PT_CUT, cw._PT_REST)
+    assert cw.COMMON == (frozenset(w for p in parts for w in p.split())
+                         | frozenset(cw._CJK) | frozenset(cw._JA))
+    for lang, cut, more, rest in (("es", cw._ES_CUT, cw._ES_CUT_MORE, cw._ES_REST),
+                                  ("it", cw._IT_CUT, cw._IT_CUT_MORE, cw._IT_REST)):
+        assert cw.BY_LANGUAGE[lang] == frozenset(cut.split()) | frozenset(more.split())
+        assert not cw.BY_LANGUAGE[lang] & frozenset(rest.split()), lang
+    assert {"tiempo", "ahora", "aquí", "momento"} <= frozenset(cw._ES_REST.split())
+    assert {"tempo", "ora", "adesso", "momento"} <= frozenset(cw._IT_REST.split())
+    for word in ("dallas", "daily", "nelly", "sully", "dally"):
+        assert not owed._is_common(word), word
 
 
 async def test_agent_first_still_says_no_acknowledgement():
