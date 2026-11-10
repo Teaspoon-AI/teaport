@@ -852,6 +852,43 @@ async def check_run_llm_resolves_properties_then_frame_then_yes():
     assert got == want, f"inference after a result: {got}, expected {want}"
 
 
+async def check_a_results_on_context_updated_runs_once_it_is_in_the_context():
+    """Owed.tla `Place` (#386): the assistant aggregator writes IN_PROGRESS at a call's
+    FunctionCallInProgressFrame and the result over it at its FunctionCallResultFrame,
+    and only after that runs the result's `properties.on_context_updated` -- the hook a
+    consult's placeholder carries (tools.placeholder_properties -> owed.Owed.placed), by
+    which a landing that came first replaces it.
+
+    If it goes: the hook runs before the placeholder is written (the landing is written
+    and the placeholder over it) or never, and the early failure stays "nothing has come
+    back yet" until the next render places it."""
+    context = LLMContext([{"role": "user", "content": "q"}])
+    below = Tap()
+    assistant = LLMContextAggregatorPair(context).assistant()
+    seen = []
+
+    def tool():
+        return [m.get("content") for m in context.get_messages() if m.get("role") == "tool"]
+
+    async def updated():
+        seen.append(tool())
+    async with Run(assistant, below) as run:
+        await run.send(FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+            function_name="f", tool_call_id="t", arguments={}, context=None)]))
+        await _marked(run, below)
+        await run.send(FunctionCallInProgressFrame(function_name="f", tool_call_id="t",
+                                                   arguments={}, cancel_on_interruption=True))
+        await _marked(run, below)
+        at_progress = tool()
+        await run.send(FunctionCallResultFrame(
+            function_name="f", tool_call_id="t", arguments={}, result={"status": "ph"},
+            properties=FunctionCallResultProperties(run_llm=False, on_context_updated=updated)))
+        await _marked(run, below)
+        await _until(lambda: seen)
+    assert at_progress == ["IN_PROGRESS"], at_progress
+    assert seen == [['{"status": "ph"}']], f"on_context_updated saw {seen}"
+
+
 async def check_the_answer_to_a_result_is_pushed_up_unless_a_turn_is_open():
     """UserTurn.tla, POSTTOOL (#17), `PushAnswer`: the assistant aggregator asks for the
     answer to a tool's result by pushing an LLMContextFrame UPSTREAM -- past

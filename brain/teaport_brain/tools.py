@@ -434,6 +434,14 @@ def no_inference() -> FunctionCallResultProperties:
     return FunctionCallResultProperties(run_llm=False)
 
 
+def placeholder_properties(owed) -> FunctionCallResultProperties:
+    """An async consult's placeholder result: no inference (no_inference), and once the
+    assistant aggregator has put it in the context, a landing that came before it
+    replaces it (owed.Owed.placed, #386: a consult that fails within milliseconds lands
+    ahead of its own placeholder)."""
+    return FunctionCallResultProperties(run_llm=False, on_context_updated=owed.placed)
+
+
 def _mem_available_mb() -> int | None:
     try:
         with open("/proc/meminfo") as f:
@@ -1100,12 +1108,13 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
     # resolves silently and the original's record answers for both.
     if owed is not None and owed.dispatch(params.tool_call_id, request) is not None:
-        # No inference on a placeholder result — see no_inference() below.
+        # A placeholder result: no inference, and a landing that came first replaces
+        # it -- see placeholder_properties() and the comment below.
         await params.result_callback(
             {"status": "duplicate",
              "instruction": ("This exact request is already in progress. Do not "
                              "respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     # From here on the call is the agent's: the relay's and the CLI lane's (_for_the_agent).
@@ -1150,9 +1159,10 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         if end_with_session is not None:
             end_with_session(consult)
     if owed is not None:
-        # Run NO inference on this placeholder (no_inference()). There is nothing for
-        # the model to say: the user already heard the acknowledgement (the model's
-        # own line, or _fallback_line's), and the real outcome lands later (owed.py),
+        # Run NO inference on this placeholder (placeholder_properties(): run_llm=False,
+        # and its on_context_updated places a landing that came first, #386). There is
+        # nothing for the model to say: the user already heard the acknowledgement (the
+        # model's own line, or _fallback_line's), and the real outcome lands later (owed.py),
         # rewriting this tool result, and a run of ours tells it then. Asking the model to
         # respond here and discarding what it says is what produced fabricated
         # answers — prompt-level "don't claim it's done" failed three times live
@@ -1163,7 +1173,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             "status": "working_in_background",
             "instruction": ("The task is running in the background and nothing has "
                             "come back yet. Do not respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,

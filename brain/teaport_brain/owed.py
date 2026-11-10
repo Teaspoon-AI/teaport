@@ -291,6 +291,10 @@ _ACTION_HEDGE = (" If it was something visible (a message, poll or post), it may
                  "through anyway: ask them to check rather than saying it failed.")
 
 
+# How a landing whose placeholder is not in the context yet is logged (Owed._rewrite).
+_HELD = "held for its placeholder"
+
+
 # What a cancelled consult's tool result says (Owed._cancelled): there is no result, and
 # it is not to be started again unless the user asks.
 CANCELLED_NOTE = ("OpenClaw stopped this before it finished, so there is no result. Don't "
@@ -713,7 +717,9 @@ def render(messages: list, records: list, purpose: str) -> list:
 #     ("Hold on, hold on." and web_fetch, 2026-10-18 17:26).
 
 # pipecat's placeholders while a call runs or after it was cancelled: no answer.
-_NOT_A_RESULT = frozenset({"IN_PROGRESS", "CANCELLED", "COMPLETED"})
+# IN_PROGRESS is written at the call's FunctionCallInProgressFrame, before its result.
+IN_PROGRESS = "IN_PROGRESS"
+_NOT_A_RESULT = frozenset({IN_PROGRESS, "CANCELLED", "COMPLETED"})
 
 
 def _argument_words(arguments) -> str:
@@ -916,6 +922,9 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
+        # Tool results written by a landing (_rewrite) that have not yet replaced their
+        # placeholder in the context: tool_call_id -> the JSON written (place_landed).
+        self._landing: dict = {}
         self._questions: dict = {}            # key -> the caller's turns when it was asked
         self._duplicates: dict = {}           # key -> the key whose consult answers it
         # Every tool result the book has seen, by tool_call_id (_Answer): a sync
@@ -1003,6 +1012,10 @@ class Owed:
         only into a quiet window, so nothing lies between its go and this render. A due
         decline check is read first (declines_read), as every reader does."""
         await self.settled()
+        # A landing that came before its placeholder (#386) is in place before any request
+        # reads the context. A speculation's copy taken before it went in no longer equals
+        # the live context, so it is not adopted (speculate._why_restart).
+        self.place_landed()
         if not speculative:
             # A speculation's render reads none (its words are interim): it is not
             # adopted while one is due (decline_due), and the commit renders here.
@@ -1094,12 +1107,13 @@ class Owed:
 
     def land(self, request, text, key, *, failure=None, detail="",
              ask=True) -> Optional[Record]:
-        """The consult landed: rewrite its placeholder ONCE to the cleaned outcome (the
-        only context write delivery makes), make the record owed, and ask the landing run
-        -- unless a caller request is still to be rendered (their turn is open, or
-        committed and not yet asked): that request carries the note, and a run would
-        speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's place
-        is taken by the re-offer, armed.
+        """The consult landed: rewrite its placeholder to the cleaned outcome (the only
+        context write delivery makes; one that lands before its placeholder is in the
+        context is written when it comes in: _rewrite), make the record owed, and ask the
+        landing run -- unless a caller request is still to be rendered (their turn is
+        open, or committed and not yet asked): that request carries the note, and a run
+        would speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's
+        place is taken by the re-offer, armed.
 
         A consult OpenClaw cancelled (failure "cancelled", consult_bridge.classify) makes
         no record and returns None: see _cancelled."""
@@ -1122,7 +1136,7 @@ class Owed:
                                 _terms(outcome, "", failure) | terms_of(request, ""))
         rec = self._owe(Record.make(key, request, outcome, failure=failure, question=question),
                         f"landed ({failure or 'answer'}); tool result "
-                        f"{'rewritten' if rewrote else 'not found'}")
+                        f"{'rewritten' if rewrote else _HELD}")
         if not ask or self._closed or self.gate is None:
             return rec
         if self.gate.caller_request_pending:
@@ -1145,7 +1159,7 @@ class Owed:
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
         logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
-                    f"tool result {'rewritten' if rewrote else 'not found'}")
+                    f"tool result {'rewritten' if rewrote else _HELD}")
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
@@ -1156,12 +1170,47 @@ class Owed:
             del self._duplicates[dup]
 
     def _rewrite(self, key, result: dict) -> bool:
+        """The tool result of the call `key` becomes `result`: a landing, a cancellation, a
+        duplicate's pointer. True if it has replaced the placeholder now; else it is held
+        and replaces it when the placeholder comes in (place_landed).
+
+        A consult can land before its placeholder is in the context (#386). One that fails
+        within milliseconds -- no budget left for the gateway's lane, a gateway refusing
+        the connection, no gateway token -- lands while its FunctionCallInProgressFrame
+        and the placeholder's FunctionCallResultFrame are still on their way to the
+        assistant aggregator, which then writes "IN_PROGRESS" and the placeholder over
+        nothing or over the landing. Written once and lost, the placeholder ("nothing has
+        come back yet") stayed for good beside a note saying it failed: the model said "I
+        don't have those results yet" and never that it failed. Held, the context ends up
+        as it does after a slow landing (Owed.tla Place, NoStaleResult)."""
+        self._landing[key] = json.dumps(result)
+        self.place_landed()
+        return key not in self._landing
+
+    def place_landed(self) -> None:
+        """Every held landing (_rewrite) written over its call's tool result in the
+        context, and let go once it has replaced the placeholder itself. One written over
+        pipecat's IN_PROGRESS is held on: the placeholder's result frame writes over it.
+        Called by the landing, when a consult's placeholder has gone into the context
+        (tools.placeholder_properties: pipecat's on_context_updated), and by every
+        render (view) -- the run a landing asks can render before the aggregator has
+        taken the placeholder."""
+        if not self._landing:
+            return
         for m in self.context.get_messages():
-            if (isinstance(m, dict) and m.get("role") == "tool"
-                    and m.get("tool_call_id") == key):
-                m["content"] = json.dumps(result)
-                return True
-        return False
+            if not (isinstance(m, dict) and m.get("role") == "tool"):
+                continue
+            content = self._landing.get(m.get("tool_call_id"))
+            if content is None:
+                continue
+            if m.get("content") not in (IN_PROGRESS, content):
+                del self._landing[m["tool_call_id"]]     # the placeholder itself: for good
+            m["content"] = content
+
+    async def placed(self) -> None:
+        """pipecat's on_context_updated for a consult's placeholder (tools.py): it is in
+        the context now, and a landing that came first replaces it."""
+        self.place_landed()
 
     def _owe(self, rec: Record, how: str) -> Record:
         """`rec` is owed, the newest: every way a record is made (land, a cut sync
