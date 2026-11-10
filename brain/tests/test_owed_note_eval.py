@@ -61,21 +61,27 @@
 #   run_answer_list           instruction 7/20 -> 0/20   (lead 20/20 both, fact too)
 #   run_answer_fact_es / _it  instruction 1/10, 3/10 -> 0/20; English 0 -> 0
 #   run_timeout_lookup        told 3/20 -> 20/20         (before: "no results", "not yet")
-#   run_error_lookup          told 0/20 -> 19/20
+#   run_error_lookup          told 0/20 -> 20/20
 #   run_credit                told 20/20 -> 20/20
 #   run_timeout_action        told 8/20 -> 20/20
 #   ask_timeout_lookup        told 1/20 -> 20/20         (before: 14/20 "yet")
-#   ask_timeout_lookup_es     told 0/10 -> 12/20         (after: "no se obtuvo respuesta")
+#   ask_timeout_lookup_es     told 0/10 -> 19/20         (12/20 before FAILED_LINE's "not
+#                                                         just that there is no answer")
 #   ask_status_two_failed     told 0/20 -> 19/20         (before: 18/20 "still waiting")
-#   ask_status_two_failed_it  told 3/10 -> 20/20
+#   ask_status_two_failed_it  told 6/10 -> 20/20
 #   reoffer_timeout_lookup    told 9/20 -> 20/20
-#   reoffer_mixed             both 0/10 -> 9/20          (the rest: the answer, and the
+#   reoffer_mixed             both 0/10 -> 16/20         (the rest: the answer, and the
 #                                                         search "didn't finish", no why)
+#   reoffer_unknown_action    "may have gone through" 15/20 (the rest: "the request was
+#                                                         sent, no confirmation of it")
 #   ask_unknown_action        "may have gone through" 10/10 -> 20/20
 #   run_timeout_lookup_es     told 0/10 -> 20/20
 #   run_timeout_lookup_it     told 0/10 -> 20/20
 # The es/it "before" runs of ask_timeout_lookup_es and ask_status_two_failed_it had the
 # session's greeting and the caller's words in English; every other es/it run speaks it.
+# The run and ask cases, the Spanish ask and the mixed re-offer were measured with the
+# final FAILED_LINE; the status, the other re-offers and the unknown ask with the one
+# before it ("say that and why"), which differs only in that clause.
 # Candidates dropped on the way (10 trials): the hedge reworded alone (lookups 2-4/10
 # told); the new run lines without the line under a failure's result (the status question
 # still 9/10 "still waiting"); a failure run line with a quoted example ("Sorry, I couldn't
@@ -255,6 +261,10 @@ CASES = [
     ("ask_unknown_action", "unknown", "message_unknown",
      lambda: build(["message_unknown"], ["message_unknown"],
                    after=["Did my message to Sam go out?"], purpose="caller")),
+    # The one re-offer of a consult the session's end cut off: no answer, no failure.
+    ("reoffer_unknown_action", "unknown", "message_unknown",
+     lambda: build(["message_unknown"], ["message_unknown"], purpose=owed.REOFFER, said=[
+         ("user", "Okay, thanks."), ("assistant", "You're welcome!")])),
     # The one re-offer of an answer and a failure together.
     ("reoffer_mixed", "mixed", "hours",
      lambda: build(["hours", "shops_timeout"], ["hours", "shops_timeout"],
@@ -317,7 +327,7 @@ ANSWER = {"hours": re.compile(r"\b9\b|nine|nueve|\bnove\b", re.I),
 # RUN_LINE's example, said as if it were the answer.
 LEAK = re.compile(r"museum|museo", re.I)
 # A reply in English in a Spanish or Italian session.
-ENGLISH = re.compile(r"\b(the|is|and|you|at|opens|on|it|I'm|I)\b")
+ENGLISH = re.compile(r"\b(the|is|and|you|at|opens|on|it)\b")
 # An action that never reported back: told as "may have gone through", not as done or not.
 MAYBE = re.compile(r"(may|might)( or may not)? have|not sure|can't (confirm|tell|be sure)|"
                    r"don't know (if|whether)|no (sé|estoy seguro)|puede que|quiz[áa]s?|"
@@ -360,7 +370,9 @@ def classify(kind: str, about: str, msg: dict, lang: str = None) -> str:
                for x in sentences(text)) or re.search(
                 r"still (waiting|working) on (those|them|all|both|the searches)", text, re.I):
             return "still running"
-        return "told" if told("timeout", text) else "no reason"
+        # Each sentence was checked above: a search still running may be named in it.
+        return ("told" if REASON["timeout"].search(text) and FAILED.search(text)
+                else "no reason")
     if kind == "unknown":
         if STILL.search(text):
             return "still running"
