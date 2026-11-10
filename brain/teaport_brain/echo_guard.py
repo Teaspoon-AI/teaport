@@ -109,6 +109,14 @@ class BotWords:
     def _time(stamp):
         return stamp() if callable(stamp) else stamp
 
+    def last(self):
+        """(when, word): the newest word the speaker has played, or None."""
+        for stamp, w in reversed(self._words):
+            t = self._time(stamp)
+            if t is not None:
+                return t, w
+        return None
+
     def since(self, since: float) -> list[tuple[float, str]]:
         """(time, word) from LOOKBACK_SECS before `since` on; none when the bot played
         nothing in the ACTIVE_SECS before it (it was not talking when this speech began).

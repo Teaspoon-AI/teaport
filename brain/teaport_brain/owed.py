@@ -119,14 +119,65 @@ _LULL_TICK_S = 0.25
 # where rounds 4 and 5 measured it (spec_round4.note_with(run=RE_S), appended; 18-20/20
 # "By the way, ..." after an unrelated exchange or "thanks", 10/20 stay_silent after
 # "hold on"). §2's sketch lists both lines under the tag; the measured placement is kept.
-RUN_LINE = ("Nothing else is going on: tell them now in one or two short spoken sentences. "
-            "Lead with the answer, then say what it answers (\"<answer> is …\"), not "
-            "the other way round.")
-REOFFER_LINE = ("They haven't heard this yet and the conversation has gone quiet. If their "
-                "last words asked you to wait and they haven't come back to you, call "
-                "stay_silent. Otherwise mention it once in passing, in one short sentence "
-                "that says what it's about and gives the answer (\"By the way, that ... is "
-                "...\").")
+#
+# #387 re-measured the run lines and the failures' texts (tests/test_owed_note_eval.py,
+# gpt-oss-120b on Groq, the room's live system prompt and tools, 20 trials a case,
+# 2026-11-09; before -> after). Round 5's "Lead with the answer, then say what it answers
+# (\"<answer> is …\")" was read out ("That answers your request.", ~50 times on the box
+# in ten days): a list answer 7/20 -> 0/20, the answer first 20/20 either way; in Spanish
+# and Italian sessions 1/10 and 3/10 -> 0/20. An English example in the line ("The museum
+# opens at ten.") made a Spanish session answer in English 5/10: there is none. A failure
+# had no line of its own, and the hedge below told every failure "rather than saying it
+# failed": a timed-out lookup's run told it failed and why 3/20 -> 20/20 (the rest: "no
+# results", "not yet"), an error's 0/20 -> 20/20, in Spanish 0/10 -> 20/20 and Italian
+# 0/10 -> 20/20; "What about the bookshops?" after it 1/20 -> 20/20, in Spanish 0/10 ->
+# 19/20; "How are those searches going?" with two failed 0/20 ("still waiting on those
+# searches") -> 19/20, in Italian 20/20; its re-offer 9/20 -> 20/20; an answer and a
+# failure re-offered together, both told 0/10 -> 16/20; an action's timeout 8/20 -> 20/20.
+# What the run lines share, and the re-offer lines (the texts stay as they were measured).
+_RUN_HEAD = "Nothing else is going on: tell them now"
+_REOFFER_HEAD = ("They haven't heard this yet and the conversation has gone quiet. If their "
+                 "last words asked you to wait and they haven't come back to you, call "
+                 "stay_silent. Otherwise mention it once in passing, in one short sentence "
+                 "that says ")
+RUN_LINE = (_RUN_HEAD + " in one or two short spoken sentences. Start with the answer "
+            "itself, in a full sentence, not with their question, and don't talk about your "
+            "reply or their request.")
+# The landing run of a failure (#387): there is no answer to lead with, and told to lead
+# with one the model made one up ("No bookshop results are available."), as if nothing
+# existed.
+FAILURE_RUN_LINE = (_RUN_HEAD + ", in one or two short spoken sentences, that you couldn't "
+                    "do it and the reason the result gives.")
+# Under a failure's result in every note (#387): it has ended. Without it, a caller's turn
+# after a timed-out lookup was answered "I don't have those results yet" (the footer's "say
+# you don't have that"), or "still waiting on those searches". "Not just that there is no
+# answer" (#398 round 2): a Spanish caller's turn mirrored the outcome's "No answer:" ("no
+# se obtuvo respuesta") 8/20, 1/20 with it; the mixed re-offer told both 9/20 -> 16/20.
+FAILED_LINE = ("This one did not get done, and it is over: if you tell them about it, say "
+               "that and the reason the result gives, not just that there is no answer; "
+               "never that you're still waiting on it or that nothing was found.")
+# The same for a consult that never reported back (failure "unknown": the session ended
+# while it ran, Owed.close_session): it may have been done, so "did not get done" would be
+# false -- an action asked for may well have gone through.
+ENDED_LINE = ("This one is over and brought no answer: if you tell them about it, say that "
+              "and what happened, as the result says, never that you're still waiting on "
+              "it.")
+REOFFER_LINE = (_REOFFER_HEAD + "what it's about and gives the answer (\"By the way, that "
+                "... is ...\").")
+# A failure's re-offer (#387): the same, with nothing to give but what happened.
+FAILURE_REOFFER_LINE = (_REOFFER_HEAD + "what it was and why it didn't get done (\"By the "
+                        "way, that ... didn't work: ...\").")
+# ...and when one of them never reported back ("unknown": it may have been done), with no
+# answer to give and nothing to say failed (#398 review).
+ENDED_REOFFER_LINE = _REOFFER_HEAD + "what it was and what happened to it."
+
+
+def _failed(r) -> bool:
+    """A record of a consult that did not get done -- a timeout, an error, nothing back --
+    not one that never reported back ("unknown"), which may have been."""
+    return bool(r.failure) and r.failure != "unknown"
+
+
 NOTE_HEAD = "Results you have for the user. Each is everything that result contains."
 NOT_HEARD = "They have NOT heard this yet."
 # Round 4 "S3": 20/20 answer after a partial telling (v1's "heard part of it": 15/20).
@@ -286,9 +337,15 @@ STAY_SILENT_SCHEMA = FunctionSchema(
 # the record's outcome, in plain words the model can say (#80: each kind says what
 # actually happened). A failure's terms are its statement's own, without the hedge and
 # the settings hint (Record.make): a reply about it heard to its end closes it (Owed.tla
-# RUNCLOSE = "about").
-_ACTION_HEDGE = (" If it was something visible (a message, poll or post), it may have gone "
-                 "through anyway: ask them to check rather than saying it failed.")
+# RUNCLOSE = "about"). The hedge is for an action that may have gone through; until #387
+# it said "ask them to check rather than saying it failed", which every lookup read as
+# "don't say it failed" (measured above, with the failure's own lines).
+_ACTION_HEDGE = (" If it was to send, post or change something, it may have gone through "
+                 "anyway: say so, and ask them to check. A lookup has nothing to check.")
+
+
+# How a landing whose placeholder is not in the context yet is logged (Owed._rewrite).
+_HELD = "held for its placeholder"
 
 
 # What a cancelled consult's tool result says (Owed._cancelled): there is no result, and
@@ -658,17 +715,22 @@ def note_text(records: list, purpose: str) -> str:
     the quote contradicts its line and reads as engagement."""
     lines = [SYSTEM_NOTICE_TAG]
     if purpose == RUN:
-        lines.append(RUN_LINE)
+        lines.append(FAILURE_RUN_LINE if all(_failed(r) for r in records) else RUN_LINE)
     lines.append(NOTE_HEAD)
     for i, r in enumerate(records, 1):
         status = (PART_HEARD.format(quote=r.heard_quote)
                   if r.heard_quote and purpose != REOFFER else NOT_HEARD)
-        lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}\n   {status}")
+        failed = (f"\n   {FAILED_LINE if _failed(r) else ENDED_LINE}" if r.failure
+                  else "")
+        lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}{failed}\n"
+                     f"   {status}")
         if r.failure and r.unheard and r.heard_quote and purpose != REOFFER:
             lines.append(f"   {NOT_HEARD_REST.format(rest=r.unheard)}")
     lines.append(FOOTER)
     if purpose == REOFFER:
-        lines.append(REOFFER_LINE)
+        lines.append(FAILURE_REOFFER_LINE if all(_failed(r) for r in records)
+                     else ENDED_REOFFER_LINE if all(r.failure for r in records)
+                     else REOFFER_LINE)
     return "\n".join(lines)
 
 
@@ -713,7 +775,9 @@ def render(messages: list, records: list, purpose: str) -> list:
 #     ("Hold on, hold on." and web_fetch, 2026-10-18 17:26).
 
 # pipecat's placeholders while a call runs or after it was cancelled: no answer.
-_NOT_A_RESULT = frozenset({"IN_PROGRESS", "CANCELLED", "COMPLETED"})
+# IN_PROGRESS is written at the call's FunctionCallInProgressFrame, before its result.
+IN_PROGRESS = "IN_PROGRESS"
+_NOT_A_RESULT = frozenset({IN_PROGRESS, "CANCELLED", "COMPLETED"})
 
 
 def _argument_words(arguments) -> str:
@@ -916,6 +980,9 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
+        # Tool results written by a landing (_rewrite) that have not yet replaced their
+        # placeholder in the context: tool_call_id -> the JSON written (place_landed).
+        self._landing: dict = {}
         self._questions: dict = {}            # key -> the caller's turns when it was asked
         self._duplicates: dict = {}           # key -> the key whose consult answers it
         # Every tool result the book has seen, by tool_call_id (_Answer): a sync
@@ -1003,6 +1070,10 @@ class Owed:
         only into a quiet window, so nothing lies between its go and this render. A due
         decline check is read first (declines_read), as every reader does."""
         await self.settled()
+        # A landing that came before its placeholder (#386) is in place before any request
+        # reads the context. A speculation's copy taken before it went in no longer equals
+        # the live context, so it is not adopted (speculate._why_restart).
+        self.place_landed()
         if not speculative:
             # A speculation's render reads none (its words are interim): it is not
             # adopted while one is due (decline_due), and the commit renders here.
@@ -1094,12 +1165,13 @@ class Owed:
 
     def land(self, request, text, key, *, failure=None, detail="",
              ask=True) -> Optional[Record]:
-        """The consult landed: rewrite its placeholder ONCE to the cleaned outcome (the
-        only context write delivery makes), make the record owed, and ask the landing run
-        -- unless a caller request is still to be rendered (their turn is open, or
-        committed and not yet asked): that request carries the note, and a run would
-        speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's place
-        is taken by the re-offer, armed.
+        """The consult landed: rewrite its placeholder to the cleaned outcome (the only
+        context write delivery makes; one that lands before its placeholder is in the
+        context is written when it comes in: _rewrite), make the record owed, and ask the
+        landing run -- unless a caller request is still to be rendered (their turn is
+        open, or committed and not yet asked): that request carries the note, and a run
+        would speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's
+        place is taken by the re-offer, armed.
 
         A consult OpenClaw cancelled (failure "cancelled", consult_bridge.classify) makes
         no record and returns None: see _cancelled."""
@@ -1122,7 +1194,7 @@ class Owed:
                                 _terms(outcome, "", failure) | terms_of(request, ""))
         rec = self._owe(Record.make(key, request, outcome, failure=failure, question=question),
                         f"landed ({failure or 'answer'}); tool result "
-                        f"{'rewritten' if rewrote else 'not found'}")
+                        f"{'rewritten' if rewrote else _HELD}")
         if not ask or self._closed or self.gate is None:
             return rec
         if self.gate.caller_request_pending:
@@ -1145,7 +1217,7 @@ class Owed:
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
         logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
-                    f"tool result {'rewritten' if rewrote else 'not found'}")
+                    f"tool result {'rewritten' if rewrote else _HELD}")
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
@@ -1156,12 +1228,47 @@ class Owed:
             del self._duplicates[dup]
 
     def _rewrite(self, key, result: dict) -> bool:
+        """The tool result of the call `key` becomes `result`: a landing, a cancellation, a
+        duplicate's pointer. True if it has replaced the placeholder now; else it is held
+        and replaces it when the placeholder comes in (place_landed).
+
+        A consult can land before its placeholder is in the context (#386). One that fails
+        within milliseconds -- no budget left for the gateway's lane, a gateway refusing
+        the connection, no gateway token -- lands while its FunctionCallInProgressFrame
+        and the placeholder's FunctionCallResultFrame are still on their way to the
+        assistant aggregator, which then writes "IN_PROGRESS" and the placeholder over
+        nothing or over the landing. Written once and lost, the placeholder ("nothing has
+        come back yet") stayed for good beside a note saying it failed: the model said "I
+        don't have those results yet" and never that it failed. Held, the context ends up
+        as it does after a slow landing (Owed.tla Place, NoStaleResult)."""
+        self._landing[key] = json.dumps(result)
+        self.place_landed()
+        return key not in self._landing
+
+    def place_landed(self) -> None:
+        """Every held landing (_rewrite) written over its call's tool result in the
+        context, and let go once it has replaced the placeholder itself. One written over
+        pipecat's IN_PROGRESS is held on: the placeholder's result frame writes over it.
+        Called by the landing, when a consult's placeholder has gone into the context
+        (tools.placeholder_properties: pipecat's on_context_updated), and by every
+        render (view) -- the run a landing asks can render before the aggregator has
+        taken the placeholder."""
+        if not self._landing:
+            return
         for m in self.context.get_messages():
-            if (isinstance(m, dict) and m.get("role") == "tool"
-                    and m.get("tool_call_id") == key):
-                m["content"] = json.dumps(result)
-                return True
-        return False
+            if not (isinstance(m, dict) and m.get("role") == "tool"):
+                continue
+            content = self._landing.get(m.get("tool_call_id"))
+            if content is None:
+                continue
+            if m.get("content") not in (IN_PROGRESS, content):
+                del self._landing[m["tool_call_id"]]     # the placeholder itself: for good
+            m["content"] = content
+
+    async def placed(self) -> None:
+        """pipecat's on_context_updated for a consult's placeholder (tools.py): it is in
+        the context now, and a landing that came first replaces it."""
+        self.place_landed()
 
     def _owe(self, rec: Record, how: str) -> Record:
         """`rec` is owed, the newest: every way a record is made (land, a cut sync

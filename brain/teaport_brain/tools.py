@@ -76,6 +76,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain.conversation_log import quoted
+from teaport_brain import browser_idle
 from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
@@ -434,6 +435,14 @@ _BG: set = set()  # background tasks (reindexes, _run_to_its_end) kept from GC m
 # from leaking one turn's callback into an unrelated turn.
 def no_inference() -> FunctionCallResultProperties:
     return FunctionCallResultProperties(run_llm=False)
+
+
+def placeholder_properties(owed) -> FunctionCallResultProperties:
+    """An async consult's placeholder result: no inference (no_inference), and once the
+    assistant aggregator has put it in the context, a landing that came before it
+    replaces it (owed.Owed.placed, #386: a consult that fails within milliseconds lands
+    ahead of its own placeholder)."""
+    return FunctionCallResultProperties(run_llm=False, on_context_updated=owed.placed)
 
 
 def _mem_available_mb() -> int | None:
@@ -896,9 +905,12 @@ def _count_consult(gate, delta: int) -> None:
     """The session's own count of consults running (FollowupGate.consults_running), async
     and agent-first alike: while one runs, a no-wake room session is not idle
     (gateway_server.room_idle) and a Talk session asks the plugin about each final, which
-    the relay's spoken run control may take (run_control.py)."""
+    the relay's spoken run control may take (run_control.py). The brain's count too
+    (browser_idle.MONITOR), session or none."""
     if gate is not None:
         gate.consults_running = max(0, getattr(gate, "consults_running", 0) + delta)
+    # And the brain's: OpenClaw's browser is not stopped while one runs (browser_idle).
+    browser_idle.MONITOR.consult(delta)
 
 
 async def _run_to_its_end(consult):
@@ -924,9 +936,14 @@ def _run_detached(consult) -> None:
 
 
 def _held(consult) -> asyncio.Task:
+    """The agent's run `consult`, held in _BG until it ends, and counted meanwhile as the
+    brain's use of the agent (browser_idle): it goes on past its session's wait, and one
+    called as its session ended has no wait at all (_run_detached)."""
     run = asyncio.ensure_future(consult)
     _BG.add(run)
     run.add_done_callback(_BG.discard)
+    browser_idle.MONITOR.consult(1)
+    run.add_done_callback(lambda _run: browser_idle.MONITOR.consult(-1))
     return run
 
 
@@ -1155,12 +1172,13 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
     # resolves silently and the original's record answers for both.
     if owed is not None and owed.dispatch(params.tool_call_id, request) is not None:
-        # No inference on a placeholder result — see no_inference() below.
+        # A placeholder result: no inference, and a landing that came first replaces
+        # it -- see placeholder_properties() and the comment below.
         await params.result_callback(
             {"status": "duplicate",
              "instruction": ("This exact request is already in progress. Do not "
                              "respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     # From here on the call is the agent's: the relay's and the CLI lane's (_for_the_agent).
@@ -1205,9 +1223,10 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         if end_with_session is not None:
             end_with_session(consult)
     if owed is not None:
-        # Run NO inference on this placeholder (no_inference()). There is nothing for
-        # the model to say: the user already heard the acknowledgement (the model's
-        # own line, or _fallback_line's), and the real outcome lands later (owed.py),
+        # Run NO inference on this placeholder (placeholder_properties(): run_llm=False,
+        # and its on_context_updated places a landing that came first, #386). There is
+        # nothing for the model to say: the user already heard the acknowledgement (the
+        # model's own line, or _fallback_line's), and the real outcome lands later (owed.py),
         # rewriting this tool result, and a run of ours tells it then. Asking the model to
         # respond here and discarding what it says is what produced fabricated
         # answers — prompt-level "don't claim it's done" failed three times live
@@ -1218,7 +1237,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             "status": "working_in_background",
             "instruction": ("The task is running in the background and nothing has "
                             "come back yet. Do not respond now. " + _PENDING_RULE)},
-            properties=no_inference())
+            properties=placeholder_properties(owed))
         return
 
     # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,
