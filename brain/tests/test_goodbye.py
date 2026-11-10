@@ -205,10 +205,19 @@ def test_a_goodbye_longer_than_a_line_is_an_answer():
     assert not is_goodbye(" ".join(["Good night!"] * (goodbye.MAX_WORDS // 2 + 1)))
 
 
-def test_only_an_english_voice_counts():
-    assert goodbye.english("en-us") and goodbye.english("en-gb") and goodbye.english("EN")
-    for code in ("fr-fr", "es", "pt-br", "it", "hi", "ja", "cmn", "", None):
-        assert not goodbye.english(code), code
+def test_every_session_hears_english_and_its_own_language():
+    """#320: English everywhere, a language's own words where its catalog has them (es,
+    it); a session in a language with none of its own yet hears English alone."""
+    fr, es = i18n.get("fr"), i18n.get("es")
+    assert goodbye_kind("Good night!", fr) == BYE and goodbye_kind("Good night!", es) == BYE
+    assert goodbye_kind("Bonne nuit !", fr) is None            # none of its own yet
+    assert goodbye_kind("¡Que descanses!", es) == BYE
+    assert goodbye_kind("¡Que descanses!") is None              # an English session
+    sent, sleep = _sent("¡Hasta mañana, que descanses!", lang="es",
+                        messages=_turn("Bueno, me voy a la cama."))
+    assert len(sent) == 1 and sleep.decisions[-1] == SENT, sleep.decisions
+    sent, sleep = _sent("Bonne nuit !", lang="fr-fr", messages=_turn("Bonne nuit."))
+    assert sent == [] and sleep.decisions[-1] == "not a goodbye", sleep.decisions
 
 
 # ------------------------------------------------------------------ the backstop, on fakes
@@ -285,14 +294,17 @@ def _reply(kind=owed.COMMIT, calls=0):
 
 
 def _sent(text, *, messages=None, reply=None, gate=None, book=None, lang="en-us",
-          heard=None, cut=False, audio=True, again=None):
+          heard=None, cut=False, audio=True, again=None, first=None):
     """Feed one reply end to a backstop, answer the call as the bridge would, and return
-    the messages it sent (and the backstop)."""
+    the messages it sent (and the backstop). `first`: the caller's turn was (True) or was
+    not their first words in the session (PhraseVoice.first_words); None, unknown."""
     async def run():
         llm = _LLM()
         sleep = GoodbyeSleep(context=_Context(messages or _turn(TURNS[0][0])),
                              owed=book or _Owed(), gate=gate or _Gate(),
                              lang_fn=lambda: lang, llm=llm)
+        if first is not None:
+            sleep.first_words = lambda said: first
         for t in [text] + ([again] if again else []):
             sleep.reply_end(reply or _reply(), t if heard is None else heard, cut=cut,
                             audio=audio, text=t)
@@ -358,8 +370,13 @@ def test_what_keeps_the_room_awake():
         "nothing the caller said": dict(messages=[{"role": "user", "content": "(The user woke you.)"}]),
         "a goodbye that answers a question": dict(
             messages=_turn("What's the opposite of hello?"), text="Goodbye!"),
-        "a French voice": dict(lang="fr-fr"),
-        "a Spanish voice": dict(lang="es"),
+        # (#320: French has no goodbyes of its own yet; English ones count everywhere.)
+        "a French goodbye": dict(lang="fr-fr", text="Bonne nuit, à demain !"),
+        "a Spanish goodbye inside an answer": dict(
+            lang="es", text="¡Buenas noches! Tu alarma está puesta para las siete."),
+        "an Italian goodbye that answers a question": dict(
+            lang="it", messages=_turn("Come si dice buonanotte in inglese?"),
+            text="Buonanotte!"),
     }
     for why, kw in cases.items():
         text = kw.pop("text", TURNS[0][1])

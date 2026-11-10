@@ -12,7 +12,7 @@ import urllib.request
 
 import pytest
 
-from teaport_brain import display, i18n, wifi_setup, wifi_voice
+from teaport_brain import display, goodbye, i18n, wifi_setup, wifi_voice
 
 PKG = os.path.dirname(os.path.abspath(i18n.__file__))
 
@@ -54,6 +54,7 @@ DYNAMIC = {
     },
     "goodbye.py": {
         "voice.t._(SLEEP_TEXT)",             # N_() there: the sleep phrase's line
+        "t.p('pattern', english)",           # PATTERNS: the goodbyes (#320)
     },
     "settings_access.py": {                  # its lines: N_() there (#279)
         "t._(OFFLINE_TEXT)", "t._(UNAVAILABLE_TEXT)",
@@ -147,6 +148,7 @@ def _used() -> set[str]:
     keys |= {"digit\x04" + str(d) for d in range(10)}
     keys |= {"spell\x04" + s for s in wifi_voice._SYMBOLS.values()}
     keys |= {"pattern\x04" + p for p in wifi_voice.PATTERNS.values()}
+    keys |= {"pattern\x04" + p for p in goodbye.PATTERNS.values()}
     return keys
 
 

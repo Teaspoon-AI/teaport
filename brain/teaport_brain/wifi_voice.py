@@ -187,11 +187,14 @@ PATTERNS = {
                 + _THANKS + r")\b)*" + _TO_THE_END,
     # "go to sleep" (goodbye.SleepPhrase): the room goes back to sleep, said as a request
     # on its own, the same way -- "okay, go to sleep", "you can go back to sleep now",
-    # "can you go to sleep?" -- and "no" or a goodbye may lead in ("No, go to sleep.",
-    # "Good night, go to sleep."). Talk about sleep is not it: "how do I make you go to
-    # sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep mode".
+    # "can you go to sleep?", "stop listening" -- and "no" or a goodbye may lead in ("No,
+    # go to sleep.", "Good night, go to sleep."). Talk about sleep is not it: "how do I
+    # make you go to sleep?", "I need to go to sleep", "don't go to sleep", "go to sleep
+    # mode", "stop listening to me". (A turn that is only a goodbye -- "Good night." --
+    # is the phrase too: goodbye.SleepPhrase hears it with the backstop's matcher.)
     "sleep": _lead_in(r"|no|yes|yeah|just|thanks|thank you|good ?night|bye")
-             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?go (?:back )?to sleep"
+             + r"(?:" + _CAN_YOU + r"|you can )?(?:please )?(?:just )?"
+             r"(?:go (?:back )?to sleep|stop listening)"
              r"(?:[\s,]+(?:now|please|then|for now|again|" + _THANKS + r")\b)*" + _TO_THE_END,
 }
 
@@ -429,6 +432,13 @@ class PhraseVoice(FrameProcessor):
         self.bot_starts = 0  # the box's speech started so far (heard_out)
         self.cuts = 0        # ... and cut by the user while it played (heard_out)
         self._start_cuts = 0  # cuts when the box's speech last started
+        # The room's echo guard's record of what the speaker played (echo_guard.BotWords),
+        # where the session has one (agent_session): the model's words, for _echo.
+        self.bot_words = None
+        # The user has said something in this session (a final heard here, the box's
+        # own voice aside): a phrase may read whether these are their first words.
+        self.caller_spoke = False
+        self._first = None    # their first words, normalized (first_words)
         # AgentSession.say_in_place, where the session wires it: an answer to the user's
         # words said while the bot is replying stops that reply first (say()).
         self.say_in_place = None
@@ -481,6 +491,26 @@ class PhraseVoice(FrameProcessor):
             return False
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
 
+    def tail_echo(self, text: str) -> bool:
+        """Might `text` be the box's own last word heard back: one word, the last of its
+        newest line or of anything the speaker played (bot_words: the model's reply),
+        heard while it speaks or just after (ECHO_TAIL_SECS)? "…es a las ocho. Chao."
+        comes back as "Chao". Too short to call echo and drop (_echo's runs: "No." over
+        "Say yes or no." is the user's answer, as the room's echo guard keeps one short
+        word), but no ground to act on alone: the sleep phrase does not sleep on it."""
+        now = self._clock()
+        if not (self._bot_speaking or now - self._quiet_since <= ECHO_TAIL_SECS):
+            return False
+        word = _norm(text)
+        if not word or len(word.split()) != 1:
+            return False
+        if self._said:
+            when, line = self._said[-1]
+            if now - when <= ECHO_LINES_SECS and line.split()[-1:] == [word]:
+                return True
+        last = self.bot_words.last() if self.bot_words is not None else None
+        return last is not None and _norm(last[1]) == word
+
     async def heard_out(self, starts: int) -> bool:
         """Until a line say() started has played to its end (`starts`: bot_starts read
         before it was said). True once it has; False when the user cut it -- an
@@ -520,6 +550,21 @@ class PhraseVoice(FrameProcessor):
         if self._echo(text):
             logger.debug(f"phrases: {quoted(text[:40])} is the box's own voice — ignored")
             return True
+        try:
+            return await self._hear(text)
+        finally:
+            if text.strip():
+                # Their first words, while that turn is the latest: the same words said
+                # again later are no hello.
+                first = not self.caller_spoke
+                self.caller_spoke, self._first = True, _norm(text) if first else None
+
+    def first_words(self, said: str) -> bool:
+        """Are `said` (the user's words, as committed) their first in this session, and
+        still their latest?"""
+        return self._first is not None and _norm(said) == self._first
+
+    async def _hear(self, text: str) -> bool:
         answer = _Answer(self)
         reset = _ANSWERING.set(answer)
         try:

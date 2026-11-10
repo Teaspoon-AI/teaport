@@ -632,7 +632,7 @@ async def test_a_slow_or_capped_empty_reply_gets_the_line_at_once():
 
 async def test_a_reply_that_is_only_a_face_is_not_retried():
     """A reply of only a face -- an emoticon or an emoji -- has no speech, but it said
-    that: the guard forwards it whole (history gets none of it). Not asked again, and no
+    that: the guard forwards it whole and history keeps it. Not asked again, and no
     line glued onto it (review round 1b: ":):)Sorry, I lost my train of thought..."). A
     mood tag alone, the emoji or the bracketed one, agrees (#383): MoodTag strips it and
     shows a known mood at once (starts: []), with nothing spoken and no line; only a tag
