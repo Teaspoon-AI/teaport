@@ -517,11 +517,15 @@ class PhraseVoice(FrameProcessor):
         try:
             return await self._hear(text)
         finally:
-            if text.strip() and not self.caller_spoke:
-                self.caller_spoke, self._first = True, _norm(text)
+            if text.strip():
+                # Their first words, while that turn is the latest: the same words said
+                # again later are no hello.
+                first = not self.caller_spoke
+                self.caller_spoke, self._first = True, _norm(text) if first else None
 
     def first_words(self, said: str) -> bool:
-        """Are `said` (the user's words, as committed) their first in this session?"""
+        """Are `said` (the user's words, as committed) their first in this session, and
+        still their latest?"""
         return self._first is not None and _norm(said) == self._first
 
     async def _hear(self, text: str) -> bool:

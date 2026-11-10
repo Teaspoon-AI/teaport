@@ -281,12 +281,15 @@ class _Words:
             return re.compile(english, re.I)
         bye, sleep, around = both("bye").pattern, both("sleep").pattern, both("around").pattern
         greets, anyone = both("greets").pattern, both("anyone").pattern
-        # A clause: the goodbye -- or two, unpunctuated ("good night sleep well") --
-        # with small talk unpunctuated before and after it ("okay bye", "buonanotte
-        # grazie", as an STT writes them) and a word for anyone after it ("good night
-        # everyone"); or small talk alone.
+        # A clause: the goodbye -- or two, unpunctuated ("good night sleep well"), or one
+        # beside words that greet as well ("ciao a domani", "a domani ciao", "buenas
+        # noches que descanses": a goodbye whatever the greeting) -- with small talk
+        # unpunctuated before and after it ("okay bye", "buonanotte grazie", as an STT
+        # writes them) and a word for anyone after it ("good night everyone"); or small
+        # talk alone.
         lead, tail = f"(?:(?:{around}) ){{0,3}}", f"(?: (?:{around})){{0,3}}"
-        self.bye = re.compile(f"{lead}(?:{bye})(?: (?:{bye}))?(?: (?:{anyone}))?{tail}", re.I)
+        self.bye = re.compile(f"{lead}(?:(?:{greets}) )?(?:{bye})(?: (?:{bye}|{greets}))?"
+                              f"(?: (?:{anyone}))?{tail}", re.I)
         self.greets = re.compile(f"{lead}(?:{greets})(?: (?:{anyone}))?{tail}", re.I)
         self.sleep = re.compile(f"{lead}(?:{sleep}){tail}", re.I)
         self.small = re.compile(f"(?:(?:{around}|{greets}) ){{0,3}}(?:{around}|{greets})", re.I)

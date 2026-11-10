@@ -248,6 +248,33 @@ def test_a_greeting_back_is_no_goodbye_for_the_backstop():
         assert len(sent) == 1 and sleep.decisions[-1] == SENT, (caller, reply, sleep.decisions)
 
 
+def test_a_greeting_beside_a_goodbye_unpunctuated_is_a_goodbye():
+    """Review round 3: "ciao a domani" -- a goodbye whatever the greeting beside it,
+    first words or not; a greeting alone or with no goodbye is none."""
+    es, it = i18n.get("es"), i18n.get("it")
+    for t, text in ((it, "ciao a domani"), (it, "ciao a dopo"), (it, "a domani ciao"),
+                    (it, "ok ciao a presto"), (es, "buenas noches que descanses"),
+                    (es, "buenas noches hasta mañana"), (es, "hasta luego buenas noches")):
+        assert goodbye_kind(text, t, greets_part=False) == BYE, text
+    for t, text in ((it, "ciao bella"), (es, "hola buenas noches"), (it, "ciao come stai"),
+                    (it, "ciao a domani alle otto"), (es, "buenas noches que tal")):
+        assert goodbye_kind(text, t) is None, text
+
+
+def test_first_words_are_only_the_first_turn_while_it_is_the_latest():
+    """Review round 3: the first words said again later are no hello."""
+    async def run():
+        v = _Voice("it")
+        assert not v.first_words("Ciao")
+        await v._heard("Ciao")
+        assert v.first_words("Ciao.")
+        await v._heard("che ore sono")
+        assert not v.first_words("che ore sono") and not v.first_words("Ciao")
+        await v._heard("Ciao")
+        assert not v.first_words("Ciao")
+    asyncio.run(run())
+
+
 def test_a_ciao_later_in_the_session_answered_with_ciao_sleeps():
     """Review round 2: the box ends "…alle otto. Ciao!", the caller answers "Ciao" at
     once (the sleep phrase stands down: maybe its echo), and the model says a bare
@@ -263,7 +290,7 @@ def test_a_ciao_later_in_the_session_answered_with_ciao_sleeps():
         v._bot_speaking = True
         return await v._heard("Ciao"), v
     took, v = asyncio.run(phrase())
-    assert not took and not v.first_words("Ciao") and v.first_words("che ore sono")
+    assert not took and not v.first_words("Ciao") and not v.first_words("che ore sono")
     for lang, caller, reply in (("it", "Ciao", "Ciao!"), ("it", "Ciao", "Ciao! A presto!"),
                                 ("es", "Chao", "¡Chao!"), ("es", "Buenas noches", "¡Buenas noches!")):
         sent, sleep = _sent(reply, lang=lang, messages=_turn(caller), first=False)
