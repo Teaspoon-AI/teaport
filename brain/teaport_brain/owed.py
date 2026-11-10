@@ -130,11 +130,11 @@ _LULL_TICK_S = 0.25
 # opens at ten.") made a Spanish session answer in English 5/10: there is none. A failure
 # had no line of its own, and the hedge below told every failure "rather than saying it
 # failed": a timed-out lookup's run told it failed and why 3/20 -> 20/20 (the rest: "no
-# results", "not yet"), an error's 0/20 -> 19/20, in Spanish 0/10 -> 20/20 and Italian
-# 0/10 -> 20/20; "What about the bookshops?" after it 1/20 -> 20/20 (in Spanish 0/10 ->
-# 12/20: the rest mostly "no se obtuvo respuesta", the outcome's "No answer"); "How are
-# those searches going?" with two failed 0/20 ("still waiting on those searches") ->
-# 19/20, in Italian 20/20; its re-offer 9/20 -> 20/20; an action's timeout 8/20 -> 20/20.
+# results", "not yet"), an error's 0/20 -> 20/20, in Spanish 0/10 -> 20/20 and Italian
+# 0/10 -> 20/20; "What about the bookshops?" after it 1/20 -> 20/20, in Spanish 0/10 ->
+# 19/20; "How are those searches going?" with two failed 0/20 ("still waiting on those
+# searches") -> 19/20, in Italian 20/20; its re-offer 9/20 -> 20/20; an answer and a
+# failure re-offered together, both told 0/10 -> 16/20; an action's timeout 8/20 -> 20/20.
 # What the run lines share, and the re-offer lines (the texts stay as they were measured).
 _RUN_HEAD = "Nothing else is going on: tell them now"
 _REOFFER_HEAD = ("They haven't heard this yet and the conversation has gone quiet. If their "
@@ -151,10 +151,12 @@ FAILURE_RUN_LINE = (_RUN_HEAD + ", in one or two short spoken sentences, that yo
                     "do it and the reason the result gives.")
 # Under a failure's result in every note (#387): it has ended. Without it, a caller's turn
 # after a timed-out lookup was answered "I don't have those results yet" (the footer's "say
-# you don't have that"), or "still waiting on those searches".
+# you don't have that"), or "still waiting on those searches". "Not just that there is no
+# answer" (#398 round 2): a Spanish caller's turn mirrored the outcome's "No answer:" ("no
+# se obtuvo respuesta") 8/20, 1/20 with it; the mixed re-offer told both 9/20 -> 16/20.
 FAILED_LINE = ("This one did not get done, and it is over: if you tell them about it, say "
-               "that and why, never that you're still waiting on it or that nothing was "
-               "found.")
+               "that and the reason the result gives, not just that there is no answer; "
+               "never that you're still waiting on it or that nothing was found.")
 # The same for a consult that never reported back (failure "unknown": the session ended
 # while it ran, Owed.close_session): it may have been done, so "did not get done" would be
 # false -- an action asked for may well have gone through.
@@ -166,6 +168,9 @@ REOFFER_LINE = (_REOFFER_HEAD + "what it's about and gives the answer (\"By the 
 # A failure's re-offer (#387): the same, with nothing to give but what happened.
 FAILURE_REOFFER_LINE = (_REOFFER_HEAD + "what it was and why it didn't get done (\"By the "
                         "way, that ... didn't work: ...\").")
+# ...and when one of them never reported back ("unknown": it may have been done), with no
+# answer to give and nothing to say failed (#398 review).
+ENDED_REOFFER_LINE = _REOFFER_HEAD + "what it was and what happened to it."
 
 
 def _failed(r) -> bool:
@@ -752,6 +757,7 @@ def note_text(records: list, purpose: str) -> str:
     lines.append(FOOTER)
     if purpose == REOFFER:
         lines.append(FAILURE_REOFFER_LINE if all(_failed(r) for r in records)
+                     else ENDED_REOFFER_LINE if all(r.failure for r in records)
                      else REOFFER_LINE)
     return "\n".join(lines)
 

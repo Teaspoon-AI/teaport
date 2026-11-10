@@ -528,7 +528,11 @@ def test_a_consult_that_never_reported_back_is_over_not_failed():
         note = owed.note_text([rec], purpose)
         assert owed.ENDED_LINE in note and owed.FAILED_LINE not in note, (purpose, note)
     assert owed.note_text([rec], owed.RUN).split("\n")[1] == owed.RUN_LINE
-    assert owed.note_text([rec], owed.REOFFER).endswith(owed.REOFFER_LINE)
+    # Its re-offer has neither an answer to give nor a failure to tell (#398 round 2).
+    assert owed.note_text([rec], owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([_failure_record("timeout", key="t"), rec],
+                          owed.REOFFER).endswith(owed.ENDED_REOFFER_LINE)
+    assert owed.note_text([hn_record(), rec], owed.REOFFER).endswith(owed.REOFFER_LINE)
     both = owed.note_text([_failure_record("timeout", key="t"), rec], owed.RUN)
     assert both.split("\n")[1] == owed.RUN_LINE and owed.FAILED_LINE in both
 
