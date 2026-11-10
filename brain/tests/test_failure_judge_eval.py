@@ -38,26 +38,33 @@
 #
 # It reports, for the rule before and the judge now: false closes (a record closed on a
 # reply that did not tell it), false owes (a telling that leaves it owed), and for cuts the
-# tellings counted wrongly. It fails if the judge does worse than the rule before, either
-# way, played or cut, or closes a fifth of the played replies that told nothing.
+# tellings counted wrongly. It fails past ceilings near the measured levels (played: one
+# false close, a tenth false owes; cut: no telling miscounted), or if the judge does not
+# beat the rule before, both ways, played and cut. The extra tellings are reported apart.
 #
-# Measured 2026-11-09 (gpt-oss-120b on Groq, majority of 3; the cases here, plus 135
-# tellings the model gave in test_owed_note_eval.py's cases, before and after #387, kept
-# out of the repo and labelled by that eval's classes: 179 played, 102 told, 61 owed, 16
-# arguable; 483 cuts):
-#                     the words (before)      the judge
-#   played, false closes   33/61                 9/61    ("non ho ricevuto una risposta":
-#                                                         "I didn't get an answer")
-#   played, false owes     41/102                0/102
-#   cut, false closes      47/331               35/331   (most: a told reply cut after "I
-#                                                         couldn't" and before why)
-#   cut, false owes        71/152               24/152
-#   cuts counted that told nothing  122 -> 0; tellings not counted 83 -> 0.
-# On the hand-written cases alone (played): 17/24 -> 0/24 false closes, 5/18 -> 0/18 false
-# owes. The cut prompt asked of whole replies instead (one prompt for both) closed 29/61;
-# framed on "it failed" for cuts too, the existing cut sets (test_cut_judge_eval.py,
+# Measured 2026-11-09 (gpt-oss-120b on Groq, majority of 3; the cases here -- 54 played,
+# 22 told, 30 owed, 2 arguable; 588 cuts -- plus 135 tellings the model gave in
+# test_owed_note_eval.py's cases, before and after #387, kept out of the repo and labelled
+# by that eval's classes, reported apart: 84 told, 37 owed, 14 arguable):
+#                                  the words (before)   the judge
+#   played, false closes              23/30               0/30
+#   played, false owes                 5/22               0/22   (the 4 "unknown" tellings
+#                                                                  included)
+#   cut, false closes                 53/411             47/411  (most: a told reply cut
+#                                                                  after "I couldn't",
+#                                                                  before why)
+#   cut, false owes                   72/177             22/177
+#   cuts counted that told nothing   156                  0
+#   tellings not counted              83                  0
+#   extra played, false closes        16/37              12/37   ("non ho ricevuto una
+#                                                                  risposta": "I didn't
+#                                                                  get an answer")
+#   extra played, false owes          36/84               0/84
+# The cut prompt asked of whole replies instead (one prompt for both) closed 29/61 vague
+# ones; framed on "it failed" for cuts too, the existing cut sets (test_cut_judge_eval.py,
 # failures / multi) went from 1/43 and 4/66 false closes to 21/43 and 35/66: a cut needs
-# the reason heard, a whole reply that it failed.
+# the reason heard, a whole reply what happened. The told prompt before it spelled out a
+# consult that never reported back judged every such telling OWED (4/4).
 #
 import asyncio
 import collections
@@ -109,6 +116,15 @@ FAILURES = {
                "Avenue.", "Find pharmacies near Oak Avenue that are open late tonight."),
         "it": ("Chiedi all'agente di trovare farmacie aperte fino a tardi vicino a Oak "
                "Avenue.", "Find pharmacies near Oak Avenue that are open late tonight."),
+    }),
+    # A consult the session's end cut off ("unknown": it may have been done).
+    "unknown": ("unknown", "", {
+        "en": ("Tell the agent to send Sam a message on Discord saying I'll be late.",
+               "Send Sam a Discord message: I'll be about twenty minutes late."),
+        "es": ("Dile al agente que le mande a Sam un mensaje por Discord: llegaré tarde.",
+               "Send Sam a Discord message: I'll be about twenty minutes late."),
+        "it": ("Di' all'agente di mandare a Sam un messaggio su Discord: arrivo tardi.",
+               "Send Sam a Discord message: I'll be about twenty minutes late."),
     }),
     "credit": ("error", "HTTP 402: insufficient credits on this account", {
         "en": ("Ask the agent what's on my calendar tomorrow.",
@@ -169,6 +185,21 @@ REPLIES = [
     ("pharmacy", "it", "La ricerca delle farmacie è scaduta prima di finire. Vuoi che "
      "riprovi?", "told", "scaduta"),
     ("pharmacy", "it", "La ricerca delle farmacie è ancora in corso.", "owed", None),
+    # --- the consult that never reported back: told is "can't know", not done or failed
+    ("unknown", "en", "I can't tell whether your message to Sam went out: the agent never "
+     "reported back, so please check Discord.", "told", "never reported back"),
+    ("unknown", "en", "That message to Sam may or may not have gone through; I never got a "
+     "confirmation, so you might want to check.", "told", "may or may not"),
+    ("unknown", "en", "I'm still sending that message to Sam.", "owed", None),
+    ("unknown", "en", "Your message to Sam was sent.", "owed", None),
+    ("unknown", "es", "No sé si tu mensaje a Sam se envió: el agente nunca respondió, así "
+     "que revisa Discord.", "told", "nunca respondió"),
+    ("unknown", "es", "Sigo enviando el mensaje a Sam.", "owed", None),
+    ("unknown", "es", "Tu mensaje a Sam ya se envió.", "owed", None),
+    ("unknown", "it", "Non so se il messaggio a Sam è partito: l'agente non ha mai "
+     "risposto, quindi controlla Discord.", "told", "non ha mai risposto"),
+    ("unknown", "it", "Sto ancora inviando il messaggio a Sam.", "owed", None),
+    ("unknown", "it", "Il messaggio a Sam è stato inviato.", "owed", None),
     # --- the error
     ("error", "en", "Sorry, I couldn't check the train times: the request hit an error. Want "
      "me to try another way?", "told", "hit an error"),
@@ -254,39 +285,41 @@ async def main():
     recs = records()
     t = collections.Counter()
     wrong = []
-    replies = list(REPLIES)
+    # (failure, lang, text, label, where): "played" -- the cases here; "extra" -- played
+    # tellings kept out of the repo, reported apart.
+    replies = [(n, lang, x, label, "played") for n, lang, x, label, _ in REPLIES]
     extra = os.getenv("TEAPORT_EVAL_FAILURE_REPLIES")
     if extra:
-        # Tellings kept out of the repo: a JSON line each, {failure, lang, text, label} --
-        # played to their end only (they carry no cut markers).
+        # A JSON line each, {failure, lang, text, label}: played to their end only (they
+        # carry no cut markers).
         import json
         with open(extra, encoding="utf-8") as f:
-            replies += [(d["failure"], d["lang"], d["text"], d["label"], None)
+            replies += [(d["failure"], d["lang"], d["text"], d["label"], "extra")
                         for d in map(json.loads, f) if d.get("text")]
     # Played to its end: the whole reply, "they heard all of it".
     played = []
-    for name, lang, text, label, _ in replies:
+    for name, lang, text, label, where in replies:
         question, request, outcome = recs[(name, lang)]
-        played.append((name, lang, text, label, question, request, outcome))
+        played.append((name, lang, text, label, question, request, outcome, where))
     verdicts = await asyncio.gather(*(majority(q, failure_core(o), x, None)
-                                      for _, _, x, _, q, _, o in played))
-    for (name, lang, text, label, q, r, o), (heard, none) in zip(played, verdicts):
+                                      for _, _, x, _, q, _, o, _ in played))
+    for (name, lang, text, label, q, r, o, where), (heard, none) in zip(played, verdicts):
         t["none"] += none
         before = old_about(q, r, o, text)
-        t[f"played_{label}"] += 1
+        t[f"{where}_{label}"] += 1
         if label == "?":
-            t[f"played_?_judge_{'heard' if heard else 'owed'}"] += 1
+            t[f"{where}_?_judge_{'heard' if heard else 'owed'}"] += 1
             continue
         for rule, closed in (("before", before), ("judge", heard)):
             if closed and label == "owed":
-                t[f"played_{rule}_false_close"] += 1
-                wrong.append((rule, "played", lang, text))
+                t[f"{where}_{rule}_false_close"] += 1
+                wrong.append((rule, where, lang, text))
             elif not closed and label == "told":
-                t[f"played_{rule}_false_owe"] += 1
-                wrong.append((rule, "played", lang, text))
+                t[f"{where}_{rule}_false_owe"] += 1
+                wrong.append((rule, where, lang, text))
     # Cut after every word: the whole text first (a telling of it at all? -- the gate,
     # the count), then the prefix and the rest.
-    whole = {text: heard for (_, _, text, *_), (heard, _) in zip(played, verdicts)}
+    whole = {p[2]: heard for p, (heard, _) in zip(played, verdicts)}
     jobs = []
     for name, lang, text, label, marker in REPLIES:
         if label == "?" or os.getenv("TEAPORT_EVAL_PLAYED_ONLY"):
@@ -317,28 +350,36 @@ async def main():
             elif not gate and label == "told":
                 t[f"count_{rule}_missed"] += 1
     lat.sort() if lat else lat.append(0.0)
-    print(f"model={setting('LLM_MODEL')} trials={TRIALS} replies={len(played)} "
+    print(f"model={setting('LLM_MODEL')} trials={TRIALS} replies={len(REPLIES)} "
           f"({t['played_told']} told, {t['played_owed']} owed, {t['played_?']} arguable), "
-          f"cuts={len(jobs)} ({t['cut_told']} told, {t['cut_owed']} owed)")
+          f"cuts={len(jobs)} ({t['cut_told']} told, {t['cut_owed']} owed); extra played "
+          f"{t['extra_told'] + t['extra_owed'] + t['extra_?']} ({t['extra_told']} told, "
+          f"{t['extra_owed']} owed, {t['extra_?']} arguable)")
     for rule in ("before", "judge"):
         print(f"{rule:6}: played false closes {t[f'played_{rule}_false_close']}/"
               f"{t['played_owed']}, false owes {t[f'played_{rule}_false_owe']}/"
               f"{t['played_told']}; cut false closes {t[f'cut_{rule}_false_close']}/"
               f"{t['cut_owed']}, false owes {t[f'cut_{rule}_false_owe']}/{t['cut_told']}; "
               f"cuts counted that tell nothing {t[f'count_{rule}_false']}, tellings not "
-              f"counted {t[f'count_{rule}_missed']}")
+              f"counted {t[f'count_{rule}_missed']}; extra false closes "
+              f"{t[f'extra_{rule}_false_close']}/{t['extra_owed']}, false owes "
+              f"{t[f'extra_{rule}_false_owe']}/{t['extra_told']}")
     print(f"arguable (told, no why): judge HEARD {t['played_?_judge_heard']}, OWED "
           f"{t['played_?_judge_owed']}")
     print(f"no verdict: {t['none']}; latency p50 {lat[len(lat) // 2]:.2f}s "
           f"p90 {lat[int(len(lat) * .9)]:.2f}s")
     for rule, where, lang, text in wrong:
         print(f"  [{rule} {where} {lang}] {text[:110]}")
-    # The judge must do better than the words did, both ways, and close no more than a
-    # fifth of the replies that told nothing.
+    # Ceilings near what was measured, on the cases here (2026-11-09: see the header):
+    # played, at most one false close and a tenth false owes; cut, no reply counted as a
+    # telling that told nothing, none left uncounted that did.
+    assert t["played_judge_false_close"] <= 1, t
+    assert t["played_judge_false_owe"] * 10 <= t["played_told"], t
+    assert t["count_judge_false"] == 0 and t["count_judge_missed"] == 0, t
+    # ...and the judge beats the words it replaced, both ways, played and cut.
     for where in ("played", "cut"):
-        assert t[f"{where}_judge_false_close"] <= t[f"{where}_before_false_close"], t
-        assert t[f"{where}_judge_false_owe"] <= t[f"{where}_before_false_owe"], t
-    assert t["played_judge_false_close"] * 5 < max(1, t["played_owed"]), t
+        assert t[f"{where}_judge_false_close"] < t[f"{where}_before_false_close"], t
+        assert t[f"{where}_judge_false_owe"] < t[f"{where}_before_false_owe"], t
     print("ALL PASS")
 
 

@@ -506,7 +506,7 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_rewriteOnce` | the landing rewrites the tool result once (the code before #386), a failure | ✗ `NoStaleResult` | the consult fails before its placeholder is in the context; the rewrite finds nothing, the placeholder comes in, and the landing run is rendered with "nothing has come back yet" beside a note saying it failed (4 steps). Live 2026-11-09: "I don't have those results yet" for lookups that had timed out |
 | `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 376,448 states |
 | `ow_failure_aboutVague` | a failure closed by a reply ABOUT it by its words (`RUNCLOSE = "about"`, the code before #380), with vague replies (`MENTION`) | ✗ `ClosedOnEvidence` | a noted reply says only "I don't have the bookshop results yet" -- it names the request -- and plays to its end; the record closes, the caller never told it failed (10 states) |
-| `ow_failure_judgeWrong` | the failure judge answers HEARD on a vague reply (`gistWrong` under `"judge"`): the measured residual, 9/61 on model tellings | ✗ `ClosedOnEvidence` | the landing run says only that there is nothing yet, judged HEARD (5 states) |
+| `ow_failure_judgeWrong` | the failure judge answers HEARD on a vague reply (`gistWrong` under `"judge"`): the measured residual, 0/30 on the eval's cases and 12/37 on the model's own tellings | ✗ `ClosedOnEvidence` | the landing run says only that there is nothing yet, judged HEARD (5 states) |
 | `ow_failNotAbout` | a failure record with no terms (`owed.py` 9349e35 until the formal audit's C1): a telling that names nothing of the request is about it only when it is the record's own run | ✗ `NoStaleNote` | the failure lands mid-turn; the caller's reply tells it in its own words ("a billing problem, want me to open your settings?") and plays through; the record stays owed, and the lull's re-offer says NOT heard (11 steps) |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
@@ -748,11 +748,14 @@ The model was written to lead the design, and it found these:
    `owed.FAILURE_TOLD_JUDGE_PROMPT` -- does it tell them it failed? -- closes it played
    through and decides whether a cut counts as a telling; a cut's prefix and rest then go
    to `owed.FAILURE_CUT_JUDGE_PROMPT` as before. No verdict closes only the record's own
-   run. Measured (`tests/test_failure_judge_eval.py`, gpt-oss-120b, majority of 3, en/es/it,
-   2026-11-09): played through, false closes 33/61 -> 9/61 and false owes 41/102 -> 0/102;
-   cut, false closes 47/331 -> 35/331 and false owes 71/152 -> 24/152; cuts counted that
-   told nothing 122 -> 0, tellings not counted 83 -> 0. The residual, a vague reply judged
-   HEARD, is `ow_failure_judgeWrong`.
+   run. A telling cut before its stream ended (no whole text) is judged on what was
+   heard of it: it counts only if that prefix already tells it. Measured
+   (`tests/test_failure_judge_eval.py`, gpt-oss-120b, majority of 3, en/es/it, a consult
+   that never reported back included, 2026-11-09): played through, false closes 23/30 ->
+   0/30 and false owes 5/22 -> 0/22 (on 135 tellings the model gave, 16/37 -> 12/37 and
+   36/84 -> 0/84); cut, false closes 53/411 -> 47/411 and false owes 72/177 -> 22/177;
+   cuts counted that told nothing 156 -> 0, tellings not counted 83 -> 0. The residual, a
+   vague reply judged HEARD, is `ow_failure_judgeWrong`.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a

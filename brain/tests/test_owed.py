@@ -2847,15 +2847,47 @@ async def test_a_failures_own_run_closes_on_no_verdict_a_caller_reply_does_not()
 async def test_a_cut_reply_that_tells_nothing_of_the_failure_is_no_cut_telling():
     """A cut reply on something else -- its whole text judged no telling -- neither counts
     toward the two cuts that drop the record nor is quoted as what they heard of it, and
-    the cut's prefix is never asked."""
+    the cut's prefix verdict (asked beside the first) is set aside: HEARD closes nothing."""
     other = "Tomorrow looks sunny, with a high around seventy."
     fj = FakeFailureJudge(True, whole=False)
     b, _, _ = failure_book(fj)
     cut(b, noted_reply(b, "caller", ("call-cal",)), "Tomorrow looks sunny,", other)
     await judged(b)
     rec = b.record("call-cal")
-    assert rec.state == OWED and rec.cuts == 0 and rec.heard_quote == "" and fj.calls == []
-    assert not b.decline_due()
+    assert rec.state == OWED and rec.cuts == 0 and rec.heard_quote == "", rec
+    assert fj.wholes == [other] and not b.decline_due() and rec.heard == []
+
+
+async def test_a_telling_cut_before_its_stream_ended_counts_by_what_they_heard():
+    """#403 review: cut before its stream ended there is no whole text -- the told judge
+    reads what they heard of it, and a prefix that already tells it counts as a cut
+    telling (it never closes: no rest to judge)."""
+    fj = FakeFailureJudge(True, whole=lambda heard: "credit" in heard)
+    b, _, _ = failure_book(fj)
+    heard = "I couldn't check your calendar: the AI account is out of credit"
+    b.settle(noted_reply(b, "caller", ("call-cal",)), heard, cut=True, audio=True,
+             text=None, rest=None)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert fj.wholes == [heard] and rec.state == OWED and rec.cuts == 1, (fj.wholes, rec)
+    b2, _, _ = failure_book(FakeFailureJudge(True, whole=False))
+    b2.settle(noted_reply(b2, "caller", ("call-cal",)), "Sorry, I", cut=True, audio=True,
+              text=None, rest=None)
+    await judged(b2)
+    assert b2.record("call-cal").cuts == 0
+
+
+async def test_a_run_played_through_and_judged_owed_adds_nothing_heard():
+    """#403 review: the failure's own run, played through and judged OWED (it said only
+    that nothing came back), stays out of what they heard of it -- the next verdict reads
+    only what told it."""
+    fj = FakeFailureJudge(whole=False)
+    b, _, _ = failure_book(fj)
+    b.settle(noted_reply(b, owed.RUN, ("call-cal",)), NOT_YET, cut=False, audio=True,
+             text=NOT_YET)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.heard == [], rec.heard
 
 
 async def test_an_answer_cut_keeps_the_cut_judge_and_its_measured_note():
