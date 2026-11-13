@@ -45,7 +45,7 @@ The command prints the same comparison and, when a part differs, names the run t
 
 The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helper that the configuration page runs as root.
 
-<!-- source: install.sh:1160-1163#cee553a8; packaging/nfpm.yaml:57-91#894ea3a9 -->
+<!-- source: install.sh:1160-1163#cee553a8; packaging/nfpm.yaml:57-85#49e7cf31 -->
 
 From a checkout of the teaport repository, update the source and install the package the release manifest names:
 

@@ -53,36 +53,52 @@ Notes:
   engine. The brain does not run espeak-ng, and no GPL code links into the
   software in this repository. espeak-ng runs as a separate program.
 
-### soxr and libsndfile (LGPL-2.1) — accepted, with one distribution constraint
+### soxr and libsndfile (LGPL-2.1) — accepted, with what shipping them asks
 
-(libsndfile arrives inside the soundfile wheel since pipecat 1.9; everything below about
-soxr's PyPI wheel holds for it word for word.)
+(libsndfile arrives inside the soundfile wheel since pipecat 1.9. What follows about soxr
+holds for it too, except where a line below says otherwise.)
 
 **Decision (accepted).** `soxr` is **LGPL-2.1-or-later** and an *unconditional* dependency
 of pipecat-ai, so the brain's installed tree is **not** uniformly MIT/BSD/Apache — but this
 is compliant and ordinary for an open-source Python package. LGPL is *weak* copyleft: it
-does not relicense teaport's MIT code; it only requires that a recipient be able to
-replace the LGPL library. Because `soxr` is fetched from PyPI by the installer (uv, from
-`brain/uv.lock`) and this repo neither vendors, modifies, nor redistributes it, that
-condition is met automatically — a recipient can swap it in place. Two mechanics notes,
-because the uv-managed venv ships **without pip** and a repair re-run re-syncs the venv
-back to the lock (removing anything not in it):
+does not relicense teaport's MIT code. It asks that a recipient be able to replace the LGPL
+library, and that whoever distributes the library hands over its licence text and a way to
+get its source.
 
-- one-off swap: `uv pip install --python /opt/teaport/venv soxr==<other>` (uv performs the
-  install; no in-venv pip needed). The next repair run restores the locked version.
-- durable swap: pin the replacement in `brain/pyproject.toml`, run `uv lock`, and re-run
-  the installer — the lock is the source of truth the venv is synced to.
+**What teaport ships.** The `teaport-brain` package, built in CI from `brain/uv.lock` by
+`packaging/build-deb.sh`, holds the PyPI wheels of that lock, unmodified, as an ordinary
+Python environment under `/opt/teaport/brain`. So teaport distributes soxr and libsndfile,
+and does what that asks:
 
-teaport ships none of its bytes; the PyPI wheel — which *does* statically bundle a modified
-libsoxr — is soxr's own LGPL-licensed artifact, distributed from PyPI, not by us.
+- **Licence texts.** Each Python package's own licence files are in its `.dist-info`
+  directory in the tree (soxr's, with libsoxr's, under
+  `soxr-<version>.dist-info/licenses/`; soundfile's beside its `METADATA`). The package also
+  installs this file and a `copyright` file under `/usr/share/doc/teaport-brain/`.
+- **Source.** The versions are the ones in `brain/uv.lock`. Their source is the source
+  distribution on PyPI (`soxr`, which carries the libsoxr source it bundles; `soundfile`),
+  and upstream at <https://github.com/dofuuz/python-soxr> (soxr and libsoxr),
+  <https://github.com/libsndfile/libsndfile> (libsndfile) and
+  <https://github.com/bastibe/python-soundfile> (soundfile). Teaspoon AI will also send the
+  source of those versions to anyone who asks at hello@teaspoon.tech, for three years from
+  the release that shipped them.
+- **Replacing them.** libsndfile is a separate shared object, `_soundfile_data/libsndfile_<arch>.so`
+  in the soundfile package: put your own build in its place. soxr links libsoxr into its
+  Python extension: rebuild the wheel from the source distribution against your own
+  libsoxr and install it into the tree (`sudo uv pip install --python
+  /opt/teaport/brain/bin/python <wheel>`; the tree ships without pip, and uv is not part
+  of the package). `teaport doctor`
+  and `dpkg -V teaport-brain` then list the changed files, as they list any other change,
+  and the next install of the package puts the shipped ones back. To keep a replacement,
+  pin it in `brain/pyproject.toml`, run `uv lock`, and build the package with
+  `packaging/build-deb.sh`: the lock is what the package is built from.
 
-**The one constraint (why this stays a non-issue):** the brain is distributed as
-**source + PyPI-installed dependencies** (the installer builds a venv from `brain/uv.lock`
-with uv). It must **never** be frozen or bundled into a single **closed** binary (PyInstaller,
-a vendored/redistributed wheel, a shipped closed image) — that is the only action that would
-turn soxr's LGPL into a real relink/redistribution obligation. Keep the brain open and
-PyPI-installed and nothing further is owed beyond this attribution. (Re-audit the full tree
-at each public cut — a pipecat bump could add a new-licensed dep.)
+**The one constraint (why this stays a non-issue):** the brain stays an open Python
+environment of unmodified wheels, with its source in this repository and the dependencies'
+source on PyPI. It must **never** be frozen or bundled into a single **closed** binary
+(PyInstaller, a shipped closed image) — that would take away the recipient's way to replace
+the library, which is the one thing the LGPL asks for. Keep the brain open and nothing
+further is owed beyond the above. (Re-audit the full tree at each public cut — a pipecat
+bump could add a new-licensed dep, and the versions named above move with the lock.)
 
 ## Plugin (`plugin/`, MIT)
 
