@@ -168,6 +168,8 @@
   .group-head { padding: 18px var(--pad) 16px; }
   .group-head .title { display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
   .group-head .file { font-family: var(--mono); font-size: 12.5px; color: var(--faint); overflow-wrap: anywhere; }
+  .group-head .docs { margin-left: auto; align-self: center; display: inline-flex; align-items: center; gap: 3px; font-size: 14px; font-weight: 600; color: var(--accent-ink); text-decoration: none; white-space: nowrap; padding: 2px 0; }
+  .group-head .docs:hover { text-decoration: underline; text-underline-offset: 3px; }
   .group-blurb { color: var(--muted); margin: 6px 0 0; max-width: 68ch; font-size: 15px; }
   .group-body { padding: 16px var(--pad) 20px; border-top: 1px solid var(--border); }
   .group-tools { padding: 12px var(--pad); border-top: 1px solid var(--border); background: var(--surface); }
@@ -186,6 +188,7 @@
   .badge.required { color: var(--warn-ink); background: var(--warn-wash); }
   .help { margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 66ch; overflow-wrap: anywhere; }
   .note { margin: 6px 0 0; color: var(--faint); font-size: 14px; line-height: 1.5; max-width: 66ch; overflow-wrap: anywhere; }
+  body:not(.show-tuning) .source { display: none; }
   .source { font-family: var(--mono); font-size: 12px; color: var(--faint); margin-top: 6px; overflow-wrap: anywhere; }
   .control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .control .default { font-size: 13px; color: var(--faint); margin: 0; overflow-wrap: anywhere; }
@@ -328,8 +331,8 @@
       <section class="group adv" id="g-wifi" hidden></section>
       <div id="groups" class="adv"></div>
       <footer class="foot">
+        <p class="adv">Every setting is described in the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a>.</p>
         <p class="build" id="build" hidden></p>
-        <p class="adv">Rendered from <span class="mono">config_schema.toml</span>, the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.</p>
       </footer>
     </div>
   </div>
@@ -410,6 +413,17 @@
   // The Wi-Fi setup settings are written when the drive is flashed and read-only here:
   // no card of their own, the Wi-Fi card names the setup network instead.
   const IN_WIFI_CARD = 'wifi_setup';
+  // A section's part of the Settings reference: the docs generator writes each group as a
+  // heading with its title, and Starlight's anchor for it is the title lowercased, its
+  // spaces as hyphens, anything else but letters, digits and hyphens dropped.
+  const DOCS = 'https://docs.teaspoon.tech/reference/settings/';
+  const docsUrl = (title) => DOCS + '#' + title.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+  const ARROW = () => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [k, v] of Object.entries({ width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2.2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) svg.setAttribute(k, v);
+    svg.innerHTML = '<path d="M7 17 17 7"/><path d="M8 7h9v9"/>';
+    return svg;
+  };
   const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', local_audio_env: 'local-audio.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
 
   const original = (name) => {
@@ -548,7 +562,8 @@
       const writable = data.writable.includes(store);
       const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store, 'aria-labelledby': 'h-' + g.id },
         h('div', { class: 'group-head' },
-          h('div', { class: 'title' }, h('h2', { id: 'h-' + g.id }, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
+          h('div', { class: 'title' }, h('h2', { id: 'h-' + g.id }, g.title), h('span', { class: 'file' }, data.schema.stores[store].path),
+            h('a', { class: 'docs', href: docsUrl(g.title), target: '_blank', rel: 'noopener', 'aria-label': g.title + ' in the Settings reference' }, 'Docs', ARROW())),
           g.summary ? h('p', { class: 'group-blurb' }, g.summary) : null,
           (data.absent || []).includes(store) ? h('p', { class: 'group-blurb' }, 'Not set up on this box: the installer creates ', h('span', { class: 'mono' }, data.schema.stores[store].path), ' when it is turned on.')
             : (data.unreadable || []).includes(store) ? h('p', { class: 'group-blurb' }, 'The brain cannot read ', h('span', { class: 'mono' }, data.schema.stores[store].path), ', so its values are not shown here.')
@@ -876,6 +891,8 @@
   const applyFilter = () => {
     const q = $('#search').value.trim().toLowerCase();
     const showAll = $('#showtuning').checked;
+    // The code files that read a setting are for people working on teaport: with the rest.
+    document.body.classList.toggle('show-tuning', showAll);
     // The Wi-Fi card has no rows to match: a search puts it away.
     $('#g-wifi').classList.toggle('filtered', !!q);
     for (const sec of document.querySelectorAll('#groups section.group')) {
