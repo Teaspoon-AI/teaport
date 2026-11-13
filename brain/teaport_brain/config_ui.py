@@ -501,10 +501,10 @@ async def get_package_license(package: str, request: Request):
     return got
 
 
-# The running brain's build record, a file in the venv's root. Only a brain installed before
-# the teaport-brain package has one (install.sh used to write it into every venv it built);
-# the package does not, so for it the footer shows no revision or build date. sys.prefix
-# names the venv that is serving.
+# The running brain's build record, a file in the venv's root: the git revision it was built
+# from and when. packaging/build-deb.sh writes it into the package (a brain installed before
+# the package has one too, from the old installer; one run from a source checkout has none).
+# sys.prefix names the venv that is serving.
 BUILD_RECORD = os.path.join(sys.prefix, "teaport-build.json")
 
 

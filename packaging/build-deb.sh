@@ -173,6 +173,9 @@ env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
 # and world-writable has no place in a root-owned tree) and the markers that keep a
 # project venv out of git and backups. None of them means anything once it is packaged.
 rm -f "$DEST/.lock" "$DEST/.gitignore" "$DEST/CACHEDIR.TAG"
+# What this build is made from, for the Settings footer (config_ui._build): the git
+# revision, "-dirty" when the tree has uncommitted changes, and when it was built.
+printf '{"revision": "%s%s", "built": "%s"}\n' "$rev" "${dirty:+-dirty}" "$(date -Iseconds)" > "$DEST/teaport-build.json"
 # Modes as a root-owned tree wants them, whatever uv created them with (on the arm64
 # runner, a world-writable lib/ despite the umask): nothing writable but by
 # the owner, everything readable, executables and directories searchable.
