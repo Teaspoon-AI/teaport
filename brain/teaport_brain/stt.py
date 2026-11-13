@@ -741,9 +741,9 @@ _STREAM_TAIL_SECS = setting("TEAPORT_STREAM_TAIL_SECS")
 # plus double-talk gating a clean offline mix cannot model. This gain compensates the
 # quiet whatever its cause; lowering aec_aggressiveness is not the lever.
 #
-# Off (0.0) by default and threaded from the FRONT-END, not read from the shared brain.env:
-# the OpenClaw Talk path does its own client-side echo cancellation and must not get this,
-# and both brains read the same env file, so only sip_server passes a non-zero value.
+# Off (0.0) here and threaded from the FRONT-END, not read from the shared brain.env: the
+# OpenClaw Talk path does its own client-side echo cancellation and must not get this, so
+# only sip_server passes a non-zero value (SIP_STT_MAKEUP_DB, default 6).
 # A fixed gain with a hard clip, deliberately simple; a level-targeting AGC is the v2 if a
 # flat boost proves too blunt (it pushes already-loud audio toward the clip guard).
 

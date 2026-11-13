@@ -1922,22 +1922,41 @@ JSON
 # so a repair keeps whatever the config page set rather than snapping back to the default.
 # An explicit answer is written plain, and wins.
 LLM_BASE_URL=""; LLM_MODEL=""; LLM_URL_SEED="?"; LLM_MODEL_SEED="?"
+# The endpoint a box gets when nobody names one: OpenRouter, which the appliance runs and
+# the brain's account features expect (first-run sign-in, the shared OpenClaw key and the
+# credit checks all test ai_account.is_openrouter).
+LLM_DEFAULT_URL="https://openrouter.ai/api/v1"
+# llm_default_model <url> — the model name to offer for <url>: OpenRouter names a model
+# with its maker (openai/gpt-oss-120b) and rejects the bare name that Groq, Cerebras and
+# a local server take. The host test is ai_account.is_openrouter's: openrouter.ai or a
+# subdomain of it.
+llm_default_model() {
+  local host="${1#*://}"; host="${host%%/*}"; host="${host%%:*}"; host="${host,,}"
+  case "$host" in
+    openrouter.ai|*.openrouter.ai) printf 'openai/gpt-oss-120b\n' ;;
+    *) printf 'gpt-oss-120b\n' ;;
+  esac
+}
 phase_credentials() {
   log "credentials -> $SECRETS (secrets never baked into units)"
   run mkdir -p "$SECRETS"; run chmod 700 "$SECRETS"
   # Bring-your-own OpenAI-compatible LLM (item-2 model): endpoint + key + model.
-  LLM_BASE_URL="${TEAPORT_LLM_BASE_URL:-}"; LLM_MODEL="${TEAPORT_LLM_MODEL:-gpt-oss-120b}"
+  LLM_BASE_URL="${TEAPORT_LLM_BASE_URL:-}"; LLM_MODEL="${TEAPORT_LLM_MODEL:-}"
   [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
-  [ -n "${TEAPORT_LLM_MODEL:-}" ] && LLM_MODEL_SEED=""
-  local key="${TEAPORT_LLM_API_KEY:-}"
+  [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
+  local key="${TEAPORT_LLM_API_KEY:-}" m=""
   if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
-    read -r -p 'LLM base URL (OpenAI-compatible, e.g. https://api.groq.com/openai/v1): ' LLM_BASE_URL
-    read -r -p 'LLM model [gpt-oss-120b]: ' m; [ -n "$m" ] && LLM_MODEL="$m"
+    read -r -p "LLM base URL (OpenAI-compatible) [$LLM_DEFAULT_URL]: " LLM_BASE_URL
     [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
-    [ -n "$m" ] && LLM_MODEL_SEED=""
+    if [ -z "$LLM_MODEL" ]; then
+      m="$(llm_default_model "${LLM_BASE_URL:-$LLM_DEFAULT_URL}")"
+      read -r -p "LLM model [$m]: " LLM_MODEL
+      [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
+    fi
     read -r -s -p 'LLM API key (blank for a local keyless server): ' key; echo
   fi
-  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="http://127.0.0.1:8182/v1"   # local default when unattended
+  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$LLM_DEFAULT_URL"   # the default when nobody named one
+  [ -z "$LLM_MODEL" ] && LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
   if [ -n "$key" ]; then
     if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s/llm_key (mode 600)\n' "$SECRETS";
     else printf '%s' "$key" > "$SECRETS/llm_key"; chmod 600 "$SECRETS/llm_key"; fi
@@ -2498,6 +2517,15 @@ set_avahi_hostname() {
   fi
 }
 
+# TTS pacing (#83): what the appliance runs. Synthesis keeps a lead over playout instead of
+# running ahead of it (lead), and the next clause synthesizes eagerly only while the queued
+# audio is shorter than it takes to make (low_lead). A barge-in then throws away 3-5 s of
+# made audio instead of 14-20 s, with no underruns and the same time to first audio (the
+# 2026-10-04 A/B, 80 replies on the live brain). Seeds: a new install gets them, a repair
+# keeps whatever brain.env or the config page holds. The code defaults (greedy, always)
+# stay what an install that never ran this line has.
+TTS_PACING_SEED=("?TTS_PACING=lead" "?TTS_EAGER=low_lead")
+
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
@@ -2539,7 +2567,8 @@ phase_services() {
     "TEAPORT_URL=ws://127.0.0.1:$ENGINE_PORT/v1/realtime" \
     "${agent[@]}" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
-    "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
+    "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1" \
+    "${TTS_PACING_SEED[@]}"
 
   # TEAPORT_PERSONA_FILE points here, but nothing else ever creates it: without this a
   # voice-only box (and a gateway box whose gateway cannot answer) reads a file that
