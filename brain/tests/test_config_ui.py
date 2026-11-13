@@ -707,6 +707,7 @@ class _WifiNM:
         self._join, self._online, self.events = join, online, []
 
     def wifi_device(self): return "wlan0"
+    def mac(self, dev): return "48:8f:4c:01:9e:35"
     def active(self, dev): return {"name": "home", "uuid": "u-home"}
     def active_wifi(self, dev): return "home"
     def online(self, dev): self.events.append(("online", dev)); return self._online
@@ -736,6 +737,14 @@ def test_wifi_section(monkeypatch=None):
         assert state["available"] and state["connection"] == "home" and state["online"]
         assert ("online", "wlan0") in nm.events   # through the Wi-Fi, not any uplink
         assert state["setup_last"]["phase"] == "ap_up" and "password" not in state["setup_last"]
+        # The setup network's name, as the setup unit makes it: from the MAC, or the
+        # flash-time name in wifi-setup.env (the brain does not load that file).
+        assert state["setup_ssid"] == "teaport-9e35"
+        with open(os.path.join(etc, "wifi-setup.env"), "w") as f:
+            f.write("WIFI_SETUP_SSID='Teaport Kitchen'\nWIFI_SETUP_PASSWORD=k7mq-x4tn-p9wr\n")
+        state = client.get("/api/wifi", headers=H).json()
+        assert state["setup_ssid"] == "Teaport Kitchen" and "k7mq" not in json.dumps(state)
+        os.remove(os.path.join(etc, "wifi-setup.env"))
         assert client.post("/api/wifi/scan", headers=H).json()["networks"][0]["ssid"] == "cafe"
         r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "short"})
         assert r.status_code == 400

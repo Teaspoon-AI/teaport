@@ -836,10 +836,19 @@ def _wifi_state(nm) -> dict:
             setup = {k: v for k, v in json.load(f).items() if k != "password"}
     except (OSError, ValueError):
         pass
+    # The network setup mode opens, named as the setup unit names it: the flash-time
+    # WIFI_SETUP_SSID from wifi-setup.env (which the brain does not load), else teaport-
+    # and the MAC's last four hex digits. The page shows it in the Wi-Fi card, in place
+    # of a section of its own for two values it cannot change.
+    setup_ssid = None
+    if wifi_voice.available():
+        text = _read_text(_store_path("wifi_setup_env")) or ""
+        setup_ssid = wifi_setup.setup_ssid(nm.mac(dev), parse_env(text).get("WIFI_SETUP_SSID", ""))
     # Online through the Wi-Fi itself: on Ethernet the box is online whatever the Wi-Fi does.
     return {"available": True, "device": dev, "connection": connection,
             "online": nm.online(dev) if connection else False,
-            "setup_installed": wifi_voice.available(), "setup_last": setup}
+            "setup_installed": wifi_voice.available(), "setup_last": setup,
+            "setup_ssid": setup_ssid}
 
 
 @router.get("/api/wifi")

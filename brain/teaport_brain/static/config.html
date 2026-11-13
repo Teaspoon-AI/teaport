@@ -161,8 +161,10 @@
 
   /* Cards: every section is one, bg-primary-white on the slate page. */
   section.group, .account { background: var(--card); border: 1px solid var(--border); border-radius: var(--card-radius); box-shadow: var(--shadow); margin-top: 20px; scroll-margin-top: calc(var(--sticky-h) + 16px); overflow: hidden; }
-  #g-wifi { margin-top: 0; }
-  #g-wifi[hidden] + #groups > section.group:first-child { margin-top: 0; }
+  #g-wifi { margin: 0 0 20px; }
+  #g-wifi.filtered { display: none; }
+  #groups { display: grid; gap: 20px; }
+  #groups > section.group { margin-top: 0; }
   .group-head { padding: 18px var(--pad) 16px; }
   .group-head .title { display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
   .group-head .file { font-family: var(--mono); font-size: 12.5px; color: var(--faint); overflow-wrap: anywhere; }
@@ -400,6 +402,9 @@
   let rowsByName = {};
   let edits = {};                // name -> text | null (null = unset)
   const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'phone line', 'teaport-discord-bridge': 'Discord bridge', 'teaport-local-audio': 'room audio' };
+  // The Wi-Fi setup settings are written when the drive is flashed and read-only here:
+  // no card of their own, the Wi-Fi card names the setup network instead.
+  const IN_WIFI_CARD = 'wifi_setup';
   const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', local_audio_env: 'local-audio.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
 
   const original = (name) => {
@@ -529,24 +534,13 @@
   const render = () => {
     rowsByName = Object.fromEntries(data.schema.settings.map((r) => [r.name, r]));
     const groupsEl = $('#groups'); groupsEl.replaceChildren();
-    const index = $('#index'); index.replaceChildren();
-    const jump = $('#jump'); jump.replaceChildren(h('option', { value: 'top' }, 'All sections'), h('option', { value: 'wifi' }, 'Wi-Fi'));
-    let optgroup = null;
     const byGroup = {};
     for (const r of data.schema.settings) (byGroup[r.group] ||= []).push(r);
-    let lastStore = null;
     for (const g of data.schema.groups) {
       const rows = byGroup[g.id] || [];
-      if (!rows.length) continue;
+      if (!rows.length || g.id === IN_WIFI_CARD) continue;
       const store = rows[0].store;
       const writable = data.writable.includes(store);
-      if (store !== lastStore) {
-        index.append(h('div', { class: 'store-label' }, STORE_LABEL[store] || store));
-        optgroup = h('optgroup', { label: STORE_LABEL[store] || store }); jump.append(optgroup);
-        lastStore = store;
-      }
-      index.append(h('a', { href: '#g-' + g.id, 'data-group': g.id }, g.title));
-      optgroup.append(h('option', { value: g.id }, g.title));
       const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store, 'aria-labelledby': 'h-' + g.id },
         h('div', { class: 'group-head' },
           h('div', { class: 'title' }, h('h2', { id: 'h-' + g.id }, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
@@ -557,7 +551,6 @@
         ...rows.map((r) => renderRow(r, writable)));
       groupsEl.append(sec);
     }
-    index.prepend(h('a', { href: '#g-wifi', 'data-group': 'wifi' }, 'Wi-Fi'));
     applyFilter();
     renderServices();
     renderBanners();
@@ -618,8 +611,8 @@
   const renderWifi = async (msg) => {
     const sec = $('#g-wifi');
     let w;
-    try { w = (await api('/api/wifi')).body; } catch (e) { sec.hidden = true; return; }
-    sec.hidden = false;
+    try { w = (await api('/api/wifi')).body; } catch (e) { sec.hidden = true; buildNav(); return; }
+    sec.hidden = false; buildNav();
     const head = h('div', { class: 'group-head' }, h('div', { class: 'title' }, h('h2', {}, 'Wi-Fi'), w.device ? h('span', { class: 'file' }, w.device) : null),
       h('p', { class: 'group-blurb' }, w.available ? 'Switch the network this box uses. A switch that does not get online is undone. With no network at all, say "set up Wi-Fi" to the box instead.' : 'This box has no Wi-Fi device.'));
     if (!w.available) { sec.replaceChildren(head); return; }
@@ -670,8 +663,12 @@
       try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Entering setup mode. Check the box\'s screen, or listen to it, for the network name and password.'; }
       catch (e) { out.textContent = 'Could not start it: ' + e.message; }
     };
+    // The network setup mode opens (the flash-time WIFI_SETUP_SSID, or teaport- and the
+    // MAC's last digits): the one thing the Wi-Fi setup settings tell an owner.
+    const setupNet = w.setup_installed && w.setup_ssid
+      ? h('p', { class: 'note' }, 'Setup mode opens the network ', h('strong', {}, w.setup_ssid), '. Its password is on the box\'s screen, or read out by the box.') : null;
     sec.replaceChildren(head,
-      h('div', { class: 'group-body' }, now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), nets, form, out));
+      h('div', { class: 'group-body' }, now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), setupNet, nets, form, out));
   };
 
   // ---- the AI account (#279): the owner's step, in the phone's language. The key is
@@ -821,11 +818,41 @@
     if (!data.auth) el.append(h('div', { class: 'banner err' }, h('p', {}, h('code', {}, 'GATEWAY_TOKEN'), ' is not set: this page, and the voice line, are open to anyone who can reach the port. It is set by the installer; re-run ', h('code', {}, 'install.sh'), '.')));
   };
 
+  // ---- section index (wide screens) and section picker (phones): the cards on show,
+  // under the file each one writes, rebuilt whenever the filter or the Wi-Fi card changes.
+  let currentGroup = null;
+  const buildNav = () => {
+    const index = $('#index'), jump = $('#jump');
+    const links = [], options = [h('option', { value: 'top' }, 'All sections')];
+    const wifi = $('#g-wifi');
+    if (wifi && !wifi.hidden && !wifi.classList.contains('filtered')) {
+      links.push(h('a', { href: '#g-wifi', 'data-group': 'wifi' }, 'Wi-Fi'));
+      options.push(h('option', { value: 'wifi' }, 'Wi-Fi'));
+    }
+    let lastStore = null, optgroup = null;
+    for (const sec of document.querySelectorAll('#groups section.group')) {
+      if (sec.hidden) continue;
+      const store = sec.dataset.store, id = sec.id.slice(2), title = $('h2', sec).textContent;
+      if (store !== lastStore) {
+        links.push(h('div', { class: 'store-label' }, STORE_LABEL[store] || store));
+        optgroup = h('optgroup', { label: STORE_LABEL[store] || store }); options.push(optgroup);
+        lastStore = store;
+      }
+      links.push(h('a', { href: '#' + sec.id, 'data-group': id, class: id === currentGroup ? 'current' : null }, title));
+      optgroup.append(h('option', { value: id }, title));
+    }
+    index.replaceChildren(...links);
+    jump.replaceChildren(...options);
+    jump.value = currentGroup && $('option[value="' + currentGroup + '"]', jump) ? currentGroup : 'top';
+  };
+
   // ---- filter
   const applyFilter = () => {
     const q = $('#search').value.trim().toLowerCase();
     const showAll = $('#showtuning').checked;
-    for (const sec of document.querySelectorAll('section.group')) {
+    // The Wi-Fi card has no rows to match: a search puts it away.
+    $('#g-wifi').classList.toggle('filtered', !!q);
+    for (const sec of document.querySelectorAll('#groups section.group')) {
       let visible = 0;
       for (const row of sec.querySelectorAll('.row')) {
         const tierOk = showAll || q || row.dataset.tier === 'setup' || row.classList.contains('changed');
@@ -839,8 +866,13 @@
       if (!foot) { foot = h('div', { class: 'group-tools' }); sec.append(foot); }
       foot.replaceChildren();
       if (!q && !showAll && hiddenCount) foot.append(h('button', { type: 'button', class: 'btn-link', onclick: () => { $('#showtuning').checked = true; applyFilter(); } }, `Show ${hiddenCount} more (tuning, diagnostics, installer)`));
-      sec.hidden = visible === 0 && !!q;
+      // A card with nothing on show is not drawn (a section of tuning rows, or one only
+      // the installer sets, until the switch is on), and neither is one for a part this
+      // box has not set up -- unless the switch is on or a search finds something in it.
+      const absent = (data.absent || []).includes(sec.dataset.store);
+      sec.hidden = visible === 0 || (absent && !showAll && !q);
     }
+    buildNav();
     try { localStorage.setItem('teaport.showtuning', showAll ? '1' : ''); } catch (e) { /* fine */ }
   };
   $('#search').addEventListener('input', applyFilter);
@@ -849,8 +881,9 @@
   // index highlight while scrolling
   const io = new IntersectionObserver((entries) => {
     for (const en of entries) if (en.isIntersecting) {
-      document.querySelectorAll('.index a').forEach((a) => a.classList.toggle('current', a.dataset.group === en.target.id.slice(2)));
-      $('#jump').value = en.target.id.slice(2);
+      currentGroup = en.target.id.slice(2);
+      document.querySelectorAll('.index a').forEach((a) => a.classList.toggle('current', a.dataset.group === currentGroup));
+      $('#jump').value = currentGroup;
     }
   }, { rootMargin: '-90px 0px -70% 0px' });
 
