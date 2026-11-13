@@ -29,7 +29,8 @@ Copyright: the authors of each Python package in the tree
 License: other
  Each Python package in the environment keeps its own license, in its own
  *.dist-info directory under that path, and is summarised in
- /usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md. Two of them are
- LGPL-2.1-or-later: soxr (libsoxr, linked into its extension module) and libsndfile
- (the shared object in the soundfile package). THIRD_PARTY_LICENSES.md says where the
- source of the exact versions is, and how to replace either library.
+ /usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md. Three of them are under
+ the LGPL: soxr (libsoxr, linked into its extension module) and libsndfile (the shared
+ object in the soundfile package), both LGPL-2.1-or-later, and num2words (LGPL 2.1).
+ THIRD_PARTY_LICENSES.md says where the source of the exact versions is, and how to
+ replace any of them.

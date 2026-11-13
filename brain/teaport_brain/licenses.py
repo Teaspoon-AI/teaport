@@ -72,51 +72,81 @@ def _license_of(meta) -> str:
     return "; ".join(names) or "not stated"
 
 
+# Packages whose wheel bundles an LGPL library under a license of its own: the package is
+# not under the LGPL, the library inside it is (THIRD_PARTY_LICENSES.md says which).
+BUNDLES_LGPL = {"soundfile": "libsndfile, LGPL-2.1-or-later"}
+
+# A file is a license text by its name, whatever directory it is in; code with such a name
+# (a module called license.py) is not.
+_NOT_TEXT = {".py", ".pyc", ".pyi", ".so", ".pyd", ".h", ".c", ".cpp", ".js", ".json"}
+MAX_FILES = 40
+
+
 def _dists(path: list[str] | None):
     seen = set()
     for d in md.distributions(path=path) if path is not None else md.distributions():
-        name = d.metadata.get("Name") or ""
+        meta = d.metadata
+        name = meta.get("Name") or ""
         if name and normalize(name) not in seen:
             seen.add(normalize(name))
-            yield name, d
+            yield name, d, meta
 
 
 def packages(path: list[str] | None = None) -> list[dict]:
     """Every Python package of this environment: {name, version, license, lgpl}, by name.
-    `lgpl` marks the ones whose license asks something of whoever distributes them (the
-    notice in THIRD_PARTY_LICENSES.md says what)."""
+    `lgpl` marks the ones that are under the LGPL or bundle an LGPL library (the notice in
+    THIRD_PARTY_LICENSES.md says what that asks)."""
     out = []
-    for name, d in _dists(path):
-        lic = _license_of(d.metadata)
-        out.append({"name": name, "version": d.version, "license": lic,
-                    "lgpl": "lgpl" in lic.lower() or "lesser general public" in lic.lower()})
+    for name, d, meta in _dists(path):
+        lic = _license_of(meta)
+        lgpl = "lgpl" in lic.lower() or "lesser general public" in lic.lower()
+        bundled = BUNDLES_LGPL.get(normalize(name))
+        if bundled:
+            lic, lgpl = f"{lic}; bundles {bundled}", True
+        out.append({"name": name, "version": d.version or "?", "license": lic, "lgpl": lgpl})
     return sorted(out, key=lambda p: p["name"].lower())
+
+
+def _is_license_file(parts: tuple[str, ...]) -> bool:
+    """A file listed in a package's RECORD that is a license text: in its .dist-info, a
+    LICENSE/COPYING/NOTICE... file or anything under licenses/; anywhere else, one named like
+    that (a library bundled in the package keeps its own). Nothing that climbs out with `..`."""
+    if not parts or ".." in parts or parts[0].startswith(("/", "~")):
+        return False
+    name = parts[-1]
+    if os.path.splitext(name)[1].lower() in _NOT_TEXT:
+        return False
+    if len(parts) >= 2 and parts[0].endswith(".dist-info") and "licenses" in parts[1:-1]:
+        return True
+    return bool(_LICENSE_FILE.match(name))
 
 
 def package_text(name: str, path: list[str] | None = None) -> dict | None:
     """One package's license: {name, version, license, text}. The text is each license file
-    the package ships (its .dist-info's LICENSE, COPYING, NOTICE..., and what is under a
-    licenses/ directory there), one after another with its name above it. None when no such
-    package is installed."""
+    the package lists as installed (its .dist-info's LICENSE, COPYING, NOTICE..., what is
+    under a licenses/ directory there, and such files of a library bundled in it), one after
+    another with its path above it. None when no such package is installed."""
     want = normalize(name)
-    for pkg, d in _dists(path):
+    for pkg, d, meta in _dists(path):
         if normalize(pkg) != want:
             continue
-        found = []
         try:
             listed = d.files or []
         except (TypeError, ValueError, OSError):  # a RECORD that does not parse: no files, not a failure
             listed = []
+        found = []
         for f in listed:
-            parts = f.parts
-            in_info = len(parts) >= 2 and parts[0].endswith(".dist-info")
-            if in_info and (_LICENSE_FILE.match(parts[-1]) or "licenses" in parts[1:-1]):
-                text = _read(str(d.locate_file(f)))
-                if text is not None:
-                    found.append(f"==== {'/'.join(parts[1:])} ====\n\n{text.strip()}\n")
-        lic = _license_of(d.metadata)
-        body = "\n".join(found) or (f"This package ships no license file. Its metadata says: {lic}.\n")
-        return {"name": pkg, "version": d.version, "license": lic, "text": body}
+            if not _is_license_file(f.parts):
+                continue
+            text = _read(str(d.locate_file(f)))
+            if text is not None:
+                shown = f.parts[1:] if f.parts[0].endswith(".dist-info") else f.parts
+                found.append(f"==== {'/'.join(shown)} ====\n\n{text.strip()}\n")
+        more = len(found) - MAX_FILES
+        found = found[:MAX_FILES] + ([f"[... {more} more license files not shown ...]\n"] if more > 0 else [])
+        lic = _license_of(meta)
+        body = "\n".join(found) or (f"The package lists no license file as installed. Its metadata says: {lic}.\n")
+        return {"name": pkg, "version": d.version or "?", "license": lic, "text": body}
     return None
 
 
@@ -149,12 +179,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.notices:
         docs = documents(a.doc_dir, a.prefix)
-        if a.json:
-            print(json.dumps(docs, indent=2))
-        elif not docs:
+        if not docs:
             print(f"no license documents found in {a.doc_dir} or {a.prefix} "
                   "(this brain was not installed from the teaport-brain package)", file=sys.stderr)
             return 1
+        if a.json:
+            print(json.dumps(docs, indent=2))
         else:
             for d in docs:
                 print(f"{'=' * 78}\n{d['title']}  [{d['path']}]\n{'=' * 78}\n\n{d['text'].rstrip()}\n")

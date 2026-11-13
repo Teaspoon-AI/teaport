@@ -153,13 +153,13 @@ teaport licenses [PACKAGE | --notices] [--json]
 
 `teaport licenses` shows the licenses of the software on the device. With no argument it
 lists the Python packages in the brain with each one's version and license, and marks the
-two that are under the LGPL. With a package name it prints that package's license text, and
+ones that are under the LGPL or bundle an LGPL library. With a package name it prints that package's license text, and
 the name matches the way `pip` matches names, so case, `-`, `_`, and `.` do not matter.
 `--notices` prints the notices instead: the third-party components and their licenses,
 teaport's own license, and the engine's notices, for each of those that is on the device.
 `--json` prints the list, or with `--notices` the documents, as JSON.
 
-<!-- source: cli/teaport:6-9#df6fb355; brain/teaport_brain/licenses.py:125-184#51ed793b; brain/teaport_brain/licenses.py:96-122#1e0fcef5; brain/teaport_brain/licenses.py:33-36#09adb1b8 -->
+<!-- source: cli/teaport:6-9#df6fb355; brain/teaport_brain/licenses.py:155-214#a5fbe99f; brain/teaport_brain/licenses.py:110-152#a42773ed; brain/teaport_brain/licenses.py:33-36#09adb1b8 -->
 
 The command runs under the brain's own Python environment, so it reads the same files as the
 open-source licenses page that the configuration page links to (see [Open-source licenses](/reference/licenses/)). A package's text is the
@@ -172,7 +172,7 @@ brain has no package of that name, or when `--notices` finds no document, which 
 for a brain that was not installed from the package. A package name together with `--notices`
 is a usage error and exits with 2.
 
-<!-- source: brain/teaport_brain/licenses.py:147-157,163-168#ed74749c -->
+<!-- source: brain/teaport_brain/licenses.py:177-185,193-198#f6fff889 -->
 
 ## teaport logs
 

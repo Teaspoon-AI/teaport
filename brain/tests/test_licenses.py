@@ -23,6 +23,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,33 +36,52 @@ from tempdirs import tempdir  # noqa: E402
 
 from teaport_brain import config_ui, licenses  # noqa: E402
 
+CLI = pathlib.Path(__file__).resolve().parents[2] / "cli" / "teaport"
 
-def _dist(site, name, version, metadata="", files=None):
-    """A package in a temp site directory: its METADATA, and `files` (name -> text) in its
-    .dist-info, listed in its RECORD as an installer writes it."""
+
+def _dist(site, name, version, metadata="", files=None, outside=None, raw=()):
+    """A package in a temp site directory: its METADATA, `files` (name -> text) in its
+    .dist-info and `outside` (path -> text) elsewhere in the site directory, all listed in its
+    RECORD as an installer writes it; `raw` are further RECORD lines as they are."""
     info = pathlib.Path(site, f"{name.replace('-', '_')}-{version}.dist-info")
     info.mkdir(parents=True)
-    (info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n{metadata}")
-    record = []
+    ver = f"Version: {version}\n" if version else ""
+    (info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {name}\n{ver}{metadata}")
+    record = list(raw)
     for rel, text in (files or {}).items():
         (info / rel).parent.mkdir(parents=True, exist_ok=True)
-        (info / rel).write_text(text)
+        (info / rel).write_bytes(text if isinstance(text, bytes) else text.encode())
         record.append(f"{info.name}/{rel},,")
+    for rel, text in (outside or {}).items():
+        (pathlib.Path(site) / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(site) / rel).write_text(text)
+        record.append(f"{rel},,")
     (info / "RECORD").write_text("\n".join(record) + "\n")
 
 
 def _site():
     site = tempdir("teaport-licenses-site-")
-    _dist(site, "plain-mit", "1.0", "License-Expression: MIT\n", {"licenses/LICENSE": "MIT TEXT\n"})
-    _dist(site, "Old_Style.Pkg", "2.1", "License: BSD-3-Clause\n", {"LICENSE.txt": "BSD TEXT\n", "top_level.txt": "x\n"})
+    site = [site]
+    _dist(site[0], "plain-mit", "1.0", "License-Expression: MIT\n", {"licenses/LICENSE": "MIT TEXT\n"})
+    _dist(site[0], "Old_Style.Pkg", "2.1", "License: BSD-3-Clause\n", {"LICENSE.txt": "BSD TEXT\n", "top_level.txt": "x\n"})
     # A License field holding a whole text is folded over lines, as METADATA folds it.
-    _dist(site, "whole-text", "3", "License: Permission is hereby granted, free of charge,\n"
+    _dist(site[0], "whole-text", "3", "License: Permission is hereby granted, free of charge,\n"
           "        to any person obtaining a copy of this software.\n"
           "Classifier: License :: OSI Approved\nClassifier: License :: OSI Approved :: Apache Software License\n")
-    _dist(site, "soxr-like", "0.5", "License-Expression: LGPL-2.1-or-later\n",
+    _dist(site[0], "soxr-like", "0.5", "License-Expression: LGPL-2.1-or-later\n",
           {"licenses/LICENSE.txt": "LGPL TEXT\n", "licenses/libsoxr/COPYING": "LIBSOXR TEXT\n"})
-    _dist(site, "bare", "0.1", "")  # its RECORD is one blank line, which importlib cannot read
-    return [site]
+    _dist(site[0], "bare", "0.1", "")  # its RECORD is one blank line, which importlib cannot read
+    # A wheel that bundles an LGPL library keeps that library's text outside its .dist-info; a
+    # module called license.py is code; a RECORD line that climbs out of the directory is not read.
+    (pathlib.Path(site[0]) / "secret.txt").write_text("NOT A LICENSE\n")
+    _dist(site[0], "bundler", "4", "License: BSD 3-Clause License\n", {"LICENSE": "BSD TEXT\n"},
+          outside={"_bundled/COPYING": "BUNDLED LGPL TEXT\n", "bundler/license.py": "x = 1\n"},
+          raw=["bundler-4.dist-info/licenses/../../secret.txt,,"])
+    _dist(site[0], "soundfile", "0.13", "License: BSD 3-Clause License\n", {"LICENSE": "BSD TEXT\n"},
+          outside={"_soundfile_data/COPYING": "LIBSNDFILE LGPL TEXT\n"})
+    _dist(site[0], "no-version", "", "License-Expression: MIT\n")
+    _dist(site[0], "latin", "1", "License-Expression: MIT\n", {"LICENSE": b"caf\xe9 license\n"})
+    return site
 
 
 def test_a_package_names_its_license_from_its_metadata():
@@ -76,8 +96,12 @@ def test_a_package_names_its_license_from_its_metadata():
 
 def test_the_lgpl_ones_are_marked():
     got = {p["name"]: p["lgpl"] for p in licenses.packages(_site())}
-    assert got == {"plain-mit": False, "Old_Style.Pkg": False, "whole-text": False,
-                   "soxr-like": True, "bare": False}, got
+    assert got == {"plain-mit": False, "Old_Style.Pkg": False, "whole-text": False, "soxr-like": True,
+                   "bare": False, "bundler": False, "soundfile": True, "no-version": False,
+                   "latin": False}, got
+    # soundfile is BSD; the library in its wheel is the LGPL one, and the list says so.
+    lic = {p["name"]: p["license"] for p in licenses.packages(_site())}["soundfile"]
+    assert lic == "BSD 3-Clause License; bundles libsndfile, LGPL-2.1-or-later", lic
 
 
 def test_a_packages_text_is_its_license_files():
@@ -89,8 +113,27 @@ def test_a_packages_text_is_its_license_files():
     old = licenses.package_text("old-style-pkg", site)
     assert "BSD TEXT" in old["text"] and "top_level" not in old["text"] and "x\n" not in old["text"], old
     bare = licenses.package_text("bare", site)
-    assert "ships no license file" in bare["text"] and "not stated" in bare["text"], bare
+    assert "lists no license file" in bare["text"] and "not stated" in bare["text"], bare
     assert licenses.package_text("nope", site) is None
+
+
+def test_a_license_text_outside_the_dist_info_is_shown_and_code_and_climbing_paths_are_not():
+    site = _site()
+    got = licenses.package_text("soundfile", site)["text"]
+    assert "LIBSNDFILE LGPL TEXT" in got and "==== _soundfile_data/COPYING ====" in got, got
+    assert "BSD TEXT" in got and "==== LICENSE ====" in got, got
+    got = licenses.package_text("bundler", site)["text"]
+    assert "BUNDLED LGPL TEXT" in got and "x = 1" not in got, got  # license.py is code
+    assert "NOT A LICENSE" not in got, got  # ../ out of the directory is not followed
+
+
+def test_a_package_without_a_version_and_a_file_that_is_not_utf8():
+    site = _site()
+    got = {p["name"]: p for p in licenses.packages(site)}
+    assert got["no-version"]["version"] == "?", got["no-version"]
+    assert "no-version" in licenses._table(list(got.values()))  # the list prints with it
+    assert licenses.package_text("no-version", site)["version"] == "?"
+    assert "caf\ufffd license" in licenses.package_text("latin", site)["text"]
 
 
 def test_the_documents_are_the_ones_on_the_device_and_a_long_one_is_cut():
@@ -167,6 +210,31 @@ def test_the_command_lists_shows_a_package_and_shows_the_notices():
     assert rc == 0 and "the notices text" in out and "THIRD_PARTY_LICENSES.md" in out, (rc, out, err)
     rc, out, err = _run("--notices", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"))
     assert rc == 1 and "not installed from the teaport-brain package" in err, (rc, err)
+    rc, out, err = _run("--notices", "--json", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"))
+    assert rc == 1 and out == "", (rc, out)  # the same answer with --json as without it
+
+
+def _cmd(prefix, *args):
+    """`teaport licenses <args>` as the CLI function runs it, against a brain at `prefix`."""
+    fn = subprocess.run(["sed", "-n", "/^cmd_licenses() {/,/^}/p", str(CLI)],
+                        capture_output=True, text=True, check=True).stdout
+    assert fn.startswith("cmd_licenses() {"), "cmd_licenses not found in cli/teaport"
+    body = ('set -euo pipefail\ndie() { echo "error: $*" >&2; exit 1; }\nPREFIX="$1"; shift\n'
+            + fn + 'cmd_licenses "$@"')
+    return subprocess.run(["bash", "-c", body, "teaport", prefix, *args], capture_output=True, text=True)
+
+
+def test_the_cli_function_runs_the_brains_python_and_says_when_there_is_none():
+    p = _cmd(tempdir("teaport-licenses-none-"), "--json")
+    assert p.returncode == 1 and "no brain at" in p.stderr, (p.returncode, p.stderr)
+    prefix = tempdir("teaport-licenses-brain-")
+    py = pathlib.Path(prefix, "brain", "bin", "python")
+    py.parent.mkdir(parents=True)
+    py.write_text('#!/bin/sh\necho "python $*"\nexit 3\n')
+    py.chmod(0o755)
+    p = _cmd(prefix, "soxr", "--json")
+    assert p.returncode == 3, p  # the command's own exit status comes through
+    assert p.stdout.strip() == f"python -I -m teaport_brain.licenses --prefix {prefix} soxr --json", p.stdout
 
 
 if __name__ == "__main__":
