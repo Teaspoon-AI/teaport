@@ -81,7 +81,7 @@ contents:
       owner: root
       group: root
 
-  # The licence material (#60): the Debian copyright file, and the third-party summary
+  # The license material (#60): the Debian copyright file, and the third-party summary
   # that says where the source of the LGPL parts is and how to replace them.
   - src: packaging/deb/copyright
     dst: /usr/share/doc/teaport-brain/copyright

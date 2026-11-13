@@ -231,9 +231,9 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 **`/usr/bin/teaport` and `/usr/lib/teaport/`**
 
-The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`, and `sudoers-sync`, which writes that `sudo` rule for the user that runs the brain. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`.
+The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`, and `sudoers-sync`, which writes that `sudo` rule for the user that runs the brain. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:64-85,86-107#ee1b0c52 -->
+<!-- source: packaging/nfpm.yaml:64-85,86-107#c7218729 -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule for Wi-Fi setup.
 

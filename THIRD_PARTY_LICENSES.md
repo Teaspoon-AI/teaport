@@ -62,7 +62,7 @@ holds for it too, except where a line below says otherwise.)
 of pipecat-ai, so the brain's installed tree is **not** uniformly MIT/BSD/Apache — but this
 is compliant and ordinary for an open-source Python package. LGPL is *weak* copyleft: it
 does not relicense teaport's MIT code. It asks that a recipient be able to replace the LGPL
-library, and that whoever distributes the library hands over its licence text and a way to
+library, and that whoever distributes the library hands over its license text and a way to
 get its source.
 
 **What teaport ships.** The `teaport-brain` package, built in CI from `brain/uv.lock` by
@@ -70,7 +70,7 @@ get its source.
 Python environment under `/opt/teaport/brain`. So teaport distributes soxr and libsndfile,
 and does what that asks:
 
-- **Licence texts.** Each Python package's own licence files are in its `.dist-info`
+- **License texts.** Each Python package's own license files are in its `.dist-info`
   directory in the tree (soxr's, with libsoxr's, under
   `soxr-<version>.dist-info/licenses/`; soundfile's beside its `METADATA`). The package also
   installs this file and a `copyright` file under `/usr/share/doc/teaport-brain/`.

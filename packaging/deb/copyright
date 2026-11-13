@@ -27,7 +27,7 @@ License: MIT
 Files: opt/teaport/brain/lib/*
 Copyright: the authors of each Python package in the tree
 License: other
- Each Python package in the environment keeps its own licence, in its own
+ Each Python package in the environment keeps its own license, in its own
  *.dist-info directory under that path, and is summarised in
  /usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md. Two of them are
  LGPL-2.1-or-later: soxr (libsoxr, linked into its extension module) and libsndfile
