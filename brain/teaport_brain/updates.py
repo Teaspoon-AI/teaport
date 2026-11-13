@@ -38,6 +38,9 @@ CHANNELS = ("stable", "beta")
 MANIFEST_BASE = "https://get.teaspoon.tech/manifest"
 STATE_FILE = "update.json"
 FETCH_TIMEOUT_SECS = 20.0
+# The download host refuses urllib's default agent ("Python-urllib/3.x") with a 403 and
+# serves the same file to any other, so the look says who it is.
+USER_AGENT = "teaport-brain (+https://github.com/Teaspoon-AI/teaport)"
 # A read that failed is tried again after this, not after a day.
 RETRY_SECS = 3600.0
 
@@ -87,7 +90,8 @@ def load(source: str) -> dict:
     """A manifest from a URL, a file:// URL or a path. Raises OSError/ValueError."""
     parsed = urlparse(source)
     if parsed.scheme in ("http", "https"):
-        with urllib.request.urlopen(source, timeout=FETCH_TIMEOUT_SECS) as r:  # noqa: S310
+        req = urllib.request.Request(source, headers={"User-Agent": USER_AGENT})  # noqa: S310
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECS) as r:  # noqa: S310
             data = json.load(r)
     else:
         path = parsed.path if parsed.scheme == "file" else source

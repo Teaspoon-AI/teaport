@@ -116,6 +116,37 @@ def test_a_look_reads_the_channels_manifest_and_names_it():
 
 
 
+def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
+    # The download host answers urllib's default agent with a 403, so `load` names itself.
+    import http.server
+    import threading
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("User-Agent"))
+            if (self.headers.get("User-Agent") or "").startswith("Python-urllib"):
+                self.send_error(403)
+                return
+            body = json.dumps({"version": "x"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        got = updates.load(f"http://127.0.0.1:{srv.server_port}/stable.json")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert got == {"version": "x"}, got
+    assert seen == [updates.USER_AGENT] and "urllib" not in seen[0], seen
+
+
 def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
     d = tempdir("teaport-updates-")
     path = os.path.join(d, "update.json")
