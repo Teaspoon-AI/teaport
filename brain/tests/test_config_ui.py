@@ -40,7 +40,7 @@ import subprocess
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from teaport_brain import agent_key, ai_account, config_ui, settings, settings_access
+from teaport_brain import agent_key, ai_account, config_ui, settings, settings_access, updates
 import appliance
 from tempdirs import tempdir
 
@@ -206,6 +206,38 @@ def test_get_masks_secrets_and_requires_token():
     # ?token= works too (what the page uses on first open)
     assert client.get("/api/config?token=t0k3n").status_code == 200
     assert client.get("/config", headers=H).headers["content-type"].startswith("text/html")
+
+
+def test_the_footer_names_the_release_and_the_running_build():
+    """GET /api/config's build: the installed manifest's version once a release is cut (a
+    placeholder or all zeros is none), and the build record of the venv this process runs
+    from -- revision and date, never a revision the installer could not name."""
+    client, etc, home, calls = setup()
+    prefix = tempdir("teaport-prefix-")
+    record = os.path.join(prefix, "teaport-build.json")
+    old = (updates.PREFIX, config_ui.BUILD_RECORD)
+    updates.PREFIX, config_ui.BUILD_RECORD = prefix, record
+
+    def build(manifest=None, rec=None):
+        for path, body in ((os.path.join(prefix, "manifest.json"), manifest), (record, rec)):
+            if body is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                with open(path, "w") as f:
+                    f.write(body if isinstance(body, str) else json.dumps(body))
+        return client.get("/api/config", headers=H).json()["build"]
+    try:
+        assert build() == {"release": None, "revision": None, "built": None}
+        rec = {"built": "2026-11-12T09:30:00+00:00", "revision": "a1b2c3d4-dirty"}
+        assert build({"version": "0.0.0"}, rec) == {"release": None, "revision": "a1b2c3d4-dirty",
+                                                     "built": "2026-11-12T09:30:00+00:00"}
+        assert build({"version": "TODO"}, rec)["release"] is None
+        assert build({"version": "1.0.0"}, rec)["release"] == "1.0.0"
+        assert build({"version": "1.0.0"}, {**rec, "revision": "unknown"})["revision"] is None
+        assert build("not json", "[1, 2]") == {"release": None, "revision": None, "built": None}
+    finally:
+        updates.PREFIX, config_ui.BUILD_RECORD = old
 
 
 def test_get_shows_values_as_the_brain_reads_them():

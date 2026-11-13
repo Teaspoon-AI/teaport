@@ -225,6 +225,10 @@
   .gate input { flex: 1 1 220px; padding-left: 14px; }
   footer.foot { margin-top: 48px; padding: 24px 0 0; border-top: 1px solid var(--border); color: var(--faint); font-size: 14px; }
   footer.foot .mono { font-size: 13px; }
+  footer.foot p { margin: 0 0 8px; }
+  footer.foot .build { color: var(--muted); }
+  footer.foot .build .update { color: var(--warn-ink); font-weight: 600; }
+  body:not(.show-adv) footer.foot { border-top: 0; margin-top: 24px; }
   dialog { border: 1px solid var(--border-strong); border-radius: 16px; padding: 24px; width: min(560px, calc(100vw - 32px)); background: var(--card); box-shadow: var(--shadow); color: var(--text); }
   dialog::backdrop { background: rgba(2, 6, 23, .45); }
   dialog ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); }
@@ -323,8 +327,9 @@
       </header>
       <section class="group adv" id="g-wifi" hidden></section>
       <div id="groups" class="adv"></div>
-      <footer class="foot adv">
-        Rendered from <span class="mono">config_schema.toml</span>, the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.
+      <footer class="foot">
+        <p class="build" id="build" hidden></p>
+        <p class="adv">Rendered from <span class="mono">config_schema.toml</span>, the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.</p>
       </footer>
     </div>
   </div>
@@ -553,6 +558,7 @@
     }
     applyFilter();
     renderServices();
+    renderBuild();
     renderBanners();
     refreshSavebar();
   };
@@ -794,6 +800,26 @@
     document.body.classList.toggle('show-adv');
     if (document.body.classList.contains('show-adv')) document.querySelectorAll('section.group').forEach((g) => io.observe(g));
   });
+
+  // ---- the footer's version line (GET /api/config's build). The owner sees the release
+  // ("Teaport 1.0"), and nothing before one is cut; the operator also sees the brain's
+  // build -- its revision and date, the one way to tell builds apart before a release --
+  // and whether the daily update check (/health's update) found a newer release.
+  const renderBuild = () => {
+    const b = data.build || {}, el = $('#build');
+    const parts = [];
+    if (b.release) parts.push('Teaport ' + b.release);
+    if (!BASE && b.revision) {
+      let when = '';
+      const d = b.built ? new Date(b.built) : null;
+      if (d && !isNaN(d)) when = ', built ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+      parts.push(h('span', {}, 'brain ', h('span', { class: 'mono' }, b.revision), when));
+    }
+    const update = !BASE && health && health.update && health.update.state === 'available';
+    if (update) parts.push(h('span', { class: 'update' }, 'update available'));
+    el.replaceChildren(...parts.flatMap((p, i) => (i ? [' · ', p] : [p])));
+    el.hidden = !parts.length;
+  };
 
   const renderServices = () => {
     const el = $('#services'); el.replaceChildren();

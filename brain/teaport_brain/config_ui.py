@@ -57,6 +57,7 @@ import hmac
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from typing import Any
 
@@ -66,7 +67,7 @@ from loguru import logger
 
 from teaport_brain.i18n import N_
 
-from teaport_brain import ai_account, config_schema, credit, i18n, settings, settings_access
+from teaport_brain import ai_account, config_schema, credit, i18n, settings, settings_access, updates
 
 ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts (install.sh
@@ -475,6 +476,34 @@ async def config_logo_dark():  # the page's <picture> source in dark mode
     return FileResponse(os.path.join(STATIC_DIR, "teaport-logo-dark.svg"), media_type="image/svg+xml")
 
 
+# The running brain's build record: install.sh writes it into every venv it builds
+# (lockcheck.py record), and this process runs from one, so sys.prefix names the build
+# that is serving -- not the venv the live symlink may point at since.
+BUILD_RECORD = os.path.join(sys.prefix, "teaport-build.json")
+
+
+def _build() -> dict:
+    """What the page's footer says this box runs: {"release": the installed manifest's
+    version, or None before a release is cut (absent, a placeholder, or all zeros),
+    "revision": the brain's git revision from its build record (8 hex digits, "-dirty"
+    for a build from uncommitted changes), "built": when that venv was built (ISO)}."""
+    release = updates.component(updates.read_installed(), "version")
+    if not updates.released(release) or not re.search(r"[1-9]", release or ""):
+        release = None
+    try:
+        with open(BUILD_RECORD, encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        record = {}
+    if not isinstance(record, dict):
+        record = {}
+    revision = record.get("revision")
+    built = record.get("built")
+    return {"release": release,
+            "revision": revision if isinstance(revision, str) and revision not in ("", "unknown") else None,
+            "built": built if isinstance(built, str) and built else None}
+
+
 @router.get("/api/config")
 async def get_config(request: Request):
     _authorize(request)
@@ -538,6 +567,7 @@ async def get_config(request: Request):
         "writable": [s for s in STORE_FILES if s not in unreadable and s not in absent],
         "unreadable": unreadable,
         "absent": absent,
+        "build": await asyncio.to_thread(_build),
     }
 
 
