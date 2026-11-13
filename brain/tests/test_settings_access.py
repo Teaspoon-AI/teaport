@@ -533,8 +533,8 @@ def test_the_check_reads_the_providers_answer():
             assert ai_account.check_key(FAKE_KEY, base) == ai_account.Check(
                 ai_account.UNKNOWN, ai_account.UNREACHABLE), answer
         ai_account._get = p = Provider((200, {"data": []}))
-        assert ai_account.check_key(FAKE_KEY, "http://127.0.0.1:8182/v1/").state == ai_account.WORKS
-        assert p.urls == ["http://127.0.0.1:8182/v1/models"]
+        assert ai_account.check_key(FAKE_KEY, "https://api.groq.com/openai/v1/").state == ai_account.WORKS
+        assert p.urls == ["https://api.groq.com/openai/v1/models"]
         assert ai_account.check_key("  ", base) == ai_account.Check(ai_account.REFUSED, ai_account.EMPTY)
         assert ai_account.check_key("sk-a\nsk-b", base).reason == ai_account.NOT_A_KEY
         assert ai_account.check_key(FAKE_KEY, "") == ai_account.Check(ai_account.UNKNOWN, ai_account.NO_SERVICE)

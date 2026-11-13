@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2830#fd9721ba -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2830#d7e18f03 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -33,8 +33,8 @@ In `/etc/teaport/brain.env`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, or http://127.0.0.1:8182/v1 for a local server. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
-| `LLM_API_KEY` | file `~/.config/teaport/llm_key` | The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local. Prefer the file; the env var, if set, wins over it. |
+| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, or https://api.cerebras.ai/v1. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
+| `LLM_API_KEY` | file `~/.config/teaport/llm_key` | The key for that endpoint. Prefer the file; the env var, if set, wins over it. |
 | `LLM_MODEL` | `gpt-oss-120b` | The served model name. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL). |
 | `LLM_REASONING_EFFORT` | `low` | Reasoning effort for models that support it. Set "" to disable for models that do not. One of `low`, `medium`, `high`, `""`. low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default. |
 | `LLM_MAX_TOKENS` | by `LLM_REASONING_EFFORT`: 1024 at `low`, 3072 at `medium`, 8192 at `high`, 4096 at `""` | Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint. |

@@ -1927,8 +1927,8 @@ LLM_BASE_URL=""; LLM_MODEL=""; LLM_URL_SEED="?"; LLM_MODEL_SEED="?"
 # credit checks all test ai_account.is_openrouter).
 LLM_DEFAULT_URL="https://openrouter.ai/api/v1"
 # llm_default_model <url> — the model name to offer for <url>: OpenRouter names a model
-# with its maker (openai/gpt-oss-120b) and rejects the bare name that Groq, Cerebras and
-# a local server take. The host test is ai_account.is_openrouter's: openrouter.ai or a
+# with its maker (openai/gpt-oss-120b) and rejects the bare name that Groq and Cerebras
+# take. The host test is ai_account.is_openrouter's: openrouter.ai or a
 # subdomain of it.
 llm_default_model() {
   local host="${1#*://}"; host="${host%%/*}"; host="${host%%:*}"; host="${host,,}"
@@ -1953,7 +1953,7 @@ phase_credentials() {
       read -r -p "LLM model [$m]: " LLM_MODEL
       [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
     fi
-    read -r -s -p 'LLM API key (blank for a local keyless server): ' key; echo
+    read -r -s -p 'LLM API key: ' key; echo
   fi
   [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$LLM_DEFAULT_URL"   # the default when nobody named one
   [ -z "$LLM_MODEL" ] && LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
@@ -2038,7 +2038,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # KEY in the file wins over it on a repair. That is for the values the config page
   # (https://<box>:$SETTINGS_PORT/settings/config) lets the operator change and the installer merely
   # defaults — LLM_BASE_URL/LLM_MODEL when nobody answered the prompt or set the env var.
-  # Without it the documented repair action put the box back on the local LLM endpoint
+  # Without it the documented repair action put the box back on the installer's default endpoint
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
   local keep=() ours=() overwritten=() managed=" " existing_keys=" " line

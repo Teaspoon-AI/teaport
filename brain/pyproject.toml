@@ -21,7 +21,7 @@ license = { text = "MIT" }
 #   websocket -> pipecat.transports.websocket.fastapi (the /talk transport) + fastapi.
 # The OpenAI LLM service (pipecat.services.openai.llm — the ONLY LLM service the brain
 # uses) is a BASE dependency, so no `openai` extra is required; it talks to any
-# OpenAI-compatible endpoint (Groq, Cerebras, OpenRouter, a local server) via LLM_BASE_URL.
+# OpenAI-compatible endpoint (OpenRouter, Groq, Cerebras) via LLM_BASE_URL.
 # Silero VAD + Smart Turn v3 also ride base deps (onnxruntime).
 #
 # NOTE: pipecat-ai depends on onnxruntime unconditionally (Silero VAD + Smart Turn v3 both

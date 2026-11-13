@@ -84,16 +84,13 @@ class NoModel(RuntimeError):
 
 _NO_URL = ("LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
            "point it at your OpenAI-compatible endpoint "
-           "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
-           "local server); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model")
+           "(e.g. https://openrouter.ai/api/v1); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model")
 _NO_KEY = ("no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
            "(see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model)")
 
 
 def _api_key() -> str | None:
-    # LLM_API_KEY wins; else the installer-written key file (ai_account.current_key). A
-    # local OpenAI-compatible server that ignores auth still needs a placeholder —
-    # set LLM_API_KEY=sk-local (or write it to the file).
+    # LLM_API_KEY wins; else the installer-written key file (ai_account.current_key).
     return ai_account.current_key()
 
 

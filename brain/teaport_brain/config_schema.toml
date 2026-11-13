@@ -231,7 +231,7 @@ type = "url"
 required = true
 read = "session"
 tier = "setup"
-help = "Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, or http://127.0.0.1:8182/v1 for a local server. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool."
+help = "Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, or https://api.cerebras.ai/v1. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
 
 [[settings]]
@@ -242,7 +242,7 @@ type = "secret"
 file = "~/.config/teaport/llm_key"
 read = "session"
 tier = "setup"
-help = "The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local."
+help = "The key for that endpoint."
 note = "Prefer the file; the env var, if set, wins over it."
 
 [[settings]]

@@ -4,7 +4,7 @@
 # A box nobody named an endpoint for gets OpenRouter, the endpoint the brain's account
 # features (first-run sign-in, the shared OpenClaw key, the credit checks) expect, and the
 # model name OpenRouter takes (openai/gpt-oss-120b). The bare gpt-oss-120b stays the
-# default for every other endpoint (Groq, Cerebras, a local server), and OpenRouter
+# default for every other endpoint (Groq, Cerebras), and OpenRouter
 # rejects it. Both are seeds: a repair keeps what brain.env or the config page holds.
 # TTS pacing (lead / low_lead, #83) is seeded the same way.
 #
@@ -97,7 +97,7 @@ def test_the_model_name_follows_the_endpoint():
                 "https://eu.openrouter.ai/api/v1", "https://openrouter.ai:443/api/v1"):
         assert _model_for(url) == "openai/gpt-oss-120b", url
     for url in ("https://api.groq.com/openai/v1", "https://api.cerebras.ai/v1",
-                "http://127.0.0.1:8182/v1", "https://notopenrouter.ai/v1",
+                "https://notopenrouter.ai/v1",
                 "https://openrouter.ai.example.com/v1"):
         assert _model_for(url) == "gpt-oss-120b", url
 
@@ -124,9 +124,9 @@ def test_a_named_model_wins():
 
 def test_a_repair_keeps_the_llm_it_has():
     # Nobody named an endpoint this run: the defaults are seeds, and lose to brain.env.
-    env, out = _install(brain_env="LLM_BASE_URL=http://127.0.0.1:8182/v1\nLLM_MODEL=local\n")
-    assert env["LLM_BASE_URL"] == "http://127.0.0.1:8182/v1", out
-    assert env["LLM_MODEL"] == "local", out
+    env, out = _install(brain_env="LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=custom\n")
+    assert env["LLM_BASE_URL"] == "https://api.groq.com/openai/v1", out
+    assert env["LLM_MODEL"] == "custom", out
 
 
 def test_a_fresh_install_paces_tts():

@@ -10,11 +10,11 @@ This page walks you through installing teaport on a Jetson Orin Nano Dev Kit (8 
 - A **Jetson Orin Nano, NX, or AGX**, flashed with **JetPack 7.2**. JetPack 7.2 ships Linux for Tegra (L4T) R39.2 with CUDA 13.2; the installer accepts L4T R38 or R39. The Orin Nano with 8 GB of memory is the reference device.
 - SSH access or a screen, and a home network.
 - An **agent**: OpenClaw on the device, or NemoClaw, which is NVIDIA's OpenClaw package. The agent gives you the browser interface, the Talk session, and the tools. You can skip the agent, but then nothing can talk to the device. See [Install an agent](#install-an-agent).
-- Your own **large language model (LLM)**. Use a cloud key from OpenRouter, Groq, or Cerebras, or a local OpenAI-compatible server. See [Configuration](/guides/configuration/).
+- Your own **large language model (LLM)**. Use a cloud key from OpenRouter, Groq, or Cerebras. See [Configuration](/guides/configuration/).
 - A **phone or laptop with a browser** on the same network. Its microphone and speaker carry the audio. Nothing to plug in: the device is already powered and on the network.
 - About **15 GB** of free disk space for the engine and its models. The installer warns when it finds less.
 
-<!-- source: install.sh:275-281,286-292,306-307,1944-1959#2eaa1b46 -->
+<!-- source: install.sh:275-281,286-292,306-307,1944-1959#35b6b496 -->
 
 ## Install JetPack 7.2
 
@@ -117,12 +117,11 @@ The installer asks you:
 2. **Your LLM endpoint, model, and API key.** The endpoint question offers OpenRouter,
    `https://openrouter.ai/api/v1`, as the default. The model question then offers the
    name that endpoint takes: `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for
-   any other endpoint, such as Groq, Cerebras, or a local server. The key can stay empty
-   for a keyless local server.
+   any other endpoint, such as Groq or Cerebras.
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:61,87,258-262,1928-1939,1948-1959#59c755f5 -->
+<!-- source: install.sh:61,87,258-262,1928-1939,1948-1959#49c78210 -->
 
 :::caution[OpenRouter needs the full model name]
 OpenRouter names a model with its maker, `openai/gpt-oss-120b`. The bare `gpt-oss-120b`
