@@ -13,7 +13,7 @@
 #     fails, saying why, when nothing is installed or the manifest cannot be read.
 #   - `teaport status` shows the release line, and nothing where the brain says nothing.
 #
-# Synthetic manifests only; nothing is fetched.
+# Synthetic manifests only; nothing leaves the machine (one test fetches from a loopback server).
 #
 # Run: python test_updates.py   (or via pytest)
 #
@@ -114,6 +114,45 @@ def test_a_look_reads_the_channels_manifest_and_names_it():
     assert got["channel"] == "beta", got
 
 
+
+
+def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
+    # The download host answers urllib's default agent with a 403, so `load` names itself.
+    import http.server
+    import threading
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("User-Agent"))
+            if (self.headers.get("User-Agent") or "").startswith("Python-urllib"):
+                self.send_error(403)
+                return
+            body = json.dumps({"version": "x"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # A proxy in the environment must not stand between the test and its own loopback.
+    kept = {k: os.environ.get(k) for k in ("no_proxy", "NO_PROXY")}
+    os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1"
+    try:
+        got = updates.load(f"http://127.0.0.1:{srv.server_port}/stable.json")
+    finally:
+        for k, v in kept.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        srv.shutdown()
+        srv.server_close()
+    assert got == {"version": "x"}, got
+    assert seen == [updates.USER_AGENT] and "urllib" not in seen[0], seen
 
 
 def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():

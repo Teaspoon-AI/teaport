@@ -12,7 +12,7 @@ The installer applies every update. The `teaport update --check` command compare
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update --check` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: brain/teaport_brain/updates.py:52-63,332-333#c715a888; install.sh:863,3595#841be564 -->
+<!-- source: brain/teaport_brain/updates.py:55-66,336-337#c715a888; install.sh:863,3595#841be564 -->
 
 ## Check for updates
 
@@ -27,7 +27,7 @@ To see which parts of the installation differ from the release manifest:
 
    The command fetches a fresh copy of the release manifest, compares it with the stored one, and prints a line for the version and for each tracked part: the engine release, the brain tag, the plugin version, the OpenClaw version, and the model files. `->` marks a part that differs; `==` marks one that matches. The check ends with `up to date.` when nothing differs, or with a `changed:` list. It changes nothing on the device.
 
-<!-- source: brain/teaport_brain/updates.py:47,290-303#b34be85f -->
+<!-- source: brain/teaport_brain/updates.py:50,294-307#b34be85f -->
 
 ## Apply an update
 
@@ -185,11 +185,11 @@ Both the installer and `teaport update --check` read the URL or local path in `T
 TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 ```
 
-<!-- source: install.sh:56,81#0f9477e2; brain/teaport_brain/updates.py:80-86#e5101603 -->
+<!-- source: install.sh:56,81#0f9477e2; brain/teaport_brain/updates.py:83-89#e5101603 -->
 
 The installer takes its channel from that variable alone. `teaport update --check` also takes `--channel stable` or `--channel beta` for one run. The brain checks every day too: set `TEAPORT_UPDATE_CHANNEL=beta` in `/etc/teaport/brain.env` to make `beta` the channel it and the command look at, and `TEAPORT_UPDATE_CHECK_SECS=0` to turn the daily check off. The brain sees `TEAPORT_MANIFEST_URL` only when it is in `/etc/teaport/brain.env`; exported in a shell, it changes the command and not the daily check.
 
-<!-- source: install.sh:101-111#ef93f814; brain/teaport_brain/updates.py:71-86,179-192#03e7c3dd -->
+<!-- source: install.sh:101-111#ef93f814; brain/teaport_brain/updates.py:74-89,183-196#03e7c3dd -->
 
 ## Retained releases
 
