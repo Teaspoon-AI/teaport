@@ -415,9 +415,9 @@
   const IN_WIFI_CARD = 'wifi_setup';
   // A section's part of the Settings reference: the docs generator writes each group as a
   // heading with its title, and Starlight's anchor for it is the title lowercased, its
-  // spaces as hyphens, anything else but letters, digits and hyphens dropped.
+  // spaces as hyphens, anything else but letters, digits, hyphens and underscores dropped.
   const DOCS = 'https://docs.teaspoon.tech/reference/settings/';
-  const docsUrl = (title) => DOCS + '#' + title.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+  const docsUrl = (title) => DOCS + '#' + title.toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/ /g, '-');
   const ARROW = () => {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     for (const [k, v] of Object.entries({ width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 2.2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) svg.setAttribute(k, v);
@@ -953,6 +953,8 @@
   $('#discard').addEventListener('click', () => { edits = {}; render(); });
 
   const showErrors = (errors) => {
+    // The owner may have folded "advanced" after an edit: the errors are drawn there.
+    document.body.classList.add('show-adv');
     const unplaced = [];
     for (const [name, msg] of Object.entries(errors)) {
       const row = $(`.row[data-name="${name}"]`);
