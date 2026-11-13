@@ -208,6 +208,16 @@ def test_get_masks_secrets_and_requires_token():
     assert client.get("/config", headers=H).headers["content-type"].startswith("text/html")
 
 
+def test_the_page_serves_both_logos():
+    """The header's <picture>: the on-light logo, and the on-dark one for dark mode."""
+    client, etc, home, calls = setup()
+    for path, name in (("/config/logo.svg", "teaport-logo.svg"), ("/config/logo-dark.svg", "teaport-logo-dark.svg")):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["content-type"] == "image/svg+xml", path
+        with open(os.path.join(config_ui.STATIC_DIR, name), "rb") as f:
+            assert r.content == f.read(), path
+
+
 def test_the_footer_names_the_release_and_the_running_build():
     """GET /api/config's build: the installed manifest's version once a release is cut (a
     placeholder or all zeros is none), and the build record of the venv this process runs
@@ -866,6 +876,73 @@ def _page_submits(cases: list) -> dict:
     r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
+
+
+def _page_consts(names: list) -> str:
+    """The config page's one-line `const NAME = ...;` definitions for `names`, as source."""
+    with open(os.path.join(config_ui.STATIC_DIR, "config.html"), encoding="utf-8") as f:
+        page = f.read()
+    out = []
+    for name in names:
+        m = re.search(r"^ *(const " + re.escape(name) + r" = .*;)$", page, re.M)
+        assert m, f"config.html has no one-line const {name}"
+        out.append(m.group(1))
+    return "\n".join(out)
+
+
+def _node(script: str):
+    node = shutil.which("node")
+    if not node:
+        raise appliance.Unavailable("node is not installed")
+    r = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_the_page_shows_only_cards_with_something_on_show():
+    """The filter, as the page runs it: a row shows if it is a setup row, the tuning switch
+    is on, it is being edited, or a search finds it (then whatever its tier); a card is
+    drawn when a row in it shows, except one for a part the box has not set up, which
+    waits for the switch or a search."""
+    cases = [
+        # rowShown(tier, edited, text, showAll, q)
+        ["row", "setup", False, "llm_model", False, ""],
+        ["row", "tuning", False, "tts_pacing", False, ""],
+        ["row", "tuning", True, "tts_pacing", False, ""],     # an edit keeps it (and its card)
+        ["row", "tuning", False, "tts_pacing", True, ""],
+        ["row", "diag", False, "ledger_trace", False, "ledger"],
+        ["row", "setup", False, "llm_model", False, "ledger"],
+        # cardShown(visible, absent, showAll, q)
+        ["card", 0, False, False, ""],                          # a tuning-only card, switch off
+        ["card", 3, False, False, ""],
+        ["card", 2, True, False, ""],                           # not set up on this box
+        ["card", 2, True, True, ""],
+        ["card", 1, True, False, "volume"],
+        ["card", 0, True, True, ""],
+    ]
+    got = _node(_page_consts(["rowShown", "cardShown"]) + "\n"
+                f"console.log(JSON.stringify({json.dumps(cases)}.map(([k, ...a]) =>"
+                " k === 'row' ? rowShown(...a) : cardShown(...a))));")
+    assert got == [True, False, True, True, True, False,
+                   False, True, False, True, True, False], got
+
+
+def test_every_section_links_to_its_heading_in_the_settings_reference():
+    """Each card's Docs link (docsUrl) lands on its group's heading in the generated
+    Settings reference: the title is a heading there, and the anchor is the one Starlight
+    makes of it (github-slugger: lowercased, punctuation but - and _ dropped, spaces to -)."""
+    from teaport_brain import config_schema
+    titles = [g["title"] for g in config_schema.load()["groups"]]
+    urls = _node(_page_consts(["DOCS", "docsUrl"]) + "\n"
+                 f"console.log(JSON.stringify({json.dumps(titles)}.map(docsUrl)));")
+    ref = os.path.join(os.path.dirname(config_ui.STATIC_DIR), "..", "..", "docs", "src",
+                       "content", "docs", "reference", "settings.md")
+    with open(ref, encoding="utf-8") as f:
+        headings = {line[3:].strip() for line in f if line.startswith("## ")}
+    for title, url in zip(titles, urls):
+        assert title in headings, f"{title!r} is no heading in settings.md"
+        slug = re.sub(r"[^\w\- ]", "", title.lower()).replace(" ", "-")
+        assert url == "https://docs.teaspoon.tech/reference/settings/#" + slug, (title, url)
 
 
 def test_the_page_shows_why_the_brain_did_not_switch():

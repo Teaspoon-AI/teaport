@@ -873,7 +873,8 @@ def _wifi_state(nm) -> dict:
     setup_ssid = None
     if wifi_voice.available():
         text = _read_text(_store_path("wifi_setup_env")) or ""
-        setup_ssid = wifi_setup.setup_ssid(nm.mac(dev), parse_env(text).get("WIFI_SETUP_SSID", ""))
+        setup_ssid = wifi_setup.setup_ssid(nm.mac(dev), parse_env(text).get("WIFI_SETUP_SSID", ""),
+                                           quiet=True)
     # Online through the Wi-Fi itself: on Ethernet the box is online whatever the Wi-Fi does.
     return {"available": True, "device": dev, "connection": connection,
             "online": nm.online(dev) if connection else False,

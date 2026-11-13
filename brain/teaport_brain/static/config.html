@@ -362,7 +362,7 @@
   const h = (tag, attrs = {}, ...kids) => {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
-      if (k === 'class') el.className = v;
+      if (k === 'class') { if (v !== null && v !== undefined) el.className = v; }
       else if (k === 'html') el.innerHTML = v;
       else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
       else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? '' : v);
@@ -813,7 +813,6 @@
   window.addEventListener('pageshow', (e) => { if (e.persisted && data) renderAccount(); });
   $('#advbtn').addEventListener('click', () => {
     document.body.classList.toggle('show-adv');
-    if (document.body.classList.contains('show-adv')) document.querySelectorAll('section.group').forEach((g) => io.observe(g));
   });
 
   // ---- the footer's version line (GET /api/config's build). The owner sees the release
@@ -884,10 +883,21 @@
     }
     index.replaceChildren(...links);
     jump.replaceChildren(...options);
+    // Cards are rebuilt by render() (a load, and Discard): observe() of one already watched
+    // is a no-op, so the scroll spy watches whatever cards there are now.
+    document.querySelectorAll('section.group').forEach((g) => io.observe(g));
     jump.value = currentGroup && $('option[value="' + currentGroup + '"]', jump) ? currentGroup : 'top';
   };
 
   // ---- filter
+  // Is a row on show: a setup row always, a tuning/diagnostic/installer one with the
+  // switch on, any row being edited; a search shows every row it matches, whatever its tier.
+  const rowShown = (tier, edited, text, showAll, q) => (showAll || !!q || tier === 'setup' || edited) && (!q || text.includes(q));
+  // Is a card drawn: not when nothing in it is on show (a section of tuning rows, or one
+  // only the installer sets, until the switch is on), nor when it is for a part this box
+  // has not set up -- unless the switch is on or a search finds something in it.
+  const cardShown = (visible, absent, showAll, q) => visible > 0 && (!absent || showAll || !!q);
+
   const applyFilter = () => {
     const q = $('#search').value.trim().toLowerCase();
     const showAll = $('#showtuning').checked;
@@ -898,9 +908,7 @@
     for (const sec of document.querySelectorAll('#groups section.group')) {
       let visible = 0;
       for (const row of sec.querySelectorAll('.row')) {
-        const tierOk = showAll || q || row.dataset.tier === 'setup' || row.classList.contains('changed');
-        const textOk = !q || row.dataset.text.includes(q);
-        const show = tierOk && textOk;
+        const show = rowShown(row.dataset.tier, row.classList.contains('changed'), row.dataset.text, showAll, q);
         row.classList.toggle('hidden', !show);
         if (show) visible++;
       }
@@ -909,11 +917,7 @@
       if (!foot) { foot = h('div', { class: 'group-tools' }); sec.append(foot); }
       foot.replaceChildren();
       if (!q && !showAll && hiddenCount) foot.append(h('button', { type: 'button', class: 'btn-link', onclick: () => { $('#showtuning').checked = true; applyFilter(); } }, `Show ${hiddenCount} more (tuning, diagnostics, installer)`));
-      // A card with nothing on show is not drawn (a section of tuning rows, or one only
-      // the installer sets, until the switch is on), and neither is one for a part this
-      // box has not set up -- unless the switch is on or a search finds something in it.
-      const absent = (data.absent || []).includes(sec.dataset.store);
-      sec.hidden = visible === 0 || (absent && !showAll && !q);
+      sec.hidden = !cardShown(visible, (data.absent || []).includes(sec.dataset.store), showAll, q);
     }
     buildNav();
     try { localStorage.setItem('teaport.showtuning', showAll ? '1' : ''); } catch (e) { /* fine */ }
@@ -949,14 +953,19 @@
   $('#discard').addEventListener('click', () => { edits = {}; render(); });
 
   const showErrors = (errors) => {
+    const unplaced = [];
     for (const [name, msg] of Object.entries(errors)) {
       const row = $(`.row[data-name="${name}"]`);
-      if (!row) continue;
+      if (!row) { unplaced.push(msg); continue; }
       row.classList.add('invalid'); row.classList.remove('hidden');
+      row.closest('section').hidden = false;
       const old = $('.field-err', row); if (old) old.remove();
       $('.control', row).append(h('p', { class: 'field-err' }, msg));
     }
+    // A refusal that names no setting (a bare `detail`): said above the cards.
+    if (unplaced.length) renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Not saved: ' + unplaced.join(' '))));
     const first = $('.row.invalid'); if (first) first.scrollIntoView({ block: 'center' });
+    else if (unplaced.length) $('#banners').scrollIntoView({ block: 'center' });
   };
 
   const confirmConstraints = (messages) => new Promise((resolve) => {
@@ -1034,7 +1043,6 @@
       renderWifi();
       renderAccount();
       if (banner) renderBanners(banner);
-      document.querySelectorAll('section.group').forEach((s) => io.observe(s));
     } catch (e) {
       if (e.status === 401 && BASE && location.hash !== '#token') {
         // The session ran out, or a remembered token is stale (a changed token ends the
