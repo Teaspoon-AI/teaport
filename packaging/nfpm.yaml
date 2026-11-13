@@ -16,7 +16,7 @@ version: ${TEAPORT_DEB_VERSION}
 version_schema: none
 section: misc
 priority: optional
-maintainer: Teaspoon AI <hello@teaspoon.tech>
+maintainer: Teaspoon AI <stefano@teaspoon.tech>
 vendor: Teaspoon AI
 homepage: https://github.com/Teaspoon-AI/teaport
 license: MIT
@@ -78,6 +78,22 @@ contents:
     dst: /usr/lib/teaport/config_apply.py
     file_info:
       mode: 0o755
+      owner: root
+      group: root
+
+  # The license material (#60): the Debian copyright file, and the third-party summary
+  # that says where the source of the LGPL parts is and how to replace them.
+  - src: packaging/deb/copyright
+    dst: /usr/share/doc/teaport-brain/copyright
+    file_info:
+      mode: 0o644
+      owner: root
+      group: root
+
+  - src: THIRD_PARTY_LICENSES.md
+    dst: /usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md
+    file_info:
+      mode: 0o644
       owner: root
       group: root
 

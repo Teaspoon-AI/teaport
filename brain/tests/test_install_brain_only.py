@@ -992,6 +992,16 @@ def test_postinst_only_configures_and_the_package_ships_what_it_runs():
     recipe = (INSTALL.parent / "packaging/nfpm.yaml").read_text()
     assert "postinstall: packaging/deb/postinst" in recipe and "postremove: packaging/deb/postrm" in recipe
     assert "\n  - sudo\n" in recipe   # visudo checks the sudoers line
+    # The license material the package distributes with the LGPL parts of its tree.
+    for src, dst in (("packaging/deb/copyright", "/usr/share/doc/teaport-brain/copyright"),
+                     ("THIRD_PARTY_LICENSES.md", "/usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md")):
+        assert f"- src: {src}\n    dst: {dst}\n" in recipe, src
+        assert (INSTALL.parent / src).is_file(), src
+    copyright_text = (INSTALL.parent / "packaging/deb/copyright").read_text()
+    assert copyright_text.startswith("Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/")
+    assert "Permission is hereby granted" in copyright_text and "LGPL-2.1-or-later" in copyright_text
+    licenses = (INSTALL.parent / "THIRD_PARTY_LICENSES.md").read_text()
+    assert "stefano@teaspoon.tech" in licenses and "never frozen or bundled into a single closed binary" in licenses
     assert "dst: /usr/lib/teaport/sudoers-sync" in recipe and "dst: /usr/lib/teaport/config_apply.py" in recipe
     # The unit that restarts it waits for it.
     unit = (INSTALL.parent / "systemd/teaport-brain.service.in").read_text()

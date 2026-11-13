@@ -48,10 +48,10 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
-# brain/, cli/ and packaging/ are what the package is built from — and only the files
-# git sees there, tracked or untracked-not-ignored (see "source" below), so this check
+# brain/, cli/, packaging/ and THIRD_PARTY_LICENSES.md are what the package is built from —
+# and only the files git sees there, tracked or untracked-not-ignored (see "source" below), so this check
 # covers everything that goes in.
-SRC_PATHS=(brain cli packaging)
+SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md)
 dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   VERSION="$TEAPORT_DEB_VERSION"

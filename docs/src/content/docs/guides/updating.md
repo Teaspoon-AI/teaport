@@ -5,7 +5,7 @@ description: Check an installed device against its release manifest, update the 
 
 The installer applies every update. The `teaport update --check` command compares the device with the release manifest and names the parts that differ; it changes nothing. The brain and the engine also have narrower paths: `install.sh --only brain` installs the brain package alone, and `install.sh --only engine` updates the engine alone. `install.sh --rollback brain` and `install.sh --rollback engine` put the previous one back.
 
-<!-- source: cli/teaport:464-480#1c777d04; install.sh:9-13#3bf0e543 -->
+<!-- source: cli/teaport:467-483#1c777d04; install.sh:9-13#3bf0e543 -->
 
 ## Before you begin
 
@@ -39,13 +39,13 @@ teaport update
 
 The command prints the same comparison and, when a part differs, names the run to make: `install.sh --only brain` for the brain, `install.sh --only engine` for an engine release, and a full `install.sh` run for the rest. The installer does the update; the command does not.
 
-<!-- source: cli/teaport:464-480#1c777d04 -->
+<!-- source: cli/teaport:467-483#1c777d04 -->
 
 ### Update only the brain
 
 The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helper that the configuration page runs as root.
 
-<!-- source: install.sh:1160-1163#cee553a8; packaging/nfpm.yaml:57-91#894ea3a9 -->
+<!-- source: install.sh:1160-1163#cee553a8; packaging/nfpm.yaml:57-85#bb01814d -->
 
 From a checkout of the teaport repository, update the source and install the package the release manifest names:
 
@@ -141,7 +141,7 @@ Run the installer with no component flag:
 
 The full run repeats the installation and downloads only the artifacts that differ. It installs the brain package the way the brain-only run does, and after every unit and env file is written, it restarts the engine and the brain in one step and checks that they come back. A full run has no automatic rollback; roll the brain or the engine back by hand afterward.
 
-<!-- source: install.sh:5,31-33#69faf65a; install.sh:50-52#c6d99e84; cli/teaport:479#06b7c6ce -->
+<!-- source: install.sh:5,31-33#69faf65a; install.sh:50-52#c6d99e84; cli/teaport:482#06b7c6ce -->
 
 ## Roll back the brain
 
