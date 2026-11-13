@@ -1182,6 +1182,7 @@ BRAIN_DEB_NEW=""      # its version
 BRAIN_DEB_CACHED=""   # its copy in $BRAIN_DEBS (brain_deb_keep)
 BRAIN_DEB_SHA=""      # its sha256 when the manifest names it (the root copy is checked against it)
 BRAIN_DEB_DOWNLOADED=0  # 1 when BRAIN_DEB is a download of ours: removed once kept
+BRAIN_DEB_ADDED=0     # 1 when this run put BRAIN_DEB_CACHED in the cache (it was not there before)
 SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the config page's line (packaging/deb/sudoers-sync)
 # Where the pre-package installer put the CLI and the config helper (retired once the
 # package's are in place: /usr/local/bin precedes /usr/bin on PATH).
@@ -1250,6 +1251,7 @@ brain_deb_keep() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] keep %s as %s\n' "$BRAIN_DEB" "$BRAIN_DEB_CACHED"; return 0; fi
   SUDO install -d -m 0755 -o root -g root "$BRAIN_DEBS"
   if ! [ "$BRAIN_DEB" -ef "$BRAIN_DEB_CACHED" ]; then
+    [ -e "$BRAIN_DEB_CACHED" ] || BRAIN_DEB_ADDED=1
     local tmp="$BRAIN_DEBS/incoming.partial" ok=1
     SUDO install -m 0644 -o root -g root "$BRAIN_DEB" "$tmp"
     if [ -n "$BRAIN_DEB_SHA" ] && [ "$(sha256sum "$tmp" | awk '{print $1}')" != "$BRAIN_DEB_SHA" ]; then
@@ -1370,7 +1372,9 @@ brain_swap() {
     # and there is nothing to put back. Restarting a healthy brain would only end a Talk
     # session, and the new package is not at fault.
     if [ -n "$prev" ] && [ "$(brain_installed_version)" = "$prev" ]; then
-      [ "$deb" = "$prevdeb" ] || SUDO rm -f "$deb" || true
+      # Out of the cache only if this run put it there: a package that was kept before
+      # (a rollback target being installed again) stays.
+      if [ "$BRAIN_DEB_ADDED" = 1 ] && [ "$deb" != "$prevdeb" ]; then SUDO rm -f "$deb" || true; fi
       die "apt could not install $BRAIN_DEB_NEW and left the box as it was: the brain still runs $prev, and nothing was restarted"
     fi
   fi
@@ -1398,9 +1402,11 @@ brain_swap() {
       die "the brain did not come back on the reinstall of $prev; it runs on $prev again — see: $journal"
     fi
     # The package that failed is not a rollback target: out of the cache, or the next
-    # --rollback would pick it as the newest. The file it came from stays.
+    # --rollback would pick it as the newest. A file given with TEAPORT_BRAIN_DEB stays.
     SUDO rm -f "$deb" || true
-    die "rolled back: the brain is running on $prev again. $BRAIN_DEB_NEW failed and is no longer kept in $BRAIN_DEBS (${BRAIN_DEB}) — see: $journal"
+    local from=""
+    if [ "$BRAIN_DEB_DOWNLOADED" != 1 ]; then from=" ($BRAIN_DEB stays)"; fi
+    die "rolled back: the brain is running on $prev again. $BRAIN_DEB_NEW failed and is no longer kept in $BRAIN_DEBS$from — see: $journal"
   fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }

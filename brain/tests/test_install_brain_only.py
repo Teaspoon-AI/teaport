@@ -604,7 +604,7 @@ def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
 
 DEB_STUBS = r'''
 PREFIX=/opt/teaport STATE="$T/state" BRAIN_DEBS="$T/cache" BRAIN_DEB_KEEP=3 BRAIN_DEB_SRC="" MF=""
-BRAIN_PKG=teaport-brain DRY_RUN=0 BRAIN_DEB_SHA="" BRAIN_DEB_DOWNLOADED=0
+BRAIN_PKG=teaport-brain DRY_RUN=0 BRAIN_DEB_SHA="" BRAIN_DEB_DOWNLOADED=0 BRAIN_DEB_ADDED=0
 mkdir -p "$BRAIN_DEBS" "$STATE"
 sudo() { return 0; }
 run()  { "$@"; }
@@ -714,6 +714,8 @@ def test_what_apt_installs_is_the_root_copy_and_the_copy_is_what_was_checked():
     cached = pathlib.Path(tmp, "cache/teaport-brain_0.1.0_arm64.deb")
     rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; orig="$BRAIN_DEB"; brain_deb_keep; test ! -e "$orig" && echo ORIG_GONE')
     assert rc == 0 and "ORIG_GONE" in out and cached.read_text() == "deb 0.1.0\n", out   # the download is not kept twice
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; brain_deb_keep; echo "ADDED=$BRAIN_DEB_ADDED"')
+    assert rc == 0 and "ADDED=0" in out, out   # the second time the cache already had it
     assert not pathlib.Path(tmp, "cache/incoming.partial").exists()
     for how, change in (("its content", 'echo tampered > "$BRAIN_DEB"'),
                         ("its fields", 'echo "Package: other" > "$BRAIN_DEB.fields"')):
@@ -756,7 +758,7 @@ def _swap(tmp, installed=None, new="2.0", mode="--auto-rollback", env=None, extr
         _cached(tmp, installed)
     new_deb = _cached(tmp, new, age=10)
     script = (f'{SWAP_STUBS}{"INSTALLED=" + installed + chr(10) if installed else ""}'
-              f'BRAIN_DEB_NEW={new} BRAIN_DEB=/in/{new}.deb\n{extra}brain_swap "{new_deb}" {mode}')
+              f'BRAIN_DEB_NEW={new} BRAIN_DEB=/in/{new}.deb BRAIN_DEB_ADDED=1\n{extra}brain_swap "{new_deb}" {mode}')
     return _debrun(tmp, script, ["brain_swap"], env)
 
 
@@ -817,6 +819,14 @@ def test_apt_that_never_reached_the_package_leaves_the_box_alone():
     # The package that was never installed is not a rollback target either; 1.0 stays.
     assert not pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
     assert pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists()
+
+
+def test_a_package_kept_before_stays_when_apt_never_reached_it():
+    # A rollback target installed again: this run added nothing to the cache, so nothing goes.
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"APT_LOCKED": "teaport-brain_2.0_arm64.deb"}, extra="BRAIN_DEB_ADDED=0\n")
+    assert rc != 0 and "left the box as it was" in out, out
+    assert pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
 
 
 def test_the_first_package_failing_on_a_pre_package_box_says_how_to_go_back_to_its_venv():
