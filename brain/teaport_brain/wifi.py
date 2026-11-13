@@ -368,13 +368,13 @@ def logo_html() -> str:
 # The setup page's look: the config page's tokens (static/config.html), with system
 # fonts — the box is offline when this page is shown, so no web font can load.
 PAGE_CSS = """
-:root{--bg:#F4F2EC;--surface:#fbfaf6;--text:#020617;--muted:#475569;--faint:#64748B;
---border:#E2E8F0;--border-strong:#CBD5E1;--accent:#0891B2;--err-ink:#B91C1C;--err-bg:#FEE2E2;
---btn-bg:#023176;--btn-fg:#fff;--radius:8px;
+:root{--bg:#F1F5F9;--surface:#FFFFFF;--text:#020617;--muted:#475569;--faint:#64748B;
+--border:#E2E8F0;--border-strong:#CBD5E1;--accent:#0891B2;--err-ink:#B91C1C;--err-bg:#FEF2F2;
+--btn-bg:#023176;--btn-fg:#F8FAFC;--radius:8px;
 --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,sans-serif}
-@media (prefers-color-scheme:dark){:root{--bg:#0b1120;--surface:#111a2e;--text:#e2e8f0;
---muted:#94a3b8;--faint:#7c8aa0;--border:#1e293b;--border-strong:#334155;--accent:#22d3ee;
---err-ink:#fca5a5;--err-bg:#3b1414;--btn-bg:#38bdf8;--btn-fg:#04121f}}
+@media (prefers-color-scheme:dark){:root{--bg:#020617;--surface:#0F172A;--text:#F8FAFC;
+--muted:#CBD5E1;--faint:#94A3B8;--border:#1E293B;--border-strong:#334155;--accent:#22D3EE;
+--err-ink:#FCA5A5;--err-bg:#450A0A;--btn-bg:#F8FAFC;--btn-fg:#023176}}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--sans)}
 main{max-width:32rem;margin:0 auto;padding:28px 16px 48px}
 .top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 18px}

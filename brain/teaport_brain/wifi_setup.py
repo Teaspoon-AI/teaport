@@ -174,15 +174,17 @@ def handed_language(path: str | None = None, now=time.time) -> i18n.T:
 
 # ------------------------------------------------------------------ the box's identity
 
-def setup_ssid(mac: str, override: str = "") -> str:
+def setup_ssid(mac: str, override: str = "", quiet: bool = False) -> str:
     """teaport-ab12 from the Wi-Fi MAC's last four hex digits (two boxes never clash).
     An override that is all hex digits ("12345678", "cafe") is refused: ZXing-based
     scanners (many Android camera apps) read such an SSID in the QR code as raw bytes,
-    and join a network that does not exist."""
+    and join a network that does not exist. `quiet`: the refusal is not logged (the
+    config page asks on every load; the setup unit, which logs it, is what uses it)."""
     name = override.strip()[:32]
     if re.fullmatch(r"[0-9A-Fa-f]+", name):
-        log(f"WIFI_SETUP_SSID {name!r} is all hex digits, which some phones read as bytes "
-            "— using the MAC-based name")
+        if not quiet:
+            log(f"WIFI_SETUP_SSID {name!r} is all hex digits, which some phones read as bytes "
+                "— using the MAC-based name")
         name = ""
     if name:
         return name

@@ -34,6 +34,9 @@ def test_an_all_hex_override_is_refused_with_a_warning(override, capsys):
     # A ZXing-based scanner reads an all-hex SSID in the QR code as raw bytes.
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", override) == "teaport-9e35"
     assert "all hex digits" in capsys.readouterr().out
+    # The config page asks on every load: the same answer, without the log line.
+    assert ws.setup_ssid("f8:3d:c6:1f:9e:35", override, quiet=True) == "teaport-9e35"
+    assert capsys.readouterr().out == ""
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Cafe-1") == "Cafe-1"   # not all hex: kept
 
 
