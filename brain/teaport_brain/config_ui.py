@@ -501,9 +501,10 @@ async def get_package_license(package: str, request: Request):
     return got
 
 
-# The running brain's build record: install.sh writes it into every venv it builds
-# (lockcheck.py record), and this process runs from one, so sys.prefix names the build
-# that is serving -- not the venv the live symlink may point at since.
+# The running brain's build record, a file in the venv's root. Only a brain installed before
+# the teaport-brain package has one (install.sh used to write it into every venv it built);
+# the package does not, so for it the footer shows no revision or build date. sys.prefix
+# names the venv that is serving.
 BUILD_RECORD = os.path.join(sys.prefix, "teaport-build.json")
 
 
