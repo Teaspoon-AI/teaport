@@ -6,7 +6,9 @@
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.
-#  3. The brain comes up on the new files: its units are restarted if they are loaded. The
+#  3. (wifi-setup is restarted with the others: it runs this package's code, and a module
+#     imported late from a replaced tree would fail. An onboarding session in progress ends.)
+#     The brain comes up on the new files: its units are restarted if they are loaded. The
 #     brain unit is Type=notify, so `systemctl restart` returns only when the new brain
 #     has bound its port (or fails, after TimeoutStartSec), and a failure fails this
 #     script: dpkg leaves the package half-configured, which install.sh reads as "roll
@@ -15,7 +17,10 @@
 set -e
 [ "$1" = configure ] || exit 0
 
-/usr/lib/teaport/sudoers-sync
+# A line that cannot be written (no visudo, a user name sudoers would reject) is the config
+# page's problem, not the brain's: it must not leave new files unpacked under a brain that
+# was never restarted, so it is said and the script goes on. install.sh says it again.
+/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the config page's sudoers line was not written (/usr/lib/teaport/sudoers-sync)" >&2
 
 if [ ! -e /opt/teaport/venv ] || [ -L /opt/teaport/venv ]; then
   if [ -d /opt/teaport ]; then ln -sfn /opt/teaport/brain /opt/teaport/venv; fi

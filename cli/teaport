@@ -248,9 +248,15 @@ cmd_status() {
 # A box still on the pre-package venv (/opt/teaport/venv, built by an older install.sh) is
 # told to switch. Uses doctor's ok/warnc (dynamically scoped from cmd_doctor).
 brain_package_check() {
-  local ver changed
+  local ver changed st
   ver="$(dpkg-query -W -f='${db:Status-Status} ${Version}\n' teaport-brain 2>/dev/null | awk '$1=="installed"{print $2; exit}')" || ver=""
   if [ -z "$ver" ]; then
+    st="$(dpkg-query -W -f='${db:Status-Status}' teaport-brain 2>/dev/null)" || st=""
+    case "$st" in
+      half-configured|half-installed|unpacked)
+        warnc "the teaport-brain package is $st — its last install did not finish, so its files cannot be checked: install.sh --only brain, or --rollback brain"
+        return 0 ;;
+    esac
     if [ -x "$PREFIX/venv/bin/teaport-brain" ]; then
       warnc "the brain is a venv built on this box by an older installer, not the teaport-brain package, so its files cannot be checked — switch to the package: install.sh --only brain"
     fi

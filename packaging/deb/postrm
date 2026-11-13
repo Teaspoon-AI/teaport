@@ -1,0 +1,14 @@
+#!/bin/sh
+# postrm for teaport-brain (#60). Removing the package takes the tree with it, so what
+# pointed into the tree goes too: the /opt/teaport/venv link that postinst made, and on
+# purge the config page's sudoers line (it names a helper the package shipped).
+set -e
+case "$1" in
+  remove|purge)
+    if [ -L /opt/teaport/venv ] && [ "$(readlink /opt/teaport/venv)" = /opt/teaport/brain ]; then
+      rm -f /opt/teaport/venv
+    fi
+    ;;
+esac
+if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config; fi
+exit 0

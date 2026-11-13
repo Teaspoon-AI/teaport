@@ -14,7 +14,7 @@ Requires=teaport-engine.service
 # is serving, and fails when it never gets there.
 Type=notify
 NotifyAccess=main
-TimeoutStartSec=90
+TimeoutStartSec=180
 User=@USER@
 # The SIP gateway's socket (teaport-sip.service's RuntimeDirectory): the brain's SIP
 # front-end looks for it and connects whenever the gateway is up. A default box has no

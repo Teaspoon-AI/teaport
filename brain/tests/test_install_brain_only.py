@@ -16,6 +16,7 @@
 #
 # Run: python test_install_brain_only.py   (or via pytest test_suite.py)
 #
+import json
 import os
 import pathlib
 import re
@@ -603,7 +604,7 @@ def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
 
 DEB_STUBS = r'''
 PREFIX=/opt/teaport STATE="$T/state" BRAIN_DEBS="$T/cache" BRAIN_DEB_KEEP=3 BRAIN_DEB_SRC="" MF=""
-BRAIN_PKG=teaport-brain DRY_RUN=0
+BRAIN_PKG=teaport-brain DRY_RUN=0 BRAIN_DEB_SHA="" BRAIN_DEB_DOWNLOADED=0
 mkdir -p "$BRAIN_DEBS" "$STATE"
 sudo() { return 0; }
 run()  { "$@"; }
@@ -612,24 +613,35 @@ SUDO() {
   local a=() x skip=0
   for x in "$@"; do
     if [ "$skip" = 1 ]; then skip=0; continue; fi
-    case "$x" in -o|-g) skip=1 ;; *) a+=("$x") ;; esac
+    case "$1:$x" in install:-o|install:-g) skip=1 ;; *) a+=("$x") ;; esac   # root:root of install
   done
   case "${a[0]}" in
-    env) printf 'APT %s\n' "${a[*]:2}" >> "$T/apt.log"; [ "${APT_FAILS:-}" != "${a[-1]##*/}" ] ;;
+    env) printf 'APT %s\n' "${a[*]:2}" >> "$T/apt.log"
+         local f="${a[-1]##*/}" v; v="${f#teaport-brain_}"; v="${v%%_*}"
+         # apt that never reaches the package (the lock) changes nothing; a postinst that
+         # fails leaves the new version half-configured; otherwise it is installed.
+         if [ "${APT_LOCKED:-}" = "$f" ]; then return 1; fi
+         if [ "${APT_FAILS:-}" = "$f" ]; then echo "half-configured $v" > "$T/dq"; return 1; fi
+         echo "installed $v" > "$T/dq" ;;
     chown) : ;;
+    install) "${a[@]}"; if [ -f "${a[-2]}.fields" ]; then cp "${a[-2]}.fields" "${a[-1]}.fields"; fi ;;
+    mv) "${a[@]}"; if [ -f "${a[-2]}.fields" ]; then mv "${a[-2]}.fields" "${a[-1]}.fields"; fi ;;
     *) "${a[@]}" ;;
   esac
 }
 dpkg() { [ "$1" = --print-architecture ] && echo arm64; }
 dpkg-deb() { sed -n "s/^$3: //p" "$2.fields"; }
-dpkg-query() { [ -z "${INSTALLED:-}" ] || printf 'installed %s\n' "$INSTALLED"; }
+dpkg-query() {
+  if [ -f "$T/dq" ]; then cat "$T/dq"
+  elif [ -n "${INSTALLED:-}" ]; then printf '%s %s\n' "${STATUS:-installed}" "$INSTALLED"; fi
+}
 download() { cp "$T/remote/$(basename "$1")" "$2"; cp "$T/remote/$(basename "$1").fields" "$2.fields"; }
 mget() { python3 -c "import json,sys; d=json.load(open('$MF'))
 for k in sys.argv[1].split('.'): d=d[k]
 print(d)" "$1"; }
 '''
-DEB_FNS = ["brain_deb_arch", "brain_installed_version", "brain_deb_path", "brain_deb_fetch",
-           "brain_deb_keep", "brain_deb_apply", "brain_deb_prune"]
+DEB_FNS = ["brain_deb_arch", "brain_installed_version", "brain_package_version", "brain_deb_path",
+           "brain_deb_fetch", "brain_deb_verify", "brain_deb_keep", "brain_deb_apply", "brain_deb_prune"]
 
 
 def _deb(path, version, package="teaport-brain", arch="arm64"):
@@ -688,6 +700,31 @@ def test_the_package_wants_the_default_prefix():
     tmp = tempdir("teaport-deb-")
     rc, out = _debrun(tmp, 'PREFIX=/srv/x; brain_deb_fetch')
     assert rc != 0 and "installs to /opt/teaport" in out, out
+
+
+def test_what_apt_installs_is_the_root_copy_and_the_copy_is_what_was_checked():
+    # The download directory is the run user's: the original can change after the check, so
+    # the sha256 and the package fields are checked on the root-owned copy.
+    import hashlib
+    tmp = tempdir("teaport-deb-")
+    _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
+    sha = hashlib.sha256(b"deb 0.1.0\n").hexdigest()
+    mf = pathlib.Path(tmp, "m.json")
+    mf.write_text(json.dumps({"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": sha}}}))
+    cached = pathlib.Path(tmp, "cache/teaport-brain_0.1.0_arm64.deb")
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; orig="$BRAIN_DEB"; brain_deb_keep; test ! -e "$orig" && echo ORIG_GONE')
+    assert rc == 0 and "ORIG_GONE" in out and cached.read_text() == "deb 0.1.0\n", out   # the download is not kept twice
+    assert not pathlib.Path(tmp, "cache/incoming.partial").exists()
+    for how, change in (("its content", 'echo tampered > "$BRAIN_DEB"'),
+                        ("its fields", 'echo "Package: other" > "$BRAIN_DEB.fields"')):
+        tmp = tempdir("teaport-deb-")
+        _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
+        mf = pathlib.Path(tmp, "m.json")
+        mf.write_text(json.dumps({"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": sha}}}))
+        rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; {change}; brain_deb_keep')
+        assert rc != 0 and "nothing was installed" in out, (how, out)
+        left = [f for f in os.listdir(pathlib.Path(tmp, "cache")) if not f.endswith(".fields")]   # (stub sidecars)
+        assert left == [], (how, left)
 
 
 def test_the_cache_keeps_the_newest_three_and_the_installed_one():
@@ -761,6 +798,41 @@ def test_with_no_earlier_package_a_failed_swap_says_so_and_does_not_guess():
     assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
 
 
+def test_a_failed_reinstall_of_the_installed_version_keeps_its_one_copy():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="2.0", new="2.0", env={"RESTARTS_FAIL": "1"})
+    assert rc != 0 and "the reinstall of 2.0" in out and "no longer kept" not in out, out
+    # The installed package and the rollback target are one file: it stays, so the next
+    # failed upgrade still has something to go back to.
+    assert pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
+
+
+def test_apt_that_never_reached_the_package_leaves_the_box_alone():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"APT_LOCKED": "teaport-brain_2.0_arm64.deb"})
+    assert rc != 0 and "left the box as it was" in out and "still runs 1.0" in out, out
+    assert "RESTART" not in out and "putting" not in out and "SIP_RESTORE" not in out, out
+    assert "DPkg::Lock::Timeout" in pathlib.Path(tmp, "apt.log").read_text()
+    assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
+    # The package that was never installed is not a rollback target either; 1.0 stays.
+    assert not pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
+    assert pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists()
+
+
+def test_the_first_package_failing_on_a_pre_package_box_says_how_to_go_back_to_its_venv():
+    tmp = tempdir("teaport-swap-")
+    extra = f'PREFIX="{tmp}/opt"\nmkdir -p "$PREFIX/venvs/r1"; ln -s venvs/r1 "$PREFIX/venv"\n'
+    rc, out = _swap(tmp, installed=None, env={"RESTARTS_FAIL": "1"}, extra=extra)
+    assert rc != 0 and "no earlier package is kept to go back to" in out, out
+    assert f"The pre-package venv (venvs/r1) is still on the box; to run on it again: sudo ln -sfn venvs/r1 {tmp}/opt/venv" in out, out
+
+
+def test_a_render_that_fails_after_the_install_is_a_failed_swap():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", extra="brain_render_units() { return 1; }\n")
+    assert rc != 0 and "installing or configuring" in out and "putting 1.0 back" in out, out
+
+
 def test_a_swap_by_hand_that_fails_just_fails():
     tmp = tempdir("teaport-swap-")
     rc, out = _swap(tmp, installed="1.0", mode='""', env={"RESTARTS_FAIL": "1"})
@@ -793,6 +865,19 @@ def test_rolling_back_installs_the_newest_other_package_and_the_next_one_goes_fo
     assert rc == 0 and f"SWAP {tmp}/cache/teaport-brain_1.2_arm64.deb []" in out, out
 
 
+def test_a_half_configured_package_is_still_the_one_being_rolled_back_from():
+    tmp = tempdir("teaport-rollback-")
+    _cached(tmp, "1.0", age=1)
+    _cached(tmp, "1.1", age=2)
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}STATUS=half-configured INSTALLED=1.1; main_rollback_brain', ["main_rollback_brain"])
+    assert rc == 0 and f"SWAP {tmp}/cache/teaport-brain_1.0_arm64.deb []" in out, out
+    # And the cache pruning does not drop it as "not installed".
+    for i, v in enumerate(("1.2", "1.3", "1.4", "1.5")):
+        _cached(tmp, v, age=10 + i)
+    rc, out = _debrun(tmp, 'STATUS=half-configured INSTALLED=1.0; brain_deb_prune')
+    assert rc == 0 and pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists(), out
+
+
 def test_rolling_back_with_nothing_kept_or_nothing_installed_says_so():
     tmp = tempdir("teaport-rollback-")
     _cached(tmp, "1.0")
@@ -804,7 +889,7 @@ def test_rolling_back_with_nothing_kept_or_nothing_installed_says_so():
 
 # --- retiring the pre-package CLI and helper ------------------------------------------
 
-def _old_tools(tmp, package_in_place=True):
+def _old_tools(tmp, package_in_place=True, sudoers=True, cli_is_link=True):
     old_lib, old_cli = pathlib.Path(tmp, "uselocal/lib"), pathlib.Path(tmp, "uselocal/bin/teaport")
     (old_lib / "releases/r1").mkdir(parents=True)
     (old_lib / "releases/r1/teaport").write_text("old cli\n")
@@ -812,14 +897,23 @@ def _old_tools(tmp, package_in_place=True):
     (old_lib / "config_apply.py").symlink_to("current/config_apply.py")
     (old_lib / "wifi-setup-net").write_text("not ours to remove\n")
     old_cli.parent.mkdir(parents=True)
-    old_cli.symlink_to(old_lib / "current/teaport")
+    if cli_is_link:
+        old_cli.symlink_to(old_lib / "current/teaport")
+    else:
+        old_cli.write_text("#!/bin/sh\n# the operator's own wrapper\n")
     pkg_cli, pkg_helper = pathlib.Path(tmp, "usr/bin/teaport"), pathlib.Path(tmp, "usr/lib/teaport/config_apply.py")
     if package_in_place:
         for f in (pkg_cli, pkg_helper):
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("new\n")
             f.chmod(0o755)
-    script = (f'OLD_TOOLS_DIR="{old_lib}"; OLD_TOOLS_CLI="{old_cli}"\n'
+    sudoers_file = pathlib.Path(tmp, "sudoers.d/teaport-config")
+    sudoers_file.parent.mkdir()
+    if sudoers:
+        sudoers_file.write_text(f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {pkg_helper} *\n")
+    else:
+        sudoers_file.write_text("alice ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/lib/teaport/config_apply.py *\n")
+    script = (f'OLD_TOOLS_DIR="{old_lib}"; OLD_TOOLS_CLI="{old_cli}"; SUDOERS_FILE="{sudoers_file}"\n'
               f'brain_retire_old_tools_in() {{ :; }}\n')
     # The function names /usr/bin/teaport and /usr/lib/teaport/config_apply.py: point them
     # into the temp tree by running its text through sed.
@@ -846,6 +940,20 @@ def test_the_old_cli_and_helper_go_once_the_packages_are_in_place_and_not_before
     assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
 
 
+def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreign_cli_stays():
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, sudoers=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "does not name the package's config helper" in out and "retiring" not in out, out
+    assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
+    # /usr/local/bin/teaport that is not the old installer's link is somebody's own.
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, cli_is_link=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "is not the pre-package CLI's link" in out, out
+    assert old_cli.read_text().startswith("#!/bin/sh") and not os.path.lexists(old_lib / "releases")
+
+
 TOOLS_STUBS = r'''
 run()  { "$@"; }
 SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; "$@"; }
@@ -858,7 +966,7 @@ DEB_DIR = INSTALL.parent / "packaging/deb"
 
 
 def test_the_maintainer_scripts_parse_and_the_sudoers_writer_refuses_a_bad_user_name():
-    for name in ("postinst", "sudoers-sync"):
+    for name in ("postinst", "postrm", "sudoers-sync"):
         assert subprocess.run(["sh", "-n", str(DEB_DIR / name)]).returncode == 0, name
     # A name that is not a plain login is refused before anything is written, and root
     # (or no unit at all) needs no line.
@@ -872,11 +980,66 @@ def test_postinst_only_configures_and_the_package_ships_what_it_runs():
     p = subprocess.run(["sh", str(DEB_DIR / "postinst"), "abort-upgrade"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr   # anything but `configure` does nothing
     recipe = (INSTALL.parent / "packaging/nfpm.yaml").read_text()
-    assert "postinstall: packaging/deb/postinst" in recipe
+    assert "postinstall: packaging/deb/postinst" in recipe and "postremove: packaging/deb/postrm" in recipe
+    assert "\n  - sudo\n" in recipe   # visudo checks the sudoers line
     assert "dst: /usr/lib/teaport/sudoers-sync" in recipe and "dst: /usr/lib/teaport/config_apply.py" in recipe
     # The unit that restarts it waits for it.
     unit = (INSTALL.parent / "systemd/teaport-brain.service.in").read_text()
     assert "Type=notify" in unit and "ExecStart=@PREFIX@/brain/bin/teaport-brain" in unit
+
+
+
+def _script(tmp, name, replace):
+    """A maintainer script with its absolute paths moved into <tmp>."""
+    text = (DEB_DIR / name).read_text()
+    for old, new in replace:
+        assert old in text, (name, old)
+        text = text.replace(old, new)
+    p = pathlib.Path(tmp, name)
+    p.write_text(text)
+    return p
+
+
+def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_the_package():
+    tmp = tempdir("teaport-postinst-")
+    opt = pathlib.Path(tmp, "opt/teaport")
+    opt.mkdir(parents=True)
+    failing = pathlib.Path(tmp, "sudoers-sync")
+    failing.write_text("#!/bin/sh\nexit 1\n")
+    failing.chmod(0o755)
+    script = _script(tmp, "postinst", [("/usr/lib/teaport/sudoers-sync", str(failing)),
+                                       ("/opt/teaport", str(opt)),
+                                       ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "sudoers line was not written" in p.stderr
+    assert os.path.islink(opt / "venv") and os.readlink(opt / "venv") == str(opt / "brain")
+    # Anything but `configure` does nothing, and a real directory where the link goes stays.
+    (opt / "venv").unlink()
+    (opt / "venv").mkdir()
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0 and (opt / "venv").is_dir() and not os.path.islink(opt / "venv")
+
+
+def test_postrm_takes_the_link_on_remove_and_the_sudoers_line_on_purge_and_nothing_on_upgrade():
+    tmp = tempdir("teaport-postrm-")
+    opt = pathlib.Path(tmp, "opt/teaport")
+    opt.mkdir(parents=True)
+    sudoers = pathlib.Path(tmp, "teaport-config")
+    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers))])
+
+    def run(action, link_to="brain"):
+        if os.path.lexists(opt / "venv"):
+            (opt / "venv").unlink()
+        os.symlink(str(opt / link_to), opt / "venv")
+        sudoers.write_text("line\n")
+        assert subprocess.run(["sh", str(script), action]).returncode == 0
+        return os.path.lexists(opt / "venv"), sudoers.exists()
+    assert run("upgrade") == (True, True)
+    assert run("remove") == (False, True)
+    assert run("purge") == (False, False)
+    # A link that is not the package's own is not ours to remove.
+    assert run("remove", link_to="venvs-x") == (True, True)
 
 
 if __name__ == "__main__":

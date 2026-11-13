@@ -4,9 +4,9 @@
 # Under a Type=notify unit, systemd sets $NOTIFY_SOCKET and holds `systemctl start` /
 # `restart` until the service sends READY=1 on it, failing the start after
 # TimeoutStartSec= if it never does. That turns "did the new brain come up?" into the
-# exit status of the restart itself. Each front-end calls ready() at the point it can
-# serve: gateway_server once uvicorn has bound its port, sip_server once it is connected
-# to the gateway's socket.
+# exit status of the restart itself. gateway_server calls ready() once uvicorn has bound
+# its port (the brain unit's start, Talk and the phone line's front-end in one process);
+# sip_server's standalone entry point calls it once it is connected to the gateway's socket.
 #
 # Everywhere else — a Type=simple unit, a shell, a test — $NOTIFY_SOCKET is unset and
 # ready() does nothing. Not libsystemd or a PyPI package: the protocol is one datagram.

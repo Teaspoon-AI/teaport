@@ -22,7 +22,7 @@
 # (teaport-brain: Talk and the phone line's front-end both live in it) and checks it
 # comes back -- putting the package that was installed before back if it does not. The
 # package carries the venv (/opt/teaport/brain), the teaport CLI and the config page's
-# helper, so a rollback puts all of them back together. No EULA, no system packages, no
+# helper, so a rollback puts all of them back together. No EULA, no system packages beyond its dependencies, no
 # engine download, no credential prompts: engine, agent, front door, bridge and SIP are
 # left as they are.
 # (One exception, once: a box that still has the retired teaport-sip-brain unit has it
@@ -54,7 +54,7 @@
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
-#   TEAPORT_PREFIX         install root (default /opt/teaport)
+#   TEAPORT_PREFIX         install root (default /opt/teaport; the brain package only installs there)
 #   TEAPORT_ETC            non-secret env dir (default /etc/teaport)
 #   TEAPORT_BRAIN_DEB      install the brain from this teaport-brain .deb (default: the manifest's)
 #   TEAPORT_PLUGIN_SRC     install the plugin from this local dir instead of npm
@@ -1180,6 +1180,9 @@ BRAIN_DEB_KEEP=3
 BRAIN_DEB=""          # the file to install (brain_deb_fetch)
 BRAIN_DEB_NEW=""      # its version
 BRAIN_DEB_CACHED=""   # its copy in $BRAIN_DEBS (brain_deb_keep)
+BRAIN_DEB_SHA=""      # its sha256 when the manifest names it (the root copy is checked against it)
+BRAIN_DEB_DOWNLOADED=0  # 1 when BRAIN_DEB is a download of ours: removed once kept
+SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the config page's line (packaging/deb/sudoers-sync)
 # Where the pre-package installer put the CLI and the config helper (retired once the
 # package's are in place: /usr/local/bin precedes /usr/bin on PATH).
 OLD_TOOLS_DIR=/usr/local/lib/teaport
@@ -1189,6 +1192,13 @@ brain_deb_arch() { dpkg --print-architecture; }
 # The installed package's version; empty when it is not installed (or half-configured).
 brain_installed_version() {
   { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } | awk '$1=="installed"{print $2; exit}'
+}
+# The package's version in any state that leaves files on the box, a half-configured one
+# included (a postinst that failed): what --rollback and the cache pruning must not treat as
+# gone. brain_installed_version is only a package that is fully there.
+brain_package_version() {
+  { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } \
+    | awk '$1=="installed"||$1=="half-configured"||$1=="unpacked"||$1=="half-installed"{print $2; exit}'
 }
 brain_deb_path() { printf '%s/%s_%s_%s.deb\n' "$BRAIN_DEBS" "$BRAIN_PKG" "$1" "$(brain_deb_arch)"; }
 
@@ -1213,38 +1223,57 @@ brain_deb_fetch() {
     SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
     run mkdir -p "$STATE/brain-deb"
     BRAIN_DEB="$STATE/brain-deb/$(basename "$url")"
+    BRAIN_DEB_SHA="$(printf '%s' "$sha" | tr 'A-F' 'a-f')" BRAIN_DEB_DOWNLOADED=1
     download "$url" "$BRAIN_DEB" "$sha"
   fi
   if [ ! -f "$BRAIN_DEB" ]; then   # a dry run that did not download
     BRAIN_DEB_NEW="(not downloaded in a dry run)"; return 0
   fi
-  [ "$(dpkg-deb -f "$BRAIN_DEB" Package 2>/dev/null)" = "$BRAIN_PKG" ] || die "$BRAIN_DEB is not a $BRAIN_PKG package"
-  [ "$(dpkg-deb -f "$BRAIN_DEB" Architecture)" = "$(brain_deb_arch)" ] || die "$BRAIN_DEB is for $(dpkg-deb -f "$BRAIN_DEB" Architecture), this machine is $(brain_deb_arch)"
+  brain_deb_verify "$BRAIN_DEB"
   BRAIN_DEB_NEW="$(dpkg-deb -f "$BRAIN_DEB" Version)"
 }
 
+# brain_deb_verify <file> -- dies unless <file> is a $BRAIN_PKG package for this machine.
+brain_deb_verify() {
+  [ "$(dpkg-deb -f "$1" Package 2>/dev/null)" = "$BRAIN_PKG" ] || die "$1 is not a $BRAIN_PKG package"
+  [ "$(dpkg-deb -f "$1" Architecture)" = "$(brain_deb_arch)" ] || die "$1 is for $(dpkg-deb -f "$1" Architecture), this machine is $(brain_deb_arch)"
+}
+
 # brain_deb_keep -- BRAIN_DEB into $BRAIN_DEBS under its canonical name; sets
-# BRAIN_DEB_CACHED. The copy is what apt installs: root's, so it cannot change between the
-# check above and the install.
+# BRAIN_DEB_CACHED. The download directory belongs to the run user (the brain, and what
+# its agent runs), so the file apt installs as root is a root-owned COPY, and it is the
+# copy that is checked: its sha256 against the manifest's, its package fields against the
+# ones read from the original. Nothing the run user does to the original afterwards reaches
+# the install.
 brain_deb_keep() {
   BRAIN_DEB_CACHED="$(brain_deb_path "$BRAIN_DEB_NEW")"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] keep %s as %s\n' "$BRAIN_DEB" "$BRAIN_DEB_CACHED"; return 0; fi
   SUDO install -d -m 0755 -o root -g root "$BRAIN_DEBS"
-  if ! [ "$BRAIN_DEB" -ef "$BRAIN_DEB_CACHED" ]; then SUDO install -m 0644 -o root -g root "$BRAIN_DEB" "$BRAIN_DEB_CACHED"; fi
+  if ! [ "$BRAIN_DEB" -ef "$BRAIN_DEB_CACHED" ]; then
+    local tmp="$BRAIN_DEBS/incoming.partial" ok=1
+    SUDO install -m 0644 -o root -g root "$BRAIN_DEB" "$tmp"
+    if [ -n "$BRAIN_DEB_SHA" ] && [ "$(sha256sum "$tmp" | awk '{print $1}')" != "$BRAIN_DEB_SHA" ]; then
+      warn "the copy of $BRAIN_DEB changed after it was checked (sha256 differs from the manifest's)"; ok=0
+    fi
+    if [ "$ok" = 1 ] && ! ( brain_deb_verify "$tmp" && [ "$(dpkg-deb -f "$tmp" Version)" = "$BRAIN_DEB_NEW" ] ); then ok=0; fi
+    if [ "$ok" != 1 ]; then SUDO rm -f "$tmp"; die "$BRAIN_DEB did not check out when it was copied to $BRAIN_DEBS — nothing was installed"; fi
+    SUDO mv -f "$tmp" "$BRAIN_DEB_CACHED"
+  fi
+  if [ "$BRAIN_DEB_DOWNLOADED" = 1 ]; then rm -f "$BRAIN_DEB" || true; fi
 }
 
 # brain_deb_apply <file> -- apt installs <file>, over any version (--allow-downgrades: a
 # rollback; --reinstall: a repair puts the files back). Its postinst restarts the units;
 # a failure there is a failure here.
 brain_deb_apply() {
-  SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades "$1"
+  SUDO env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y --reinstall --allow-downgrades "$1"
 }
 
 # brain_deb_prune -- keep the newest $BRAIN_DEB_KEEP packages, and the installed one
 # whatever its age. Never fails the run.
 brain_deb_prune() {
   [ "$DRY_RUN" = 1 ] && return 0
-  local cur f n=0; cur="$(brain_installed_version)"
+  local cur f n=0; cur="$(brain_package_version)"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     n=$((n + 1))
@@ -1266,14 +1295,25 @@ brain_sudoers() {
 # the helper link and the CLI link/file. /usr/local/lib/teaport itself stays (the wifi
 # setup keeps its own files there).
 brain_retire_old_tools() {
-  local f found=0
+  local f found=0 target
   for f in "$OLD_TOOLS_CLI" "$OLD_TOOLS_DIR/config_apply.py" "$OLD_TOOLS_DIR/current" "$OLD_TOOLS_DIR/releases"; do
     if [ -e "$f" ] || [ -L "$f" ]; then found=1; fi
   done
   [ "$found" = 1 ] || return 0
   [ -x /usr/bin/teaport ] && [ -f /usr/lib/teaport/config_apply.py ] || { warn "the package's CLI and config helper are not in place — the old ones at $OLD_TOOLS_DIR are left"; return 0; }
+  # The config page's sudoers line must name the package's helper first: with the old
+  # helper gone and the line still naming it, saving a setting would fail.
+  SUDO grep -qs /usr/lib/teaport/config_apply.py "$SUDOERS_FILE" || { warn "$SUDOERS_FILE does not name the package's config helper — the old ones at $OLD_TOOLS_DIR are left"; return 0; }
   log "retiring the pre-package CLI and config helper ($OLD_TOOLS_CLI, $OLD_TOOLS_DIR/{releases,current,config_apply.py}); /usr/bin/teaport is the package's"
-  SUDO rm -rf "$OLD_TOOLS_CLI" "$OLD_TOOLS_DIR/config_apply.py" "$OLD_TOOLS_DIR/current" "$OLD_TOOLS_DIR/releases"
+  SUDO rm -rf "$OLD_TOOLS_DIR/config_apply.py" "$OLD_TOOLS_DIR/current" "$OLD_TOOLS_DIR/releases"
+  # The old CLI was a symlink into those releases. Anything else at that path is the
+  # operator's own (a wrapper, a dev link) and stays.
+  if [ -L "$OLD_TOOLS_CLI" ]; then
+    target="$(readlink "$OLD_TOOLS_CLI" || true)"
+    case "$target" in "$OLD_TOOLS_DIR"/*) SUDO rm -f "$OLD_TOOLS_CLI" ;; *) warn "$OLD_TOOLS_CLI is not the pre-package CLI's link ($target) — left" ;; esac
+  elif [ -e "$OLD_TOOLS_CLI" ]; then
+    warn "$OLD_TOOLS_CLI is not the pre-package CLI's link — left"
+  fi
 }
 
 # brain_render_units -- the units that run brain code, rendered from this checkout: a
@@ -1292,9 +1332,12 @@ brain_render_units() {
 # the run fails; "" = just fail. Used by --only brain and --rollback brain; a full install
 # installs the package in phase_brain and leaves the restart to phase_services.
 brain_swap() {
-  local deb="$1" auto="$2" prev prevdeb="" journal
+  local deb="$1" auto="$2" prev prevdeb="" journal oldvenv=""
   prev="$(brain_installed_version)"
   if [ -n "$prev" ] && [ -f "$(brain_deb_path "$prev")" ]; then prevdeb="$(brain_deb_path "$prev")"; fi
+  # A box still on the pre-package venv: where its link points, before the package's
+  # postinst repoints it (named if the first package does not come up).
+  if [ -z "$prev" ] && [ -L "$PREFIX/venv" ]; then oldvenv="$(readlink "$PREFIX/venv" || true)"; fi
   brain_units
   # shellcheck disable=SC2086  # word lists of unit names
   set -- $SWAP_JUDGE
@@ -1312,8 +1355,7 @@ brain_swap() {
   # prompt although the restart itself never would.
   sudo_ready "install the brain package and restart its units"
   log "teaport-brain ${prev:-(none)} -> $BRAIN_DEB_NEW"
-  if brain_deb_apply "$deb"; then
-    brain_render_units
+  if brain_deb_apply "$deb" && brain_render_units; then
     brain_sudoers
     brain_units
     # shellcheck disable=SC2086
@@ -1321,14 +1363,28 @@ brain_swap() {
     if [ $# = 0 ]; then return 0; fi   # no brain unit to restart: the operator starts it
     if brain_restart "$SWAP_ALSO" "$@"; then log "brain units back up on $BRAIN_DEB_NEW: $*"; return 0; fi
   else
-    warn "installing $deb failed (the package's postinst restarts the brain, and a brain that does not become ready fails it)"
+    warn "installing or configuring $deb failed (the package's postinst restarts the brain, and a brain that does not become ready fails it)"
     FAILED_UNIT=teaport-brain.service
+    # apt that never got as far as the package (dpkg's lock held by an unattended upgrade,
+    # a broken index): the installed package is the one that was there, so nothing changed
+    # and there is nothing to put back. Restarting a healthy brain would only end a Talk
+    # session, and the new package is not at fault.
+    if [ -n "$prev" ] && [ "$(brain_installed_version)" = "$prev" ]; then
+      [ "$deb" = "$prevdeb" ] || SUDO rm -f "$deb" || true
+      die "apt could not install $BRAIN_DEB_NEW and left the box as it was: the brain still runs $prev, and nothing was restarted"
+    fi
   fi
   journal="journalctl -u ${FAILED_UNIT%.service} -n 50"
   if [ "$auto" != --auto-rollback ]; then
     die "the brain did not come back on $BRAIN_DEB_NEW — see: $journal"
   fi
-  [ -n "$prevdeb" ] || die "the brain did not come back on $BRAIN_DEB_NEW, and no earlier package is kept to go back to ($BRAIN_DEBS) — see: $journal"
+  if [ -z "$prevdeb" ]; then
+    local back=""
+    if [ -n "$oldvenv" ]; then
+      back=". The pre-package venv ($oldvenv) is still on the box; to run on it again: sudo ln -sfn $oldvenv $PREFIX/venv && sudo systemctl restart teaport-brain"
+    fi
+    die "the brain did not come back on $BRAIN_DEB_NEW, and no earlier package is kept to go back to ($BRAIN_DEBS)$back — see: $journal"
+  fi
   warn "the brain did not come back on $BRAIN_DEB_NEW — putting ${prev} back"
   sip_brain_restore
   brain_deb_apply "$prevdeb" || true
@@ -1336,6 +1392,11 @@ brain_swap() {
   # shellcheck disable=SC2086
   set -- $SWAP_JUDGE
   if [ $# -gt 0 ] && brain_restart "$SWAP_ALSO" "$@"; then
+    if [ "$deb" = "$prevdeb" ]; then
+      # The same version reinstalled (a repair) and it failed: the installed package and the
+      # rollback target are one file, which stays.
+      die "the brain did not come back on the reinstall of $prev; it runs on $prev again — see: $journal"
+    fi
     # The package that failed is not a rollback target: out of the cache, or the next
     # --rollback would pick it as the newest. The file it came from stays.
     SUDO rm -f "$deb" || true
@@ -3243,7 +3304,7 @@ main_brain_only() {
 main_rollback_brain() {
   log "teaport installer — brain rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
   local cur target f
-  cur="$(brain_installed_version)"
+  cur="$(brain_package_version)"
   [ -n "$cur" ] || die "$BRAIN_PKG is not installed — there is nothing to roll back"
   target=""
   while IFS= read -r f; do
