@@ -235,8 +235,8 @@ def test_the_real_model_hears_speech_at_8k():
 
 
 def test_the_install_selfcheck_runs_the_narrowband_analyzer():
-    # selfcheck is install.sh's gate before a venv goes live: it must run the 8 kHz path
-    # too, so a pipecat bump that breaks the swap fails the install, not the phone.
+    # selfcheck is CI's brain-deb gate on the built package: it must run the 8 kHz path
+    # too, so a pipecat bump that breaks it fails the build, not the phone.
     from teaport_brain import selfcheck
     selfcheck._install_onnx_sessions()
     selfcheck._check_narrowband_vad()

@@ -46,7 +46,7 @@ you to do depends on whose venv it is, because a sync into the wrong one does da
 
 - **brain/.venv, or another venv of this project's:** the `uv sync` that puts it
   right, with `UV_PROJECT_ENVIRONMENT=<venv>` for the other, and `--no-editable` when
-  its teaport-brain was installed that way (CI's install, and install.sh's).
+  its teaport-brain was installed that way (CI's install, and build-deb.sh's).
 - **An installed brain** (the install prefix's own `brain/` or its `venv` link, under
   `/opt/teaport` or `$TEAPORT_PREFIX`): `teaport doctor` (which runs `dpkg -V`), never a
   sync. One would make teaport-brain editable against your checkout and add the dev

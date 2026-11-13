@@ -196,7 +196,7 @@ def test_another_checkouts_venv_is_not_re_pointed_here():
 
 
 def test_a_no_editable_venv_is_synced_no_editable():
-    # CI's install, and install.sh's: a sync that dropped the flag would leave teaport-brain
+    # CI's install, and build-deb.sh's: a sync that dropped the flag would leave teaport-brain
     # an editable .pth into this checkout.
     brain = _checkout()
     line = _line(brain, _venv(*STALE, cfg=PROJECT_CFG, editable=False))

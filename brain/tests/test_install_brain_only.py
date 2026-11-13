@@ -968,6 +968,7 @@ def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreig
 TOOLS_STUBS = r'''
 run()  { "$@"; }
 SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; "$@"; }
+systemctl() { [ "$1" = is-active ] && [ "${BRAIN_STOPPED:-0}" = 0 ]; }   # the brain unit is running
 '''
 
 
@@ -1008,6 +1009,25 @@ def test_the_old_venvs_go_once_the_packages_brain_is_in_place_and_not_before():
     rc, out = _run(tmp, TOOLS_STUBS + script)
     assert rc == 0 and "WARN the package's brain is not in place" in out, out
     assert os.path.lexists(prefix / "venvs") and os.path.lexists(prefix / "venv.pre-uv")
+
+
+def test_the_old_venvs_stay_while_the_brain_is_not_running_and_on_a_dry_run():
+    # A stopped brain (brain_swap restarts nothing then) has not shown the package works.
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp)
+    rc, out = _run(tmp, TOOLS_STUBS + "BRAIN_STOPPED=1\n" + script)
+    assert rc == 0 and "WARN teaport-brain is not running" in out and "removing" not in out, out
+    assert os.path.lexists(prefix / "venvs") and os.path.lexists(prefix / "venv.pre-uv")
+    # and once it runs, the next run takes them
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "removing the pre-package brain venvs" in out, out
+    assert not os.path.lexists(prefix / "venvs")
+    # A dry run says what it would do, not that the package is missing, and removes nothing.
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, package_in_place=False)
+    rc, out = _run(tmp, TOOLS_STUBS + "DRY_RUN=1\n" + script)
+    assert rc == 0 and "[dry-run] would remove the pre-package brain venvs" in out and "WARN" not in out, out
+    assert os.path.lexists(prefix / "venvs")
 
 
 def test_a_venv_directory_where_the_link_belongs_is_named_and_left():
@@ -1075,12 +1095,19 @@ def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_th
     failing = pathlib.Path(tmp, "sudoers-sync")
     failing.write_text("#!/bin/sh\nexit 1\n")
     failing.chmod(0o755)
+    old_cli = pathlib.Path(tmp, "usr-local-bin-teaport")
     script = _script(tmp, "postinst", [("/usr/lib/teaport/sudoers-sync", str(failing)),
+                                       ("/usr/local/bin/teaport", str(old_cli)),
                                        ("/opt/teaport", str(opt)),
                                        ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert "sudoers line was not written" in p.stderr
+    assert "shadows" not in p.stderr   # no old CLI: nothing to say
+    old_cli.write_text("#!/bin/sh\n")
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0 and "shadows the package's /usr/bin/teaport" in p.stderr, p.stderr
+    old_cli.unlink()
     assert os.path.islink(opt / "venv") and os.readlink(opt / "venv") == str(opt / "brain")
     # Anything but `configure` does nothing, and a real directory where the link goes stays.
     (opt / "venv").unlink()

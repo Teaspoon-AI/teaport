@@ -1320,18 +1320,27 @@ brain_retire_old_tools() {
 
 # brain_retire_old_venvs -- the pre-package brain venvs (each a few GB), once the package's
 # brain has come back: $PREFIX/venvs/*, the rollback link venv.previous and the pip-era
-# venv.pre-uv. A rollback now means a cached package, so nothing returns to them.
-# $PREFIX/venv itself stays: the package's link for a path older units and scripts name.
+# venv.pre-uv. A rollback now means a cached package, so nothing returns to them. "Come
+# back" is checked, not assumed: a brain the operator stopped (brain_swap restarts nothing
+# then) has not shown that the package runs, and on a first migration these venvs are the
+# only way back. $PREFIX/venv itself stays: the package's link for a path older units and
+# scripts name.
 brain_retire_old_venvs() {
   local f found=0
   for f in "$PREFIX/venvs" "$PREFIX/venv.previous" "$PREFIX/venv.pre-uv"; do
     if [ -e "$f" ] || [ -L "$f" ]; then found=1; fi
   done
   if [ -d "$PREFIX/venv" ] && [ ! -L "$PREFIX/venv" ]; then
-    warn "$PREFIX/venv is a directory, not the package's link — an old venv; remove it if nothing uses it"
+    warn "$PREFIX/venv is a directory, not the package's link — an old venv; if nothing uses it, remove it (sudo rm -rf $PREFIX/venv) and the package's next install puts the link there"
   fi
   [ "$found" = 1 ] || return 0
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    log "[dry-run] would remove the pre-package brain venvs ($PREFIX/{venvs,venv.previous,venv.pre-uv}) once the package's brain is running"
+    return 0
+  fi
   [ -x "$PREFIX/brain/bin/teaport-brain" ] || { warn "the package's brain is not in place — the old venvs under $PREFIX are left"; return 0; }
+  systemctl is-active --quiet teaport-brain.service \
+    || { warn "teaport-brain is not running, so the package's brain has not shown it works — the old venvs under $PREFIX are left; run the installer again once it is up"; return 0; }
   log "removing the pre-package brain venvs ($PREFIX/{venvs,venv.previous,venv.pre-uv}); the package's brain is $PREFIX/brain"
   SUDO rm -rf "$PREFIX/venvs" "$PREFIX/venv.previous" "$PREFIX/venv.pre-uv"
 }

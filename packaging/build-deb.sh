@@ -155,7 +155,9 @@ git -C "$REPO" ls-files -z -co --exclude-standard -- "${SRC_PATHS[@]}" \
   | tar -C "$REPO" --null -T - -cf - | tar -C "$SRC" -xf -
 
 # --- venv ----------------------------------------------------------------------
-# The flags install.sh's brain_stage uses, for the same reasons (see there), plus:
+# --locked (fail when brain/uv.lock is stale against pyproject.toml, never a fresh resolve),
+# --no-editable (the built teaport-brain, not a .pth into a source tree) and --link-mode
+# copy (files of the venv's own, not links into uv's cache), plus:
 #   --compile-bytecode    ship the .pyc files. The installed tree is root-owned, so the
 #                         brain's user could never write a __pycache__ into it: without
 #                         them, every start would recompile all of pipecat in memory.
