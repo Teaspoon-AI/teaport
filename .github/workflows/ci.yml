@@ -70,12 +70,13 @@ jobs:
       - name: Brain self-check (what the brain-deb job runs against the built package)
         # The same gate the brain-deb job applies to the built package: import both
         # front-ends and push audio through Silero VAD + Smart Turn v3, the compiled
-        # extensions (onnxruntime, loudness) a numpy major would break. Here it runs on
-        # the aarch64 leg too, so a lock bump that breaks them on arm fails in CI rather
-        # than in the package build (where it would be caught, but only then).
+        # extensions (onnxruntime, loudness) a numpy major would break. brain-deb builds
+        # on the arm runner only; this step runs on both legs, so it is also what checks
+        # the x86 wheels of the lock.
         # In a venv of its own built the way build-deb.sh builds one — --no-dev, not the
         # dev-group venv above — and run from /, so nothing the tests need, and no
-        # teaport_brain/ from the checkout, can make it pass here and fail on the box. `uv run` would re-sync the project venv instead.
+        # teaport_brain/ from the checkout, can make it pass here and fail on the box.
+        # `uv run` would re-sync the project venv instead.
         run: |
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/brain-prod" \
             uv sync --locked --no-editable --no-dev --project brain

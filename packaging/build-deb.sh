@@ -32,7 +32,7 @@ set -euo pipefail
 BASE_VERSION="0.1.0"
 DEST=/opt/teaport/brain
 PY=/usr/bin/python3.12
-UV_VERSION="0.9.24"   # the same uv install.sh and CI's brain job pin
+UV_VERSION="0.9.24"   # the same uv CI's brain job pins (pip install uv== in ci.yml)
 NFPM_VERSION="2.47.0"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

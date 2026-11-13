@@ -1302,6 +1302,10 @@ brain_retire_old_tools() {
     if [ -e "$f" ] || [ -L "$f" ]; then found=1; fi
   done
   [ "$found" = 1 ] || return 0
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    printf '  [dry-run] retire the pre-package CLI and config helper (%s, %s/{releases,current,config_apply.py}) once the package'"'"'s are in place and the brain is back\n' "$OLD_TOOLS_CLI" "$OLD_TOOLS_DIR"
+    return 0
+  fi
   [ -x /usr/bin/teaport ] && [ -f /usr/lib/teaport/config_apply.py ] || { warn "the package's CLI and config helper are not in place — the old ones at $OLD_TOOLS_DIR are left"; return 0; }
   # The config page's sudoers line must name the package's helper first: with the old
   # helper gone and the line still naming it, saving a setting would fail.
@@ -1335,7 +1339,7 @@ brain_retire_old_venvs() {
   fi
   [ "$found" = 1 ] || return 0
   if [ "${DRY_RUN:-0}" = 1 ]; then
-    log "[dry-run] would remove the pre-package brain venvs ($PREFIX/{venvs,venv.previous,venv.pre-uv}) once the package's brain is running"
+    printf '  [dry-run] remove the pre-package brain venvs (%s/{venvs,venv.previous,venv.pre-uv}) once the package'"'"'s brain is running\n' "$PREFIX"
     return 0
   fi
   [ -x "$PREFIX/brain/bin/teaport-brain" ] || { warn "the package's brain is not in place — the old venvs under $PREFIX are left"; return 0; }

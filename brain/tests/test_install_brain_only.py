@@ -951,6 +951,14 @@ def test_the_old_cli_and_helper_go_once_the_packages_are_in_place_and_not_before
     assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
 
 
+def test_a_dry_run_says_what_it_would_retire_and_touches_nothing():
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, package_in_place=False)   # a first run: nothing installed yet
+    rc, out = _run(tmp, TOOLS_STUBS + "DRY_RUN=1\n" + script)
+    assert rc == 0 and "[dry-run] retire the pre-package CLI and config helper" in out and "WARN" not in out, out
+    assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
+
+
 def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreign_cli_stays():
     tmp = tempdir("teaport-retire-")
     old_lib, old_cli, script = _old_tools(tmp, sudoers=False)
@@ -1026,7 +1034,7 @@ def test_the_old_venvs_stay_while_the_brain_is_not_running_and_on_a_dry_run():
     tmp = tempdir("teaport-retire-venvs-")
     prefix, script = _old_venvs(tmp, package_in_place=False)
     rc, out = _run(tmp, TOOLS_STUBS + "DRY_RUN=1\n" + script)
-    assert rc == 0 and "[dry-run] would remove the pre-package brain venvs" in out and "WARN" not in out, out
+    assert rc == 0 and "[dry-run] remove the pre-package brain venvs" in out and "WARN" not in out, out
     assert os.path.lexists(prefix / "venvs")
 
 
