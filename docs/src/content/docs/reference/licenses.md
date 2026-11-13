@@ -24,7 +24,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:61-66,84-100#85615cdf; packaging/deb/copyright:6-33#5f81607f; THIRD_PARTY_LICENSES.md:73-76#b337588f; install.sh:82,521,844#228177a9 -->
+<!-- source: packaging/nfpm.yaml:61-66,84-100#85615cdf; packaging/deb/copyright:6-33#5f81607f; THIRD_PARTY_LICENSES.md:77-80#079adf2d; install.sh:82,521,844#228177a9 -->
 
 ## The engine's license
 
@@ -36,11 +36,11 @@ The engine is a separate component with its own license terms. The installer sho
 
 Two libraries in the brain package are under the GNU Lesser General Public License (LGPL) 2.1 or later: soxr, which resamples audio, and libsndfile, which reads and writes audio files. The package contains both unmodified. soxr links libsoxr into its Python extension, and libsndfile is a shared object in the soundfile package.
 
-<!-- source: THIRD_PARTY_LICENSES.md:56-72,84-88#320a906e -->
+<!-- source: THIRD_PARTY_LICENSES.md:56-75,88-90#193badec -->
 
 You can replace either library. The source of the exact versions in the brain package is in the source distributions on PyPI and in the upstream projects: [soxr](https://github.com/dofuuz/python-soxr), [libsndfile](https://github.com/libsndfile/libsndfile), and [soundfile](https://github.com/bastibe/python-soundfile). Replacing a file in `/opt/teaport/brain` shows up in `teaport doctor` as a changed file, and the next install of the package restores the shipped one. The [third-party licenses file](https://github.com/Teaspoon-AI/teaport/blob/main/THIRD_PARTY_LICENSES.md) in the repository describes how to replace each library and how to keep a replacement.
 
-<!-- source: THIRD_PARTY_LICENSES.md:77-94#622a30fa -->
+<!-- source: THIRD_PARTY_LICENSES.md:81-99#c0cedd6f -->
 
 ## What's next
 

@@ -1001,7 +1001,7 @@ def test_postinst_only_configures_and_the_package_ships_what_it_runs():
     assert copyright_text.startswith("Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/")
     assert "Permission is hereby granted" in copyright_text and "LGPL-2.1-or-later" in copyright_text
     licenses = (INSTALL.parent / "THIRD_PARTY_LICENSES.md").read_text()
-    assert "hello@teaspoon.tech" in licenses and "never** be frozen or bundled into a single **closed**" in licenses
+    assert "stefano@teaspoon.tech" in licenses and "never frozen or bundled into a single closed binary" in licenses
     assert "dst: /usr/lib/teaport/sudoers-sync" in recipe and "dst: /usr/lib/teaport/config_apply.py" in recipe
     # The unit that restarts it waits for it.
     unit = (INSTALL.parent / "systemd/teaport-brain.service.in").read_text()

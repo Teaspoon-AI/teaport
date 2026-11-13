@@ -16,7 +16,7 @@ version: ${TEAPORT_DEB_VERSION}
 version_schema: none
 section: misc
 priority: optional
-maintainer: Teaspoon AI <hello@teaspoon.tech>
+maintainer: Teaspoon AI <stefano@teaspoon.tech>
 vendor: Teaspoon AI
 homepage: https://github.com/Teaspoon-AI/teaport
 license: MIT
