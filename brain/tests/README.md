@@ -32,8 +32,8 @@ over the file), and all three name 3.12 too.
 
 **The suite checks the venv before it runs anything.** `conftest.py` compares the
 running venv with `uv.lock` (`locked_venv.py`: what `uv sync --locked` installs on
-this interpreter, dev group included, diffed by `teaport_brain.lockcheck`, the code
-behind `teaport doctor`'s drift check). A package missing, at another version or
+this interpreter, dev group included, diffed against the venv's dist-info records by
+`locked_venv.drift`). A package missing, at another version or
 recorded twice stops the run with one line:
 
 ```
@@ -47,10 +47,10 @@ you to do depends on whose venv it is, because a sync into the wrong one does da
 - **brain/.venv, or another venv of this project's:** the `uv sync` that puts it
   right, with `UV_PROJECT_ENVIRONMENT=<venv>` for the other, and `--no-editable` when
   its teaport-brain was installed that way (CI's install, and install.sh's).
-- **An installed brain** (a `teaport-build.json` beside it, or the install prefix's
-  own `brain/`, `venv` or `venvs/<release>`, under `/opt/teaport` or
-  `$TEAPORT_PREFIX`): `teaport doctor`, never a sync. One would make teaport-brain editable against your
-  checkout and add the dev group to the box's venv.
+- **An installed brain** (the install prefix's own `brain/` or its `venv` link, under
+  `/opt/teaport` or `$TEAPORT_PREFIX`): `teaport doctor` (which runs `dpkg -V`), never a
+  sync. One would make teaport-brain editable against your checkout and add the dev
+  group to the package's tree.
 - **Anyone else's** (pipx's pytest, another project's): run the suite in the
   project's own, `uv run --locked --project brain python -m pytest brain/tests/test_suite.py`.
 

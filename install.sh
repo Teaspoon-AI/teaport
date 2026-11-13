@@ -31,8 +31,8 @@
 # A full install installs the same package, then -- once every unit and env file is
 # written -- restarts the engine and the brain in one step and checks them. No automatic
 # rollback there, since a full run changes far more than the brain (`--rollback brain`
-# still works). The first package is the oldest a box can go back to: a box that still has
-# the pre-package venv under /opt/teaport/venvs has no earlier package.
+# still works). The first package is the oldest a box can go back to: once the package's
+# brain is up, the pre-package venvs under /opt/teaport are removed (brain_retire_old_venvs).
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
@@ -1072,7 +1072,7 @@ check_brain_source() {
 # SWAP_JUDGE, the brain processes whose health decides the swap, and SWAP_ALSO, units
 # restarted with them but never judged. Only brain processes are judged: this path
 # deploys the brain, and a failure anywhere else is not something swapping the brain
-# back can fix — blaming it on the brain rolled good venvs back.
+# back can fix — blaming it on the brain rolled good packages back.
 #   teaport-brain: when it is active OR enabled. Enabled catches a brain crash-looping at
 #     update time ("activating (auto-restart)", not active) — the run most likely to be
 #     fixing it. Active catches one running although disabled (teaport-engine Upholds= it).
@@ -1316,6 +1316,24 @@ brain_retire_old_tools() {
   elif [ -e "$OLD_TOOLS_CLI" ]; then
     warn "$OLD_TOOLS_CLI is not the pre-package CLI's link — left"
   fi
+}
+
+# brain_retire_old_venvs -- the pre-package brain venvs (each a few GB), once the package's
+# brain has come back: $PREFIX/venvs/*, the rollback link venv.previous and the pip-era
+# venv.pre-uv. A rollback now means a cached package, so nothing returns to them.
+# $PREFIX/venv itself stays: the package's link for a path older units and scripts name.
+brain_retire_old_venvs() {
+  local f found=0
+  for f in "$PREFIX/venvs" "$PREFIX/venv.previous" "$PREFIX/venv.pre-uv"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then found=1; fi
+  done
+  if [ -d "$PREFIX/venv" ] && [ ! -L "$PREFIX/venv" ]; then
+    warn "$PREFIX/venv is a directory, not the package's link — an old venv; remove it if nothing uses it"
+  fi
+  [ "$found" = 1 ] || return 0
+  [ -x "$PREFIX/brain/bin/teaport-brain" ] || { warn "the package's brain is not in place — the old venvs under $PREFIX are left"; return 0; }
+  log "removing the pre-package brain venvs ($PREFIX/{venvs,venv.previous,venv.pre-uv}); the package's brain is $PREFIX/brain"
+  SUDO rm -rf "$PREFIX/venvs" "$PREFIX/venv.previous" "$PREFIX/venv.pre-uv"
 }
 
 # brain_render_units -- the units that run brain code, rendered from this checkout: a
@@ -2583,6 +2601,7 @@ phase_services() {
   SUDO systemctl restart teaport-engine.service teaport-brain.service
   brain_deb_prune
   brain_retire_old_tools
+  brain_retire_old_venvs
   if [ -n "$SANDBOX" ]; then SUDO systemctl enable --now teaport-sandbox-recover.service; fi
   brain_sudoers
 }
@@ -3295,6 +3314,7 @@ main_brain_only() {
   brain_swap "$BRAIN_DEB_CACHED" --auto-rollback
   sip_brain_retire
   brain_retire_old_tools
+  brain_retire_old_venvs
   install_busy_lamp   # only now: the swap has been verified
   install_dns_resilience
   install_arp_multihome

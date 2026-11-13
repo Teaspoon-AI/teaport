@@ -7,7 +7,7 @@
 # package the lock does not have is reported without stopping the run (review round 1).
 #
 # The locks here are small hand-written ones in uv.lock's shape; the venvs are fake ones,
-# a pyvenv.cfg and a site-packages of dist-info records, as in test_lockcheck.py.
+# a pyvenv.cfg and a site-packages of dist-info records, as in test_installed_packages.py.
 #
 # Run: python test_locked_venv.py   (or via pytest test_suite.py)
 #
@@ -21,8 +21,7 @@ import appliance
 import locked_venv
 from tempdirs import tempdir
 
-# A tests/ copied away from its checkout has no uv.lock and no teaport_brain/lockcheck.py
-# beside it: nothing here can run, and the conftest checks nothing (#220 review).
+# A tests/ copied away from its checkout has no uv.lock beside it: nothing here can run, and the conftest checks nothing (#220 review).
 AWAY = locked_venv.check() is None
 if AWAY and "pytest" in sys.modules:
     import pytest
@@ -85,10 +84,10 @@ def _records(site, *records):
     return site
 
 
-def _venv(*records, at=None, cfg="include-system-site-packages = false\n", build_record=False,
+def _venv(*records, at=None, cfg="include-system-site-packages = false\n",
           editable=None, record=None, pth=None):
-    """A venv: its pyvenv.cfg, <records> in its site-packages, and as asked, an install's
-    build record and teaport-brain's PEP 610 record (<editable>, or <record>'s raw text)
+    """A venv: its pyvenv.cfg, <records> in its site-packages, and as asked, teaport-brain's
+    PEP 610 record (<editable>, or <record>'s raw text)
     and editable .pth (<pth>, which defaults to what <editable> says)."""
     venv = at or tempdir("teaport-locked-venv-")
     site = locked_venv.site_dirs(venv)[0]
@@ -96,9 +95,6 @@ def _venv(*records, at=None, cfg="include-system-site-packages = false\n", build
     with open(os.path.join(venv, "pyvenv.cfg"), "w") as f:
         f.write(cfg)
     _records(site, *records)
-    if build_record:
-        with open(os.path.join(venv, "teaport-build.json"), "w") as f:
-            f.write("{}")
     if editable is not None:
         record = json.dumps({"url": "file:///src/brain", "dir_info": {"editable": editable}})
     if record is not None:
@@ -210,14 +206,14 @@ def test_a_no_editable_venv_is_synced_no_editable():
 
 
 def test_an_installed_brain_is_pointed_at_teaport_doctor_not_synced():
-    # What an appliance venv looks like with pytest added by hand: --no-dev, --no-editable,
-    # a build record. A sync into it would make teaport-brain editable against this
-    # checkout and add the dev group.
+    # What the package's tree looks like with pytest added by hand: --no-dev, --no-editable.
+    # A sync into it would make teaport-brain editable against this checkout and add the
+    # dev group.
     brain = _checkout()
     box = (("teaport_brain", "0.0.0"), ("h2", "4.4.1"), ("numpy", "2.1.0"), ("pytest", "8.0.0"),
            ("vaderSentiment", "3.3.2"))
-    lines = [_line(brain, _venv(*box, cfg=PROJECT_CFG, build_record=True, editable=False))]
-    # The .deb's venv, /opt/teaport/brain, has no build record: under the install prefix.
+    lines = []
+    # The .deb's venv, /opt/teaport/brain: under the install prefix.
     prefix = tempdir("teaport-locked-opt-")
     saved = os.environ.get("TEAPORT_PREFIX")
     os.environ["TEAPORT_PREFIX"] = prefix
@@ -341,21 +337,19 @@ def test_an_installed_brain_is_the_install_prefixs_own_venv_not_anything_under_i
     saved, locked_venv.INSTALL_PREFIX = locked_venv.INSTALL_PREFIX, opt
     cwd = os.getcwd()
     try:
-        deb = _venv(*box, at=os.path.join(opt, "brain"))   # the .deb's: no build record
-        old = _venv(*box, at=os.path.join(opt, "venvs", "20261001-000000-aaaa"))
-        new = _venv(*box, at=os.path.join(opt, "venvs", "20261101-000000-bbbb"))
-        os.symlink(new, os.path.join(opt, "venv"))   # install.sh's link to the live release
-        ours = _venv(*box, at=os.path.join(other, "venvs", "20261101-000000-cccc"))
+        deb = _venv(*box, at=os.path.join(opt, "brain"))   # the .deb's
+        os.symlink(deb, os.path.join(opt, "venv"))   # the package's link to it
+        ours = _venv(*box, at=os.path.join(other, "brain"))
         dev = _venv(*box, at=os.path.join(home, "src", "teaport", "brain", ".venv"))
         os.chdir(home)
         cwd_brain = _venv(*box, at=os.path.join(home, "brain"))
         for prefix in (None, ""):   # unset and empty are the default, as for install.sh
             with _Env(TEAPORT_PREFIX=prefix):
-                assert [locked_venv._installed(v) for v in (deb, old, os.path.join(opt, "venv"))] == \
-                    [True] * 3
+                assert [locked_venv._installed(v) for v in (deb, os.path.join(opt, "venv"))] == \
+                    [True] * 2
                 assert not locked_venv._installed(cwd_brain) and not locked_venv._installed(ours)
         with _Env(TEAPORT_PREFIX=other):
-            # Another prefix's own releases, and still the .deb's tree.
+            # Another prefix's own brain, and still the .deb's tree.
             assert locked_venv._installed(ours) and locked_venv._installed(deb)
         with _Env(TEAPORT_PREFIX=home):
             # A prefix above a developer's checkout does not make its venv an install.

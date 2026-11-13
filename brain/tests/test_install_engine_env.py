@@ -35,6 +35,7 @@ resolve_gateway_token() { GATEWAY_TOKEN=tok; }
 render_unit() { :; }
 brain_deb_prune() { :; }
 brain_retire_old_tools() { :; }
+brain_retire_old_venvs() { :; }
 brain_sudoers() { :; }
 sudo() { "$@"; }
 SUDO() { case "$1" in tee) command tee "$2" ;; mkdir|chmod) "$@" ;; *) : ;; esac; }

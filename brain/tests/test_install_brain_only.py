@@ -184,7 +184,7 @@ ONLY_BRAIN_STUBS = r'''
 BRAIN_DEB_CACHED=/cache/x.deb BRAIN_DEB_NEW=2.0
 systemctl() { [ "$1" = cat ] && [ "${NO_UNIT:-0}" = 0 ]; }   # the brain unit is installed
 for f in check_brain_source brain_deb_fetch brain_deb_keep sip_brain_detach brain_swap sip_brain_retire \
-         brain_retire_old_tools install_busy_lamp install_dns_resilience install_arp_multihome \
+         brain_retire_old_tools brain_retire_old_venvs install_busy_lamp install_dns_resilience install_arp_multihome \
          brain_deb_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
@@ -236,7 +236,8 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     assert rc == 0, out
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
     assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "sip_brain_detach",
-                     "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "install_busy_lamp",
+                     "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
+                     "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
 
 
@@ -968,6 +969,53 @@ TOOLS_STUBS = r'''
 run()  { "$@"; }
 SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; "$@"; }
 '''
+
+
+# --- retiring the pre-package venvs ----------------------------------------------------
+
+def _old_venvs(tmp, package_in_place=True, venv_is_dir=False):
+    prefix = pathlib.Path(tmp, "opt/teaport")
+    (prefix / "venvs/20260901-aaa/bin").mkdir(parents=True)
+    (prefix / "venvs/20260901-aaa/bin/python").write_text("old\n")
+    (prefix / "venv.previous").symlink_to("venvs/20260901-aaa")
+    (prefix / "venv.pre-uv/bin").mkdir(parents=True)
+    (prefix / "engine").mkdir()
+    (prefix / "engine/teagram-engine").write_text("not ours to remove\n")
+    if venv_is_dir:
+        (prefix / "venv").mkdir()
+    else:
+        (prefix / "venv").symlink_to("brain")
+    if package_in_place:
+        (prefix / "brain/bin").mkdir(parents=True)
+        (prefix / "brain/bin/teaport-brain").write_text("new\n")
+        (prefix / "brain/bin/teaport-brain").chmod(0o755)
+    return prefix, f'PREFIX="{prefix}"\n' + _fn("brain_retire_old_venvs") + "brain_retire_old_venvs\n"
+
+
+def test_the_old_venvs_go_once_the_packages_brain_is_in_place_and_not_before():
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "removing the pre-package brain venvs" in out, out
+    for gone in ("venvs", "venv.previous", "venv.pre-uv"):
+        assert not os.path.lexists(prefix / gone), gone
+    assert os.path.islink(prefix / "venv") and (prefix / "brain/bin/teaport-brain").exists()   # the package's
+    assert (prefix / "engine/teagram-engine").exists()   # nothing else under the prefix
+    rc, out = _run(tmp, TOOLS_STUBS + script)   # again: nothing left, nothing said
+    assert rc == 0 and "removing" not in out, out
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, package_in_place=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "WARN the package's brain is not in place" in out, out
+    assert os.path.lexists(prefix / "venvs") and os.path.lexists(prefix / "venv.pre-uv")
+
+
+def test_a_venv_directory_where_the_link_belongs_is_named_and_left():
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, venv_is_dir=True)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "is a directory, not the package's link" in out, out
+    assert os.path.isdir(prefix / "venv") and not os.path.islink(prefix / "venv")
 
 
 # --- the package's own scripts ---------------------------------------------------------

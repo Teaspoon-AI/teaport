@@ -11,8 +11,8 @@
 # "What the lock installs" is what `uv sync --locked` puts in a venv on this interpreter:
 # the project, the packages reachable from it along the edges whose markers hold here,
 # the extras those edges ask for, and the dependency groups uv syncs by default (dev, for
-# the locked pytest). lockcheck.drift compares that with the venv's site-packages, by the
-# name normalization `teaport doctor` uses. A package missing, at another version, or
+# the locked pytest). drift() compares that with the venv's site-packages, by dist-info
+# record, normalizing names as pip does. A package missing, at another version, or
 # recorded twice stops the run. One the lock does not have is only reported: a debugger
 # a developer added does not change what the tests test, and the one way past a stop
 # would be a sync that deletes it. Versions only: an editable and a --no-editable (CI's)
@@ -25,17 +25,16 @@
 #     adds, at whatever version, is the run's own choice. Only an overlay adds: with none,
 #     a PYTHONPATH entry or the system's site-packages never stands in for a locked
 #     package the venv lacks.
-#   - An installed brain (a teaport-build.json beside it, or the install prefix's own
-#     brain/, venv or venvs/<release>) is never synced into: `teaport doctor` checks it
-#     against its own build record, and a sync would make teaport-brain editable against
-#     this checkout and add the dev group, the failure install.sh's --no-editable exists
-#     to prevent.
+#   - An installed brain (the install prefix's own brain/, the .deb's tree, or the venv
+#     link to it) is never synced into: `teaport doctor` checks the package against its
+#     own file list (dpkg -V), and a sync would make teaport-brain editable against this
+#     checkout and add the dev group, which dpkg would then report as damage.
 #   - A venv of this project's keeps how its teaport-brain was installed (--no-editable).
 #   - Any other venv (pipx's pytest, another project's) is not this suite's to change:
 #     the line says to run the suite in the project's own, through `uv run`.
 #
 import glob
-import importlib.util
+import importlib.metadata as md
 import json
 import os
 import re
@@ -52,19 +51,38 @@ from packaging.markers import Marker  # pytest's own dependency, so it is here w
 BRAIN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 LOCK = os.path.join(BRAIN, "uv.lock")
 PYPROJECT = os.path.join(BRAIN, "pyproject.toml")
-LOCKCHECK = os.path.join(BRAIN, "teaport_brain", "lockcheck.py")
 SUITE = os.path.join(BRAIN, "tests", "test_suite.py")
-# Where install.sh and the .deb put the brain: ${TEAPORT_PREFIX:-/opt/teaport} in both.
+# Where the .deb puts the brain (install.sh's ${TEAPORT_PREFIX:-/opt/teaport} is the same).
 INSTALL_PREFIX = "/opt/teaport"
 
 
-def _lockcheck():
-    # Loaded from the checkout by path, not imported from teaport_brain: a venv that lacks
-    # the project itself is one of the states this reports, and lockcheck is stdlib only.
-    spec = importlib.util.spec_from_file_location("_teaport_lockcheck", LOCKCHECK)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def installed(path: list[str] | None = None) -> dict[str, str]:
+    # A dist-info with no Name — what an interrupted `pip install` can leave behind — is
+    # itself drift: listed under its path rather than crashing the check that exists to
+    # report exactly that kind of damage. So are two records of one package, which a
+    # half-finished upgrade leaves (the new version's dist-info beside the old one's):
+    # every version found is kept, joined with " + ", so neither passes for the lock's.
+    # One record reached twice (its dir on the path twice, or through a link) is one.
+    found: dict[str, list[str]] = {}
+    seen = set()
+    for d in md.distributions(path=sys.path if path is None else path):
+        where = getattr(d, "_path", None)
+        if where is not None:
+            if os.path.realpath(where) in seen:
+                continue
+            seen.add(os.path.realpath(where))
+        name = d.metadata.get("Name")
+        key = re.sub(r"[-_.]+", "-", name).lower() if name else f"?broken:{where or '?'}"
+        found.setdefault(key, []).append(d.version if name else "?")
+    return {k: " + ".join(sorted(v)) for k, v in found.items()}
+
+
+def drift(want: dict[str, str], path: list[str] | None = None) -> list[str]:
+    have = installed(path)
+    out = [f"{n} {want[n]} -> {have[n]}" for n in sorted(want.keys() & have.keys()) if want[n] != have[n]]
+    out += [f"+{n} {have[n]}" for n in sorted(have.keys() - want.keys())]
+    out += [f"-{n} {want[n]}" for n in sorted(want.keys() - have.keys())]
+    return out
 
 
 @cache
@@ -162,18 +180,15 @@ def _source(dirs: list[str]) -> str | None:
 
 
 def _installed(venv: str) -> bool:
-    """Whether <venv> is an installed brain's: one with a build record (install.sh's), or
-    the install prefix's own brain/ (the .deb's), venv (install.sh's link) or a release in
-    its venvs/. Not anything under the prefix: a developer's checkout can be. Empty
-    TEAPORT_PREFIX is the default, as for install.sh, and /opt/teaport counts whatever
-    TEAPORT_PREFIX says, since the .deb always installs there (review round 2)."""
-    if os.path.isfile(os.path.join(venv, "teaport-build.json")):
-        return True
+    """Whether <venv> is an installed brain's: the install prefix's own brain/ (the .deb's)
+    or venv (the package's link to it). Not anything under the prefix: a developer's
+    checkout can be. Empty TEAPORT_PREFIX is the default, as for install.sh, and
+    /opt/teaport counts whatever TEAPORT_PREFIX says, since the .deb always installs there
+    (review round 2)."""
     real = os.path.realpath(venv)
     for prefix in {os.environ.get("TEAPORT_PREFIX") or INSTALL_PREFIX, INSTALL_PREFIX}:
         if real in (os.path.realpath(os.path.join(prefix, "brain")),
-                    os.path.realpath(os.path.join(prefix, "venv"))) or \
-                os.path.dirname(real) == os.path.realpath(os.path.join(prefix, "venvs")):
+                    os.path.realpath(os.path.join(prefix, "venv"))):
             return True
     return False
 
@@ -215,11 +230,10 @@ def check(prefix: str | None = None, path: list[str] | None = None) -> Check | N
         added = [p for p in (sys.path if path is None else path)
                  if os.path.basename(os.path.normpath(p)) in ("site-packages", "dist-packages")
                  and os.path.realpath(p) not in real]
-    lockcheck = _lockcheck()
-    over = lockcheck.installed(added) if added else {}
+    over = installed(added) if added else {}
     want = locked(lock, pyproject)
     problems, extras = [], []
-    for d in lockcheck.drift({n: v for n, v in want.items() if n not in over}, base):
+    for d in drift({n: v for n, v in want.items() if n not in over}, base):
         name = d[1:].split(" ")[0]
         if d[0] != "+" or name.startswith("?broken:") or " + " in d:
             problems.append(d)
