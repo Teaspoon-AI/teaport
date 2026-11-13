@@ -254,7 +254,7 @@ eula_gate() {
     [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula"
     printf '\n  Teaport Engine License v%s — summary (the full text below governs):\n' "$ver"
     printf '    - personal use by individuals: free\n'
-    printf '    - any organizational or commercial use: requires a written license (hello@teaspoon.tech)\n\n'
+    printf '    - any organizational or commercial use: requires a written license (stefano@teaspoon.tech)\n\n'
     read -r -p '  Press Enter to read the license... ' _ || true
     if have less; then less "$txt"; elif have more; then more "$txt"; else cat "$txt"; fi
     printf '\n'

@@ -200,6 +200,10 @@ def test_the_phrase_shows_a_code_and_the_phone_gets_settings_without_the_token()
         async with _client() as c:
             # Not signed in: the page's routes refuse, as they always did.
             assert (await c.get("/settings/api/config")).status_code == 401
+            assert (await c.get("/settings/api/licenses")).status_code == 401
+            # The licenses page is the page's, not a code.
+            page = await c.get("/settings/licenses")
+            assert page.status_code == 200 and "Open-source licenses" in page.text
             # A GET spends nothing: a link preview, then the real tap.
             for _ in range(2):
                 r = await c.get(f"/settings/{code}")
@@ -214,6 +218,8 @@ def test_the_phrase_shows_a_code_and_the_phone_gets_settings_without_the_token()
         async with _client(cookie=session) as c:
             got = await c.get("/settings/api/config")
             assert got.status_code == 200 and "LLM_API_KEY" not in got.json()["values"]["brain_env"]
+            lic = await c.get("/settings/api/licenses")
+            assert lic.status_code == 200 and lic.json()["packages"], lic.text
             account = (await c.get("/settings/api/account")).json()
             assert account["offered"] is True and account["key_set"] is False
             assert account["text"]["title"] == "AI account"
