@@ -2,199 +2,267 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Teaport configuration</title>
 <meta name="description" content="Settings for this Teaport box.">
 <meta name="robots" content="noindex, nofollow">
-<meta name="theme-color" content="#137a6f">
+<meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F172A" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="config/logo.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Montserrat:wght@700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Archivo:wght@700&display=swap" rel="stylesheet">
 <style>
-  /* The same aliases TeaportLayout.astro declares on the marketing site, with
-     the design-system tokens it points at resolved to their light values, so
-     this page and teaspoon.tech/teaport read as one product. */
+  /* The aliases TeaportLayout.astro declares on the marketing site, resolved to the
+     Teaspoon design-system values they point at (tokens.css), so this page,
+     teaspoon.tech/teaport and docs.teaspoon.tech read as one product: the slate
+     page ground (bg-tertiary) with cards one step lighter (bg-primary), the cyan
+     highlight, navy primary buttons, DM Sans body and Archivo 700 headings. Dark
+     mode is the tokens.css .dark set, as the docs site uses it. */
   :root {
-    --bg: #F4F2EC; --surface: #fbfaf6; --surface-2: #efece3;
+    --bg: #F1F5F9; --surface: #F8FAFC; --surface-2: #E2E8F0; --card: #FFFFFF;
     --text: #020617; --muted: #475569; --faint: #64748B;
     --border: #E2E8F0; --border-strong: #CBD5E1;
     --accent: #0891B2; --accent-ink: #0E7490; --accent-wash: hsl(191.6 91.4% 36.5% / .12);
-    --mint: #82FFB6; --openclaw: #EA580C;
-    --ok-ink: #178347; --ok-bg: #E8FBC6; --err-ink: #B91C1C; --err-bg: #FEE2E2; --info-bg: #D9E8FF;
-    --btn-primary-bg: #023176; --btn-primary-fg: #FFFFFF; --btn-height: 48px;
-    --btn-ghost-hover-bg: var(--surface-2); --btn-ghost-active-bg: var(--border);
-    --control-radius: 8px;
+    --warn: #EA580C; --warn-ink: #C2410C; --warn-wash: rgba(234, 88, 12, .08);
+    --ok-ink: #178347; --ok-bg: #ECFDF3; --err-ink: #B91C1C; --err-bg: #FEF2F2;
+    --btn-primary-bg: #023176; --btn-primary-hover: #001B41; --btn-primary-fg: #F8FAFC; --btn-height: 44px;
+    --control-radius: 8px; --card-radius: 12px;
     --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
     --sans: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, sans-serif;
-    --display: "Montserrat", "DM Sans", system-ui, sans-serif;
-    --shadow: 0 1px 2px rgba(28,27,24,.05), 0 18px 40px -24px rgba(28,27,24,.28);
-    --maxw: 1536px; --maxw-prose: 960px;
-    --nav-h: 81px;
+    --display: "Archivo", "DM Sans", system-ui, sans-serif;
+    --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 12px 32px -24px rgba(15, 23, 42, .25);
+    --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%2364748B' stroke-width='1.6'/></svg>");
+    --maxw: 1280px; --maxw-prose: 920px;
+    --nav-h: 73px; --sticky-h: var(--nav-h);
+    --gutter: 16px; --pad: 16px;
     color-scheme: light;
   }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #020617; --surface: #0F172A; --surface-2: #1E293B; --card: #0F172A;
+      --text: #F8FAFC; --muted: #CBD5E1; --faint: #94A3B8;
+      --border: #1E293B; --border-strong: #334155;
+      --accent: #22D3EE; --accent-ink: #67E8F9; --accent-wash: rgba(34, 211, 238, .14);
+      --warn: #FB923C; --warn-ink: #FDBA74; --warn-wash: rgba(251, 146, 60, .10);
+      --ok-ink: #4ADE80; --ok-bg: #052E16; --err-ink: #FCA5A5; --err-bg: #450A0A;
+      --btn-primary-bg: #F8FAFC; --btn-primary-hover: #E2E8F0; --btn-primary-fg: #023176;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+      --chevron: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%2394A3B8' stroke-width='1.6'/></svg>");
+      color-scheme: dark;
+    }
+  }
+  @media (min-width: 640px) { :root { --gutter: 32px; --pad: 24px; } }
+  @media (min-width: 1024px) { :root { --gutter: 48px; } }
+  /* Phones: the header scrolls away and the section bar is what stays. */
+  @media (max-width: 899px) { :root { --sticky-h: 57px; } }
+
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; scroll-padding-top: calc(var(--nav-h) + 16px); }
+  [hidden] { display: none !important; }
+  html { scroll-behavior: smooth; scroll-padding-top: calc(var(--sticky-h) + 16px); -webkit-text-size-adjust: 100%; }
   @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font-family: var(--sans); line-height: 1.7; letter-spacing: 0.01em; -webkit-font-smoothing: antialiased;
+    font-family: var(--sans); font-size: 16px; line-height: 1.6; letter-spacing: 0.01em; -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
-  @media (min-width: 640px) { .wrap { padding: 0 32px; } }
-  @media (min-width: 1024px) { .wrap { padding: 0 48px; } }
-  a { color: var(--accent-ink); text-decoration: none; }
-  a:hover { text-decoration: underline; }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding-inline: max(var(--gutter), env(safe-area-inset-left)) max(var(--gutter), env(safe-area-inset-right)); }
+  a { color: var(--accent-ink); text-underline-offset: 3px; }
+  a:hover { text-decoration-thickness: 2px; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
   .mono { font-family: var(--mono); }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
-  .eyebrow { font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
-  h1 { font-family: var(--display); font-weight: 700; font-size: clamp(36px, 5vw, 60px); line-height: 1.05; letter-spacing: -0.01em; margin: 16px 0 0; text-wrap: balance; }
-  h2 { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 3vw, 34px); line-height: 1.1; letter-spacing: -0.01em; margin: 0; }
-  h3 { font-family: var(--sans); font-weight: 600; font-size: clamp(18px, 2vw, 24px); line-height: 1.4; letter-spacing: -0.01em; margin: 0; }
-  .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 54rem; margin: 22px 0 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .eyebrow { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent-ink); font-weight: 700; }
+  h1, h2 { font-family: var(--display); font-weight: 700; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.1; margin-top: 8px; }
+  h2 { font-size: clamp(19px, 2.2vw, 22px); line-height: 1.25; }
+  h3 { font-weight: 600; font-size: 18px; line-height: 1.4; margin: 0; }
+  .lede { font-size: 16px; color: var(--muted); max-width: 62ch; margin: 10px 0 0; }
 
-  /* nav — the Teaport header band: sticky, solid, 48px logo, 16px padding. */
-  .nav { border-bottom: 1px solid var(--border); background: var(--bg); position: sticky; top: 0; z-index: 10; }
-  .navbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; }
-  .brand-lockup { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
-  .brand-logo { height: 48px; width: auto; display: block; }
-  .brand-byline { font-size: 13px; line-height: 1; color: var(--faint); white-space: nowrap; padding: 1px 0 3px 10px; border-left: 1px solid var(--border); }
-  .services { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-  @media (max-width: 639px) { .navbar { flex-wrap: wrap; } .services { justify-content: flex-start; width: 100%; } }
-  .svc { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
-  .svc::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  /* Header band: solid bg-primary, sticky on wide screens. */
+  .nav { background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+  @media (max-width: 899px) { .nav { position: static; } }
+  .navbar { display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; padding-block: 12px; min-height: var(--nav-h); flex-wrap: wrap; }
+  .brand-lockup { display: flex; align-items: flex-end; gap: 12px; min-width: 0; }
+  .brand-lockup a { display: block; line-height: 0; }
+  .brand-logo { height: 40px; width: auto; display: block; }
+  @media (min-width: 900px) { .brand-logo { height: 48px; } }
+  .brand-byline { font-size: 14px; line-height: 1; color: var(--faint); white-space: nowrap; padding: 2px 0 4px 12px; border-left: 1px solid var(--border-strong); }
+
+  /* Service status: one row of pills; on a phone it scrolls sideways rather than wrapping. */
+  .services { display: flex; gap: 6px; justify-content: flex-end; min-width: 0; }
+  @media (max-width: 899px) {
+    .services { order: 3; width: calc(100% + 2 * var(--gutter)); margin-inline: calc(-1 * var(--gutter)); padding-inline: var(--gutter); justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
+    .services::-webkit-scrollbar { display: none; }
+  }
+  .svc { flex: none; font-size: 13px; font-weight: 500; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--card); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .svc::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
   .svc.active::before { background: var(--ok-ink); }
   .svc.failed::before, .svc.inactive::before { background: var(--err-ink); }
-  .svc.stale { border-color: var(--openclaw); color: var(--openclaw); }
+  .svc.stale { border-color: var(--warn); color: var(--warn-ink); background: var(--warn-wash); }
 
-  /* buttons — .btn-primary / .btn-ghost from the site, plus a compact size for rows. */
+  /* Buttons: the marketing Primary Button (navy, bold, 8px radius) and an outlined
+     secondary for the actions inside a card. */
   .btn-primary, .btn-ghost {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    font-family: var(--sans); font-size: 16px; font-weight: 700; cursor: pointer; white-space: nowrap;
-    height: var(--btn-height); padding: 12px 32px; border-radius: var(--control-radius); border: 1px solid transparent;
-    text-decoration: none; transition: box-shadow .3s cubic-bezier(.4,0,.2,1), background-color .2s ease, transform .05s ease;
+    font-family: var(--sans); font-size: 15px; font-weight: 700; line-height: 1; cursor: pointer; white-space: nowrap;
+    min-height: var(--btn-height); padding: 0 20px; border-radius: var(--control-radius); border: 1px solid transparent;
+    text-decoration: none; transition: box-shadow .3s cubic-bezier(.4,0,.2,1), background-color .2s ease, border-color .2s ease;
   }
   .btn-primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
-  .btn-primary:hover { box-shadow: 0 10px 24px rgba(2,49,118,.22); }
-  .btn-primary:active { transform: translateY(1px); }
-  .btn-primary[disabled], .btn-ghost[disabled] { opacity: .6; cursor: default; box-shadow: none; }
-  .btn-ghost { color: var(--text); background: transparent; }
-  .btn-ghost .btn-label { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
-  .btn-ghost:hover { background: var(--btn-ghost-hover-bg); }
-  .btn-ghost:hover .btn-label { text-decoration: none; }
-  .btn-ghost:active { background: var(--btn-ghost-active-bg); }
-  .btn-sm { height: 36px; padding: 6px 16px; font-size: 14px; }
+  .btn-primary:hover { background: var(--btn-primary-hover); box-shadow: 0 10px 24px rgba(2,49,118,.22); }
+  .btn-ghost { color: var(--text); background: var(--card); border-color: var(--border-strong); font-weight: 600; }
+  .btn-ghost:hover { background: var(--surface-2); }
+  .btn-primary[disabled], .btn-ghost[disabled] { opacity: .55; cursor: default; box-shadow: none; }
+  .btn-sm { min-height: 36px; padding: 0 14px; font-size: 14px; }
+  .btn-link { background: none; border: 0; padding: 0; font: inherit; font-size: 15px; font-weight: 600; color: var(--accent-ink); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  .btn-link:hover { text-decoration-thickness: 2px; }
 
-  /* page grid: sticky group index beside the settings column. */
-  .page { display: grid; grid-template-columns: 240px minmax(0, var(--maxw-prose)); gap: 48px; padding: 48px 0 160px; align-items: start; }
-  @media (max-width: 899px) { .page { grid-template-columns: minmax(0, 1fr); gap: 24px; } .index { display: none; } }
-  .index { position: sticky; top: calc(var(--nav-h) + 24px); }
-  .index a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--muted); font-size: 15px; }
-  .index a:hover { background: color-mix(in srgb, var(--text) 7%, transparent); text-decoration: none; }
+  /* Page grid: a sticky section index beside the settings column on wide screens;
+     on a phone, a sticky section picker above it instead. */
+  .page { display: grid; grid-template-columns: 220px minmax(0, var(--maxw-prose)); gap: 48px; padding: 40px 0 160px; align-items: start; }
+  @media (max-width: 899px) { .page { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 20px; } .index { display: none; } }
+  .index { position: sticky; top: calc(var(--nav-h) + 24px); max-height: calc(100vh - var(--nav-h) - 48px); overflow-y: auto; padding-bottom: 24px; }
+  .index a { display: block; padding: 5px 10px; border-radius: 6px; color: var(--muted); font-size: 14.5px; text-decoration: none; line-height: 1.45; }
+  .index a:hover { background: var(--surface-2); color: var(--text); }
   .index a.current { color: var(--text); font-weight: 600; background: var(--accent-wash); }
-  .index .store-label { font-family: var(--mono); font-size: 12px; color: var(--faint); margin: 18px 10px 4px; letter-spacing: .04em; }
+  .index .store-label { font-size: 11.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin: 20px 10px 4px; }
   .index .store-label:first-child { margin-top: 0; }
 
-  header.intro { margin-bottom: 40px; }
-  .toolbar { display: flex; gap: 12px; align-items: center; margin-top: 28px; flex-wrap: wrap; }
-  .search { flex: 1 1 280px; height: var(--btn-height); font: inherit; font-size: 16px; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
-  .search:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-wash); }
-  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--muted); cursor: pointer; user-select: none; }
-  .toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .jumpbar { display: none; }
+  @media (max-width: 899px) {
+    .jumpbar { display: flex; gap: 8px; position: sticky; top: 0; z-index: 9; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); padding: 8px max(var(--gutter), env(safe-area-inset-right)) 8px max(var(--gutter), env(safe-area-inset-left)); }
+    .jumpbar select { flex: 1; min-width: 0; height: 40px; font: inherit; font-size: 16px; font-weight: 600; color: var(--text); background: var(--card) var(--chevron) no-repeat right 14px center; border: 1px solid var(--border-strong); border-radius: var(--control-radius); padding: 0 40px 0 14px; appearance: none; }
+    .jumpbar .top { flex: none; width: 40px; height: 40px; padding: 0; }
+  }
 
-  /* banners */
-  .banner { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 12px; padding: 18px 22px; margin: 24px 0 0; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; box-shadow: var(--shadow); }
-  .banner.warn { border-color: var(--openclaw); background: color-mix(in srgb, var(--openclaw) 8%, var(--surface)); }
-  .banner.err { border-color: var(--err-ink); background: var(--err-bg); }
-  .banner.ok { border-color: var(--ok-ink); background: var(--ok-bg); }
+  header.intro { margin-bottom: 20px; }
+  .toolbar { display: flex; gap: 12px 20px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+  .searchbox { position: relative; flex: 1 1 280px; }
+  .searchbox svg { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .search { width: 100%; height: var(--btn-height); font: inherit; font-size: 16px; padding: 0 14px 0 40px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--card); color: var(--text); }
+  .search::placeholder, .control ::placeholder, input::placeholder { color: var(--faint); opacity: 1; }
+  .search:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-wash); }
+  /* The tuning checkbox drawn as a switch. */
+  .toggle { display: inline-flex; align-items: center; gap: 10px; font-size: 15px; color: var(--muted); cursor: pointer; user-select: none; }
+  .toggle input { appearance: none; margin: 0; flex: none; width: 36px; height: 20px; border-radius: 999px; background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .2s ease; }
+  .toggle input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .2s ease; }
+  .toggle input:checked { background: var(--accent); }
+  .toggle input:checked::after { transform: translateX(16px); }
+
+  /* Banners */
+  .banner { border: 1px solid var(--border-strong); background: var(--card); border-radius: var(--card-radius); padding: 14px 18px; margin: 16px 0 0; display: flex; gap: 12px 16px; align-items: center; flex-wrap: wrap; }
+  .banner.warn { border-color: color-mix(in srgb, var(--warn) 55%, transparent); background: var(--warn-wash); }
+  .banner.err { border-color: color-mix(in srgb, var(--err-ink) 45%, transparent); background: var(--err-bg); }
+  .banner.ok { border-color: color-mix(in srgb, var(--ok-ink) 45%, transparent); background: var(--ok-bg); }
   .banner p { margin: 0; flex: 1 1 320px; }
   .banner .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  @media (max-width: 639px) { .banner .actions { width: 100%; } .banner .actions > * { flex: 1 1 0; } }
   .banner code { font-family: var(--mono); font-size: 14px; background: color-mix(in srgb, var(--text) 6%, transparent); padding: 1px 6px; border-radius: 4px; }
 
-  /* groups and rows */
-  section.group { margin-top: 56px; scroll-margin-top: calc(var(--nav-h) + 16px); }
-  section.group:first-of-type { margin-top: 0; }
-  .group-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border-strong); padding-bottom: 12px; }
-  .group-head .file { font-family: var(--mono); font-size: 13px; color: var(--faint); }
-  .group-blurb { color: var(--muted); margin: 12px 0 0; max-width: 54rem; }
-  .group-tools { margin: 14px 0 0; display: flex; gap: 16px; flex-wrap: wrap; }
-  .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 8px 32px; padding: 22px 0; border-bottom: 1px solid var(--border); align-items: start; }
-  @media (max-width: 1099px) { .row { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+  /* Cards: every section is one, bg-primary-white on the slate page. */
+  section.group, .account { background: var(--card); border: 1px solid var(--border); border-radius: var(--card-radius); box-shadow: var(--shadow); margin-top: 20px; scroll-margin-top: calc(var(--sticky-h) + 16px); overflow: hidden; }
+  #g-wifi { margin-top: 0; }
+  #g-wifi[hidden] + #groups > section.group:first-child { margin-top: 0; }
+  .group-head { padding: 18px var(--pad) 16px; }
+  .group-head .title { display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
+  .group-head .file { font-family: var(--mono); font-size: 12.5px; color: var(--faint); overflow-wrap: anywhere; }
+  .group-blurb { color: var(--muted); margin: 6px 0 0; max-width: 68ch; font-size: 15px; }
+  .group-body { padding: 16px var(--pad) 20px; border-top: 1px solid var(--border); }
+  .group-tools { padding: 12px var(--pad); border-top: 1px solid var(--border); background: var(--surface); }
+  .group-tools:empty { display: none; }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 340px); gap: 8px 32px; padding: 18px var(--pad); border-top: 1px solid var(--border); align-items: start; }
+  @media (max-width: 1099px) { .row { grid-template-columns: minmax(0, 1fr); gap: 12px; } }
   .row.hidden { display: none; }
-  .row-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .row-head label { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text); }
-  .badge { font-family: var(--mono); font-size: 12px; color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .row.changed { background: var(--warn-wash); box-shadow: inset 3px 0 0 var(--warn); }
+  .row.invalid { background: var(--err-bg); box-shadow: inset 3px 0 0 var(--err-ink); }
+  .row-head { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
+  .row-head label { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; margin-right: 2px; }
+  .badge { font-size: 12px; font-weight: 500; line-height: 1.5; color: var(--muted); background: var(--surface-2); padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
   .badge.tier-tuning { color: var(--accent-ink); background: var(--accent-wash); }
   .badge.tier-diag { color: var(--faint); background: transparent; border: 1px dashed var(--border-strong); }
-  .badge.tier-installer { color: var(--faint); }
-  .badge.changed { color: var(--openclaw); background: color-mix(in srgb, var(--openclaw) 12%, transparent); }
-  .help { margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 62ch; }
-  .note { margin: 6px 0 0; color: var(--faint); font-size: 14px; line-height: 1.5; max-width: 62ch; }
-  .source { font-family: var(--mono); font-size: 12px; color: var(--faint); }
-  .control { display: flex; flex-direction: column; gap: 6px; }
+  .badge.tier-installer { color: var(--faint); background: transparent; border: 1px solid var(--border); }
+  .badge.required { color: var(--warn-ink); background: var(--warn-wash); }
+  .help { margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 66ch; overflow-wrap: anywhere; }
+  .note { margin: 6px 0 0; color: var(--faint); font-size: 14px; line-height: 1.5; max-width: 66ch; overflow-wrap: anywhere; }
+  .source { font-family: var(--mono); font-size: 12px; color: var(--faint); margin-top: 6px; overflow-wrap: anywhere; }
+  .control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .control .default { font-size: 13px; color: var(--faint); margin: 0; overflow-wrap: anywhere; }
+  .control .default code { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
   .control input[type=text], .control input[type=password], .control input[type=number], .control select, .control textarea {
-    font: inherit; font-size: 16px; color: var(--text); background: var(--surface);
+    font: inherit; font-size: 16px; color: var(--text); background: var(--card);
     border: 1px solid var(--border-strong); border-radius: var(--control-radius);
-    height: var(--btn-height); padding: 0 16px; width: 100%;
+    height: var(--btn-height); padding: 0 14px; width: 100%;
   }
-  .control textarea { height: auto; min-height: 96px; padding: 12px 16px; font-family: var(--mono); font-size: 14px; resize: vertical; }
-  .control input[type=number] { max-width: 220px; font-family: var(--mono); }
-  .control select { max-width: 320px; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%23475569' stroke-width='1.6'/></svg>"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 40px; }
-  .control :is(input, select, textarea):focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-wash); }
+  .control textarea { height: auto; min-height: 96px; padding: 10px 14px; font-family: var(--mono); font-size: 14px; resize: vertical; }
+  .control input[type=number] { max-width: 200px; font-family: var(--mono); }
+  .control select { appearance: none; background: var(--card) var(--chevron) no-repeat right 14px center; padding-right: 40px; }
+  .control :is(input, select, textarea):focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-wash); }
   .control :is(input, select, textarea)[disabled] { background: var(--surface-2); color: var(--faint); cursor: not-allowed; }
-  .row.changed .control :is(input, select, textarea) { border-color: var(--openclaw); }
+  .row.changed .control :is(input, select, textarea) { border-color: var(--warn); }
   .row.invalid .control :is(input, select, textarea) { border-color: var(--err-ink); }
   .field-err { color: var(--err-ink); font-size: 14px; margin: 0; }
   .with-unit { display: flex; align-items: center; gap: 10px; }
   .with-unit .unit { font-family: var(--mono); font-size: 13px; color: var(--faint); }
-  .readonly { font-family: var(--mono); font-size: 15px; color: var(--muted); padding: 12px 0; word-break: break-all; }
-  .readonly .lock { color: var(--faint); font-size: 13px; font-family: var(--sans); margin-left: 8px; }
-  .secret-state { font-size: 14px; color: var(--muted); }
+  .readonly { font-family: var(--mono); font-size: 14px; color: var(--muted); padding: 10px 12px; background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--control-radius); overflow-wrap: anywhere; }
+  .readonly .lock { display: block; color: var(--faint); font-size: 12.5px; font-family: var(--sans); margin-top: 2px; }
+  .secret-state { font-size: 13px; color: var(--muted); }
   .secret-state.set { color: var(--ok-ink); }
 
-  /* save bar */
-  .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--surface); border-top: 1px solid var(--border-strong); box-shadow: 0 -12px 40px -24px rgba(28,27,24,.5); transform: translateY(110%); transition: transform .25s cubic-bezier(.4,0,.2,1); }
+  /* Save bar */
+  .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--card); border-top: 1px solid var(--border-strong); box-shadow: 0 -12px 40px -24px rgba(15,23,42,.5); transform: translateY(110%); transition: transform .25s cubic-bezier(.4,0,.2,1); padding-bottom: env(safe-area-inset-bottom); }
   .savebar.show { transform: none; }
-  .savebar .inner { display: flex; align-items: center; gap: 16px; padding: 16px 0; flex-wrap: wrap; }
-  .savebar .count { font-weight: 600; flex: 1 1 200px; }
-  .savebar .count small { font-weight: 400; color: var(--muted); display: block; font-size: 14px; }
+  .savebar .inner { display: flex; align-items: center; gap: 10px 12px; padding-block: 12px; flex-wrap: wrap; }
+  .savebar .count { font-weight: 700; flex: 1 1 200px; line-height: 1.35; }
+  .savebar .count small { font-weight: 400; color: var(--muted); display: block; font-size: 13px; font-family: var(--mono); }
+  @media (max-width: 639px) { .savebar .count { flex-basis: 100%; } .savebar button { flex: 1 1 0; } }
 
   .empty { color: var(--faint); padding: 24px 0; }
-  .gate { max-width: 520px; margin: 64px auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; padding: 32px; box-shadow: var(--shadow); }
+  .gate { max-width: 460px; margin: 64px auto; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
   .gate p { color: var(--muted); }
-  .gate form { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
-  .gate input { flex: 1 1 240px; }
-  footer.foot { border-top: 1px solid var(--border); margin-top: 80px; padding: 32px 0 48px; color: var(--faint); font-size: 14px; }
+  .gate form { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  .gate input { flex: 1 1 220px; padding-left: 14px; }
+  footer.foot { margin-top: 48px; padding: 24px 0 0; border-top: 1px solid var(--border); color: var(--faint); font-size: 14px; }
   footer.foot .mono { font-size: 13px; }
-  dialog { border: 1px solid var(--border-strong); border-radius: 16px; padding: 28px 32px; max-width: 560px; background: var(--surface); box-shadow: var(--shadow); color: var(--text); }
-  dialog::backdrop { background: rgba(2, 6, 23, .35); }
+  dialog { border: 1px solid var(--border-strong); border-radius: 16px; padding: 24px; width: min(560px, calc(100vw - 32px)); background: var(--card); box-shadow: var(--shadow); color: var(--text); }
+  dialog::backdrop { background: rgba(2, 6, 23, .45); }
   dialog ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); }
   dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; flex-wrap: wrap; }
+  @media (max-width: 639px) { dialog .actions > * { flex: 1 1 0; } }
 
   /* Wi-Fi */
-  .wifi-now { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 0; }
+  .wifi-now { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .wifi-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 0; }
-  .wifi-nets { display: grid; gap: 8px; margin: 20px 0 0; max-width: 640px; }
-  .wifi-net { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--control-radius); cursor: pointer; }
-  .wifi-net span { flex: 1; overflow-wrap: anywhere; } .wifi-net small { font-family: var(--mono); font-size: 13px; color: var(--faint); }
-  .wifi-form { display: grid; gap: 10px; max-width: 640px; margin: 16px 0 0; }
-  .wifi-form input { height: var(--btn-height); font: inherit; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
-  .wifi-msg { margin: 14px 0 0; }
+  .wifi-nets { display: grid; gap: 8px; margin: 16px 0 0; max-width: 560px; }
+  .wifi-nets:empty { display: none; }
+  .wifi-net { display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 48px; background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--control-radius); cursor: pointer; }
+  .wifi-net:has(input:checked) { border-color: var(--accent); background: var(--accent-wash); }
+  .wifi-net input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; }
+  .wifi-net span { flex: 1; overflow-wrap: anywhere; font-weight: 500; } .wifi-net small { font-size: 13px; color: var(--faint); white-space: nowrap; }
+  .wifi-form { display: grid; gap: 10px; max-width: 560px; margin: 12px 0 0; }
+  .wifi-form input, .account input { height: var(--btn-height); font: inherit; font-size: 16px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--card); color: var(--text); width: 100%; }
+  .wifi-form input:focus, .account input:focus, .gate input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-wash); }
+  .wifi-form .btn-primary { justify-self: start; }
+  .wifi-msg { margin: 12px 0 0; color: var(--muted); }
+  .wifi-msg:empty { display: none; }
+  @media (max-width: 639px) { .wifi-actions > *, .wifi-form .btn-primary { flex: 1 1 100%; justify-self: stretch; } }
 
   /* The owner's part (#279): the AI account step, then everything else behind "Show
      advanced" -- folded by default on the front door's /settings/config. */
   body:not(.show-adv) .adv { display: none !important; }
-  body:not(.show-adv) .page { grid-template-columns: minmax(0, var(--maxw-prose)); }
-  .account { margin: 0 0 40px; }
-  .account .acct-form { display: grid; gap: 10px; max-width: 640px; margin: 16px 0 0; }
-  .account input { height: var(--btn-height); font: inherit; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
-  .account .acct-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-  .account .acct-msg { margin: 14px 0 0; }
+  body:not(.show-adv) .page { grid-template-columns: minmax(0, 640px); justify-content: center; }
+  .account { margin: 0 0 20px; }
+  .account .acct-form { display: grid; gap: 10px; max-width: 560px; margin: 16px 0 0; }
+  .account .acct-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .account .acct-actions .note { flex-basis: 100%; margin: 0; }
+  @media (max-width: 639px) { .account .acct-actions > button { flex: 1 1 100%; } }
+  .account .acct-msg { margin: 12px 0 0; }
+  .account .acct-msg:empty { display: none; }
   .account .acct-msg.err { color: var(--err-ink); }
   .account .acct-msg.ok { color: var(--ok-ink); }
-  .account .acct-connect { display: grid; gap: 8px; max-width: 640px; margin: 16px 0 0; }
+  .account .acct-connect { display: grid; gap: 8px; max-width: 560px; margin: 16px 0 0; }
   .account .acct-connect .btn-primary { justify-self: start; }
+  .account .banner { margin: 12px 0 0; }
+  .account > .group-blurb + .group-blurb { margin-top: 10px; }
   .adv-toggle { margin: 0 0 24px; }
 </style>
 </head>
@@ -202,12 +270,25 @@
 <header class="nav">
   <div class="wrap navbar">
     <div class="brand-lockup">
-      <a href="config" aria-label="Teaport configuration"><img src="config/logo.svg" alt="Teaport" class="brand-logo" width="86" height="48"></a>
-      <span class="brand-byline">configuration</span>
+      <a href="config" aria-label="Teaport configuration">
+        <picture>
+          <source srcset="config/logo-dark.svg" media="(prefers-color-scheme: dark)">
+          <img src="config/logo.svg" alt="Teaport" class="brand-logo" width="85" height="48">
+        </picture>
+      </a>
+      <span class="brand-byline" id="byline">configuration</span>
     </div>
-    <div class="services" id="services" aria-live="polite"></div>
+    <div class="services adv" id="services" aria-live="polite" aria-label="Services"></div>
   </div>
 </header>
+
+<div class="jumpbar adv" id="jumpbar" hidden>
+  <label class="sr-only" for="jump">Go to section</label>
+  <select id="jump"></select>
+  <button type="button" class="btn-ghost top" id="totop" aria-label="Back to top" title="Back to top">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>
+  </button>
+</div>
 
 <main class="wrap" id="main">
   <div class="gate" id="gate" hidden>
@@ -224,21 +305,24 @@
     <nav class="index adv" id="index" aria-label="Sections"></nav>
     <div>
       <section class="account" id="account" hidden></section>
-      <div class="adv-toggle" id="advtoggle" hidden><button class="btn-ghost btn-sm" type="button" id="advbtn"><span class="btn-label" id="advlabel">Show advanced</span></button></div>
-      <header class="intro adv">
+      <div class="adv-toggle" id="advtoggle" hidden><button class="btn-ghost" type="button" id="advbtn"><span class="btn-label" id="advlabel">Show advanced</span></button></div>
+      <header class="intro adv" id="top">
         <div class="eyebrow">This box</div>
         <h1>Configuration</h1>
         <p class="lede">A change is written to the box the moment you save. It takes effect when the service that reads it restarts — nothing here hot-reloads, and the page says which service is waiting.</p>
         <div class="toolbar">
-          <input type="search" id="search" class="search" placeholder="Find a setting — name or words from its description" aria-label="Find a setting">
-          <label class="toggle"><input type="checkbox" id="showtuning"> Show tuning &amp; diagnostics</label>
+          <div class="searchbox">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" id="search" class="search" placeholder="Find a setting by name or description" aria-label="Find a setting">
+          </div>
+          <label class="toggle"><input type="checkbox" id="showtuning" role="switch"> Show tuning &amp; diagnostics</label>
         </div>
         <div id="banners"></div>
       </header>
       <section class="group adv" id="g-wifi" hidden></section>
       <div id="groups" class="adv"></div>
-      <footer class="foot">
-        Rendered from <span class="mono">config_schema.toml</span> — the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.
+      <footer class="foot adv">
+        Rendered from <span class="mono">config_schema.toml</span>, the same table the <a href="https://docs.teaspoon.tech/reference/settings/">Settings reference</a> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.
       </footer>
     </div>
   </div>
@@ -315,7 +399,7 @@
   let health = null;             // last GET /health, null while the brain does not answer
   let rowsByName = {};
   let edits = {};                // name -> text | null (null = unset)
-  const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-discord-bridge': 'bridge' };
+  const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'phone line', 'teaport-discord-bridge': 'Discord bridge', 'teaport-local-audio': 'room audio' };
   const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', local_audio_env: 'local-audio.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
 
   const original = (name) => {
@@ -350,6 +434,14 @@
     let s = String(row.default);
     if (row.unit && (row.type === 'int' || row.type === 'float')) s += ' ' + row.unit;
     return s;
+  };
+
+  // Under the control: what the setting is when nothing is set (defaultText's words).
+  const defaultLine = (row) => {
+    const d = defaultText(row);
+    if (!d || d === 'required') return null;
+    if (row.type === 'secret') return h('p', { class: 'default' }, 'Read from ', h('code', {}, row.file));
+    return h('p', { class: 'default' }, 'Default: ', h('code', {}, d));
   };
 
   const control = (row, writable) => {
@@ -411,7 +503,8 @@
   };
 
   const renderRow = (row, writable) => {
-    const badges = [h('span', { class: 'badge' }, defaultText(row))];
+    const badges = [];
+    if (row.required) badges.push(h('span', { class: 'badge required' }, 'required'));
     if (row.tier === 'tuning') badges.push(h('span', { class: 'badge tier-tuning' }, 'tuning'));
     if (row.tier === 'diag') badges.push(h('span', { class: 'badge tier-diag' }, 'diagnostic'));
     if (row.tier === 'installer') badges.push(h('span', { class: 'badge tier-installer' }, 'installer'));
@@ -424,7 +517,7 @@
         row.note ? h('p', { class: 'note' }, row.note) : null,
         row.name === 'TTS_PACING' ? pacingNote() : null,
         row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
-      h('div', { class: 'control' }, ...control(row, writable),
+      h('div', { class: 'control' }, ...control(row, writable), defaultLine(row),
         Object.prototype.hasOwnProperty.call(data.renamed || {}, row.name) ? h('p', { class: 'note' }, data.renamed[row.name]) : null,
         isIgnored(row.name) ? h('p', { class: 'field-err' }, data.ignored[row.name] + ' ',
           writable && row.tier !== 'installer' ? h('button', { class: 'btn-ghost btn-sm', onclick: () => setEdit(row.name, null) }, h('span', { class: 'btn-label' }, 'Remove it from the file')) : null) : null));
@@ -437,6 +530,8 @@
     rowsByName = Object.fromEntries(data.schema.settings.map((r) => [r.name, r]));
     const groupsEl = $('#groups'); groupsEl.replaceChildren();
     const index = $('#index'); index.replaceChildren();
+    const jump = $('#jump'); jump.replaceChildren(h('option', { value: 'top' }, 'All sections'), h('option', { value: 'wifi' }, 'Wi-Fi'));
+    let optgroup = null;
     const byGroup = {};
     for (const r of data.schema.settings) (byGroup[r.group] ||= []).push(r);
     let lastStore = null;
@@ -445,14 +540,20 @@
       if (!rows.length) continue;
       const store = rows[0].store;
       const writable = data.writable.includes(store);
-      if (store !== lastStore) { index.append(h('div', { class: 'store-label' }, STORE_LABEL[store] || store)); lastStore = store; }
+      if (store !== lastStore) {
+        index.append(h('div', { class: 'store-label' }, STORE_LABEL[store] || store));
+        optgroup = h('optgroup', { label: STORE_LABEL[store] || store }); jump.append(optgroup);
+        lastStore = store;
+      }
       index.append(h('a', { href: '#g-' + g.id, 'data-group': g.id }, g.title));
-      const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store },
-        h('div', { class: 'group-head' }, h('h2', {}, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
-        g.blurb ? h('p', { class: 'group-blurb' }, g.blurb) : null,
-        (data.absent || []).includes(store) ? h('p', { class: 'group-blurb' }, 'Not set up on this box: the installer creates ', h('span', { class: 'mono' }, data.schema.stores[store].path), ' when it is turned on.')
-          : (data.unreadable || []).includes(store) ? h('p', { class: 'group-blurb' }, 'The brain cannot read ', h('span', { class: 'mono' }, data.schema.stores[store].path), ', so its values are not shown here.')
-          : !writable ? h('p', { class: 'group-blurb' }, 'Read-only here: ', h('span', { class: 'mono' }, data.schema.stores[store].apply)) : null,
+      optgroup.append(h('option', { value: g.id }, g.title));
+      const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store, 'aria-labelledby': 'h-' + g.id },
+        h('div', { class: 'group-head' },
+          h('div', { class: 'title' }, h('h2', { id: 'h-' + g.id }, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
+          g.summary ? h('p', { class: 'group-blurb' }, g.summary) : null,
+          (data.absent || []).includes(store) ? h('p', { class: 'group-blurb' }, 'Not set up on this box: the installer creates ', h('span', { class: 'mono' }, data.schema.stores[store].path), ' when it is turned on.')
+            : (data.unreadable || []).includes(store) ? h('p', { class: 'group-blurb' }, 'The brain cannot read ', h('span', { class: 'mono' }, data.schema.stores[store].path), ', so its values are not shown here.')
+            : !writable ? h('p', { class: 'group-blurb' }, 'Read-only here: ', h('span', { class: 'mono' }, data.schema.stores[store].apply)) : null),
         ...rows.map((r) => renderRow(r, writable)));
       groupsEl.append(sec);
     }
@@ -519,8 +620,9 @@
     let w;
     try { w = (await api('/api/wifi')).body; } catch (e) { sec.hidden = true; return; }
     sec.hidden = false;
-    const head = h('div', { class: 'group-head' }, h('h2', {}, 'Wi-Fi'), w.device ? h('span', { class: 'file' }, w.device) : null);
-    if (!w.available) { sec.replaceChildren(head, h('p', { class: 'group-blurb' }, 'This box has no Wi-Fi device.')); return; }
+    const head = h('div', { class: 'group-head' }, h('div', { class: 'title' }, h('h2', {}, 'Wi-Fi'), w.device ? h('span', { class: 'file' }, w.device) : null),
+      h('p', { class: 'group-blurb' }, w.available ? 'Switch the network this box uses. A switch that does not get online is undone. With no network at all, say "set up Wi-Fi" to the box instead.' : 'This box has no Wi-Fi device.'));
+    if (!w.available) { sec.replaceChildren(head); return; }
     const now = h('div', { class: 'wifi-now' },
       h('span', { class: 'svc ' + (w.online ? 'active' : 'failed') }, w.online ? 'online' : 'offline'),
       w.connection ? h('span', {}, 'Connected to ', h('strong', {}, w.connection)) : h('span', {}, 'Not connected to a network.'));
@@ -569,8 +671,7 @@
       catch (e) { out.textContent = 'Could not start it: ' + e.message; }
     };
     sec.replaceChildren(head,
-      h('p', { class: 'group-blurb' }, 'Switch the network this box uses. A switch that does not get online is undone. With no network at all, say "set up Wi-Fi" to the box instead.'),
-      now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), nets, form, out);
+      h('div', { class: 'group-body' }, now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), nets, form, out));
   };
 
   // ---- the AI account (#279): the owner's step, in the phone's language. The key is
@@ -585,6 +686,7 @@
     $('#advtoggle').hidden = !BASE;  // operators on /config see everything already
     if (BASE) {
       document.title = T.settings || document.title;
+      if (T.settings) $('#byline').textContent = T.settings;
       document.documentElement.lang = a.lang || 'en';
       document.documentElement.dir = a.dir || 'ltr';
     }
@@ -683,9 +785,9 @@
       connectPart = parts;
     }
     sec.replaceChildren(
-      h('div', { class: 'group-head' }, h('h2', {}, T.title)),
-      h('p', { class: 'group-blurb' }, connect.offered ? T.intro_connect : T.intro), state, connectPart, form, out,
-      BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null);
+      h('div', { class: 'group-head' }, h('h2', {}, T.title), h('p', { class: 'group-blurb' }, connect.offered ? T.intro_connect : T.intro)),
+      h('div', { class: 'group-body' }, state, connectPart, form, out,
+        BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null));
     sec.hidden = false;
   };
   // Back from OpenRouter can bring this page back from the browser's cache, as it was
@@ -736,7 +838,7 @@
       let foot = $('.group-tools', sec);
       if (!foot) { foot = h('div', { class: 'group-tools' }); sec.append(foot); }
       foot.replaceChildren();
-      if (!q && !showAll && hiddenCount) foot.append(h('a', { href: '#', onclick: (e) => { e.preventDefault(); $('#showtuning').checked = true; applyFilter(); } }, `Show ${hiddenCount} more (tuning, diagnostics, installer)`));
+      if (!q && !showAll && hiddenCount) foot.append(h('button', { type: 'button', class: 'btn-link', onclick: () => { $('#showtuning').checked = true; applyFilter(); } }, `Show ${hiddenCount} more (tuning, diagnostics, installer)`));
       sec.hidden = visible === 0 && !!q;
     }
     try { localStorage.setItem('teaport.showtuning', showAll ? '1' : ''); } catch (e) { /* fine */ }
@@ -748,8 +850,15 @@
   const io = new IntersectionObserver((entries) => {
     for (const en of entries) if (en.isIntersecting) {
       document.querySelectorAll('.index a').forEach((a) => a.classList.toggle('current', a.dataset.group === en.target.id.slice(2)));
+      $('#jump').value = en.target.id.slice(2);
     }
   }, { rootMargin: '-90px 0px -70% 0px' });
+
+  $('#jump').addEventListener('change', (e) => {
+    const target = e.target.value === 'top' ? $('#top') : $('#g-' + e.target.value);
+    if (target) target.scrollIntoView({ block: 'start' });
+  });
+  $('#totop').addEventListener('click', () => { window.scrollTo({ top: 0 }); $('#jump').value = 'top'; });
 
   // ---- save
   const refreshSavebar = () => {
@@ -844,7 +953,7 @@
     try {
       const [res, hl] = await Promise.all([api('/api/config'), fetchHealth()]);
       data = res.body; health = hl;
-      $('#gate').hidden = true; $('#page').hidden = false;
+      $('#gate').hidden = true; $('#page').hidden = false; $('#jumpbar').hidden = false;
       render();
       renderWifi();
       renderAccount();

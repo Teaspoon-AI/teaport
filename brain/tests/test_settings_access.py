@@ -666,12 +666,13 @@ def test_the_brains_own_port_serves_nothing_under_settings():
                                  base_url="http://box",
                                  headers={"X-Forwarded-Proto": "https", "Host": f"{HOST}:{PORT}"})
         async with lan, site:
-            for path in ("/settings/config", "/settings/config/logo.svg", "/settings/api/config",
+            for path in ("/settings/config", "/settings/config/logo.svg",
+                         "/settings/config/logo-dark.svg", "/settings/api/config",
                          "/settings/api/account", "/settings/health", "/settings/trust",
                          "/settings", "/settings/AB3CD9"):
                 r = await lan.get(path)
                 assert r.status_code == 404 and "<html" not in r.text.lower(), (path, r.status_code)
-            for path in ("/config", "/config/logo.svg", "/api/config", "/api/account"):
+            for path in ("/config", "/config/logo.svg", "/config/logo-dark.svg", "/api/config", "/api/account"):
                 r = await lan.get(path)
                 assert r.status_code == 403 and "<html" not in r.text.lower(), (path, r.status_code)
             assert f"{ORIGIN}/settings/config" in (await lan.get("/config")).json()["detail"]

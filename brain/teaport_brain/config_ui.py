@@ -470,6 +470,11 @@ async def config_logo():
     return FileResponse(os.path.join(STATIC_DIR, "teaport-logo.svg"), media_type="image/svg+xml")
 
 
+@router.get("/config/logo-dark.svg", include_in_schema=False)
+async def config_logo_dark():  # the page's <picture> source in dark mode
+    return FileResponse(os.path.join(STATIC_DIR, "teaport-logo-dark.svg"), media_type="image/svg+xml")
+
+
 @router.get("/api/config")
 async def get_config(request: Request):
     _authorize(request)
