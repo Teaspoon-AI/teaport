@@ -9,7 +9,12 @@ Wants=network-online.target
 Requires=teaport-engine.service
 
 [Service]
-Type=simple
+# notify: the brain says READY=1 (sdnotify.py) once uvicorn has bound its port, so
+# `systemctl restart` -- and so the package's postinst -- returns only when the new brain
+# is serving, and fails when it never gets there.
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=180
 User=@USER@
 # The SIP gateway's socket (teaport-sip.service's RuntimeDirectory): the brain's SIP
 # front-end looks for it and connects whenever the gateway is up. A default box has no
@@ -19,7 +24,7 @@ Environment=TEAPORT_SIP_SOCKET=@SIP_UDS@
 # and the group, which exists before this unit is rendered).
 SupplementaryGroups=teaport-hw
 EnvironmentFile=@ETC@/brain.env
-ExecStart=@PREFIX@/venv/bin/teaport-brain --port ${BRAIN_PORT}
+ExecStart=@PREFIX@/brain/bin/teaport-brain --port ${BRAIN_PORT}
 Restart=on-failure
 RestartSec=5
 # The voice path goes last when memory runs out (see teaport-engine.service).

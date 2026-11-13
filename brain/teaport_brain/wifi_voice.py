@@ -72,7 +72,7 @@ from teaport_brain.taken_turn import handed_back, is_taken, taken  # noqa: F401 
 UNIT = "teaport-wifi-setup"
 UNIT_FILE = f"/etc/systemd/system/{UNIT}.service"
 # The root-owned config helper the installer puts in sudoers (config_ui.py uses it too).
-APPLY_HELPER = "/usr/local/lib/teaport/config_apply.py"
+APPLY_HELPER = "/usr/lib/teaport/config_apply.py"
 SYSTEM_PYTHON = "/usr/bin/python3"
 STATUS_PATH = "/run/teaport-wifi-setup/status.json"
 POLL_SECS = 0.5

@@ -3,23 +3,20 @@
 /etc/teaport/*.env are root:<run-user> 0640 (install.sh write_env), so the brain
 — which runs as the run user — can read them but not write them, and a restart
 is systemctl. Rather than widen the brain's privileges, config_ui.py shells out
-to THIS module under sudo for exactly those two actions, and install.sh installs
-the one sudoers line that allows it:
+to THIS module under sudo for exactly those two actions, and the teaport-brain
+package installs the one sudoers line that allows it (packaging/deb/sudoers-sync):
 
-    <run-user> ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/lib/teaport/config_apply.py *
+    <run-user> ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/config_apply.py *
 
-install.sh keeps a root:root 0755 copy of this file per brain release under
-/usr/local/lib/teaport/releases/, and the path above links to the live one's (a
-root-owned link in a root-owned directory) — NOT the copy inside $PREFIX/venv.
-The venv, its bin/python and every module in it are owned by the run user
-(install.sh chowns the prefix so uv can populate it),
-so a sudoers line that trusted the venv's interpreter or the venv's copy of
-this module would let the run user edit either and run anything as root. The
-system python and a root-owned script are the two things that user cannot
-touch. Everything after the script path is argv to THIS code, which only ever
-touches the files and units named below. sudo's env_reset strips PYTHONPATH,
-and python puts the script's own (root-owned) directory first on sys.path: the
-release's, since it resolves the links first.
+The package ships this file as /usr/lib/teaport/config_apply.py, root:root 0755,
+so the brain and the line it runs under always come from the same package
+version. The venv under /opt/teaport/brain is root's too, but the line still
+names the system python and this one script: a venv is a large tree of code that
+is not meant to run as root, and the package's own files are the only ones a
+rollback is guaranteed to put back together. Everything after the script path
+is argv to THIS code, which only ever touches the files and units named below.
+sudo's env_reset strips PYTHONPATH, and python puts the script's own root-owned
+directory first on sys.path.
 
     python3 config_apply.py write brain.env   < new-content
     python3 config_apply.py restart teaport-brain

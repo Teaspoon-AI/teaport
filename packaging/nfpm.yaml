@@ -3,10 +3,9 @@
 # venv under contents must first be built AT /opt/teaport/brain (a venv is not
 # relocatable) and the version comes from the script.
 #
-# Build-only for now: the package lays its files down and has no maintainer scripts.
-# The installer and the units still run the brain from its own venv, so installing
-# this .deb changes nothing that is running. Pointing the units, the sudoers line and
-# the config page at these paths is a separate step.
+# Installing it puts the brain live: postinst writes the config page's sudoers line,
+# links the old /opt/teaport/venv path to the new tree and restarts the brain's units
+# (packaging/deb/postinst). install.sh renders the units; this package carries what runs.
 name: teaport-brain
 arch: ${TEAPORT_DEB_ARCH}
 platform: linux
@@ -35,11 +34,13 @@ description: |-
 # pool links (numba comes in with resampy). libgomp is the one of these a minimal
 # Ubuntu install lacks. Then the interpreter the venv was built on (pyvenv.cfg home =
 # /usr/bin), the system python3 that runs the root-owned config helper, and curl for
-# the CLI. No python3.12-venv: the venv is built in CI by uv, and nothing on the box
+# the CLI, and sudo (visudo checks the config page's sudoers line before it is installed).
+# No python3.12-venv: the venv is built in CI by uv, and nothing on the box
 # creates one or runs ensurepip.
 depends:
   - python3.12 (>= 3.12.3)
   - python3
+  - sudo
   - curl
   - libc6
   - libgcc-s1
@@ -48,6 +49,10 @@ depends:
   - libgomp1
 
 umask: 0o022
+
+scripts:
+  postinstall: packaging/deb/postinst
+  postremove: packaging/deb/postrm
 
 contents:
   # The venv, byte for byte as uv built it (bytecode included, so a root-owned tree
@@ -71,6 +76,15 @@ contents:
   # of the venv: a root-owned copy outside it (see config_apply.py's docstring).
   - src: brain/teaport_brain/config_apply.py
     dst: /usr/lib/teaport/config_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
+  # The one writer of the config page's sudoers line (see the script): run by postinst
+  # and by install.sh once it has rendered the unit that names the run user.
+  - src: packaging/deb/sudoers-sync
+    dst: /usr/lib/teaport/sudoers-sync
     file_info:
       mode: 0o755
       owner: root

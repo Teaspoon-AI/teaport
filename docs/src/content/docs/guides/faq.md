@@ -33,7 +33,7 @@ The brain and the plugin are MIT. The engine is a separate component with its ow
 
 Yes. Install without an agent and teaport runs in voice-only mode: the brain offers only the tools that live on the device, and the installer writes `TEAPORT_AGENT=none`. Anything that needs the OpenClaw gateway, such as web search, memory, or the agent consult, is not available in this mode. Installing OpenClaw later and running the installer again turns the agent on; the choices are in [Install an agent](/getting-started/installation/#install-an-agent).
 
-<!-- source: install.sh:2703-2724#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
+<!-- source: install.sh:2510-2531#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
 
 ## Can teaport answer phone calls?
 
@@ -49,6 +49,6 @@ The engine serves a single speech-to-text session at a time, and the brain holds
 
 ## How do updates work?
 
-The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it builds a new environment beside the running one, checks it, swaps it in, and restarts `teaport-brain`. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new environment is not healthy, the previous one comes back by itself. An engine release has its own path too: `--only engine` updates the engine alone, and puts the previous engine back by itself when the new one doesn't come up healthy. The `teaport update --check` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
+The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it installs the brain package, restarts `teaport-brain`, and checks that the brain comes back. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new package does not come up healthy, the previous package comes back by itself. An engine release has its own path too: `--only engine` updates the engine alone, and puts the previous engine back by itself when the new one doesn't come up healthy. The `teaport update --check` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
 
-<!-- source: install.sh:17-23,1398#544cd662; install.sh:12,37-45#0188744d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7-8#efef4a9b -->
+<!-- source: install.sh:17-23,1149#468bd310; install.sh:12,37-45#0188744d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7-8#efef4a9b -->

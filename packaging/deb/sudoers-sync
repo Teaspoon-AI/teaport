@@ -1,0 +1,36 @@
+#!/bin/sh
+# sudoers-sync [RUN_USER] -- the one sudoers line the config page needs (#60).
+#
+# The config page writes /etc/teaport/*.env and restarts teaport-* units, as root, through
+# one script and nothing else: /usr/lib/teaport/config_apply.py, root-owned, run by the
+# SYSTEM python, never the venv's interpreter. The line names the run user, who the package does not know: it is
+# the User= of the rendered teaport-brain unit, or the argument (install.sh passes it right
+# after it renders the unit, on a first install where the unit did not exist yet when the
+# package was configured).
+#
+# Run by postinst and by install.sh; one writer, so the helper path in the line and in
+# config_ui.APPLY_HELPER change together with the package. A line that does not pass
+# visudo is not installed: a malformed sudoers.d entry locks sudo for everyone, which on a
+# headless box is a reinstall.
+set -eu
+f=/etc/sudoers.d/teaport-config
+helper=/usr/lib/teaport/config_apply.py
+user="${1:-}"
+if [ -z "$user" ]; then
+  user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+fi
+# No unit yet, or a root brain: nothing to grant (root needs no line).
+if [ -z "$user" ] || [ "$user" = root ]; then exit 0; fi
+case "$user" in
+  *[!A-Za-z0-9._-]*|-*) echo "sudoers-sync: refusing the user name '$user'" >&2; exit 1 ;;
+esac
+[ -f "$helper" ] || { echo "sudoers-sync: $helper is missing" >&2; exit 1; }
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' \
+  "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
+  "# through this one root-owned script and nothing else. See config_apply.py." \
+  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" > "$tmp"
+if [ -f "$f" ] && cmp -s "$tmp" "$f"; then exit 0; fi
+visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated line does not pass visudo; $f left as it was" >&2; exit 1; }
+install -m 0440 -o root -g root "$tmp" "$f"

@@ -1,10 +1,13 @@
 #
-# install.sh's --only brain follow-ups (issue #59): it refuses a box with no brain venv
-# (main_brain_only), its freshness check looks only at what it installs
-# (check_brain_source), the three privileged reads of an env file share one helper
-# (read_env_file: resolve_gateway_token, write_env, brain_verify), and a release's
-# teaport CLI and config helper go live and come back with its venv (brain_stage_tools,
-# tools_point_at, from brain_point_at).
+# install.sh's brain package path (#60) and the --only brain follow-ups (issue #59):
+# --only brain refuses a box with no appliance (main_brain_only) and installs the
+# teaport-brain .deb (brain_deb_fetch, brain_deb_keep, brain_swap), putting the package
+# that was installed before back when the brain does not come up; --rollback brain does
+# the same by hand (main_rollback_brain); the package cache keeps three (brain_deb_prune);
+# the pre-package CLI and helper are retired only once the package's are in place
+# (brain_retire_old_tools); its freshness check looks only at what it installs
+# (check_brain_source); and the three privileged reads of an env file share one helper
+# (read_env_file: resolve_gateway_token, write_env, brain_verify).
 #
 # The functions are taken out of install.sh as they are and run by bash with the
 # commands around them stubbed (sudo, systemctl, curl, the phases), against a temp dir.
@@ -13,6 +16,7 @@
 #
 # Run: python test_install_brain_only.py   (or via pytest test_suite.py)
 #
+import json
 import os
 import pathlib
 import re
@@ -25,7 +29,7 @@ INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
 
 STUBS = r'''
 set -euo pipefail
-DRY_RUN=0 ONLY="" BRAIN_SRC="" ALLOW_STALE_SOURCE=0 BRAIN_PORT=7861 GATEWAY_TOKEN="" RUN_USER=nobody
+DRY_RUN=0 ONLY="" ALLOW_STALE_SOURCE=0 BRAIN_PORT=7861 GATEWAY_TOKEN="" RUN_USER=nobody
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
@@ -174,17 +178,18 @@ def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
     assert rc == 0 and "CURL http://127.0.0.1:7861/health" in out, out
 
 
-# --- --only brain refuses a box with no brain venv -----------------------------------
+# --- --only brain refuses a box with no appliance ------------------------------------
 
 ONLY_BRAIN_STUBS = r'''
-STAGED=/opt/teaport/venvs/new
-systemctl() { [ "$1" = cat ]; }   # the brain unit is installed
-for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_retire \
-         install_busy_lamp install_dns_resilience install_arp_multihome brain_prune; do eval "$f() { echo STEP $f; }"; done
+BRAIN_DEB_CACHED=/cache/x.deb BRAIN_DEB_NEW=2.0
+systemctl() { [ "$1" = cat ] && [ "${NO_UNIT:-0}" = 0 ]; }   # the brain unit is installed
+for f in check_brain_source brain_deb_fetch brain_deb_keep sip_brain_detach brain_swap sip_brain_retire \
+         brain_retire_old_tools install_busy_lamp install_dns_resilience install_arp_multihome \
+         brain_deb_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
 
-def _brain_only(tmp, venv=None, dry_run=False, logs_capped=True):
+def _brain_only(tmp, unit=True, dry_run=False, logs_capped=True):
     prefix = pathlib.Path(tmp, "opt")
     prefix.mkdir()
     # logrotate and the journal drop-in, under tmp: there (a box a full run has set up since
@@ -196,48 +201,43 @@ def _brain_only(tmp, venv=None, dry_run=False, logs_capped=True):
         logrotate.chmod(0o755)
         dropin.write_text("[Journal]\n")
         applied.write_text("Storage=persistent\n")
-    if venv == "dir":
-        (prefix / "venv").mkdir()
-    elif venv == "link":
-        (prefix / "venvs/r1").mkdir(parents=True)
-        (prefix / "venv").symlink_to(prefix / "venvs/r1")
-    elif venv == "dangling":
-        (prefix / "venv").symlink_to(prefix / "venvs/gone")
-    script = (f'{ONLY_BRAIN_STUBS}PREFIX="{prefix}"; BRAIN_LINK="$PREFIX/venv"; '
+    script = (f'{ONLY_BRAIN_STUBS}PREFIX="{prefix}"; '
               f'LOGROTATE_BIN="{logrotate}"; JOURNAL_DROPIN="{dropin}"; JOURNAL_APPLIED="{applied}"; '
-              f'DRY_RUN={int(dry_run)}; '
-              'main_brain_only')
+              f'DRY_RUN={int(dry_run)}; ')
+    if not unit:
+        script += 'NO_UNIT=1; '
+    script += 'main_brain_only'
     return _run(tmp, script, ["main_brain_only"])
 
 
-def test_only_brain_refuses_a_box_with_no_brain_venv():
-    rc, out = _brain_only(tempdir("teaport-only-"))
-    assert rc != 0 and "DIE no brain venv at" in out and "without --only" in out, out
-    assert "STEP" not in out, out   # refused before anything was built or swapped
+def test_only_brain_refuses_a_box_with_no_appliance():
+    rc, out = _brain_only(tempdir("teaport-only-"), unit=False)
+    assert rc != 0 and "DIE no installed appliance here" in out and "without it first" in out, out
+    assert "STEP" not in out, out   # refused before any package was fetched or installed
 
 
 def test_only_brain_dry_run_warns_and_shows_the_plan():
-    rc, out = _brain_only(tempdir("teaport-only-"), dry_run=True)
-    assert rc == 0 and "WARN no brain venv at" in out and "STEP brain_swap" in out, out
+    rc, out = _brain_only(tempdir("teaport-only-"), unit=False, dry_run=True)
+    assert rc == 0 and "WARN no installed appliance here" in out and "STEP brain_swap" in out, out
 
 
 def test_only_brain_says_when_the_box_has_no_capped_logs_yet():
     # --only brain installs no system packages: a box no full run has set up since
     # setup_logs (no logrotate) keeps its unrotated /var/log, and is told so; it goes on.
-    rc, out = _brain_only(tempdir("teaport-only-"), venv="link", logs_capped=False)
+    rc, out = _brain_only(tempdir("teaport-only-"), logs_capped=False)
     assert rc == 0 and "WARN logs may not be rotated or capped on this box yet" in out, out
     assert "without --only once" in out and "STEP brain_swap" in out, out
-    rc, out = _brain_only(tempdir("teaport-only-"), venv="link")
+    rc, out = _brain_only(tempdir("teaport-only-"))
     assert rc == 0 and "may not be rotated" not in out, out
 
 
-def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
-    for venv in ("link", "dir", "dangling"):
-        rc, out = _brain_only(tempdir("teaport-only-"), venv=venv)
-        assert rc == 0 and "no brain venv" not in out and "STEP brain_swap" in out, (venv, out)
-        # The resolver's and the ARP drop-ins ride the brain update too, after the verified swap.
-        assert out.index("STEP brain_swap") < out.index("STEP install_dns_resilience"), out
-        assert out.index("STEP brain_swap") < out.index("STEP install_arp_multihome"), out
+def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verified_swap():
+    rc, out = _brain_only(tempdir("teaport-only-"))
+    assert rc == 0, out
+    order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
+    assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "sip_brain_detach",
+                     "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "install_busy_lamp",
+                     "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
 
 
 # --- the resolver's serve-stale drop-in ------------------------------------------------
@@ -253,7 +253,7 @@ def _dns(tmp, resolved_active=True, stub=True, systemd=255):
     resolv.write_text("nameserver 127.0.0.53\noptions edns0 trust-ad\n" if stub
                       else "nameserver 192.168.1.254\n")
     active = 0 if resolved_active else 3
-    script = (f'SRC_DIR="{tmp}/src/brain"; HERE="{tmp}/none"; RESOLVED_DROPIN="{dropin}"; '
+    script = (f'HERE="{tmp}/src"; RESOLVED_DROPIN="{dropin}"; '
               f'RESOLV_CONF="{resolv}"\n'
               f'systemctl() {{ printf "%s\\n" "$*" >> "$T/systemctl.log"; '
               f'[ "$1" = --version ] && {{ echo "systemd {systemd} ({systemd}.4-1ubuntu8)"; return 0; }}; '
@@ -517,7 +517,8 @@ def _behind(touching):
     up, here, other = (os.path.join(tmp, d) for d in ("up.git", "here", "other"))
     _git(tmp, "init", "--bare", up)
     _git(tmp, "clone", up, other)
-    for f in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules",
+    for f in ("brain/uv.lock", "cli/teaport", "systemd/teaport-brain.service.in",
+              "packaging/xvf3800/60-teaport-xvf3800.rules",
               "packaging/resolved/60-teaport-serve-stale.conf",
               "packaging/wifi-setup/x", "docs/x.md", "plugin/x.ts", "install.sh"):
         p = pathlib.Path(other, f)
@@ -542,7 +543,8 @@ def _check(tmp, here, only):
 
 
 def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
-    for touching in ("docs/x.md", "plugin/x.ts", "packaging/wifi-setup/x"):
+    # The brain itself (brain/, the CLI) is the package now, not the checkout.
+    for touching in ("docs/x.md", "plugin/x.ts", "packaging/wifi-setup/x", "brain/uv.lock", "cli/teaport"):
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here, "brain")
         assert rc == 0 and "CHECKED" in out and "behind" not in out, (touching, out)
@@ -552,33 +554,31 @@ def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
 
 
 def test_only_brain_is_refused_for_upstream_commits_to_what_it_installs():
-    # install.sh too: how the brain is built, and some of what --only brain writes, is in it.
-    for touching in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules",
+    # install.sh too: how the package is installed, and some of what --only brain writes, is in it.
+    for touching in ("systemd/teaport-brain.service.in", "packaging/xvf3800/60-teaport-xvf3800.rules",
                      "packaging/resolved/60-teaport-serve-stale.conf", "install.sh"):
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here, "brain")
         assert rc != 0, (touching, out)
         assert ("1 commit(s) behind origin/main in what --only brain installs "
-                "(brain cli packaging/xvf3800 packaging/resolved install.sh)") in out, (touching, out)
+                "(systemd packaging/xvf3800 packaging/resolved install.sh)") in out, (touching, out)
 
 
 def test_uncommitted_changes_in_any_installed_path_are_named():
     tmp, here = _behind("docs/x.md")   # behind only in what --only brain does not install
-    pathlib.Path(here, "cli/teaport").write_text("local\n")
+    pathlib.Path(here, "systemd/teaport-brain.service.in").write_text("local\n")
     rc, out = _check(tmp, here, "brain")
-    assert rc == 0 and f"uncommitted changes in {here} are used too: cli\n" in out, out
-    pathlib.Path(here, "brain/uv.lock").write_text("local\n")
+    assert rc == 0 and f"uncommitted changes in {here} are used too: systemd\n" in out, out
+    pathlib.Path(here, "install.sh").write_text("local\n")
     rc, out = _check(tmp, here, "brain")
-    assert rc == 0 and ": brain cli (the venv's revision is marked -dirty)" in out, out
+    assert rc == 0 and f"are used too: systemd install.sh\n" in out, out
 
 
-# The checkout paths --only brain's functions read, as they spell them. SRC_DIR (and
-# brain_stage's $src) is the checkout's brain/ (check_brain_source).
+# The checkout paths --only brain's functions read, as they spell them: the unit
+# templates render_unit takes from $HERE/systemd, and packaging_src's files.
 _READS = {
-    r'\$\(dirname "\$SRC_DIR"\)/([\w./-]+)': "",
+    r'render_unit ([\w.-]+\.in)': "systemd/",
     r'packaging_src ([\w./-]+)': "packaging/",
-    r'\$SRC_DIR/([\w./-]+)': "brain/",
-    r'\$src/([\w./-]+)': "brain/",
     r'\$HERE/([\w./-]+)': "",
 }
 
@@ -586,25 +586,26 @@ _READS = {
 def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
     paths = re.findall(r"\((.*)\)", _line("BRAIN_ONLY_PATHS="))[0].split()
     read = set()
-    for fn in ("brain_stage", "brain_stage_tools", "install_busy_lamp", "install_dns_resilience"):
+    for fn in ("brain_render_units", "install_busy_lamp", "install_dns_resilience"):
         body = _fn(fn)
         for pattern, base in _READS.items():
             read.update(base + m for m in re.findall(pattern, body))
     # Found at all: a respelled reference must not make this pass by matching nothing.
-    assert {"cli/teaport", "brain/uv.lock", "packaging/xvf3800/60-teaport-xvf3800.rules",
+    assert {"systemd/teaport-brain.service.in", "packaging/xvf3800/60-teaport-xvf3800.rules",
             "packaging/resolved/60-teaport-serve-stale.conf"} <= read, read
     uncovered = sorted(r for r in read if not any(r == p or r.startswith(p + "/") for p in paths))
     assert not uncovered, f"read by --only brain but not in BRAIN_ONLY_PATHS: {uncovered}"
     assert "install.sh" in paths
 
 
-# --- the operator tools follow the venv ----------------------------------------------
-# brain_stage_tools / tools_point_at / tools_adopt with brain_point_at, brain_swap and
-# brain_prune around them, against a prefix, a tools dir and two brain sources in a temp
-# dir. SUDO runs what it is given, minus the -o root -g root a user cannot do, and logs
-# it: the ownership itself is root's to check (on a box, as root).
+# --- the package: fetch, keep, swap, roll back, prune ---------------------------------
+# brain_deb_* and brain_swap run by bash with dpkg, apt (SUDO) and the restart stubbed,
+# against a temp cache. A .deb here is a file plus a `.fields` file the dpkg-deb stub reads.
 
-TOOLS_STUBS = r'''
+DEB_STUBS = r'''
+PREFIX=/opt/teaport STATE="$T/state" BRAIN_DEBS="$T/cache" BRAIN_DEB_KEEP=3 BRAIN_DEB_SRC="" MF=""
+BRAIN_PKG=teaport-brain DRY_RUN=0 BRAIN_DEB_SHA="" BRAIN_DEB_DOWNLOADED=0 BRAIN_DEB_ADDED=0
+mkdir -p "$BRAIN_DEBS" "$STATE"
 sudo() { return 0; }
 run()  { "$@"; }
 SUDO() {
@@ -612,171 +613,443 @@ SUDO() {
   local a=() x skip=0
   for x in "$@"; do
     if [ "$skip" = 1 ]; then skip=0; continue; fi
-    case "$x" in -o|-g) skip=1 ;; *) a+=("$x") ;; esac
+    case "$1:$x" in install:-o|install:-g) skip=1 ;; *) a+=("$x") ;; esac   # root:root of install
   done
-  "${a[@]}"
+  case "${a[0]}" in
+    env) printf 'APT %s\n' "${a[*]:2}" >> "$T/apt.log"
+         local f="${a[-1]##*/}" v; v="${f#teaport-brain_}"; v="${v%%_*}"
+         # apt that never reaches the package (the lock) changes nothing; a postinst that
+         # fails leaves the new version half-configured; otherwise it is installed.
+         if [ "${APT_LOCKED:-}" = "$f" ]; then return 1; fi
+         if [ "${APT_FAILS:-}" = "$f" ]; then echo "half-configured $v" > "$T/dq"; return 1; fi
+         echo "installed $v" > "$T/dq" ;;
+    chown) : ;;
+    install) "${a[@]}"; if [ -f "${a[-2]}.fields" ]; then cp "${a[-2]}.fields" "${a[-1]}.fields"; fi ;;
+    mv) "${a[@]}"; if [ -f "${a[-2]}.fields" ]; then mv "${a[-2]}.fields" "${a[-1]}.fields"; fi ;;
+    *) "${a[@]}" ;;
+  esac
 }
-PREFIX="$T/opt" BRAIN_KEEP=3 TOOLS_DIR="$T/lib" TOOLS_CLI="$T/bin/teaport"
-BRAIN_VENVS="$PREFIX/venvs" BRAIN_LINK="$PREFIX/venv" BRAIN_PREV="$PREFIX/venv.previous"
-BRAIN_LEGACY="$PREFIX/venv.pre-uv"
-mkdir -p "$BRAIN_VENVS" "$T/bin"
-# build <release> <source>: a venv dir and its tools, from $T/<source>
-build() { mkdir -p "$BRAIN_VENVS/$1"; SRC_DIR="$T/$2/brain"; brain_stage_tools "$BRAIN_VENVS/$1"; }
+dpkg() { [ "$1" = --print-architecture ] && echo arm64; }
+dpkg-deb() { sed -n "s/^$3: //p" "$2.fields"; }
+dpkg-query() {
+  if [ -f "$T/dq" ]; then cat "$T/dq"
+  elif [ -n "${INSTALLED:-}" ]; then printf '%s %s\n' "${STATUS:-installed}" "$INSTALLED"; fi
+}
+download() { cp "$T/remote/$(basename "$1")" "$2"; cp "$T/remote/$(basename "$1").fields" "$2.fields"; }
+mget() { python3 -c "import json,sys; d=json.load(open('$MF'))
+for k in sys.argv[1].split('.'): d=d[k]
+print(d)" "$1"; }
 '''
-TOOLS_FNS = ["tools_id", "brain_stage_tools", "tools_point_at", "tools_adopt", "tools_link", "tools_has",
-             "brain_point_at", "brain_prune", "sudo_ready"]
+DEB_FNS = ["brain_deb_arch", "brain_installed_version", "brain_package_version", "brain_deb_path",
+           "brain_deb_fetch", "brain_deb_verify", "brain_deb_keep", "brain_deb_apply", "brain_deb_prune"]
 
 
-def _tools_box(*sources):
-    tmp = tempdir("teaport-tools-")
-    for s in sources:
-        for rel, text in (("cli/teaport", f"cli {s}\n"), ("brain/teaport_brain/config_apply.py", f"helper {s}\n")):
-            p = pathlib.Path(tmp, s, rel)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(text)
-    return tmp
+def _deb(path, version, package="teaport-brain", arch="arm64"):
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"deb {version}\n")
+    pathlib.Path(str(path) + ".fields").write_text(
+        f"Package: {package}\nVersion: {version}\nArchitecture: {arch}\n")
+    return path
 
 
-def _tools_run(tmp, script, extra_fns=()):
-    return _run(tmp, TOOLS_STUBS + _line("CONFIG_HELPER=") + _line("STAGED=") + script, TOOLS_FNS + list(extra_fns))
+def _cached(tmp, version, age=0):
+    p = _deb(pathlib.Path(tmp, "cache", f"teaport-brain_{version}_arm64.deb"), version)
+    os.utime(p, (1_700_000_000 + age, 1_700_000_000 + age))
+    os.utime(str(p) + ".fields", (1_700_000_000 + age, 1_700_000_000 + age))
+    return p
 
 
-def _installed(tmp):
-    """The CLI and helper as a caller reaches them: through the fixed paths."""
-    cli, helper = pathlib.Path(tmp, "bin/teaport"), pathlib.Path(tmp, "lib/config_apply.py")
-    return cli.read_text().strip(), helper.read_text().strip()
+def _debrun(tmp, script, fns=(), env=None):
+    return _run(tmp, DEB_STUBS + script, DEB_FNS + list(fns), env)
 
 
-def test_a_swap_and_a_rollback_by_hand_move_the_tools_with_the_venv():
-    tmp = _tools_box("v1", "v2")
-    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
-    assert rc == 0 and _installed(tmp) == ("cli v2", "helper v2"), out
-    # What --rollback brain does (main_rollback_brain -> brain_swap -> brain_point_at).
-    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
-    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v1"), out
-    # ... and again, to undo it.
-    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
-    assert rc == 0 and _installed(tmp) == ("cli v2", "helper v2"), out
-    # The fixed paths (the sudoers line's, PATH's) are links through `current`, into the
-    # tools dir and never into the run user's prefix; every write there went through
-    # SUDO, as root:root.
-    lib = pathlib.Path(tmp, "lib")
-    assert os.readlink(lib / "config_apply.py") == "current/config_apply.py"
-    assert os.readlink(pathlib.Path(tmp, "bin/teaport")) == f"{lib}/current/teaport"
-    assert os.readlink(lib / "current") == "releases/r2"
-    for f in ("bin/teaport", "lib/config_apply.py"):
-        assert os.path.realpath(pathlib.Path(tmp, f)).startswith(f"{lib}/releases/"), f
-    installs = [c for c in _sudo_calls(tmp) if c.startswith("SUDO install ")]
-    assert installs and all("-o root -g root" in c for c in installs), installs
+def test_a_given_package_is_checked_and_kept_under_its_canonical_name():
+    tmp = tempdir("teaport-deb-")
+    deb = _deb(pathlib.Path(tmp, "in/whatever.deb"), "1.2.3")
+    rc, out = _debrun(tmp, f'BRAIN_DEB_SRC="{deb}"; brain_deb_fetch; brain_deb_keep; echo "$BRAIN_DEB_NEW $BRAIN_DEB_CACHED"')
+    assert rc == 0 and f"1.2.3 {tmp}/cache/teaport-brain_1.2.3_arm64.deb" in out, out
+    assert pathlib.Path(tmp, "cache/teaport-brain_1.2.3_arm64.deb").read_text() == "deb 1.2.3\n"
+    # Something that is not the package, or is for another machine, is refused.
+    for fields, why in (({"package": "other"}, "is not a teaport-brain package"),
+                        ({"arch": "amd64"}, "is for amd64, this machine is arm64")):
+        bad = _deb(pathlib.Path(tmp, "in/bad.deb"), "1.0", **fields)
+        rc, out = _debrun(tmp, f'BRAIN_DEB_SRC="{bad}"; brain_deb_fetch')
+        assert rc != 0 and why in out, out
+    rc, out = _debrun(tmp, f'BRAIN_DEB_SRC="{tmp}/in/missing.deb"; brain_deb_fetch')
+    assert rc != 0 and "is not a file" in out, out
 
 
-def test_an_automatic_rollback_puts_the_previous_tools_back():
-    tmp = _tools_box("v1", "v2")
-    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"')
+def test_without_a_package_the_manifest_names_one_or_the_run_says_how_to_give_one():
+    tmp = tempdir("teaport-deb-")
+    mf = pathlib.Path(tmp, "m.json")
+    mf.write_text('{"brain": {"repo": "x/y", "tag": "main"}}')
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch')
+    assert rc != 0 and "names no brain package" in out and "TEAPORT_BRAIN_DEB=" in out, out
+    # A dry run says so and goes on; a real run stops.
+    rc, out = _debrun(tmp, f'MF="{mf}"; DRY_RUN=1; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"')
+    assert rc == 0 and "WARN the release manifest names no brain package yet" in out and "NEW (none named)" in out, out
+    # It names one: downloaded, checked against its fields.
+    _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
+    mf.write_text('{"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": "aa"}}}')
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; echo "GOT $BRAIN_DEB_NEW"')
+    assert rc == 0 and "GOT 0.1.0" in out, out
+
+
+def test_the_package_wants_the_default_prefix():
+    tmp = tempdir("teaport-deb-")
+    rc, out = _debrun(tmp, 'PREFIX=/srv/x; brain_deb_fetch')
+    assert rc != 0 and "installs to /opt/teaport" in out, out
+
+
+def test_what_apt_installs_is_the_root_copy_and_the_copy_is_what_was_checked():
+    # The download directory is the run user's: the original can change after the check, so
+    # the sha256 and the package fields are checked on the root-owned copy.
+    import hashlib
+    tmp = tempdir("teaport-deb-")
+    _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
+    sha = hashlib.sha256(b"deb 0.1.0\n").hexdigest()
+    mf = pathlib.Path(tmp, "m.json")
+    mf.write_text(json.dumps({"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": sha}}}))
+    cached = pathlib.Path(tmp, "cache/teaport-brain_0.1.0_arm64.deb")
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; orig="$BRAIN_DEB"; brain_deb_keep; test ! -e "$orig" && echo ORIG_GONE')
+    assert rc == 0 and "ORIG_GONE" in out and cached.read_text() == "deb 0.1.0\n", out   # the download is not kept twice
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; brain_deb_keep; echo "ADDED=$BRAIN_DEB_ADDED"')
+    assert rc == 0 and "ADDED=0" in out, out   # the second time the cache already had it
+    assert not pathlib.Path(tmp, "cache/incoming.partial").exists()
+    for how, change in (("its content", 'echo tampered > "$BRAIN_DEB"'),
+                        ("its fields", 'echo "Package: other" > "$BRAIN_DEB.fields"')):
+        tmp = tempdir("teaport-deb-")
+        _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
+        mf = pathlib.Path(tmp, "m.json")
+        mf.write_text(json.dumps({"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": sha}}}))
+        rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch; {change}; brain_deb_keep')
+        assert rc != 0 and "nothing was installed" in out, (how, out)
+        left = [f for f in os.listdir(pathlib.Path(tmp, "cache")) if not f.endswith(".fields")]   # (stub sidecars)
+        assert left == [], (how, left)
+
+
+def test_the_cache_keeps_the_newest_three_and_the_installed_one():
+    tmp = tempdir("teaport-deb-")
+    for i, v in enumerate(("1.0", "1.1", "1.2", "1.3", "1.4")):
+        _cached(tmp, v, age=i)
+    # 1.0 is the oldest and the installed one: it stays beside the newest three.
+    rc, out = _debrun(tmp, 'INSTALLED=1.0; brain_deb_prune')
+    left = sorted(f for f in os.listdir(pathlib.Path(tmp, "cache")) if f.endswith(".deb"))
     assert rc == 0, out
-    # The new brain does not come back; the previous one does.
-    script = r'''
-DRY_RUN=0 SWAP_ALSO=""
-brain_units() { SWAP_JUDGE=teaport-brain.service; }
-brain_restart() { [ -e "$T/restarted" ] && return 0; touch "$T/restarted"; FAILED_UNIT=teaport-brain.service; return 1; }
-sip_brain_restore() { :; }
-build r2 v2; brain_swap "$BRAIN_VENVS/r2" --auto-rollback'''
-    rc, out = _tools_run(tmp, script, ["brain_swap"])
-    assert rc != 0 and "DIE rolled back" in out and "config helper are back too" in out, out
-    assert _installed(tmp) == ("cli v1", "helper v1"), out
-    assert os.readlink(pathlib.Path(tmp, "opt/venv")).endswith("/r1")
+    assert left == [
+        f"teaport-brain_{v}_arm64.deb" for v in ("1.0", "1.2", "1.3", "1.4")], left
 
 
-def test_tools_installed_before_releases_had_their_own_become_the_live_releases():
-    tmp = _tools_box("v1")
-    # A box from before: plain files, and a live venv with no tools of its own.
-    pathlib.Path(tmp, "lib").mkdir()
-    pathlib.Path(tmp, "bin/teaport").parent.mkdir()
-    pathlib.Path(tmp, "bin/teaport").write_text("cli old\n")
-    pathlib.Path(tmp, "lib/config_apply.py").write_text("helper old\n")
-    rc, out = _tools_run(tmp, 'mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"; '
-                              'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"')
-    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v1"), out
-    assert "kept as r0's" in out, out
-    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
-    assert rc == 0 and _installed(tmp) == ("cli old", "helper old"), out
-    assert os.path.islink(pathlib.Path(tmp, "bin/teaport")), out
+SWAP_STUBS = r'''
+SWAP_JUDGE="teaport-brain.service" SWAP_ALSO=""
+brain_units() { :; }
+brain_render_units() { echo RENDER; }
+brain_sudoers() { echo SUDOERS; }
+sip_brain_restore() { echo SIP_RESTORE; }
+sudo_ready() { :; }
+brain_restart() { echo "RESTART $*"; n=$(( $(cat "$T/restarts" 2>/dev/null || echo 0) + 1 )); echo $n > "$T/restarts"; FAILED_UNIT=teaport-brain.service; [ "$n" -gt "${RESTARTS_FAIL:-0}" ]; }
+'''
 
 
-def test_a_release_with_no_tools_or_a_repointed_link_leaves_the_tools_alone():
-    tmp = _tools_box("v1", "v2")
-    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
-    assert rc == 0, out
-    for prev in ('mkdir "$BRAIN_VENVS/r0"; echo "$BRAIN_VENVS/r0"',   # built before per-release tools
-                 'mkdir -p "$T/x/.."; echo "$T/x/.."',                 # not a release name at all
-                 'echo "$TOOLS_DIR"'):                                 # a dir that is not a release
-        rc, out = _tools_run(tmp, f'tools_point_at "$({prev})"')
-        assert rc == 0 and "has no operator tools of its own" in out, (prev, out)
-        assert _installed(tmp) == ("cli v2", "helper v2"), (prev, out)
+def _swap(tmp, installed=None, new="2.0", mode="--auto-rollback", env=None, extra=""):
+    """brain_swap of a fresh 2.0 over <installed>, whose package is kept."""
+    if installed:
+        _cached(tmp, installed)
+    new_deb = _cached(tmp, new, age=10)
+    script = (f'{SWAP_STUBS}{"INSTALLED=" + installed + chr(10) if installed else ""}'
+              f'BRAIN_DEB_NEW={new} BRAIN_DEB=/in/{new}.deb BRAIN_DEB_ADDED=1\n{extra}brain_swap "{new_deb}" {mode}')
+    return _debrun(tmp, script, ["brain_swap"], env)
 
 
-def test_a_source_without_the_cli_or_helper_keeps_the_installed_one():
-    tmp = _tools_box("v1", "v2", "v3")
-    pathlib.Path(tmp, "v2/cli/teaport").unlink()                                  # a bare brain/
-    pathlib.Path(tmp, "v3/brain/teaport_brain/config_apply.py").unlink()          # predates the page
-    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
-    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v2"), out
-    rc, out = _tools_run(tmp, 'build r3 v3; brain_point_at "$BRAIN_VENVS/r3"')
-    assert rc == 0 and _installed(tmp) == ("cli v3", "helper v2"), out
+def test_a_swap_installs_renders_restarts_and_keeps_going_when_the_brain_comes_back():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0")
+    assert rc == 0 and "teaport-brain 1.0 -> 2.0" in out, out
+    assert out.index("RENDER") < out.index("SUDOERS") < out.index("RESTART"), out
+    assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
+    assert "install -y --reinstall --allow-downgrades" in pathlib.Path(tmp, "apt.log").read_text()
 
 
-def test_an_automatic_rollback_to_a_release_without_tools_says_they_stayed():
-    tmp = _tools_box("v2")
-    script = r'''
-DRY_RUN=0 SWAP_ALSO=""
-brain_units() { SWAP_JUDGE=teaport-brain.service; }
-brain_restart() { [ -e "$T/restarted" ] && return 0; touch "$T/restarted"; FAILED_UNIT=teaport-brain.service; return 1; }
-sip_brain_restore() { :; }
-mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
-build r2 v2; brain_swap "$BRAIN_VENVS/r2" --auto-rollback'''
-    rc, out = _tools_run(tmp, script, ["brain_swap"])
-    assert rc != 0 and "DIE rolled back" in out, out
-    assert "are still /" in out and "/r2's (" in out and "are back too" not in out, out
-    # A dry run says the same before anything moves.
-    rc, out = _tools_run(tmp, 'DRY_RUN=1; brain_units() { SWAP_JUDGE=""; }; brain_swap "$BRAIN_VENVS/r0" ""',
-                         ["brain_swap"])
-    assert rc == 0 and "operator tools left as they are (it has none of its own)" in out, out
+def test_a_brain_that_does_not_come_back_gets_the_previous_package_back():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"RESTARTS_FAIL": "1"})
+    assert rc != 0 and "putting 1.0 back" in out and "SIP_RESTORE" in out, out
+    assert "rolled back: the brain is running on 1.0 again" in out, out
+    # The package that failed is out of the cache, so --rollback cannot pick it later.
+    assert "no longer kept" in out and not pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists(), out
+    assert pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists()
+    apt = pathlib.Path(tmp, "apt.log").read_text().splitlines()
+    assert [a.rsplit("/", 1)[-1] for a in apt] == ["teaport-brain_2.0_arm64.deb", "teaport-brain_1.0_arm64.deb"], apt
 
 
-def test_a_dry_run_shows_the_tools_it_would_stage_keep_and_swap_and_touches_nothing():
-    tmp = _tools_box("v1")
-    pathlib.Path(tmp, "lib").mkdir()
-    pathlib.Path(tmp, "bin/teaport").parent.mkdir()
-    pathlib.Path(tmp, "bin/teaport").write_text("cli old\n")
-    pathlib.Path(tmp, "lib/config_apply.py").write_text("helper old\n")
-    script = r'''
-DRY_RUN=1 SWAP_ALSO=""
-SUDO() { printf 'DRY sudo %s\n' "$*"; }   # install.sh's SUDO under --dry-run
-brain_units() { SWAP_JUDGE=teaport-brain.service; }
-mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
-STAGED="$BRAIN_VENVS/r1"; SRC_DIR="$T/v1/brain"
-brain_stage_tools "$STAGED"; brain_swap "$STAGED" --auto-rollback'''
-    rc, out = _tools_run(tmp, script, ["brain_swap"])
-    assert rc == 0, out
-    assert "DRY sudo install -m 0755 -o root -g root" in out and "releases/r1/teaport" in out, out
-    assert "the installed teaport CLI and config helper are kept as r0's" in out, out
-    assert "its operator tools too; restart teaport-brain.service" in out, out
-    assert "none of its own" not in out, out
-    assert sorted(os.listdir(pathlib.Path(tmp, "lib"))) == ["config_apply.py"], out
-    assert _installed(tmp) == ("cli old", "helper old") and not os.path.islink(pathlib.Path(tmp, "bin/teaport"))
+def test_a_package_whose_postinst_fails_is_a_brain_that_did_not_come_back():
+    # postinst restarts the Type=notify brain: a brain that never says ready fails apt.
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"APT_FAILS": "teaport-brain_2.0_arm64.deb"})
+    assert rc != 0 and "installing" in out and "failed" in out and "putting 1.0 back" in out, out
+    apt = pathlib.Path(tmp, "apt.log").read_text().splitlines()
+    assert apt[-1].endswith("teaport-brain_1.0_arm64.deb"), apt
 
 
-def test_pruning_removes_the_tools_of_removed_venvs_and_keeps_the_live_ones():
-    tmp = _tools_box("v1")
-    script = ('for r in r1 r2 r3 r4 r5 r6; do build "$r" v1; done; '
-              'brain_point_at "$BRAIN_VENVS/r1"; brain_point_at "$BRAIN_VENVS/r2"; '
-              'rm -rf "$BRAIN_VENVS/r2"; brain_prune')   # the live venv's dir gone: its tools still stay
-    rc, out = _tools_run(tmp, script)
-    assert rc == 0, out
-    kept = sorted(os.listdir(pathlib.Path(tmp, "lib/releases")))
-    # Newest three venvs (r4-r6), the rollback target (r1), and current (r2).
-    assert kept == ["r1", "r2", "r4", "r5", "r6"], (kept, out)
-    assert sorted(os.listdir(pathlib.Path(tmp, "opt/venvs"))) == ["r1", "r4", "r5", "r6"]
+def test_with_no_earlier_package_a_failed_swap_says_so_and_does_not_guess():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed=None, env={"RESTARTS_FAIL": "1"})
+    assert rc != 0 and "no earlier package is kept to go back to" in out and "journalctl -u teaport-brain" in out, out
+    assert "putting" not in out
+    assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
+
+
+def test_a_failed_reinstall_of_the_installed_version_keeps_its_one_copy():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="2.0", new="2.0", env={"RESTARTS_FAIL": "1"})
+    assert rc != 0 and "the reinstall of 2.0" in out and "no longer kept" not in out, out
+    # The installed package and the rollback target are one file: it stays, so the next
+    # failed upgrade still has something to go back to.
+    assert pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
+
+
+def test_apt_that_never_reached_the_package_leaves_the_box_alone():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"APT_LOCKED": "teaport-brain_2.0_arm64.deb"})
+    assert rc != 0 and "left the box as it was" in out and "still runs 1.0" in out, out
+    assert "RESTART" not in out and "putting" not in out and "SIP_RESTORE" not in out, out
+    assert "DPkg::Lock::Timeout" in pathlib.Path(tmp, "apt.log").read_text()
+    assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
+    # The package that was never installed is not a rollback target either; 1.0 stays.
+    assert not pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
+    assert pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists()
+
+
+def test_a_package_kept_before_stays_when_apt_never_reached_it():
+    # A rollback target installed again: this run added nothing to the cache, so nothing goes.
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", env={"APT_LOCKED": "teaport-brain_2.0_arm64.deb"}, extra="BRAIN_DEB_ADDED=0\n")
+    assert rc != 0 and "left the box as it was" in out, out
+    assert pathlib.Path(tmp, "cache/teaport-brain_2.0_arm64.deb").exists()
+
+
+def test_the_first_package_failing_on_a_pre_package_box_says_how_to_go_back_to_its_venv():
+    tmp = tempdir("teaport-swap-")
+    extra = f'PREFIX="{tmp}/opt"\nmkdir -p "$PREFIX/venvs/r1"; ln -s venvs/r1 "$PREFIX/venv"\n'
+    rc, out = _swap(tmp, installed=None, env={"RESTARTS_FAIL": "1"}, extra=extra)
+    assert rc != 0 and "no earlier package is kept to go back to" in out, out
+    assert f"The pre-package venv (venvs/r1) is still on the box; to run on it again: sudo ln -sfn venvs/r1 {tmp}/opt/venv" in out, out
+
+
+def test_a_render_that_fails_after_the_install_is_a_failed_swap():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", extra="brain_render_units() { return 1; }\n")
+    assert rc != 0 and "installing or configuring" in out and "putting 1.0 back" in out, out
+
+
+def test_a_swap_by_hand_that_fails_just_fails():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", mode='""', env={"RESTARTS_FAIL": "1"})
+    assert rc != 0 and "the brain did not come back on 2.0" in out and "putting" not in out, out
+    assert pathlib.Path(tmp, "apt.log").read_text().count("APT ") == 1
+
+
+def test_a_dry_run_swap_names_the_package_and_installs_nothing():
+    tmp = tempdir("teaport-swap-")
+    rc, out = _swap(tmp, installed="1.0", extra="DRY_RUN=1\n")
+    assert rc == 0 and "[dry-run] apt-get install" in out and "was 1.0" in out, out
+    assert not pathlib.Path(tmp, "apt.log").exists()
+
+
+ROLLBACK_STUBS = r'''
+brain_swap() { echo "SWAP $1 [$2]"; }
+'''
+
+
+def test_rolling_back_installs_the_newest_other_package_and_the_next_one_goes_forward_again():
+    tmp = tempdir("teaport-rollback-")
+    _cached(tmp, "1.0", age=1)
+    _cached(tmp, "1.1", age=2)
+    _cached(tmp, "1.2", age=3)
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}INSTALLED=1.2; main_rollback_brain', ["main_rollback_brain"])
+    assert rc == 0 and f"SWAP {tmp}/cache/teaport-brain_1.1_arm64.deb []" in out, out
+    assert "brain rolled back to 1.1" in out, out
+    # After that rollback 1.1 is installed and 1.2 is the newest other one.
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}INSTALLED=1.1; main_rollback_brain', ["main_rollback_brain"])
+    assert rc == 0 and f"SWAP {tmp}/cache/teaport-brain_1.2_arm64.deb []" in out, out
+
+
+def test_a_half_configured_package_is_still_the_one_being_rolled_back_from():
+    tmp = tempdir("teaport-rollback-")
+    _cached(tmp, "1.0", age=1)
+    _cached(tmp, "1.1", age=2)
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}STATUS=half-configured INSTALLED=1.1; main_rollback_brain', ["main_rollback_brain"])
+    assert rc == 0 and f"SWAP {tmp}/cache/teaport-brain_1.0_arm64.deb []" in out, out
+    # And the cache pruning does not drop it as "not installed".
+    for i, v in enumerate(("1.2", "1.3", "1.4", "1.5")):
+        _cached(tmp, v, age=10 + i)
+    rc, out = _debrun(tmp, 'STATUS=half-configured INSTALLED=1.0; brain_deb_prune')
+    assert rc == 0 and pathlib.Path(tmp, "cache/teaport-brain_1.0_arm64.deb").exists(), out
+
+
+def test_rolling_back_with_nothing_kept_or_nothing_installed_says_so():
+    tmp = tempdir("teaport-rollback-")
+    _cached(tmp, "1.0")
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}INSTALLED=1.0; main_rollback_brain', ["main_rollback_brain"])
+    assert rc != 0 and "no earlier brain package is kept" in out, out
+    rc, out = _debrun(tmp, f'{ROLLBACK_STUBS}main_rollback_brain', ["main_rollback_brain"])
+    assert rc != 0 and "is not installed" in out, out
+
+
+# --- retiring the pre-package CLI and helper ------------------------------------------
+
+def _old_tools(tmp, package_in_place=True, sudoers=True, cli_is_link=True):
+    old_lib, old_cli = pathlib.Path(tmp, "uselocal/lib"), pathlib.Path(tmp, "uselocal/bin/teaport")
+    (old_lib / "releases/r1").mkdir(parents=True)
+    (old_lib / "releases/r1/teaport").write_text("old cli\n")
+    (old_lib / "current").symlink_to("releases/r1")
+    (old_lib / "config_apply.py").symlink_to("current/config_apply.py")
+    (old_lib / "wifi-setup-net").write_text("not ours to remove\n")
+    old_cli.parent.mkdir(parents=True)
+    if cli_is_link:
+        old_cli.symlink_to(old_lib / "current/teaport")
+    else:
+        old_cli.write_text("#!/bin/sh\n# the operator's own wrapper\n")
+    pkg_cli, pkg_helper = pathlib.Path(tmp, "usr/bin/teaport"), pathlib.Path(tmp, "usr/lib/teaport/config_apply.py")
+    if package_in_place:
+        for f in (pkg_cli, pkg_helper):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("new\n")
+            f.chmod(0o755)
+    sudoers_file = pathlib.Path(tmp, "sudoers.d/teaport-config")
+    sudoers_file.parent.mkdir()
+    if sudoers:
+        sudoers_file.write_text(f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {pkg_helper} *\n")
+    else:
+        sudoers_file.write_text("alice ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/lib/teaport/config_apply.py *\n")
+    script = (f'OLD_TOOLS_DIR="{old_lib}"; OLD_TOOLS_CLI="{old_cli}"; SUDOERS_FILE="{sudoers_file}"\n'
+              f'brain_retire_old_tools_in() {{ :; }}\n')
+    # The function names /usr/bin/teaport and /usr/lib/teaport/config_apply.py: point them
+    # into the temp tree by running its text through sed.
+    body = _fn("brain_retire_old_tools").replace("/usr/bin/teaport", str(pkg_cli)).replace(
+        "/usr/lib/teaport/config_apply.py", str(pkg_helper))
+    return old_lib, old_cli, script + body + "brain_retire_old_tools\n"
+
+
+def test_the_old_cli_and_helper_go_once_the_packages_are_in_place_and_not_before():
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "retiring the pre-package CLI" in out, out
+    assert not os.path.lexists(old_cli) and not os.path.lexists(old_lib / "current")
+    assert not os.path.lexists(old_lib / "releases") and not os.path.lexists(old_lib / "config_apply.py")
+    assert (old_lib / "wifi-setup-net").exists()   # other files in that directory stay
+    # Run again: nothing left, nothing said.
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "retiring" not in out, out
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, package_in_place=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "WARN the package's CLI and config helper are not in place" in out, out
+    assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
+
+
+def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreign_cli_stays():
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, sudoers=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "does not name the package's config helper" in out and "retiring" not in out, out
+    assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
+    # /usr/local/bin/teaport that is not the old installer's link is somebody's own.
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, cli_is_link=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "is not the pre-package CLI's link" in out, out
+    assert old_cli.read_text().startswith("#!/bin/sh") and not os.path.lexists(old_lib / "releases")
+
+
+TOOLS_STUBS = r'''
+run()  { "$@"; }
+SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; "$@"; }
+'''
+
+
+# --- the package's own scripts ---------------------------------------------------------
+
+DEB_DIR = INSTALL.parent / "packaging/deb"
+
+
+def test_the_maintainer_scripts_parse_and_the_sudoers_writer_refuses_a_bad_user_name():
+    for name in ("postinst", "postrm", "sudoers-sync"):
+        assert subprocess.run(["sh", "-n", str(DEB_DIR / name)]).returncode == 0, name
+    # A name that is not a plain login is refused before anything is written, and root
+    # (or no unit at all) needs no line.
+    for bad in ("bad user", "-oops", "a;b", "x$y"):
+        p = subprocess.run(["sh", str(DEB_DIR / "sudoers-sync"), bad], capture_output=True, text=True)
+        assert p.returncode == 1 and "refusing the user name" in p.stderr, (bad, p.stderr)
+    assert subprocess.run(["sh", str(DEB_DIR / "sudoers-sync"), "root"]).returncode == 0
+
+
+def test_postinst_only_configures_and_the_package_ships_what_it_runs():
+    p = subprocess.run(["sh", str(DEB_DIR / "postinst"), "abort-upgrade"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr   # anything but `configure` does nothing
+    recipe = (INSTALL.parent / "packaging/nfpm.yaml").read_text()
+    assert "postinstall: packaging/deb/postinst" in recipe and "postremove: packaging/deb/postrm" in recipe
+    assert "\n  - sudo\n" in recipe   # visudo checks the sudoers line
+    assert "dst: /usr/lib/teaport/sudoers-sync" in recipe and "dst: /usr/lib/teaport/config_apply.py" in recipe
+    # The unit that restarts it waits for it.
+    unit = (INSTALL.parent / "systemd/teaport-brain.service.in").read_text()
+    assert "Type=notify" in unit and "ExecStart=@PREFIX@/brain/bin/teaport-brain" in unit
+
+
+
+def _script(tmp, name, replace):
+    """A maintainer script with its absolute paths moved into <tmp>."""
+    text = (DEB_DIR / name).read_text()
+    for old, new in replace:
+        assert old in text, (name, old)
+        text = text.replace(old, new)
+    p = pathlib.Path(tmp, name)
+    p.write_text(text)
+    return p
+
+
+def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_the_package():
+    tmp = tempdir("teaport-postinst-")
+    opt = pathlib.Path(tmp, "opt/teaport")
+    opt.mkdir(parents=True)
+    failing = pathlib.Path(tmp, "sudoers-sync")
+    failing.write_text("#!/bin/sh\nexit 1\n")
+    failing.chmod(0o755)
+    script = _script(tmp, "postinst", [("/usr/lib/teaport/sudoers-sync", str(failing)),
+                                       ("/opt/teaport", str(opt)),
+                                       ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "sudoers line was not written" in p.stderr
+    assert os.path.islink(opt / "venv") and os.readlink(opt / "venv") == str(opt / "brain")
+    # Anything but `configure` does nothing, and a real directory where the link goes stays.
+    (opt / "venv").unlink()
+    (opt / "venv").mkdir()
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0 and (opt / "venv").is_dir() and not os.path.islink(opt / "venv")
+
+
+def test_postrm_takes_the_link_on_remove_and_the_sudoers_line_on_purge_and_nothing_on_upgrade():
+    tmp = tempdir("teaport-postrm-")
+    opt = pathlib.Path(tmp, "opt/teaport")
+    opt.mkdir(parents=True)
+    sudoers = pathlib.Path(tmp, "teaport-config")
+    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers))])
+
+    def run(action, link_to="brain"):
+        if os.path.lexists(opt / "venv"):
+            (opt / "venv").unlink()
+        os.symlink(str(opt / link_to), opt / "venv")
+        sudoers.write_text("line\n")
+        assert subprocess.run(["sh", str(script), action]).returncode == 0
+        return os.path.lexists(opt / "venv"), sudoers.exists()
+    assert run("upgrade") == (True, True)
+    assert run("remove") == (False, True)
+    assert run("purge") == (False, False)
+    # A link that is not the package's own is not ours to remove.
+    assert run("remove", link_to="venvs-x") == (True, True)
 
 
 if __name__ == "__main__":
