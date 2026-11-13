@@ -46,7 +46,7 @@ Three libraries in the brain package are under the GNU Lesser General Public Lic
 
 <!-- source: THIRD_PARTY_LICENSES.md:58-80,99-101#7d35d2ad -->
 
-You can replace any of them. The source of the exact versions in the brain package is in the source distributions on PyPI and in the upstream projects: [soxr](https://github.com/dofuuz/python-soxr), [libsndfile](https://github.com/libsndfile/libsndfile), and [soundfile](https://github.com/bastibe/python-soundfile), and [num2words](https://github.com/savoirfairelinux/num2words). Replacing a file in `/opt/teaport/brain` shows up in `teaport doctor` as a changed file, and the next install of the package restores the shipped one. The [third-party licenses file](https://github.com/Teaspoon-AI/teaport/blob/main/THIRD_PARTY_LICENSES.md) in the repository describes how to replace each library and how to keep a replacement.
+You can replace any of them. The source of the exact versions in the brain package is in the source distributions on PyPI and in the upstream projects: [soxr](https://github.com/dofuuz/python-soxr), [libsndfile](https://github.com/libsndfile/libsndfile), [soundfile](https://github.com/bastibe/python-soundfile), and [num2words](https://github.com/savoirfairelinux/num2words). Replacing a file in `/opt/teaport/brain` shows up in `teaport doctor` as a changed file, and the next install of the package restores the shipped one. The [third-party licenses file](https://github.com/Teaspoon-AI/teaport/blob/main/THIRD_PARTY_LICENSES.md) in the repository describes how to replace each library and how to keep a replacement.
 
 <!-- source: THIRD_PARTY_LICENSES.md:87-106#5f3ab273 -->
 
