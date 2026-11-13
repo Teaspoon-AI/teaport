@@ -13,7 +13,7 @@
 #     fails, saying why, when nothing is installed or the manifest cannot be read.
 #   - `teaport status` shows the release line, and nothing where the brain says nothing.
 #
-# Synthetic manifests only; nothing is fetched.
+# Synthetic manifests only; nothing leaves the machine (one test fetches from a loopback server).
 #
 # Run: python test_updates.py   (or via pytest)
 #
@@ -138,9 +138,17 @@ def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
             pass
     srv = http.server.HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # A proxy in the environment must not stand between the test and its own loopback.
+    kept = {k: os.environ.get(k) for k in ("no_proxy", "NO_PROXY")}
+    os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1"
     try:
         got = updates.load(f"http://127.0.0.1:{srv.server_port}/stable.json")
     finally:
+        for k, v in kept.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         srv.shutdown()
         srv.server_close()
     assert got == {"version": "x"}, got
