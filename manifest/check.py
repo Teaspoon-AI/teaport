@@ -48,10 +48,11 @@ HOST = "get.teaspoon.tech"
 CHUNK = 1 << 20
 ATTEMPTS = 3  # install.sh downloads with curl --retry 3
 
-# The url + sha256 entries install.sh cannot install without (phase_engine and
-# eula_gate; its engine asset key is ASSET_KEY). Keep in step with install.sh's mget
-# reads: it points back here.
+# The url + sha256 entries install.sh cannot install without (phase_engine, eula_gate
+# and brain_deb_fetch; its engine asset key is ASSET_KEY). Keep in step with install.sh's
+# mget reads: it points back here.
 REQUIRED = (
+    "brain.deb",
     "engine.eula",
     "engine.assets.l4t38-cu13",
     "engine.g2p_dict",
@@ -60,7 +61,7 @@ REQUIRED = (
     "models.voxtral",
     "models.kokoro",
 )
-# The {repo, tag} entries install.sh always clones (the brain).
+# The {repo, tag} entries install.sh clones (brain: the Discord bridge's source).
 REQUIRED_REPOS = ("brain",)
 NPM_REGISTRY = "https://registry.npmjs.org"
 

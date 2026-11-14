@@ -49,7 +49,11 @@
   },
   "brain": {
     "repo": "Teaspoon-AI/teaport",
-    "tag": "main"
+    "tag": "main",
+    "deb": {
+      "url": "https://get.teaspoon.tech/dl/brain/teaport-brain_0.1.0_arm64.deb",
+      "sha256": "8622b3812658b428476bd1f7d8ede9fe2c95edf1a96bb90ee8c7772b2213e553"
+    }
   },
   "plugin": {
     "npm": "@teaspoon-ai/openclaw-teaport-realtime",
