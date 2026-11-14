@@ -32,7 +32,7 @@ set -euo pipefail
 BASE_VERSION="0.1.0"
 DEST=/opt/teaport/brain
 PY=/usr/bin/python3.12
-UV_VERSION="0.9.24"   # the same uv install.sh and CI's brain job pin
+UV_VERSION="0.9.24"   # the same uv CI's brain job pins (pip install uv== in ci.yml)
 NFPM_VERSION="2.47.0"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,10 +48,10 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
-# brain/, cli/ and packaging/ are what the package is built from — and only the files
-# git sees there, tracked or untracked-not-ignored (see "source" below), so this check
+# brain/, cli/, packaging/ and THIRD_PARTY_LICENSES.md are what the package is built from —
+# and only the files git sees there, tracked or untracked-not-ignored (see "source" below), so this check
 # covers everything that goes in.
-SRC_PATHS=(brain cli packaging)
+SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md)
 dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   VERSION="$TEAPORT_DEB_VERSION"
@@ -155,7 +155,9 @@ git -C "$REPO" ls-files -z -co --exclude-standard -- "${SRC_PATHS[@]}" \
   | tar -C "$REPO" --null -T - -cf - | tar -C "$SRC" -xf -
 
 # --- venv ----------------------------------------------------------------------
-# The flags install.sh's brain_stage uses, for the same reasons (see there), plus:
+# --locked (fail when brain/uv.lock is stale against pyproject.toml, never a fresh resolve),
+# --no-editable (the built teaport-brain, not a .pth into a source tree) and --link-mode
+# copy (files of the venv's own, not links into uv's cache), plus:
 #   --compile-bytecode    ship the .pyc files. The installed tree is root-owned, so the
 #                         brain's user could never write a __pycache__ into it: without
 #                         them, every start would recompile all of pipecat in memory.
@@ -173,6 +175,9 @@ env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
 # and world-writable has no place in a root-owned tree) and the markers that keep a
 # project venv out of git and backups. None of them means anything once it is packaged.
 rm -f "$DEST/.lock" "$DEST/.gitignore" "$DEST/CACHEDIR.TAG"
+# What this build is made from, for the Settings footer (config_ui._build): the git
+# revision, "-dirty" when the tree has uncommitted changes, and when it was built.
+printf '{"revision": "%s%s", "built": "%s"}\n' "$rev" "${dirty:+-dirty}" "$(date -Iseconds)" > "$DEST/teaport-build.json"
 # Modes as a root-owned tree wants them, whatever uv created them with (on the arm64
 # runner, a world-writable lib/ despite the umask): nothing writable but by
 # the owner, everything readable, executables and directories searchable.

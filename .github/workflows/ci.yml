@@ -58,25 +58,25 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install the brain from uv.lock (the set that ships)
-        # Mirrors install.sh phase_brain, not a fresh pip resolve: --locked FAILS if
+        # Mirrors packaging/build-deb.sh, not a fresh pip resolve: --locked FAILS if
         # brain/uv.lock is stale against brain/pyproject.toml (the silent-drift case a
         # `pip install ./brain` papered over — CI green on a new resolve while every
         # appliance shipped the old lock), and --no-editable installs the same built
-        # copy the appliance gets. The dev group supplies the locked pytest. uv itself
-        # is pinned to the same version install.sh bootstraps.
+        # copy the package ships. The dev group supplies the locked pytest. uv itself
+        # is pinned to the same version build-deb.sh uses.
         run: |
           pip install uv==0.9.24
           uv sync --locked --no-editable --project brain
-      - name: Brain self-check (what install.sh runs before swapping a venv in)
-        # The same gate an appliance install applies to a freshly built venv: import both
+      - name: Brain self-check (what the brain-deb job runs against the built package)
+        # The same gate the brain-deb job applies to the built package: import both
         # front-ends and push audio through Silero VAD + Smart Turn v3, the compiled
-        # extensions (onnxruntime, loudness) a numpy major would break. Here it runs on
-        # the aarch64 leg too, so a lock bump that breaks them on arm fails in CI rather
-        # than in an appliance's install (where it would be caught, but only then).
-        # In a venv of its own built the way brain_stage builds one — --no-dev, not the
-        # dev-group venv above — and run from / like install.sh runs it, so nothing the
-        # tests need, and no teaport_brain/ from the checkout, can make it pass here and
-        # fail on the box. `uv run` would re-sync the project venv instead.
+        # extensions (onnxruntime, loudness) a numpy major would break. brain-deb builds
+        # on the arm runner only; this step runs on both legs, so it is also what checks
+        # the x86 wheels of the lock.
+        # In a venv of its own built the way build-deb.sh builds one — --no-dev, not the
+        # dev-group venv above — and run from /, so nothing the tests need, and no
+        # teaport_brain/ from the checkout, can make it pass here and fail on the box.
+        # `uv run` would re-sync the project venv instead.
         run: |
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/brain-prod" \
             uv sync --locked --no-editable --no-dev --project brain

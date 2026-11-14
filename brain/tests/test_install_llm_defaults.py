@@ -37,6 +37,7 @@ brain_activate() { :; }
 brain_prune() { :; }
 brain_deb_prune() { :; }
 brain_retire_old_tools() { :; }
+brain_retire_old_venvs() { :; }
 brain_sudoers() { :; }
 install_config_sudoers() { :; }
 sudo() { "$@"; }

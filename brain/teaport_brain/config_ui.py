@@ -11,6 +11,8 @@ runs, this is a static file and a few file reads.
                              written through config_apply under sudo (env files) or
                              directly (secret files, which the run user owns)
     POST /api/restart        {unit} — deferred restart through config_apply
+    GET  /licenses           the open-source licenses page (static/licenses.html); its data is
+                             GET /api/licenses and GET /api/licenses/{package} (licenses.py)
 
 Auth is the same shared secret /talk uses: GATEWAY_TOKEN, as a bearer header
 or ?token=. Unset means open, exactly like /talk, and the brain already warns
@@ -67,7 +69,7 @@ from loguru import logger
 
 from teaport_brain.i18n import N_
 
-from teaport_brain import ai_account, config_schema, credit, i18n, settings, settings_access, updates
+from teaport_brain import ai_account, config_schema, credit, i18n, licenses, settings, settings_access, updates
 
 ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts: the package ships it
@@ -476,9 +478,33 @@ async def config_logo_dark():  # the page's <picture> source in dark mode
     return FileResponse(os.path.join(STATIC_DIR, "teaport-logo-dark.svg"), media_type="image/svg+xml")
 
 
-# The running brain's build record: install.sh writes it into every venv it builds
-# (lockcheck.py record), and this process runs from one, so sys.prefix names the build
-# that is serving -- not the venv the live symlink may point at since.
+@router.get("/licenses", include_in_schema=False)
+async def licenses_page():
+    return FileResponse(os.path.join(STATIC_DIR, "licenses.html"), media_type="text/html")
+
+
+@router.get("/api/licenses")
+async def get_licenses(request: Request):
+    """The license documents this device has and the Python packages in the brain with
+    their licenses (licenses.py). Read off the disk each time, off the event loop."""
+    _authorize(request)
+    return {"documents": await asyncio.to_thread(licenses.documents),
+            "packages": await asyncio.to_thread(licenses.packages)}
+
+
+@router.get("/api/licenses/{package}")
+async def get_package_license(package: str, request: Request):
+    _authorize(request)
+    got = await asyncio.to_thread(licenses.package_text, package)
+    if got is None:
+        raise HTTPException(status_code=404, detail=f"no Python package named {package!r}")
+    return got
+
+
+# The running brain's build record, a file in the venv's root: the git revision it was built
+# from and when. packaging/build-deb.sh writes it into the package (a brain installed before
+# the package has one too, from the old installer; one run from a source checkout has none).
+# sys.prefix names the venv that is serving.
 BUILD_RECORD = os.path.join(sys.prefix, "teaport-build.json")
 
 

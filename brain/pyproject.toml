@@ -35,7 +35,7 @@ license = { text = "MIT" }
 # extensions a numpy major bump could break, and imports clean under the numpy below.
 #
 # These are the DIRECT imports of the gateway_server closure; the FULL transitive closure is
-# pinned reproducibly in uv.lock (installed by install.sh phase_brain via `uv sync --locked`),
+# pinned reproducibly in uv.lock (installed into the package by packaging/build-deb.sh via `uv sync --locked`),
 # so the constraints here only need to express INTENT — uv.lock records the exact resolved
 # versions. This retires the old "pin every direct dep from an appliance `pip freeze`"
 # approach, which could not pin transitives and so drifted on every reinstall.

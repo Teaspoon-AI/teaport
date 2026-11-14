@@ -83,6 +83,7 @@ export default defineConfig({
 						{ label: 'teaport CLI reference', slug: 'reference/cli' },
 						{ label: 'Installer reference', slug: 'reference/installer' },
 						{ label: 'Settings reference', slug: 'reference/settings' },
+						{ label: 'Open-source licenses', slug: 'reference/licenses' },
 					],
 				},
 			],

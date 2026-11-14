@@ -1,8 +1,8 @@
 #
-# selfcheck.py — "does this venv actually run the brain?", asked before it goes live.
+# selfcheck.py — "does this venv actually run the brain?", asked before it ships.
 #
-# install.sh builds each brain venv beside the live one and swaps it in only after this
-# passes (python -m teaport_brain.selfcheck, run by the NEW venv's interpreter). A clean
+# CI's brain-deb job builds the package and runs this against the installed tree
+# (python -m teaport_brain.selfcheck, by the package's own interpreter). A clean
 # `uv sync` proves the lock resolved, not that the result works on this box: the risk
 # pyproject.toml names is a compiled extension (onnxruntime, loudness) breaking under a
 # numpy major, which only shows up when those extensions actually run. So this does more

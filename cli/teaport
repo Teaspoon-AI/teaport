@@ -6,6 +6,9 @@
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update --check [--json] [--channel stable|beta]
 #                                 is a newer release out? (diff installed vs the channel's manifest)
+#   teaport licenses [PACKAGE | --notices] [--json]
+#                                 the licenses of the software on the device: the brain's Python packages,
+#                                 one package's license text, or the third-party notices
 #   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; bare, this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
@@ -477,6 +480,16 @@ cmd_update() {
   "$venv/bin/python" -I -m teaport_brain.updates check ${pass[@]+"${pass[@]}"} || exit $?
   [ "$check_only" = 1 ] && return 0
   die "applying an update is not wired yet — for a brain change run: install.sh --only brain (installs the teaport-brain package, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+}
+
+# ---- licenses --------------------------------------------------------------
+# What the software on the device is licensed under. The reading is the brain's
+# (teaport_brain.licenses), the same code the Settings page uses, run under the brain's own
+# venv, isolated (-I): the package list, one package's license text, or the notices.
+cmd_licenses() {
+  local venv="$PREFIX/brain"
+  [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
+  "$venv/bin/python" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
 }
 
 # ---- logs ------------------------------------------------------------------
@@ -1634,8 +1647,9 @@ case "$cmd" in
   status) cmd_status "$@" ;;
   doctor) cmd_doctor "$@" ;;
   update) cmd_update "$@" ;;
+  licenses) cmd_licenses "$@" ;;
   logs)   cmd_logs "$@" ;;
   sip)    cmd_sip "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $cmd (try: status | doctor | update | logs | sip)" ;;
+  *) die "unknown command: $cmd (try: status | doctor | update | licenses | logs | sip)" ;;
 esac

@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:348-457#ba7ee15c -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:351-460#ba7ee15c -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -148,7 +148,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:348-457#ba7ee15c -->
+<!-- source: cli/teaport:351-460#ba7ee15c -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1998#2ca3ef5a; install.sh:2413-2482#d970b544 -->
+<!-- source: install.sh:2029#2ca3ef5a; install.sh:2444-2513#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +211,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:1827-1840#c562c839 -->
+<!-- source: install.sh:1858-1871#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +242,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:1846-1850#bf1269bd -->
+<!-- source: install.sh:1877-1881#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +273,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1678-1690#a65c0a82 -->
+<!-- source: install.sh:1709-1721#a65c0a82 -->
 
 **Fix**
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2413-2482#d970b544; install.sh:2285-2330#cd323bfa -->
+<!-- source: install.sh:2444-2513#d970b544; install.sh:2316-2361#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2502-2506#3c1e6011; install.sh:2586-2589#b1e28ef5 -->
+<!-- source: install.sh:2533-2537#3c1e6011; install.sh:2617-2620#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -398,7 +398,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:348-457#ba7ee15c -->
+<!-- source: cli/teaport:351-460#ba7ee15c -->
 
 **Fix**
 
@@ -517,7 +517,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:1933-1941,1968-1974#4287c4a8; install.sh:1988-1991#cefd034b -->
+<!-- source: install.sh:1964-1972,1999-2005#4287c4a8; install.sh:2019-2022#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -525,7 +525,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:1978-1986#b3851890 -->
+<!-- source: install.sh:2009-2017#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -562,7 +562,7 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:86-93#b8312c4d -->
+<!-- source: cli/teaport:89-96#b8312c4d -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -594,7 +594,7 @@ failures usually pass.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:59-112#1ca6dd03 -->
+<!-- source: cli/teaport:62-115#1ca6dd03 -->
 
 ## teaport says its AI account has run out of credit
 
@@ -625,7 +625,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:94-97#5e2e8c16; brain/teaport_brain/config_ui.py:792-798#b2285852 -->
+<!-- source: cli/teaport:97-100#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -633,7 +633,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1827-1840#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1858-1871#c562c839 -->
 
 **Fix**
 

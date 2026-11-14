@@ -184,7 +184,7 @@ ONLY_BRAIN_STUBS = r'''
 BRAIN_DEB_CACHED=/cache/x.deb BRAIN_DEB_NEW=2.0
 systemctl() { [ "$1" = cat ] && [ "${NO_UNIT:-0}" = 0 ]; }   # the brain unit is installed
 for f in check_brain_source brain_deb_fetch brain_deb_keep sip_brain_detach brain_swap sip_brain_retire \
-         brain_retire_old_tools install_busy_lamp install_dns_resilience install_arp_multihome \
+         brain_retire_old_tools brain_retire_old_venvs install_busy_lamp install_dns_resilience install_arp_multihome \
          brain_deb_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
@@ -236,7 +236,8 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     assert rc == 0, out
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
     assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "sip_brain_detach",
-                     "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "install_busy_lamp",
+                     "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
+                     "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
 
 
@@ -950,6 +951,14 @@ def test_the_old_cli_and_helper_go_once_the_packages_are_in_place_and_not_before
     assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
 
 
+def test_a_dry_run_says_what_it_would_retire_and_touches_nothing():
+    tmp = tempdir("teaport-retire-")
+    old_lib, old_cli, script = _old_tools(tmp, package_in_place=False)   # a first run: nothing installed yet
+    rc, out = _run(tmp, TOOLS_STUBS + "DRY_RUN=1\n" + script)
+    assert rc == 0 and "[dry-run] retire the pre-package CLI and config helper" in out and "WARN" not in out, out
+    assert os.path.lexists(old_cli) and os.path.lexists(old_lib / "releases")
+
+
 def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreign_cli_stays():
     tmp = tempdir("teaport-retire-")
     old_lib, old_cli, script = _old_tools(tmp, sudoers=False)
@@ -967,7 +976,74 @@ def test_the_old_helper_stays_while_the_sudoers_line_still_names_it_and_a_foreig
 TOOLS_STUBS = r'''
 run()  { "$@"; }
 SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; "$@"; }
+systemctl() { [ "$1" = is-active ] && [ "${BRAIN_STOPPED:-0}" = 0 ]; }   # the brain unit is running
 '''
+
+
+# --- retiring the pre-package venvs ----------------------------------------------------
+
+def _old_venvs(tmp, package_in_place=True, venv_is_dir=False):
+    prefix = pathlib.Path(tmp, "opt/teaport")
+    (prefix / "venvs/20260901-aaa/bin").mkdir(parents=True)
+    (prefix / "venvs/20260901-aaa/bin/python").write_text("old\n")
+    (prefix / "venv.previous").symlink_to("venvs/20260901-aaa")
+    (prefix / "venv.pre-uv/bin").mkdir(parents=True)
+    (prefix / "engine").mkdir()
+    (prefix / "engine/teagram-engine").write_text("not ours to remove\n")
+    if venv_is_dir:
+        (prefix / "venv").mkdir()
+    else:
+        (prefix / "venv").symlink_to("brain")
+    if package_in_place:
+        (prefix / "brain/bin").mkdir(parents=True)
+        (prefix / "brain/bin/teaport-brain").write_text("new\n")
+        (prefix / "brain/bin/teaport-brain").chmod(0o755)
+    return prefix, f'PREFIX="{prefix}"\n' + _fn("brain_retire_old_venvs") + "brain_retire_old_venvs\n"
+
+
+def test_the_old_venvs_go_once_the_packages_brain_is_in_place_and_not_before():
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "removing the pre-package brain venvs" in out, out
+    for gone in ("venvs", "venv.previous", "venv.pre-uv"):
+        assert not os.path.lexists(prefix / gone), gone
+    assert os.path.islink(prefix / "venv") and (prefix / "brain/bin/teaport-brain").exists()   # the package's
+    assert (prefix / "engine/teagram-engine").exists()   # nothing else under the prefix
+    rc, out = _run(tmp, TOOLS_STUBS + script)   # again: nothing left, nothing said
+    assert rc == 0 and "removing" not in out, out
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, package_in_place=False)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "WARN the package's brain is not in place" in out, out
+    assert os.path.lexists(prefix / "venvs") and os.path.lexists(prefix / "venv.pre-uv")
+
+
+def test_the_old_venvs_stay_while_the_brain_is_not_running_and_on_a_dry_run():
+    # A stopped brain (brain_swap restarts nothing then) has not shown the package works.
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp)
+    rc, out = _run(tmp, TOOLS_STUBS + "BRAIN_STOPPED=1\n" + script)
+    assert rc == 0 and "WARN teaport-brain is not running" in out and "removing" not in out, out
+    assert os.path.lexists(prefix / "venvs") and os.path.lexists(prefix / "venv.pre-uv")
+    # and once it runs, the next run takes them
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "removing the pre-package brain venvs" in out, out
+    assert not os.path.lexists(prefix / "venvs")
+    # A dry run says what it would do, not that the package is missing, and removes nothing.
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, package_in_place=False)
+    rc, out = _run(tmp, TOOLS_STUBS + "DRY_RUN=1\n" + script)
+    assert rc == 0 and "[dry-run] remove the pre-package brain venvs" in out and "WARN" not in out, out
+    assert os.path.lexists(prefix / "venvs")
+
+
+def test_a_venv_directory_where_the_link_belongs_is_named_and_left():
+    tmp = tempdir("teaport-retire-venvs-")
+    prefix, script = _old_venvs(tmp, venv_is_dir=True)
+    rc, out = _run(tmp, TOOLS_STUBS + script)
+    assert rc == 0 and "is a directory, not the package's link" in out, out
+    assert os.path.isdir(prefix / "venv") and not os.path.islink(prefix / "venv")
 
 
 # --- the package's own scripts ---------------------------------------------------------
@@ -992,6 +1068,16 @@ def test_postinst_only_configures_and_the_package_ships_what_it_runs():
     recipe = (INSTALL.parent / "packaging/nfpm.yaml").read_text()
     assert "postinstall: packaging/deb/postinst" in recipe and "postremove: packaging/deb/postrm" in recipe
     assert "\n  - sudo\n" in recipe   # visudo checks the sudoers line
+    # The license material the package distributes with the LGPL parts of its tree.
+    for src, dst in (("packaging/deb/copyright", "/usr/share/doc/teaport-brain/copyright"),
+                     ("THIRD_PARTY_LICENSES.md", "/usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md")):
+        assert f"- src: {src}\n    dst: {dst}\n" in recipe, src
+        assert (INSTALL.parent / src).is_file(), src
+    copyright_text = (INSTALL.parent / "packaging/deb/copyright").read_text()
+    assert copyright_text.startswith("Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/")
+    assert "Permission is hereby granted" in copyright_text and "LGPL-2.1-or-later" in copyright_text
+    licenses = (INSTALL.parent / "THIRD_PARTY_LICENSES.md").read_text()
+    assert "stefano@teaspoon.tech" in licenses and "never frozen or bundled into a single closed binary" in licenses
     assert "dst: /usr/lib/teaport/sudoers-sync" in recipe and "dst: /usr/lib/teaport/config_apply.py" in recipe
     # The unit that restarts it waits for it.
     unit = (INSTALL.parent / "systemd/teaport-brain.service.in").read_text()
@@ -1017,12 +1103,19 @@ def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_th
     failing = pathlib.Path(tmp, "sudoers-sync")
     failing.write_text("#!/bin/sh\nexit 1\n")
     failing.chmod(0o755)
+    old_cli = pathlib.Path(tmp, "usr-local-bin-teaport")
     script = _script(tmp, "postinst", [("/usr/lib/teaport/sudoers-sync", str(failing)),
+                                       ("/usr/local/bin/teaport", str(old_cli)),
                                        ("/opt/teaport", str(opt)),
                                        ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert "sudoers line was not written" in p.stderr
+    assert "shadows" not in p.stderr   # no old CLI: nothing to say
+    old_cli.write_text("#!/bin/sh\n")
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    assert p.returncode == 0 and "shadows the package's /usr/bin/teaport" in p.stderr, p.stderr
+    old_cli.unlink()
     assert os.path.islink(opt / "venv") and os.readlink(opt / "venv") == str(opt / "brain")
     # Anything but `configure` does nothing, and a real directory where the link goes stays.
     (opt / "venv").unlink()
