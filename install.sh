@@ -1928,10 +1928,12 @@ LLM_BASE_URL=""; LLM_MODEL=""; LLM_URL_SEED="?"; LLM_MODEL_SEED="?"
 LLM_DEFAULT_URL="https://openrouter.ai/api/v1"
 # llm_default_model <url> — the model name to offer for <url>: OpenRouter names a model
 # with its maker (openai/gpt-oss-120b) and rejects the bare name that Groq and Cerebras
-# take. The host test is ai_account.is_openrouter's: openrouter.ai or a
-# subdomain of it.
+# take. The host test is ai_account.is_openrouter's (urlsplit's hostname): openrouter.ai
+# or a subdomain of it; no scheme, no host; userinfo, port, query and fragment dropped.
 llm_default_model() {
-  local host="${1#*://}"; host="${host%%/*}"; host="${host%%:*}"; host="${host,,}"
+  local host=""
+  case "$1" in *://*) host="${1#*://}" ;; esac
+  host="${host%%[/?#]*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
   case "$host" in
     openrouter.ai|*.openrouter.ai) printf 'openai/gpt-oss-120b\n' ;;
     *) printf 'gpt-oss-120b\n' ;;
@@ -1945,18 +1947,34 @@ phase_credentials() {
   [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
   [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
   local key="${TEAPORT_LLM_API_KEY:-}" m=""
+  # A repair offers what brain.env already holds (a seed keeps it), and a fresh install
+  # the defaults. A model goes with its endpoint: one named without a model gets that
+  # endpoint's default, written plain (an endpoint a repair moves to would otherwise keep
+  # the old endpoint's model name, which the new one rejects).
+  local had_url had_model
+  had_url="$(read_env_file "$ETC/brain.env" --lenient | sed -n 's/^LLM_BASE_URL=//p' | tail -n 1)"
+  had_model="$(read_env_file "$ETC/brain.env" --lenient | sed -n 's/^LLM_MODEL=//p' | tail -n 1)"
+  local url_default="${had_url:-$LLM_DEFAULT_URL}"
   if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
-    read -r -p "LLM base URL (OpenAI-compatible) [$LLM_DEFAULT_URL]: " LLM_BASE_URL
+    read -r -p "LLM base URL (OpenAI-compatible) [$url_default]: " LLM_BASE_URL
     [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
     if [ -z "$LLM_MODEL" ]; then
-      m="$(llm_default_model "${LLM_BASE_URL:-$LLM_DEFAULT_URL}")"
+      m="$(llm_default_model "${LLM_BASE_URL:-$url_default}")"
+      if [ -n "$had_model" ] && [ "${LLM_BASE_URL:-$url_default}" = "$had_url" ]; then m="$had_model"; fi
       read -r -p "LLM model [$m]: " LLM_MODEL
       [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
     fi
     read -r -s -p 'LLM API key: ' key; echo
   fi
-  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$LLM_DEFAULT_URL"   # the default when nobody named one
-  [ -z "$LLM_MODEL" ] && LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
+  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$url_default"   # nobody named one: kept, or the default
+  if [ -z "$LLM_MODEL" ]; then
+    if [ -n "$had_model" ] && [ "$LLM_BASE_URL" = "$had_url" ]; then
+      LLM_MODEL="$had_model"                                   # same endpoint: its model stays
+    else
+      LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
+      [ -n "$had_url" ] && LLM_MODEL_SEED=""                   # a new endpoint: its model, plain
+    fi
+  fi
   if [ -n "$key" ]; then
     if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s/llm_key (mode 600)\n' "$SECRETS";
     else printf '%s' "$key" > "$SECRETS/llm_key"; chmod 600 "$SECRETS/llm_key"; fi

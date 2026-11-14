@@ -253,8 +253,8 @@ type = "string"
 default = "gpt-oss-120b"
 read = "session"
 tier = "setup"
-help = "The served model name."
-note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL)."
+help = "The served model name. install.sh writes the name the endpoint takes: openai/gpt-oss-120b for OpenRouter, gpt-oss-120b for any other; the default here is only for a brain.env without the line."
+note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL), or names a different endpoint without one: the new endpoint's name is written then."
 
 [[settings]]
 name = "LLM_REASONING_EFFORT"
@@ -1949,7 +1949,7 @@ max = 20
 default = 6
 read = "startup"
 tier = "setup"
-help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; the default 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips, and the appliance has run it on live calls since September. VAD and endpointing are upstream of it and unaffected."
+help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; the default 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips, and the appliance has run it on live calls since September. VAD and endpointing are upstream of it and unaffected. It assumes the gateway's echo cancellation is on (aec, the default): with `teaport sip aec off` it lifts the bot's echo too, so set 0 there."
 
 [[settings]]
 name = "SIP_ANSWER_AFTER_SECS"

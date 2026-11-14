@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2830#d7e18f03 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2830#358d1a73 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -35,7 +35,7 @@ In `/etc/teaport/brain.env`.
 |---|---|---|
 | `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://openrouter.ai/api/v1, https://api.groq.com/openai/v1, or https://api.cerebras.ai/v1. For gpt-oss-120b, use OpenRouter and route it to BaseTen with LLM_EXTRA_BODY: on Groq and Cerebras that model sometimes breaks down in the middle of a reply, most often after it uses a tool. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
 | `LLM_API_KEY` | file `~/.config/teaport/llm_key` | The key for that endpoint. Prefer the file; the env var, if set, wins over it. |
-| `LLM_MODEL` | `gpt-oss-120b` | The served model name. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL). |
+| `LLM_MODEL` | `gpt-oss-120b` | The served model name. install.sh writes the name the endpoint takes: openai/gpt-oss-120b for OpenRouter, gpt-oss-120b for any other; the default here is only for a brain.env without the line. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL), or names a different endpoint without one: the new endpoint's name is written then. |
 | `LLM_REASONING_EFFORT` | `low` | Reasoning effort for models that support it. Set "" to disable for models that do not. One of `low`, `medium`, `high`, `""`. low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default. |
 | `LLM_MAX_TOKENS` | by `LLM_REASONING_EFFORT`: 1024 at `low`, 3072 at `medium`, 8192 at `high`, 4096 at `""` | Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint. |
 | `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt can take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this, plus up to 2 s when an empty answer that came quickly is asked again. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
@@ -283,7 +283,7 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 |---|---|---|
 | `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks, and while the thinking sound types over a consult (agent-first mode). On means no barge-in. |
 | `SIP_HALF_DUPLEX_TAIL_S` | **0.8** s (≥ 0) | The tail after the bot stops, when half-duplex is on. |
-| `SIP_STT_MAKEUP_DB` | **6** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; the default 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips, and the appliance has run it on live calls since September. VAD and endpointing are upstream of it and unaffected. |
+| `SIP_STT_MAKEUP_DB` | **6** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; the default 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips, and the appliance has run it on live calls since September. VAD and endpointing are upstream of it and unaffected. It assumes the gateway's echo cancellation is on (aec, the default): with `teaport sip aec off` it lifts the bot's echo too, so set 0 there. |
 | `SIP_ANSWER_AFTER_SECS` | **5** s (≥ 0) | How long a call rings before the brain answers it: a couple of rings, time it builds the call's pipeline and has the greeting worded in, so the greeting plays as soon as the caller is connected. 0 answers as soon as the pipeline is up. Needs the gateway's auto_answer off (the brain answers). |
 | `TEAPORT_CALL_PROMPT_SECS` | **8** s (≥ 0) | When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first ("Someone's calling me — … Should I step away for a moment?"). This is how long they have to answer, counted from the start of the question (the caller hears it ring meanwhile, and many carriers send an unanswered call to voicemail after 20–30 s), and never less than 3 s (or this, if shorter) after the question has been said. Someone still talking at the end gets up to 5 s more. |
 | `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |

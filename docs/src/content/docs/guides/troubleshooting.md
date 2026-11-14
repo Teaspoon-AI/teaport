@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1971#2ca3ef5a; install.sh:2386-2455#d970b544 -->
+<!-- source: install.sh:1989#2ca3ef5a; install.sh:2404-2473#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2386-2455#d970b544; install.sh:2258-2303#cd323bfa -->
+<!-- source: install.sh:2404-2473#d970b544; install.sh:2276-2321#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2475-2479#3c1e6011; install.sh:2559-2562#b1e28ef5 -->
+<!-- source: install.sh:2493-2497#3c1e6011; install.sh:2577-2580#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -517,7 +517,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:1933-1939,1951-1954#6cd31469; install.sh:1961-1964#cefd034b -->
+<!-- source: install.sh:1933-1941,1961-1966#bb544be4; install.sh:1979-1982#cefd034b -->
 
 ## teaport says it can't answer questions yet
 

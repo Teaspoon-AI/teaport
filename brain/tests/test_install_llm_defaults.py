@@ -63,9 +63,12 @@ def _globals() -> str:
     return "".join(_line(p) for p in ('LLM_BASE_URL=""', "LLM_DEFAULT_URL=", "TTS_PACING_SEED="))
 
 
-def _install(env: dict | None = None, brain_env: str | None = None) -> tuple[dict, str]:
-    """phase_credentials then phase_services, unattended, over a brain.env holding
-    `brain_env` (None = a first install). Returns the brain.env it wrote, as a dict."""
+def _install(env: dict | None = None, brain_env: str | None = None,
+             answers: list[str] | None = None) -> tuple[dict, str]:
+    """phase_credentials then phase_services over a brain.env holding `brain_env` (None = a
+    first install): unattended, or with `answers` typed at the prompts on a terminal
+    (script(1) gives bash a pty, so `[ -t 0 ]` holds). Returns the brain.env it wrote, as a
+    dict, and what the run printed."""
     tmp = pathlib.Path(tempdir("teaport-llm-defaults-"))
     (tmp / "etc").mkdir()
     (tmp / "secrets").mkdir()
@@ -75,8 +78,14 @@ def _install(env: dict | None = None, brain_env: str | None = None) -> tuple[dic
            "phase_credentials", "phase_services")
     body = STUBS + _globals() + "".join(_fn(f) for f in fns) + "phase_credentials\nphase_services\n"
     clean = {k: v for k, v in os.environ.items() if not k.startswith("TEAPORT_LLM_")}
-    p = subprocess.run(["bash", "-c", body], capture_output=True, text=True,
-                       env={**clean, "T": str(tmp), **(env or {})}, stdin=subprocess.DEVNULL)
+    if answers is None:
+        p = subprocess.run(["bash", "-c", body], capture_output=True, text=True,
+                           env={**clean, "T": str(tmp), **(env or {})}, stdin=subprocess.DEVNULL)
+    else:
+        (tmp / "run.sh").write_text(body)
+        p = subprocess.run(["script", "-qec", f"bash {tmp / 'run.sh'}", "/dev/null"],
+                           capture_output=True, text=True, input="".join(a + "\n" for a in answers),
+                           env={**clean, "T": str(tmp), **(env or {})})
     out = p.stdout + p.stderr
     assert p.returncode == 0, out
     written = {}
@@ -96,9 +105,12 @@ def test_the_model_name_follows_the_endpoint():
     for url in ("https://openrouter.ai/api/v1", "https://OpenRouter.ai/api/v1/",
                 "https://eu.openrouter.ai/api/v1", "https://openrouter.ai:443/api/v1"):
         assert _model_for(url) == "openai/gpt-oss-120b", url
+    for url in ("https://user@openrouter.ai/api/v1", "https://openrouter.ai?x=1",
+                "https://openrouter.ai#top"):
+        assert _model_for(url) == "openai/gpt-oss-120b", url       # as urlsplit's hostname
     for url in ("https://api.groq.com/openai/v1", "https://api.cerebras.ai/v1",
-                "https://notopenrouter.ai/v1",
-                "https://openrouter.ai.example.com/v1"):
+                "https://notopenrouter.ai/v1", "openrouter.ai/api/v1",  # no scheme, no host
+                "https://openrouter.ai.example.com/v1", "https://openrouter.ai@evil.example/v1"):
         assert _model_for(url) == "gpt-oss-120b", url
 
 
@@ -127,6 +139,35 @@ def test_a_repair_keeps_the_llm_it_has():
     env, out = _install(brain_env="LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=custom\n")
     assert env["LLM_BASE_URL"] == "https://api.groq.com/openai/v1", out
     assert env["LLM_MODEL"] == "custom", out
+
+
+def test_a_repair_that_moves_endpoint_takes_the_new_endpoint_s_model():
+    # The old endpoint's model name would be rejected by the new one.
+    env, out = _install({"TEAPORT_LLM_BASE_URL": "https://openrouter.ai/api/v1"},
+                        brain_env="LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=gpt-oss-120b\n")
+    assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1", out
+    assert env["LLM_MODEL"] == "openai/gpt-oss-120b", out
+    env, out = _install({"TEAPORT_LLM_BASE_URL": "https://api.groq.com/openai/v1"},
+                        brain_env="LLM_BASE_URL=https://openrouter.ai/api/v1\nLLM_MODEL=openai/gpt-oss-120b\n")
+    assert env["LLM_MODEL"] == "gpt-oss-120b", out
+    # Named again, the same endpoint keeps its model.
+    env, out = _install({"TEAPORT_LLM_BASE_URL": "https://api.groq.com/openai/v1"},
+                        brain_env="LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=custom\n")
+    assert env["LLM_MODEL"] == "custom", out
+
+
+def test_the_prompts_offer_what_the_box_has_and_a_new_endpoint_s_model():
+    groq = "LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=custom\n"
+    env, out = _install(brain_env=groq, answers=["", "", "k"])        # Enter, Enter
+    assert "[https://api.groq.com/openai/v1]" in out and "[custom]" in out, out
+    assert env["LLM_BASE_URL"] == "https://api.groq.com/openai/v1" and env["LLM_MODEL"] == "custom", out
+    env, out = _install(brain_env=groq, answers=["https://openrouter.ai/api/v1", "", "k"])
+    assert "[openai/gpt-oss-120b]" in out, out
+    assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1", out
+    assert env["LLM_MODEL"] == "openai/gpt-oss-120b", out
+    env, out = _install(answers=["", "", "k"])                          # a fresh install
+    assert "[https://openrouter.ai/api/v1]" in out and "[openai/gpt-oss-120b]" in out, out
+    assert env["LLM_MODEL"] == "openai/gpt-oss-120b", out
 
 
 def test_a_fresh_install_paces_tts():
