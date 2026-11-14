@@ -690,6 +690,12 @@ def test_without_a_package_the_manifest_names_one_or_the_run_says_how_to_give_on
     # A dry run says so and goes on; a real run stops.
     rc, out = _debrun(tmp, f'MF="{mf}"; DRY_RUN=1; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"')
     assert rc == 0 and "WARN the release manifest names no brain package yet" in out and "NEW (none named)" in out, out
+    # A "TODO" entry (a channel that has released nothing yet) is the same as none.
+    mf.write_text('{"brain": {"deb": {"url": "TODO", "sha256": "TODO"}}}')
+    rc, out = _debrun(tmp, f'MF="{mf}"; brain_deb_fetch')
+    assert rc != 0 and "names no brain package" in out, out
+    rc, out = _debrun(tmp, f'MF="{mf}"; DRY_RUN=1; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"')
+    assert rc == 0 and "NEW (none named)" in out, out
     # It names one: downloaded, checked against its fields.
     _deb(pathlib.Path(tmp, "remote/teaport-brain_0.1.0_arm64.deb"), "0.1.0")
     mf.write_text('{"brain": {"deb": {"url": "https://x/teaport-brain_0.1.0_arm64.deb", "sha256": "aa"}}}')

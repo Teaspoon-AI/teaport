@@ -35,7 +35,7 @@
     "kokoro": { "url": "https://get.teaspoon.tech/dl/models/kokoro/Kokoro_espeak_F16.gguf", "sha256": "TODO" },
     "voxtral": { "url": "https://get.teaspoon.tech/dl/models/voxtral/consolidated.safetensors", "sha256": "TODO", "aux": { "params.json": "TODO", "tekken.json": "TODO" } }
   },
-  "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main" },
+  "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main", "deb": { "url": "TODO", "sha256": "TODO" } },
   "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
   "openclaw": { "version": "2026.9.7", "node": "24" },
   "nemoclaw": { "tested_tag": "TODO" }

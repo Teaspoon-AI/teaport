@@ -116,6 +116,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the .deb
+        shell: bash   # -eo pipefail: a failed checksum in the pipe below fails the step
         run: |
           if [[ "$GITHUB_REF" == refs/tags/brain-v* ]]; then
             # checkout fetched the commit, not the tag; build-deb.sh checks HEAD is it.
@@ -129,7 +130,9 @@ jobs:
           deb="$(ls dist/teaport-brain_*.deb)"
           echo "DEB=$deb" >> "$GITHUB_ENV"
           dpkg-deb --info "$deb"
-          ls -l "$deb"; sha256sum "$deb" | tee "$deb.sha256"
+          # The checksum names the file, not dist/<file>: `sha256sum -c` works from wherever
+          # the artifact is downloaded.
+          ls -l "$deb"; (cd dist && sha256sum "$(basename "$deb")" | tee "$(basename "$deb").sha256")
       - name: Install it
         run: sudo apt-get install -y "./$DEB"
       - name: Self-check the installed package
