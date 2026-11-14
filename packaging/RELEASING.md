@@ -109,8 +109,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.
-- [ ] After the first release, add `brain.deb` to `REQUIRED` in `manifest/check.py`, so a
-      manifest without one fails the check.
+- [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
+      manifest without one fails the check. The beta channel's `TODO` passes only under
+      `--placeholders-ok`.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 
