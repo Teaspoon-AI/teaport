@@ -519,6 +519,14 @@ model you type yourself is written as you typed it.
 
 <!-- source: install.sh:1933-1941,1968-1974#4287c4a8; install.sh:1988-1991#cefd034b -->
 
+A re-run that names an endpoint and no model keeps the model the device has while
+the endpoint takes the same kind of name, and writes the new endpoint's name when it
+moves between OpenRouter and any other endpoint. A move between two other endpoints,
+Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
+doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
+
+<!-- source: install.sh:1978-1986#b3851890 -->
+
 ## teaport says it can't answer questions yet
 
 **Cause** No model is configured: `LLM_BASE_URL` is not set, or there is no key in
