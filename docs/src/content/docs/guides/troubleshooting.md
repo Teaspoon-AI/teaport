@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1983#2ca3ef5a; install.sh:2398-2467#d970b544 -->
+<!-- source: install.sh:2029#2ca3ef5a; install.sh:2444-2513#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2398-2467#d970b544; install.sh:2270-2315#cd323bfa -->
+<!-- source: install.sh:2444-2513#d970b544; install.sh:2316-2361#cd323bfa -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2487-2491#3c1e6011; install.sh:2562-2565#b1e28ef5 -->
+<!-- source: install.sh:2533-2537#3c1e6011; install.sh:2617-2620#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -513,10 +513,19 @@ miss the endpoint or the key.
    `no LLM key - set LLM_API_KEY or write ~/.config/teaport/llm_key` when the
    key is missing.
 
-The installer offers `gpt-oss-120b` as the default value. That default is wrong
-for OpenRouter.
+The installer's model question offers the name the endpoint takes:
+`openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
+model you type yourself is written as you typed it.
 
-<!-- source: install.sh:1960#2e67295a; install.sh:1973-1976#cefd034b -->
+<!-- source: install.sh:1964-1972,1999-2005#4287c4a8; install.sh:2019-2022#cefd034b -->
+
+A re-run that names an endpoint and no model keeps the model the device has while
+the endpoint takes the same kind of name, and writes the new endpoint's name when it
+moves between OpenRouter and any other endpoint. A move between two other endpoints,
+Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
+doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
+
+<!-- source: install.sh:2009-2017#b3851890 -->
 
 ## teaport says it can't answer questions yet
 

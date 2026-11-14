@@ -15,7 +15,7 @@ different engine if it is compatible with the teaport-engine interface.
 
 - **Local voice loop:** speech recognition and speech synthesis run on the device
 - **Target:** Jetson Orin (Nano / NX / AGX), JetPack 7.2 / CUDA 13
-- **LLM:** you supply the LLM — a cloud key or a local OpenAI-compatible endpoint
+- **LLM:** you supply the LLM — a key for a cloud OpenAI-compatible endpoint
 - **Agent:** runs as an OpenClaw realtime-voice provider under NemoClaw (NVIDIA's OpenClaw packaging)
 
 ## Quickstart — your own Jetson Orin Nano (8 GB)

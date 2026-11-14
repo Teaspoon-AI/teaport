@@ -183,7 +183,8 @@ _HD_TAIL_S = setting("SIP_HALF_DUPLEX_TAIL_S")
 # in stt.py. SIP-only, and read HERE rather than in make_stt so the Talk front-end --
 # which shares this brain.env but does its own client-side AEC -- never picks it up.
 # 0 = off. Measured 2026-09-11: +6 dB recovered the quiet barge-in "stop"s the engine was
-# dropping with no regressions on 205 clips. Default off pending a live call to confirm.
+# dropping with no regressions on 205 clips; the appliance has run 6 on live calls since,
+# and it is the default.
 STT_MAKEUP_DB = setting("SIP_STT_MAKEUP_DB")
 
 # Ringing with a head start (see the header): how long after the call comes in the brain

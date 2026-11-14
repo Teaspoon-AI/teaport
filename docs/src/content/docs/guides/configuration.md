@@ -15,7 +15,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2228-2237#38d9c1ca; install.sh:2535#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2228-2237#38d9c1ca; install.sh:2590#31d4462b -->
 
 ## Change a setting in the configuration page
 
@@ -94,7 +94,7 @@ The [Settings reference](/reference/settings/) names the file that holds each se
 
 The env files are root-owned, so edit them with sudo. Keep one `KEY=value` line per setting; comments and blank lines are fine. A boolean reads `0`, `false`, `no`, or `off` as off, and `1`, `true`, `yes`, or `on` as on. An empty value means the setting is unset, and the default applies; space around the value is not part of it. A flag that is off says so in the journal at startup. A few settings treat an empty value as a value in its own right, off for example; the Settings reference marks them.
 
-<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2126#f2ca1efb -->
+<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2172#f2ca1efb -->
 
 To change a setting this way:
 
@@ -122,11 +122,11 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:2572,2728#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1868-1870,1957-1958,1973-1975#d7455a4b -->
+<!-- source: install.sh:2627,2784#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1868-1870,1974-1975,2019-2021#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 
-<!-- source: install.sh:2581-2594#7403c329 -->
+<!-- source: install.sh:2637-2650#7403c329 -->
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 
@@ -160,9 +160,9 @@ On the configuration page, the restart runs the same command two seconds later. 
 
 ## Set up the language model
 
-Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model, `gpt-oss-120b` by default. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`; for a server on the device itself, `http://127.0.0.1:8182/v1`.
+Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model. The installer writes the name the endpoint takes: `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`.
 
-<!-- source: brain/teaport_brain/config_schema.toml:226-257#a558cd9c -->
+<!-- source: brain/teaport_brain/config_schema.toml:226-257#c8ffd4ac -->
 
 :::caution[gpt-oss-120b: pick who serves it]
 On Groq and on Cerebras, `gpt-oss-120b` sometimes breaks down in the middle of a reply, most often right after it used a tool (looked something up, checked the time), and the device says it lost its train of thought. BaseTen serves the same model without that. Use OpenRouter as the endpoint, `openai/gpt-oss-120b` as the model, and send OpenRouter to BaseTen first with `LLM_EXTRA_BODY`:
@@ -182,11 +182,11 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 
 1. Open the configuration page as [Change a setting in the configuration page](/guides/configuration/#change-a-setting-in-the-configuration-page) shows.
 2. In the language model section, enter your endpoint in `LLM_BASE_URL`.
-3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page first sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. For an OpenRouter key that works, the page also reads the account's credit at `/api/v1/credits`, or, when OpenRouter does not answer that for the key, the key's own record, where an account that has never paid for credit, with a key that has no limit of its own, counts as having none. When the account has no credit, it saves the key and says that the device can't answer until you add credit on OpenRouter. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies. A server that ignores keys still needs a placeholder, `sk-local` for example.
+3. Enter the key in `LLM_API_KEY`. Before it saves the key, the page first sends one request with it: for OpenRouter, the key's own record at `/api/v1/key`, and for any other endpoint, its `/models` list. If the endpoint refuses the key or does not answer, the page says why and saves the key only when you choose **Save anyway**. For an OpenRouter key that works, the page also reads the account's credit at `/api/v1/credits`, or, when OpenRouter does not answer that for the key, the key's own record, where an account that has never paid for credit, with a key that has no limit of its own, counts as having none. When the account has no credit, it saves the key and says that the device can't answer until you add credit on OpenRouter. The page writes the key to `~/.config/teaport/llm_key` and drops any `LLM_API_KEY` copy from the env file, so the new key is the one that applies.
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:238-257#3812d0b5; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
+<!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:238-257#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 ### In the configuration files
 
@@ -211,7 +211,7 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 
    The mode keeps the file readable only by you, as the installer writes it.
 
-   <!-- source: install.sh:1973-1975#37da8b7d -->
+   <!-- source: install.sh:2019-2021#37da8b7d -->
 
 4. If `brain.env` also sets `LLM_API_KEY`, remove that line or empty its value; the environment wins over the file.
 5. Restart the brain as [Apply the change](/guides/configuration/#apply-the-change) describes.
@@ -238,7 +238,7 @@ The first two are said one time, at the start of a conversation in the room or i
 
 When nothing is left, the device stops answering questions. It does not switch to another model. It says that its trial credit has run out and how to connect your own account; "open my settings" and setup mode still work by voice. After you save your own key, the next conversation answers again.
 
-<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1401-1405#1508a36d -->
+<!-- source: brain/teaport_brain/credit.py:104-105#58343f27; brain/teaport_brain/services.py:1398-1402#1508a36d -->
 
 ## One key for OpenClaw too
 

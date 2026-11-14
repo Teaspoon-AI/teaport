@@ -21,7 +21,7 @@ The engine transcribes one session at a time. That single STT slot is the scarce
 
 The brain is the voice pipeline service `teaport-brain`. It runs a Pipecat pipeline: the engine's STT, your large language model (LLM), and then the engine's TTS. The LLM runs wherever you point the brain, and the brain reads its configuration from the environment.
 
-<!-- source: brain/README.md:3-4#4d22de21; brain/README.md:12#050b5bc3; README.md:18#cc733da3 -->
+<!-- source: brain/README.md:3-4#4d22de21; brain/README.md:12#050b5bc3; README.md:18#79a8bc31 -->
 
 The brain owns the conversation: barge-in, the heard-grounding ledger, memory recall, the tools, and the persona. It sends plain text to the engine and receives audio and per-word timestamps back.
 
@@ -145,7 +145,7 @@ The table lists each port a teaport service listens on, and the service behind i
 | 7861 | `teaport-brain` | the `/talk` WebSocket and `/health`; the plugin, the Discord bridge, and the room microphone connect here as clients |
 | 80 | `teaport-wifi-setup`, through a redirect | captive-portal probes on the setup network, sent to the setup page while the service runs |
 
-<!-- source: brain/teaport_brain/gateway_server.py:27-28#c17952f7; install.sh:1982#b5bc5408; brain/README.md:8#8e48c7c2; brain/README.md:20#9528fc28; systemd/teaport-brain.service.in:1-2#4ed91011; plugin/README.md:31#0ebd73fa; systemd/teaport-wifi-setup.service.in:40-42#1d45013f -->
+<!-- source: brain/teaport_brain/gateway_server.py:27-28#c17952f7; install.sh:2028#b5bc5408; brain/README.md:8#8e48c7c2; brain/README.md:20#9528fc28; systemd/teaport-brain.service.in:1-2#4ed91011; plugin/README.md:31#0ebd73fa; systemd/teaport-wifi-setup.service.in:40-42#1d45013f -->
 
 The `teaport-sip` gateway binds the SIP port that its trunk configuration names, and it binds nothing before `teaport sip configure` writes the credentials file. The gateway talks to the brain over a UNIX domain socket under `/run/teaport`, not TCP. The Discord bridge and the room microphone open no ports; both connect out to the brain's `/talk` WebSocket.
 
@@ -155,9 +155,9 @@ The `teaport-sip` gateway binds the SIP port that its trunk configuration names,
 
 What crosses the network depends on the parts you use:
 
-- The room's audio stays on the device: the microphone, the brain, and the engine exchange it directly, and the LLM runs wherever you point the brain, on the device or elsewhere. See [Configure teaport](/guides/configuration/).
+- The room's audio stays on the device: the microphone, the brain, and the engine exchange it directly, and the LLM runs wherever you point the brain. See [Configure teaport](/guides/configuration/).
 - Web search and web fetch leave the device through the co-resident OpenClaw gateway.
 - A phone call crosses the SIP trunk or registrar that the `teaport-sip` gateway bridges to the brain.
 - Discord voice media travels as RTP over UDP to Discord's per-call servers, and the bridge pipes it to the brain.
 
-<!-- source: README.md:3-4,16,18#b1351cf0; brain/teaport_brain/tools.py:4-8#dcdda3e4; systemd/teaport-sip.service.in:1-2#ccee4d55; systemd/teaport-discord-bridge.service.in:1-3#0f842336 -->
+<!-- source: README.md:3-4,16,18#3a06b951; brain/teaport_brain/tools.py:4-8#dcdda3e4; systemd/teaport-sip.service.in:1-2#ccee4d55; systemd/teaport-discord-bridge.service.in:1-3#0f842336 -->

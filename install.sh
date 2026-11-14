@@ -1953,22 +1953,68 @@ JSON
 # so a repair keeps whatever the config page set rather than snapping back to the default.
 # An explicit answer is written plain, and wins.
 LLM_BASE_URL=""; LLM_MODEL=""; LLM_URL_SEED="?"; LLM_MODEL_SEED="?"
+# The endpoint a box gets when nobody names one: OpenRouter, which the appliance runs and
+# the brain's account features expect (first-run sign-in, the shared OpenClaw key and the
+# credit checks all test ai_account.is_openrouter).
+LLM_DEFAULT_URL="https://openrouter.ai/api/v1"
+# llm_default_model <url> — the model name to offer for <url>: OpenRouter names a model
+# with its maker (openai/gpt-oss-120b) and rejects the bare name that Groq and Cerebras
+# take. The host test is ai_account.is_openrouter's (urlsplit's hostname): openrouter.ai
+# or a subdomain of it; no scheme, no host; userinfo, port, query and fragment dropped.
+llm_default_model() {
+  local host=""
+  case "$1" in *://*) host="${1#*://}" ;; esac
+  host="${host%%[/?#]*}"; host="${host##*@}"; host="${host%%:*}"; host="${host,,}"
+  case "$host" in
+    openrouter.ai|*.openrouter.ai) printf 'openai/gpt-oss-120b\n' ;;
+    *) printf 'gpt-oss-120b\n' ;;
+  esac
+}
 phase_credentials() {
   log "credentials -> $SECRETS (secrets never baked into units)"
   run mkdir -p "$SECRETS"; run chmod 700 "$SECRETS"
   # Bring-your-own OpenAI-compatible LLM (item-2 model): endpoint + key + model.
-  LLM_BASE_URL="${TEAPORT_LLM_BASE_URL:-}"; LLM_MODEL="${TEAPORT_LLM_MODEL:-gpt-oss-120b}"
+  LLM_BASE_URL="${TEAPORT_LLM_BASE_URL:-}"; LLM_MODEL="${TEAPORT_LLM_MODEL:-}"
   [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
-  [ -n "${TEAPORT_LLM_MODEL:-}" ] && LLM_MODEL_SEED=""
-  local key="${TEAPORT_LLM_API_KEY:-}"
-  if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
-    read -r -p 'LLM base URL (OpenAI-compatible, e.g. https://api.groq.com/openai/v1): ' LLM_BASE_URL
-    read -r -p 'LLM model [gpt-oss-120b]: ' m; [ -n "$m" ] && LLM_MODEL="$m"
-    [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
-    [ -n "$m" ] && LLM_MODEL_SEED=""
-    read -r -s -p 'LLM API key (blank for a local keyless server): ' key; echo
+  [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
+  local key="${TEAPORT_LLM_API_KEY:-}" m=""
+  # A repair offers what brain.env already holds (a seed keeps it), and a fresh install
+  # the defaults. A model goes with its provider: an endpoint named without a model keeps
+  # brain.env's model while llm_default_model gives both endpoints the same name (the
+  # same provider, however the URL is written), and otherwise gets the new one's, written
+  # plain (a repair moving to OpenRouter would keep a bare name OpenRouter rejects).
+  # A dry run reads brain.env only when it can without sudo, as write_env does.
+  local had_env="" had_url had_model
+  if [ "$DRY_RUN" != 1 ] || [ -r "$ETC/brain.env" ]; then
+    had_env="$(read_env_file "$ETC/brain.env" --lenient)"
   fi
-  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="http://127.0.0.1:8182/v1"   # local default when unattended
+  had_url="$(printf '%s\n' "$had_env" | tr -d '\r' | sed -n 's/^LLM_BASE_URL=//p' | tail -n 1)"
+  had_model="$(printf '%s\n' "$had_env" | tr -d '\r' | sed -n 's/^LLM_MODEL=//p' | tail -n 1)"
+  had_url="${had_url#[\"\']}"; had_url="${had_url%[\"\']}"
+  had_model="${had_model#[\"\']}"; had_model="${had_model%[\"\']}"
+  local url_default="${had_url:-$LLM_DEFAULT_URL}"
+  if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
+    read -r -p "LLM base URL (OpenAI-compatible) [$url_default]: " LLM_BASE_URL
+    [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
+    if [ -z "$LLM_MODEL" ]; then
+      m="$(llm_default_model "${LLM_BASE_URL:-$url_default}")"
+      if [ -n "$had_model" ] && [ -n "$had_url" ] &&
+         [ "$m" = "$(llm_default_model "$had_url")" ]; then m="$had_model"; fi
+      read -r -p "LLM model [$m]: " LLM_MODEL
+      [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
+    fi
+    read -r -s -p 'LLM API key: ' key; echo
+  fi
+  [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$url_default"   # nobody named one: kept, or the default
+  if [ -z "$LLM_MODEL" ]; then
+    LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
+    if [ -n "$had_model" ] && [ -n "$had_url" ] &&
+       [ "$LLM_MODEL" = "$(llm_default_model "$had_url")" ]; then
+      LLM_MODEL="$had_model"                                   # the same provider: its model stays
+    elif [ -n "$had_url" ]; then
+      LLM_MODEL_SEED=""                                        # a new provider: its model, plain
+    fi
+  fi
   if [ -n "$key" ]; then
     if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s/llm_key (mode 600)\n' "$SECRETS";
     else printf '%s' "$key" > "$SECRETS/llm_key"; chmod 600 "$SECRETS/llm_key"; fi
@@ -2050,7 +2096,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # KEY in the file wins over it on a repair. That is for the values the config page
   # (https://<box>:$SETTINGS_PORT/settings/config) lets the operator change and the installer merely
   # defaults — LLM_BASE_URL/LLM_MODEL when nobody answered the prompt or set the env var.
-  # Without it the documented repair action put the box back on the local LLM endpoint
+  # Without it the documented repair action put the box back on the installer's default endpoint
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
   local keep=() ours=() overwritten=() managed=" " existing_keys=" " line
@@ -2529,6 +2575,15 @@ set_avahi_hostname() {
   fi
 }
 
+# TTS pacing (#83): what the appliance runs. Synthesis keeps a lead over playout instead of
+# running ahead of it (lead), and the next clause synthesizes eagerly only while the queued
+# audio is shorter than it takes to make (low_lead). A barge-in then throws away 3-5 s of
+# made audio instead of 14-20 s, with no underruns and the same time to first audio (the
+# 2026-10-04 A/B, 80 replies on the live brain). Seeds: a new install gets them, a repair
+# keeps whatever brain.env or the config page holds. The code defaults (greedy, always)
+# stay what an install that never ran this line has.
+TTS_PACING_SEED=("?TTS_PACING=lead" "?TTS_EAGER=low_lead")
+
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
@@ -2570,7 +2625,8 @@ phase_services() {
     "TEAPORT_URL=ws://127.0.0.1:$ENGINE_PORT/v1/realtime" \
     "${agent[@]}" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
-    "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
+    "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1" \
+    "${TTS_PACING_SEED[@]}"
 
   # TEAPORT_PERSONA_FILE points here, but nothing else ever creates it: without this a
   # voice-only box (and a gateway box whose gateway cannot answer) reads a file that

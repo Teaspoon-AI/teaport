@@ -226,7 +226,7 @@ def test_nothing_is_run_where_openclaw_does_not_take_the_key():
         assert _key_file() == NEW + "\n" and box.argv == [], box.argv
         assert _status()["state"] == state, _status()
     box = Fake(["fail"], key_file=OLD)
-    asyncio.run(ai_account.save_key(NEW, "http://127.0.0.1:8182/v1"))
+    asyncio.run(ai_account.save_key(NEW, "https://api.groq.com/openai/v1"))
     assert box.argv == [] and agent_key.status(NEW, False)["state"] == agent_key.OTHER
     agent_backend.HAS_AGENT = True
     agent_key.SHARES = True

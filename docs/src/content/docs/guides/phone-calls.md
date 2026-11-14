@@ -21,7 +21,7 @@ You need:
   repository, and the service runs `~/teaport-sip/build/teaport-sip`.
 - Access to the device as the user the teaport services run as.
 
-<!-- source: install.sh:3085-3086#439739d4; cli/teaport:30-32#8d57683f -->
+<!-- source: install.sh:3141-3142#439739d4; cli/teaport:30-32#8d57683f -->
 
 ## Turn on telephony
 
@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:12,499-503#0ac45871; brain/teaport_brain/sip_server.py:494#f51c16f8 -->
+<!-- source: cli/teaport:12,499-503#0ac45871; brain/teaport_brain/sip_server.py:495#f51c16f8 -->
 
 ## Keep the line running
 
@@ -287,7 +287,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1456-1458#d7433986; brain/teaport_brain/sip_server.py:875,895#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1456-1458#d7433986; brain/teaport_brain/sip_server.py:876,896#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the
@@ -296,7 +296,7 @@ there the brain doesn't hear the caller while the typing plays, the same as
 while the agent speaks. An OLED face on the device doesn't type along to a
 call.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1529-1539#82e31268; brain/teaport_brain/config_schema.toml:1917-1925#ac57e09d; brain/teaport_brain/sip_server.py:219-221,244-246#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1529-1539#82e31268; brain/teaport_brain/config_schema.toml:1917-1925#ac57e09d; brain/teaport_brain/sip_server.py:220-222,245-247#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
 
 Before you turn the typing on for calls, listen to it on a call. The typing is
 made at 24 kHz, and a phone line carries 8 kHz audio, which keeps little of the
@@ -365,7 +365,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:22#3f95ac55; brain/teaport_brain/sip_server.py:5-7,256#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:22#3f95ac55; brain/teaport_brain/sip_server.py:5-7,257#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -429,7 +429,7 @@ To test the phone path, follow these steps:
    The front-end logs `SIP front-end: connected to the gateway at ...` when it
    connects.
 
-   <!-- source: brain/teaport_brain/sip_server.py:494#f51c16f8 -->
+   <!-- source: brain/teaport_brain/sip_server.py:495#f51c16f8 -->
 
 6. End the fake; it removes the socket when it exits. Then clean up:
 
