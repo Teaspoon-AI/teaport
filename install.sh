@@ -1214,7 +1214,8 @@ brain_deb_fetch() {
     [ -n "$MF" ] || fetch_manifest
     local url sha
     url="$(mget brain.deb.url 2>/dev/null || true)"; sha="$(mget brain.deb.sha256 2>/dev/null || true)"
-    if [ -z "$url" ] || [ -z "$sha" ]; then
+    # An unset entry and a "TODO" one (a channel with nothing released yet) say the same.
+    if [ -z "$url" ] || [ -z "$sha" ] || [[ "$url" == *TODO* || "$sha" == TODO ]]; then
       if [ "$DRY_RUN" = 1 ]; then
         warn "the release manifest names no brain package yet (brain.deb) — a real run stops here unless TEAPORT_BRAIN_DEB names one"
         BRAIN_DEB="" BRAIN_DEB_NEW="(none named)"; return 0
