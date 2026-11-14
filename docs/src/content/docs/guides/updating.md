@@ -12,7 +12,7 @@ The installer applies every update. The `teaport update --check` command compare
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update --check` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: brain/teaport_brain/updates.py:55-66,336-337#c715a888; install.sh:859,3418#841be564 -->
+<!-- source: brain/teaport_brain/updates.py:55-66,336-337#c715a888; install.sh:859,3427#841be564 -->
 
 ## Check for updates
 
@@ -121,11 +121,11 @@ The engine takes about a minute to load its models after a restart, and a Talk s
 
 `/etc/teaport/engine.env` gains only the keys it lacks. A value that is already in the file stays, so a `KOKORO_RESERVE_FPT` that you tuned survives the update. A full run writes the installer's values over it.
 
-<!-- source: install.sh:46-47,2170,2184,2554-2555#1d268b76 -->
+<!-- source: install.sh:46-47,2179,2193,2563-2564#1d268b76 -->
 
 The run asks you to accept the engine license only when its version differs from the one you accepted. It installs no system packages: it checks that `espeak-ng`, `libopenblas.so.0`, and `libcudnn.so.9` are present, and stops when one is missing. Nothing else changes: no brain build and no other unit.
 
-<!-- source: install.sh:47-48,3397-3403#d2f3ce52 -->
+<!-- source: install.sh:47-48,3406-3412#d2f3ce52 -->
 
 If a drop-in changes the engine's unit, for example one that a manual deployment left in `/run`, the run names it and leaves it in place. Remove it if you don't need it, and then run `sudo systemctl daemon-reload`.
 
@@ -155,7 +155,7 @@ To put the previous brain package back, run the rollback on its own:
 
 The run installs the newest other package kept in `/var/cache/teaport`, restarts the brain, and checks it comes back. The `teaport` command and the configuration helper come with the package, so they go back together with the brain. The package that the run replaces stays kept, so running the rollback again undoes it.
 
-<!-- source: install.sh:3357-3377#a43d31fd -->
+<!-- source: install.sh:3366-3386#a43d31fd -->
 
 The installer accepts two components, `brain` and `engine`, and `--only` and `--rollback` do not combine in one run.
 
@@ -177,11 +177,11 @@ To put the previous engine back, run the rollback on its own:
 
 The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under and any model it kept. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
 
-<!-- source: install.sh:13,50-51,687-706,3424-3463#069be2b9 -->
+<!-- source: install.sh:13,50-51,687-706,3433-3472#069be2b9 -->
 
 The engine-only update rolls back on its own when the engine fails its check. A rollback doesn't: if the engine doesn't come back, the run stops and says so. A full run doesn't roll back either; use the rollback by hand there.
 
-<!-- source: install.sh:45,51-52,851,3426-3427,3459#a9536167 -->
+<!-- source: install.sh:45,51-52,851,3435-3436,3468#a9536167 -->
 
 ## Choose a release channel
 

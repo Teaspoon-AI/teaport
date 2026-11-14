@@ -150,10 +150,15 @@ def test_a_repair_that_moves_endpoint_takes_the_new_endpoint_s_model():
     env, out = _install({"TEAPORT_LLM_BASE_URL": "https://api.groq.com/openai/v1"},
                         brain_env="LLM_BASE_URL=https://openrouter.ai/api/v1\nLLM_MODEL=openai/gpt-oss-120b\n")
     assert env["LLM_MODEL"] == "gpt-oss-120b", out
-    # Named again, the same endpoint keeps its model.
-    env, out = _install({"TEAPORT_LLM_BASE_URL": "https://api.groq.com/openai/v1"},
-                        brain_env="LLM_BASE_URL=https://api.groq.com/openai/v1\nLLM_MODEL=custom\n")
-    assert env["LLM_MODEL"] == "custom", out
+    # The same provider named again, however the URL is written, keeps its model.
+    for had, named in (("https://api.groq.com/openai/v1", "https://api.groq.com/openai/v1"),
+                       ("https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/"),
+                       ('"https://openrouter.ai/api/v1"', "https://openrouter.ai/api/v1"),
+                       ("https://openrouter.ai/api/v1\r", "https://OpenRouter.ai/api/v1"),
+                       ("https://openrouter.ai/api/v1", "https://eu.openrouter.ai/api/v1")):
+        env, out = _install({"TEAPORT_LLM_BASE_URL": named},
+                            brain_env=f"LLM_BASE_URL={had}\nLLM_MODEL=custom/x\n")
+        assert env["LLM_MODEL"] == "custom/x", (had, named, out)
 
 
 def test_the_prompts_offer_what_the_box_has_and_a_new_endpoint_s_model():
@@ -165,6 +170,8 @@ def test_the_prompts_offer_what_the_box_has_and_a_new_endpoint_s_model():
     assert "[openai/gpt-oss-120b]" in out, out
     assert env["LLM_BASE_URL"] == "https://openrouter.ai/api/v1", out
     assert env["LLM_MODEL"] == "openai/gpt-oss-120b", out
+    env, out = _install(brain_env=groq, answers=["https://api.groq.com/openai/v1/", "", "k"])
+    assert "[custom]" in out and env["LLM_MODEL"] == "custom", out        # same provider
     env, out = _install(answers=["", "", "k"])                          # a fresh install
     assert "[https://openrouter.ai/api/v1]" in out and "[openai/gpt-oss-120b]" in out, out
     assert env["LLM_MODEL"] == "openai/gpt-oss-120b", out

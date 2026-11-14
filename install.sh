@@ -1948,19 +1948,27 @@ phase_credentials() {
   [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
   local key="${TEAPORT_LLM_API_KEY:-}" m=""
   # A repair offers what brain.env already holds (a seed keeps it), and a fresh install
-  # the defaults. A model goes with its endpoint: one named without a model gets that
-  # endpoint's default, written plain (an endpoint a repair moves to would otherwise keep
-  # the old endpoint's model name, which the new one rejects).
-  local had_url had_model
-  had_url="$(read_env_file "$ETC/brain.env" --lenient | sed -n 's/^LLM_BASE_URL=//p' | tail -n 1)"
-  had_model="$(read_env_file "$ETC/brain.env" --lenient | sed -n 's/^LLM_MODEL=//p' | tail -n 1)"
+  # the defaults. A model goes with its provider: an endpoint named without a model keeps
+  # brain.env's model while llm_default_model gives both endpoints the same name (the
+  # same provider, however the URL is written), and otherwise gets the new one's, written
+  # plain (a repair moving to OpenRouter would keep a bare name OpenRouter rejects).
+  # A dry run reads brain.env only when it can without sudo, as write_env does.
+  local had_env="" had_url had_model
+  if [ "$DRY_RUN" != 1 ] || [ -r "$ETC/brain.env" ]; then
+    had_env="$(read_env_file "$ETC/brain.env" --lenient)"
+  fi
+  had_url="$(printf '%s\n' "$had_env" | tr -d '\r' | sed -n 's/^LLM_BASE_URL=//p' | tail -n 1)"
+  had_model="$(printf '%s\n' "$had_env" | tr -d '\r' | sed -n 's/^LLM_MODEL=//p' | tail -n 1)"
+  had_url="${had_url#[\"\']}"; had_url="${had_url%[\"\']}"
+  had_model="${had_model#[\"\']}"; had_model="${had_model%[\"\']}"
   local url_default="${had_url:-$LLM_DEFAULT_URL}"
   if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
     read -r -p "LLM base URL (OpenAI-compatible) [$url_default]: " LLM_BASE_URL
     [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
     if [ -z "$LLM_MODEL" ]; then
       m="$(llm_default_model "${LLM_BASE_URL:-$url_default}")"
-      if [ -n "$had_model" ] && [ "${LLM_BASE_URL:-$url_default}" = "$had_url" ]; then m="$had_model"; fi
+      if [ -n "$had_model" ] && [ -n "$had_url" ] &&
+         [ "$m" = "$(llm_default_model "$had_url")" ]; then m="$had_model"; fi
       read -r -p "LLM model [$m]: " LLM_MODEL
       [ -n "$LLM_MODEL" ] && LLM_MODEL_SEED=""
     fi
@@ -1968,11 +1976,12 @@ phase_credentials() {
   fi
   [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="$url_default"   # nobody named one: kept, or the default
   if [ -z "$LLM_MODEL" ]; then
-    if [ -n "$had_model" ] && [ "$LLM_BASE_URL" = "$had_url" ]; then
-      LLM_MODEL="$had_model"                                   # same endpoint: its model stays
-    else
-      LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
-      [ -n "$had_url" ] && LLM_MODEL_SEED=""                   # a new endpoint: its model, plain
+    LLM_MODEL="$(llm_default_model "$LLM_BASE_URL")"
+    if [ -n "$had_model" ] && [ -n "$had_url" ] &&
+       [ "$LLM_MODEL" = "$(llm_default_model "$had_url")" ]; then
+      LLM_MODEL="$had_model"                                   # the same provider: its model stays
+    elif [ -n "$had_url" ]; then
+      LLM_MODEL_SEED=""                                        # a new provider: its model, plain
     fi
   fi
   if [ -n "$key" ]; then
