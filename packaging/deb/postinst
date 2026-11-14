@@ -26,6 +26,15 @@ if [ ! -e /opt/teaport/venv ] || [ -L /opt/teaport/venv ]; then
   if [ -d /opt/teaport ]; then ln -sfn /opt/teaport/brain /opt/teaport/venv; fi
 fi
 
+# The pre-package installer's CLI, if it is still there, comes before /usr/bin/teaport on
+# PATH and reads this package's brain as one of its own old venvs, so `teaport doctor`
+# would misreport it. install.sh retires it once the brain is back (this script runs inside
+# its apt-get, before that); a plain apt install does not. Said, not removed: it may be the
+# operator's own wrapper.
+if [ -e /usr/local/bin/teaport ]; then
+  echo "teaport-brain: /usr/local/bin/teaport shadows the package's /usr/bin/teaport. If it is the old installer's CLI, install.sh retires it once the brain is back; after a plain apt install, remove it or run ./install.sh --only brain from a checkout" >&2
+fi
+
 # Not under systemd (a container, a chroot, an image build): nothing to restart.
 [ -d /run/systemd/system ] || exit 0
 for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup.service; do
