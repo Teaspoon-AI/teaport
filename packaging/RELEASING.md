@@ -54,7 +54,8 @@ dpkg-deb -f teaport-brain_X.Y.Z_arm64.deb Package Version Architecture
 
 ## Test it on a box that is not the one you live on
 
-- [ ] Copy the .deb to the spare box, then
+- [ ] Copy the .deb into the checkout on the spare box (the bare name is read from where
+      you run `install.sh`), then
       `TEAPORT_BRAIN_DEB=teaport-brain_X.Y.Z_arm64.deb ./install.sh --only brain`:
       a first install on a box that still has the old venvs, and an upgrade over the
       previous release. For the first release there is no previous release: install a CI

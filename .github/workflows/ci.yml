@@ -116,6 +116,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the .deb
+        shell: bash   # -eo pipefail: a failed checksum in the pipe below fails the step
         run: |
           if [[ "$GITHUB_REF" == refs/tags/brain-v* ]]; then
             # checkout fetched the commit, not the tag; build-deb.sh checks HEAD is it.
