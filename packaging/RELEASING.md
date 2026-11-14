@@ -9,8 +9,10 @@ What a release is, end to end:
     tag brain-vX.Y.Z  ->  CI builds the .deb  ->  you test it  ->  you upload it
                       ->  manifest PR (url + sha256)  ->  merge publishes the manifest
 
-`install.sh` and `teaport update` read `manifest/stable.json` from get.teaspoon.tech, so a
-package a box can install exists only once its manifest entry is merged *and* published.
+`install.sh` reads `manifest/stable.json` from get.teaspoon.tech, so a package a box can
+install by itself exists only once its manifest entry is merged *and* published. (`teaport
+update` does not announce a new brain package yet: it still compares `brain.tag`. That
+changes with the updater's apply step.)
 
 ## Before the tag
 
@@ -52,15 +54,18 @@ dpkg-deb -f teaport-brain_X.Y.Z_arm64.deb Package Version Architecture
 
 ## Test it on a box that is not the one you live on
 
-- [ ] `TEAPORT_BRAIN_DEB=/tmp/brain-release/teaport-brain_X.Y.Z_arm64.deb ./install.sh --only brain`
-      on a spare box: a first install on a box that still has the old venvs, and an upgrade
-      over the previous release. The run must end with the brain up.
+- [ ] Copy the .deb to the spare box, then
+      `TEAPORT_BRAIN_DEB=teaport-brain_X.Y.Z_arm64.deb ./install.sh --only brain`:
+      a first install on a box that still has the old venvs, and an upgrade over the
+      previous release. For the first release there is no previous release: install a CI
+      dev build the same way (the brain-deb artifact of any run) and upgrade from that. The
+      run must end with the brain up.
 - [ ] `teaport doctor` has no failures, `dpkg -V teaport-brain` is silent.
 - [ ] The Settings page opens; its footer shows the revision and build date; `/licenses`
       opens, and so does `teaport licenses --notices`.
 - [ ] A call or a room turn works end to end.
-- [ ] `./install.sh --rollback brain` after an upgrade puts the previous package back, and a
-      second run undoes it.
+- [ ] `./install.sh --rollback brain` after an upgrade puts the previous package (the dev
+      build, for the first release) back, and a second run undoes it.
 
 The first release is the oldest a box can go back to: a box that had the pre-package venvs has
 no earlier package to return to, and `install.sh` removes those venvs once the package's brain
@@ -79,6 +84,12 @@ aws --profile teaport s3 cp teaport-brain_X.Y.Z_arm64.deb \
 
 - [ ] Do not `curl` the new URL before the upload has finished: the edge caches a 404 for a
       few minutes. Check it with `?x=$RANDOM` appended first, then the plain URL.
+
+## Right after the tag
+
+- [ ] Bump `BASE_VERSION` in `packaging/build-deb.sh` to the next release, in a PR. Until you
+      do, main's dev builds are `X.Y.Z~dev…`, which sort *below* the release you just cut: a
+      box on the release that is given one has to downgrade to take it.
 
 ## The manifest
 
@@ -104,6 +115,7 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 
 ## After
 
-- [ ] From a box, with no `TEAPORT_BRAIN_DEB`: `./install.sh --only brain --dry-run` names the
-      package and its version, then the real run installs it.
+- [ ] From a box, with no `TEAPORT_BRAIN_DEB`: `./install.sh --only brain --dry-run` prints
+      the download of the package (its URL carries the version), then the real run installs
+      it.
 - [ ] Note the release (version, sha256, date) where you keep release notes.
