@@ -28,6 +28,11 @@ export default defineConfig({
 				light: './src/assets/teaport-logo-light-bg.svg',
 				replacesTitle: true,
 			},
+			// The header logo links to the teaport page on the marketing site;
+			// see src/overrides/SiteTitle.astro.
+			components: {
+				SiteTitle: './src/overrides/SiteTitle.astro',
+			},
 			// Code sits on the marketing site's terminal ground in both themes.
 			expressiveCode: {
 				themes: ['github-dark-default'],
@@ -59,7 +64,8 @@ export default defineConfig({
 				{
 					label: 'Get started',
 					items: [
-						{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
+						{ label: 'Overview', slug: 'index' },
+					{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
 						{ label: 'Install teaport', slug: 'getting-started/installation' },
 					],
 				},
