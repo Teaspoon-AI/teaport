@@ -82,10 +82,25 @@
 	--sl-shadow-md: 0 1px 2px rgba(28, 27, 24, 0.05), 0 18px 40px -24px rgba(28, 27, 24, 0.28);
 }
 
-/* The marketing nav is 81px tall around a 48px logo. */
-@media (min-width: 50em) {
+/* The marketing nav's box (TeaportNav .navbar): 16px 48px around the 48px
+   logo -- an 80px bar. The inline padding is set on .header directly so the
+   value stays out of Starlight's sidebar-column arithmetic, which is keyed
+   to --sl-nav-pad-x, and the grid carries no inner gap: the 48px gutter is
+   the only inset, as on the marketing row. */
+@media (min-width: 50rem) {
 	:root {
-		--sl-nav-height: 4.5rem;
+		--sl-nav-height: 5rem;
+		--sl-nav-pad-y: 1rem;
+	}
+	/* The gutter belongs on the fixed bar alone. Starlight renders a second,
+	   nested .header div (the content grid) -- padding that one too doubled
+	   the inset, so the bar is picked by tag here and the grid stays
+	   unpadded, gap-less. */
+	header.header {
+		padding-inline: 3rem;
+	}
+	.header {
+		gap: 0;
 	}
 }
 
@@ -98,6 +113,45 @@ body {
    the hairline under it. */
 .site-title img {
 	height: calc(var(--sl-nav-height) - 2 * var(--sl-nav-pad-y));
+}
+
+/* Header controls wear the marketing nav's link pill (TeaportNav.astro
+   .navlink): primary ink at rest, the button radius, and a hover fill one
+   solid step from the bar, .15s. The theme select's pill is its own border
+   box -- its absolute icons already span it -- so it needs no padding of
+   its own; the GitHub link trades Starlight's invisible negative-margin
+   hover area for the visible 8/10px pill. */
+.social-icons a,
+starlight-theme-select label {
+	color: var(--sl-color-white);
+	border-radius: var(--tp-btn-radius);
+	transition: background-color 0.15s ease, color 0.15s ease;
+}
+.social-icons a {
+	padding: 0.5rem 0.625rem;
+	margin: 0;
+}
+/* The mark at the marketing nav's 20px; Starlight ships it at 16. */
+.social-icons svg {
+	inline-size: 1.25rem;
+	block-size: 1.25rem;
+}
+.social-icons a:hover,
+starlight-theme-select label:hover {
+	background-color: var(--sl-color-gray-6);
+}
+:root[data-theme='light'] .social-icons a:hover,
+:root[data-theme='light'] starlight-theme-select label:hover {
+	/* The marketing hover fill: its --bg-tertiary, slate.100. */
+	background-color: var(--sl-color-black);
+}
+
+/* The focus ring waits for the keyboard. Chrome rings the select on mouse
+   focus too -- :focus-visible matches clicks on form controls -- so the
+   head script in astro.config.mjs tags pointer-driven focus and this
+   quiets the ring while the flag holds. */
+starlight-theme-select label[data-pointer-focus] select:focus {
+	outline: none;
 }
 
 /* Display headings: Archivo 700 at -1%, as on the Teaport pages. h3 and
@@ -141,7 +195,17 @@ h1 {
 	font-weight: 600;
 	border-radius: var(--tp-btn-radius);
 }
+:root[data-theme='light'] .sidebar-content a[aria-current='page'] {
+	/* Light mode quiets the selection: cyan.50 ground, cyan.700 ink. Dark
+	   keeps the accent-low wash above. */
+	background-color: var(--sl-color-blue-low);
+	color: var(--sl-color-accent-high);
+}
 .sidebar-content a {
+	/* One 40px row per item -- roomier targets for the left navigation. */
+	display: flex;
+	align-items: center;
+	min-height: 2.5rem;
 	border-radius: var(--tp-btn-radius);
 }
 .sidebar-content a:not([aria-current='page']):hover {
@@ -201,7 +265,7 @@ h1 {
 	--sl-card-bg: var(--tp-navy);
 }
 :root:not([data-theme='light']) .card .icon {
-	color: #f8fafc;
+	color: var(--sl-color-white);
 }
 .card .title {
 	font-family: var(--__sl-font);
@@ -265,6 +329,17 @@ h1 {
 	outline-offset: 2px;
 }
 
+/* The document index collapses into a fixed top bar on narrow screens;
+   skip it. Below the wide layout the page reads straight through, and the
+   full index returns in the right column at 72rem -- so the bar is hidden
+   and its reserved strip of padding zeroed. */
+:root {
+	--sl-mobile-toc-height: 0rem;
+}
+mobile-starlight-toc nav {
+	display: none;
+}
+
 /* Wide screens: give the content column the room the viewport has, up to
    64rem, so reference tables are not squeezed into the 45rem prose
    measure while hundreds of pixels sit empty either side. Starlight sizes
@@ -275,9 +350,48 @@ h1 {
 	:root {
 		--sl-content-width: clamp(45rem, calc(100vw - 2 * var(--sl-sidebar-width)), 64rem);
 	}
+	/* The index column: pinned at 13rem -- narrower than the nav's starlight
+	   default 18.75rem, deliberately decoupled from --sl-sidebar-width. */
+	.right-sidebar-container {
+		width: 13rem;
+	}
+	/* The fixed panel inside resolves percentage widths against the viewport
+	   -- position:relative does not containing-block a fixed child -- so it
+	   gets the container's 13rem explicitly instead of its own 100%. */
+	.right-sidebar {
+		inline-size: 13rem;
+	}
 	.sl-markdown-content > :is(p, ul, ol, dl, blockquote, .starlight-aside) {
 		max-width: 45rem;
 	}
+}
+
+/* Long section titles ellipsize in the index; the heading carries the rest. */
+/* Index labels wrap to a second line; no truncation. Taller rows for
+   easier clicks. */
+starlight-toc nav a {
+	display: block;
+	padding-block: 0.5rem;
+}
+starlight-toc nav ul,
+starlight-toc nav li {
+	padding-inline-end: 0;
+	margin-inline-end: 0;
+}
+
+/* The index heading: entry-sized type on the entries' left edge -- the
+   links carry a 0.5rem inline pad the heading mirrors. */
+starlight-toc h2 {
+	font-size: var(--sl-text-sm);
+	font-weight: 600;
+	margin-block: 0;
+	padding-inline-start: 0.5rem;
+}
+
+/* The index column starts where the sidebar's does: the same 1rem
+   PageFrame gives .sidebar-content under the bar. */
+.right-sidebar {
+	padding-top: calc(var(--sl-nav-height) + 1rem);
 }
 
 /* Reference tables. A setting name never breaks, and the closing
@@ -295,4 +409,71 @@ h1 {
 	.sl-markdown-content tr > :last-child:nth-child(n + 3) {
 		min-width: 28rem;
 	}
+}
+
+/* Home (no toc): the same measure and inset as toc pages -- the container
+   pads 1.5rem like their main-pane, and the hero box keeps to the shared
+   45rem instead of stretching. */
+.content-panel .sl-container {
+	padding-inline: 1.5rem;
+	/* Home's container auto-centers (no toc); pin to the start edge like
+	   toc pages, whose pane is inset by the rail instead. */
+	margin-inline: 0;
+}
+.content-panel :is(.hero, .sl-markdown-content, footer) {
+	max-inline-size: 45rem;
+}
+
+/* Card grid: one column -- each card a single-topic quick start, read
+   top to bottom, never a two-up row. The stagger's 5rem offsets and
+   padding read as random gaps down a single column; flattened to a
+   uniform 1.5rem. */
+.card-grid {
+	grid-template-columns: 1fr;
+	gap: 1.5rem;
+}
+.card-grid.stagger {
+	--stagger-height: 0rem;
+	padding-block-end: 0;
+}
+
+/* Cards: fixed 1.5rem interior -- the stock clamp runs to 2.5rem. Whole
+   card clickable via the head script; the pointer says so. */
+.card {
+	padding: 1.5rem;
+}
+.card.card-link {
+	cursor: pointer;
+}
+
+/* Prev/next: one quiet text line -- title only, no card, no label. */
+.pagination-links {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1.5rem;
+}
+.pagination-links a {
+	flex: none;
+	width: auto;
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	padding: 0;
+	background: none;
+	color: var(--sl-color-gray-3);
+}
+.pagination-links a > span {
+	font-size: 0; /* collapse the Previous/Next label and its br */
+}
+.pagination-links a br {
+	display: none;
+}
+.pagination-links .link-title {
+	font-size: var(--sl-text-sm);
+	color: var(--sl-color-white);
+}
+.pagination-links a:hover .link-title {
+	color: var(--sl-color-gray-2);
+	text-decoration: underline;
 }

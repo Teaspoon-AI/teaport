@@ -2,6 +2,36 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
+// Chrome rings the theme select on mouse focus too (:focus-visible matches
+// clicks on form controls), so pointer-driven focus is tagged on the label
+// here; teaport.css quiets the ring while the flag holds and the outline
+// waits for the keyboard.
+const themeFocusFlag = `
+const themeLabel = document.querySelector('starlight-theme-select label');
+const themeSelect = themeLabel?.querySelector('select');
+if (themeLabel && themeSelect) {
+	const mark = () => themeLabel.setAttribute('data-pointer-focus', '');
+	const clear = () => themeLabel.removeAttribute('data-pointer-focus');
+	themeLabel.addEventListener('pointerdown', mark);
+	themeSelect.addEventListener('blur', clear);
+	themeLabel.addEventListener('keydown', clear);
+}
+`;
+
+// Whole-card click: a card holding a link navigates as one target; the
+// cursor comes from teaport.css. Modifier clicks stay with the browser.
+const cardClickFlag = `
+for (const card of document.querySelectorAll('.card')) {
+	const link = card.querySelector('a[href]');
+	if (!link) continue;
+	card.classList.add('card-link');
+	card.addEventListener('click', (e) => {
+		if (e.target.closest('a') || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+		link.click();
+	});
+}
+`;
+
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.teaspoon.tech',
@@ -21,6 +51,19 @@ export default defineConfig({
 						rel: 'stylesheet',
 						href: 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Archivo:wght@700&display=swap',
 					},
+				},
+				{
+					// Tag pointer-driven focus on the theme select; see the
+					// themeFocusFlag note above and teaport.css.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: themeFocusFlag,
+				},
+				{
+					// Whole-card click; see the cardClickFlag note above.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: cardClickFlag,
 				},
 			],
 			logo: {
@@ -57,9 +100,6 @@ export default defineConfig({
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/Teaspoon-AI/teaport' },
 			],
-			editLink: {
-				baseUrl: 'https://github.com/Teaspoon-AI/teaport/edit/main/docs/',
-			},
 			sidebar: [
 				{
 					label: 'Get started',
