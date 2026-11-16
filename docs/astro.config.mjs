@@ -2,6 +2,55 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
+// Chrome rings the theme select on mouse focus too (:focus-visible matches
+// clicks on form controls), so pointer-driven focus is tagged on the label
+// here; teaport.css quiets the ring while the flag holds and the outline
+// waits for the keyboard.
+const themeFocusFlag = `
+const themeLabel = document.querySelector('starlight-theme-select label');
+const themeSelect = themeLabel?.querySelector('select');
+if (themeLabel && themeSelect) {
+	const mark = () => themeLabel.setAttribute('data-pointer-focus', '');
+	const clear = () => themeLabel.removeAttribute('data-pointer-focus');
+	themeLabel.addEventListener('pointerdown', mark);
+	themeSelect.addEventListener('blur', clear);
+	themeLabel.addEventListener('keydown', clear);
+}
+`;
+
+// Whole-card click: a card holding a link navigates as one target; the
+// cursor comes from teaport.css. Modifier clicks stay with the browser.
+const cardClickFlag = `
+for (const card of document.querySelectorAll('.card')) {
+	const link = card.querySelector('a[href]');
+	if (!link) continue;
+	card.classList.add('card-link');
+	card.addEventListener('click', (e) => {
+		if (e.target.closest('a') || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+		link.click();
+	});
+}
+`;
+
+// Heading anchors copy their URL; the icon ticks for a moment to confirm.
+// The default jump-to-heading still runs.
+const anchorCopyFlag = `
+for (const link of document.querySelectorAll('.sl-anchor-link')) {
+	const icon = link.querySelector('.sl-anchor-icon');
+	const original = icon?.innerHTML;
+	link.addEventListener('click', () => {
+		const url = new URL(link.getAttribute('href'), location.href).href;
+		navigator.clipboard?.writeText(url).catch(() => {});
+		if (!icon || !original) return;
+		icon.innerHTML =
+			'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+		setTimeout(() => {
+			icon.innerHTML = original;
+		}, 1200);
+	});
+}
+`;
+
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.teaspoon.tech',
@@ -22,11 +71,35 @@ export default defineConfig({
 						href: 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Archivo:wght@700&display=swap',
 					},
 				},
+				{
+					// Tag pointer-driven focus on the theme select; see the
+					// themeFocusFlag note above and teaport.css.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: themeFocusFlag,
+				},
+				{
+					// Whole-card click; see the cardClickFlag note above.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: cardClickFlag,
+				},
+				{
+					// Heading anchors copy their URL; see the anchorCopyFlag note.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: anchorCopyFlag,
+				},
 			],
 			logo: {
 				dark: './src/assets/teaport-logo-dark-bg.svg',
 				light: './src/assets/teaport-logo-light-bg.svg',
 				replacesTitle: true,
+			},
+			// The header logo links to the teaport page on the marketing site;
+			// see src/overrides/SiteTitle.astro.
+			components: {
+				SiteTitle: './src/overrides/SiteTitle.astro',
 			},
 			// Code sits on the marketing site's terminal ground in both themes.
 			expressiveCode: {
@@ -52,14 +125,12 @@ export default defineConfig({
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/Teaspoon-AI/teaport' },
 			],
-			editLink: {
-				baseUrl: 'https://github.com/Teaspoon-AI/teaport/edit/main/docs/',
-			},
 			sidebar: [
 				{
 					label: 'Get started',
 					items: [
-						{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
+						{ label: 'Overview', slug: 'index' },
+					{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
 						{ label: 'Install teaport', slug: 'getting-started/installation' },
 					],
 				},
