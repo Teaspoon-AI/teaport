@@ -32,6 +32,25 @@ for (const card of document.querySelectorAll('.card')) {
 }
 `;
 
+// Heading anchors copy their URL; the icon ticks for a moment to confirm.
+// The default jump-to-heading still runs.
+const anchorCopyFlag = `
+for (const link of document.querySelectorAll('.sl-anchor-link')) {
+	const icon = link.querySelector('.sl-anchor-icon');
+	const original = icon?.innerHTML;
+	link.addEventListener('click', () => {
+		const url = new URL(link.getAttribute('href'), location.href).href;
+		navigator.clipboard?.writeText(url).catch(() => {});
+		if (!icon || !original) return;
+		icon.innerHTML =
+			'<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>';
+		setTimeout(() => {
+			icon.innerHTML = original;
+		}, 1200);
+	});
+}
+`;
+
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://docs.teaspoon.tech',
@@ -64,6 +83,12 @@ export default defineConfig({
 					tag: 'script',
 					attrs: { type: 'module' },
 					content: cardClickFlag,
+				},
+				{
+					// Heading anchors copy their URL; see the anchorCopyFlag note.
+					tag: 'script',
+					attrs: { type: 'module' },
+					content: anchorCopyFlag,
 				},
 			],
 			logo: {

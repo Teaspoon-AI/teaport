@@ -179,6 +179,18 @@ h1 {
 	text-underline-offset: 3px;
 }
 
+/* Heading anchors: a small quiet icon button, not a chain the size of the
+   text; muted until the heading is hovered. */
+.sl-markdown-content .sl-heading-wrapper {
+	--sl-anchor-icon-size: 1rem;
+}
+.sl-markdown-content .sl-anchor-icon {
+	color: var(--sl-color-gray-3);
+}
+.sl-markdown-content .sl-anchor-link:hover .sl-anchor-icon {
+	color: var(--sl-color-white);
+}
+
 /* Sidebar group headings are the marketing eyebrow: small, uppercase,
    tracked, bold, highlight-coloured. */
 .sidebar-content .group-label .large {
