@@ -323,7 +323,8 @@ h1 {
 }
 .starlight-aside {
 	border-radius: var(--tp-control-radius);
-	border-inline-start-width: 4px;
+	/* A hairline in the aside's own hue, lightened; no thick edge bar. */
+	border: 1px solid color-mix(in oklab, var(--sl-color-asides-border) 55%, transparent);
 }
 
 /* Splash page hero: Teaport's h1 scale and lede. */
@@ -456,6 +457,13 @@ starlight-toc h2 {
 }
 .card.card-link {
 	cursor: pointer;
+}
+/* Clickable cards say so: the cyan outline on hover. */
+.card.card-link {
+	transition: border-color 150ms ease;
+}
+.card.card-link:hover {
+	border-color: var(--sl-color-accent);
 }
 
 /* Prev/next: one quiet text line -- title only, no card, no label. */
