@@ -4,8 +4,8 @@
 #
 #   packaging/build-deb.sh                           dev build: <BASE_VERSION>~dev0+g<sha>
 #   TEAPORT_DEB_BUILD=12 packaging/build-deb.sh      dev build: <BASE_VERSION>~dev12+g<sha>
-#   TEAPORT_DEB_VERSION=0.1.0 packaging/build-deb.sh release build: must equal BASE_VERSION,
-#                                                    HEAD must be tag brain-v0.1.0, tree clean
+#   TEAPORT_DEB_VERSION=0.1.1 packaging/build-deb.sh release build: must equal BASE_VERSION,
+#                                                    HEAD must be tag brain-v0.1.1, tree clean
 #
 # The same script CI's brain-deb job runs, so a local build is the package CI would
 # make from the same commit. The .deb lands in dist/ (TEAPORT_DEB_OUT overrides).
@@ -29,7 +29,7 @@
 #
 set -euo pipefail
 
-BASE_VERSION="0.1.0"
+BASE_VERSION="0.1.1"
 DEST=/opt/teaport/brain
 PY=/usr/bin/python3.12
 UV_VERSION="0.9.24"   # the same uv CI's brain job pins (pip install uv== in ci.yml)

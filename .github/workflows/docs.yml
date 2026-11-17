@@ -41,12 +41,12 @@ jobs:
       # Default depth: the lint reads the working tree only. Only
       # `lint.mjs --fix-sources`, which a person runs to refresh citations, reads git
       # history, so the full clone is not needed here.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       # Astro 7 needs Node >= 22.12 (docs/package.json engines); "22" resolves to the
       # newest 22.x, as the plugin job in ci.yml does.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
