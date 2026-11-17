@@ -38,6 +38,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*"; else "$@"; fi; }
 as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+brain_tree_needed() { :; }; brain_tree_complete() { :; }   # the rebuild's marker: not here
 RUN_HOME="$HOME"
 # GNU sha256sum's two forms, on any system (macOS's has no --status).
 _sha() { python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
@@ -841,7 +842,8 @@ def test_a_second_run_stops_at_once_while_one_holds_the_lock():
         raise appliance.Unavailable("no flock(1) here (util-linux); the appliance and CI have it")
     tmp = tempdir("teaport-eng-lock-")
     script = _lock_script(tmp)
-    env = {**os.environ, "T": str(tmp)}
+    pathlib.Path(tmp, "state").mkdir(exist_ok=True)
+    env = {**os.environ, "T": str(tmp), "TEAPORT_INSTALL_LOCK": str(pathlib.Path(tmp, "state/install.lock"))}
     p = subprocess.run(["bash", str(script), "--only", "engine"], capture_output=True, text=True, env=env)
     assert p.returncode == 0 and "LOCKED RUN 1 --only engine" in p.stdout, p.stdout + p.stderr
     lock = pathlib.Path(tmp, "state/install.lock")
@@ -965,7 +967,7 @@ def test_only_engine_is_refused_only_for_upstream_commits_to_what_it_installs():
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here)
         assert rc != 0 and ("1 commit(s) behind origin/main in what --only engine installs "
-                            "(systemd/teaport-engine.service.in install.sh)") in out, (touching, out)
+                            "(systemd/teaport-engine.service.in packaging/install install.sh)") in out, (touching, out)
 
 
 def test_every_checkout_path_only_engine_reads_is_in_its_freshness_check():

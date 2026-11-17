@@ -55,7 +55,11 @@ def _helper(state):
     mod.STATE, mod.STATUS, mod.LOG = state, os.path.join(state, "run.json"), os.path.join(state, "log")
     mod.ROOT_UID = os.getuid()
     mod.run_user = lambda: os.environ.get("USER") or __import__("pwd").getpwuid(os.getuid()).pw_name
-    mod.read_source = lambda channel: {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
+    def read_manifest(channel, dest):
+        manifest = {"channel": channel, "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}}
+        pathlib.Path(dest).write_text(json.dumps(manifest))
+        return manifest
+    mod.read_manifest = read_manifest
     return mod
 
 
@@ -108,7 +112,8 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     # Root's own HOME: no tool the root run starts reads a config from the run user's home.
     assert env["TEAPORT_USER"] == user and env["HOME"] == "/root", env
     assert env["TEAPORT_SECRETS_DIR"] == os.path.join(home, ".config", "teaport"), env
-    assert env["TEAPORT_MANIFEST_URL"] == "https://get.teaspoon.tech/manifest/stable.json"
+    # This run's own copy of the channel's manifest (read once, in the work directory).
+    assert env["TEAPORT_MANIFEST_URL"].endswith("/manifest.json"), env
     assert int(env["TEAPORT_WAIT_IDLE_SECS"]) > 0, env
     # The installer the channel's manifest names (read_source), not one the plan names.
     assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
@@ -146,9 +151,7 @@ def test_nothing_to_do_is_done_and_names_what_only_a_full_run_updates():
     # A plan with steps but a manifest that names no installer this takes fails before anything.
     mod.read_plan = lambda *a: _plan(["brain"])
 
-    def no_source(channel):
-        raise RuntimeError("the release manifest names no installer this installs from")
-    mod.read_source = no_source
+    mod.read_manifest = lambda channel, dest: {"brain": {"repo": "evil/repo", "tag": "v1"}}
     assert mod.main() == 1 and "names no installer" in _status(mod)["message"]
 
 
@@ -213,42 +216,75 @@ def test_the_brains_code_runs_as_the_run_user_and_its_answer_is_only_data():
 
 
 def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
-    mod = _helper(tempdir("teaport-apply-"))
     spec = importlib.util.spec_from_file_location("ua_src", HELPER)
     real = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(real)
     asked = []
+    w = tempdir("teaport-apply-man-")
 
     def fetch(manifest):
         def f(url):
             asked.append(url)
-            return manifest
+            return json.dumps(manifest).encode()
         return f
-    got = real.read_source("beta", fetch=fetch({"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}))
-    assert got == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}
+    got = real.read_manifest("beta", os.path.join(w, "m1.json"),
+                             fetch=fetch({"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}))
     assert asked == ["https://get.teaspoon.tech/manifest/beta.json"], asked
+    assert json.loads(pathlib.Path(w, "m1.json").read_text()) == got   # the copy the steps install from
+    assert real.read_source(got) == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}
     for manifest in ({"brain": {"repo": "evil/teaport", "tag": "v1"}}, {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "TODO"}},
-                     {"brain": {"repo": "Teaspoon-AI/teaport"}}, {}, []):
+                     {"brain": {"repo": "Teaspoon-AI/teaport"}}, {}):
         try:
-            real.read_source("stable", fetch=fetch(manifest))
+            real.read_source(manifest)
         except RuntimeError as e:
             assert "names no installer" in str(e), e
         else:
             raise AssertionError(manifest)
-    try:
-        real.read_source("stable", fetch=lambda url: (_ for _ in ()).throw(OSError("offline")))
-    except RuntimeError as e:
-        assert "cannot read the release manifest" in str(e)
-    # main(): the steps run against that channel's manifest, from that installer.
+    for i, bad in enumerate((lambda url: (_ for _ in ()).throw(OSError("offline")), lambda url: b"not json",
+                             lambda url: b"[]")):
+        try:
+            real.read_manifest("stable", os.path.join(w, f"x{i}.json"), fetch=bad)
+        except RuntimeError as e:
+            assert "release manifest" in str(e), e
+        else:
+            raise AssertionError(i)
+    # main(): one copy of the manifest, in the run's work directory, for every step.
     state = _state(tempdir("teaport-apply-"))
     mod = _helper(state)
-    mod.read_plan = lambda *a: {"steps": ["brain"], "channel": "beta", "manual": []}
-    srcs, envs = [], []
-    mod.read_source = lambda ch: (srcs.append(ch), {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"})[1]
-    mod.clone = lambda source, into: (srcs.append(source["tag"]), into)[1]
-    mod.run_step = lambda installer, step, env, log: (envs.append(env), (0, ""))[1]
+    mod.read_plan = lambda *a: {"steps": ["engine", "brain"], "channel": "beta", "manual": []}
+    seen, envs = [], []
+
+    def read_manifest(channel, dest):
+        seen.append(channel)
+        pathlib.Path(dest).write_text("{}")
+        return {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}
+    mod.read_manifest = read_manifest
+    mod.clone = lambda source, into: (seen.append(source["tag"]), into)[1]
+    mod.run_step = lambda installer, step, env, log: (envs.append(dict(env)), (0, ""))[1]
     assert mod.main() == 0
-    assert srcs == ["beta", "brain-v0.2.0"] and envs[0]["TEAPORT_MANIFEST_URL"] == "https://get.teaspoon.tech/manifest/beta.json"
+    assert seen == ["beta", "brain-v0.2.0"], seen
+    assert {e["TEAPORT_MANIFEST_URL"] for e in envs} == {envs[0]["TEAPORT_MANIFEST_URL"]}
+    assert envs[0]["TEAPORT_MANIFEST_URL"].endswith("/manifest.json"), envs[0]
+
+
+def test_an_absent_brain_unit_is_not_taken_for_a_root_brain():
+    mod = _helper(tempdir("teaport-apply-"))
+    spec = importlib.util.spec_from_file_location("ua_user", HELPER)
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    show = lambda out: (lambda *a, **k: _P(0, out))  # noqa: E731
+    assert real.run_user(show("LoadState=loaded\nUser=bob\n")) == "bob"
+    assert real.run_user(show("LoadState=loaded\nUser=\n")) == "root"   # a brain that runs as root
+    for out in ("LoadState=masked\nUser=\n", "LoadState=not-found\nUser=\n", ""):
+        try:
+            real.run_user(show(out))
+        except RuntimeError as e:
+            assert "not installed here" in str(e)
+        else:
+            raise AssertionError(out)
+    real.run_user = lambda: (_ for _ in ()).throw(RuntimeError("teaport-brain.service is not installed here"))
+    real.STATE = tempdir("teaport-apply-")
+    assert real.main() == 1
 
 
 def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
@@ -381,7 +417,7 @@ DRY_RUN=0
 ROOT_TREE_FUNCTIONS = ("download", "engine_fetch", "engine_keep_live", "engine_swap_in",
                        "engine_swap_abort", "engine_swap_recover", "engine_restore", "engine_prune",
                        "manifest_take_py", "brain_deb_fetch", "brain_deb_keep", "main_rollback_engine",
-                       "phase_engine", "eula_gate", "own_dir", "own_tree", "own_install_trees",
+                       "phase_engine", "eula_gate", "own_dir", "own_install_trees",
                        "installer_lock")
 TEMP_WRITE = re.compile(r'-o "\$(txt|tmp)" ')
 WRITE = re.compile(r"(?:^|[;&|{(!]\s*|\bthen\s+|\belse\s+|\bdo\s+|\|\|\s*|&&\s*)(mv|ln|cp|mkdir|rm|touch|chmod|chown|tee|curl|install)\s")
@@ -413,79 +449,213 @@ def test_the_install_trees_are_written_only_as_root():
     assert "  brain_deb_fetch\n  wait_for_idle\n" in text and "  brain_deb_keep\n  brain_swap " in text
 
 
-OWN_STUB = r"""
-# chown is recorded, not done (a test cannot chown to root); what was chowned counts as root's.
-SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"
-  case "$1" in chown) printf '%s\n' "${@: -1}" >> "$T/chowned" ;; chmod) : ;; *) "$@" ;; esac; }
-not_roots() { ! grep -qxF -- "$1" "$T/chowned" 2>/dev/null; }
-sudo_ready() { :; }
-die() { printf 'DIE %s\n' "$*"; exit 1; }
-DRY_RUN=0 BRAIN_PKG=teaport-brain RUN_USER=bob
-"""
+LAYOUT = ROOT / "packaging/install/root_layout.py"
 
 
-def test_taking_a_tree_back_removes_what_an_install_never_makes_there():
-    tmp = tempdir("teaport-owntree-")
-    root = pathlib.Path(tmp, "opt")
-    (root / "bin/g2p").mkdir(parents=True)
-    (root / "bin/voxtral").write_text("engine\n")
-    os.symlink("/etc/shadow", root / "bin/g2p/kokoro_g2p.v2.dict")
-    os.mkfifo(root / "bin/pipe")
-    os.symlink("/etc", root / "models")
-    rc, out = _bash(tmp, OWN_STUB + _fn("own_tree") + f'own_tree "{root}/bin"; own_tree "{root}/models"; own_tree "{root}/missing"\n')
-    assert rc == 0, out
-    assert (root / "bin/voxtral").read_text() == "engine\n"
-    assert not os.path.lexists(root / "bin/g2p/kokoro_g2p.v2.dict") and not os.path.lexists(root / "bin/pipe"), out
-    assert not os.path.lexists(root / "models") and os.path.isdir("/etc"), out
-    calls = pathlib.Path(tmp, "sudo.log").read_text()
-    # Twice: a file made in a directory before the first pass reached it is caught by the second.
-    assert calls.count(f"chown -R -h -P root:root {root}/bin") == 2 and f"chmod -R go-w {root}/bin" in calls, calls
-    # What is still not root's after both passes (made meanwhile) stops the run.
-    rc, out = _bash(tmp, OWN_STUB + "not_roots() { true; }\n" + _fn("own_tree") + f'own_tree "{root}/bin"\n')
-    assert rc == 1 and "kept changing while it was being made root's" in out, out
+def _layout():
+    spec = importlib.util.spec_from_file_location(f"root_layout_{time.monotonic_ns()}", LAYOUT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def test_what_the_run_user_made_in_the_trees_is_dropped_not_adopted():
-    """A box from before root owned the install: everything in it is the run user's (here,
-    the test's own user, so every path counts as "not root's")."""
-    tmp = tempdir("teaport-owninstall-")
+def test_the_trees_an_older_installer_gave_away_are_rebuilt_not_taken_over():
+    """A box from before root owned the install, with what the agent (as the run user) could
+    have left there: links out, special files, a planted .pth, a changed package file, a
+    rollback copy with a unit of its own, a default ACL."""
+    import hashlib
+    tmp = tempdir("teaport-layout-")
     prefix, state = pathlib.Path(tmp, "opt"), pathlib.Path(tmp, "state")
+    owner = (os.getuid(), os.getgid())
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin/voxtral").write_text("engine\n")
-    (prefix / "manifest.json").write_text("{}\n")
-    snap = prefix / "engine.rollback/999999-x"
-    snap.mkdir(parents=True)
-    (snap / "teaport-engine.service").write_text("[Service]\nUser=root\n")
-    (prefix / "engine.swapping").write_text(str(snap) + "\n")
+    (prefix / "bin/voxtral").chmod(0o755)
+    os.symlink("/etc", prefix / "bin/g2p")                          # the dict, reached through a link out
+    (prefix / "models/voxtral").mkdir(parents=True)
+    (prefix / "models/voxtral/consolidated.safetensors").write_text("model\n")
+    (prefix / "models/kokoro").mkdir(parents=True)
+    os.symlink("/etc/passwd", prefix / "models/kokoro/Kokoro_espeak_F16.gguf")
+    (prefix / "manifest.json").write_text('{"engine": {"release": "1.6"}}\n')
+    (prefix / "engine.rollback/000009-x").mkdir(parents=True)
+    (prefix / "engine.rollback/000009-x/teaport-engine.service").write_text("[Service]\nUser=root\n")
+    (prefix / "engine.swapping").write_text(str(prefix / "engine.rollback/000009-x") + "\n")
+    (prefix / "bridge").mkdir()
+    (prefix / "bridge/index.js").write_text("bridge\n")
     brain = prefix / "brain"
     (brain / "bin").mkdir(parents=True)
+    (brain / "lib").mkdir()
     (brain / "bin/teaport-brain").write_text("#!/bin/sh\n")
+    (brain / "lib/ok.py").write_text("ok = 1\n")
+    os.utime(brain / "lib/ok.py", ns=(1_000_000_000, 1_000_000_000))
+    (brain / "lib/changed.py").write_text("changed = 1\n")
+    (brain / "lib/zz.pth").write_text("import os\n")                  # not the package's
     os.symlink("/usr/bin/python3", brain / "bin/python")
-    os.symlink(tmp, brain / "lib")                       # a listed directory, swapped for a link out
-    evil = brain / "bin" / "x\n"                          # a name with a newline...
-    (evil / "etc").mkdir(parents=True)                    # ...that reads "/etc" on its own line
+    os.symlink(tmp, brain / "lib2")                                   # listed as a directory, swapped for a link out
+    os.mkfifo(brain / "lib/pipe")
+    acl = shutil.which("setfacl") and subprocess.run(
+        ["setfacl", "-d", "-m", f"u:{os.getuid()}:rwx", str(prefix)], capture_output=True).returncode == 0
     state.mkdir()
     (state / "eula-accepted.json").write_text('{"version": "1.0"}\n')
+    (state / "EULA-v1.0.txt").write_text("license\n")
+    (state / "journald.applied").write_text("SystemMaxUse=2G\n")
     (state / "brain-deb").mkdir()
     (state / "brain-deb/teaport-brain_9_arm64.deb").write_text("plant\n")
-    stub = OWN_STUB + (f'PREFIX="{prefix}" STATE="{state}"\n'
-                       + _line("PREFIX_KEPT=") + _line("PREFIX_DROPPED=") + _line("STATE_KEPT=")
-                       )
-    fns = "".join(_fn(f) for f in ("own_dir", "own_tree", "own_install_trees"))
-    rc, out = _bash(tmp, stub + fns + "own_install_trees\n")
-    assert rc == 0, out
-    # The engine's staged and kept copies and the swap marker: removed, not adopted.
-    assert not (prefix / "engine.rollback").exists() and not (prefix / "engine.swapping").exists(), out
-    # The live engine and the manifest: taken over.
-    assert (prefix / "bin/voxtral").exists() and (prefix / "manifest.json").exists(), out
-    # The brain's tree: the venv's link to /usr/bin stays; the link out goes; a name with a
-    # newline is never split into a path of its own.
-    assert os.path.islink(brain / "bin/python") and not os.path.lexists(brain / "lib"), out
-    assert (brain / "bin/teaport-brain").exists(), out
-    calls = pathlib.Path(tmp, "sudo.log").read_text()
-    assert "rm -rf -- /etc\n" not in calls and "rm -f -- /etc\n" not in calls, calls
-    # $STATE: downloads the run user made go; the license receipt is taken over.
-    assert not (state / "brain-deb").exists() and (state / "eula-accepted.json").exists(), out
+    (state / "..evil").write_text("x\n")
+    md5 = lambda t: hashlib.md5(t.encode()).hexdigest()  # noqa: E731,S324
+    listed = [str(prefix), str(brain), str(brain / "bin"), str(brain / "bin/teaport-brain"), str(brain / "bin/python"),
+              str(brain / "lib"), str(brain / "lib/ok.py"), str(brain / "lib/changed.py"), str(brain / "lib2"),
+              str(brain / "lib/pipe")]
+    sums = {str(brain / "bin/teaport-brain"): md5("#!/bin/sh\n"), str(brain / "lib/ok.py"): md5("ok = 1\n"),
+            str(brain / "lib/changed.py"): md5("as shipped\n")}
+    layout = _layout()
+    layout._dpkg_files = lambda package: (listed, sums)
+    assert not layout.done(str(prefix), str(state), owner)
+    # Rebuilt, but the brain package's tree lacks what was left out: said, until an install
+    # of the package marks it whole.
+    assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == layout.INCOMPLETE
+    assert layout.done(str(prefix), str(state), owner)
+    names = sorted(os.listdir(tmp))
+    assert names == ["opt", "state"], names                             # the old trees are gone
+    # Engine: the regular files only, not what a link led to; no rollback copy, no marker.
+    assert (prefix / "bin/voxtral").read_text() == "engine\n" and os.access(prefix / "bin/voxtral", os.X_OK)
+    assert (prefix / "models/voxtral/consolidated.safetensors").read_text() == "model\n"
+    assert not (prefix / "bin/g2p/kokoro_g2p.v2.dict").exists() and not os.path.islink(prefix / "bin/g2p")
+    assert not os.path.lexists(prefix / "models/kokoro/Kokoro_espeak_F16.gguf")
+    assert not os.path.lexists(prefix / "engine.rollback") and not os.path.lexists(prefix / "engine.swapping")
+    assert json.loads((prefix / "manifest.json").read_text()) == {"engine": {"release": "1.6"}}
+    # The run user's own tree moves over as it is.
+    assert (prefix / "bridge/index.js").read_text() == "bridge\n"
+    # Brain: what dpkg lists and vouches for, with its times; nothing else.
+    assert (brain / "lib/ok.py").read_text() == "ok = 1\n" and os.stat(brain / "lib/ok.py").st_mtime_ns == 1_000_000_000
+    assert os.readlink(brain / "bin/python") == "/usr/bin/python3" and (brain / "bin/teaport-brain").exists()
+    for gone in ("lib/changed.py", "lib/zz.pth", "lib2", "lib/pipe"):
+        assert not os.path.lexists(brain / gone), gone
+    # $STATE: the license records and the notes; no download, no stray name.
+    assert sorted(os.listdir(state)) == [".root-layout", "EULA-v1.0.txt", "eula-accepted.json", "journald.applied"], os.listdir(state)
+    # No ACL anywhere in the new trees.
+    if acl:
+        out = subprocess.run(["getfacl", "-Rsp", str(prefix), str(state)], capture_output=True, text=True).stdout
+        assert "default:" not in out and f"user:{os.getuid()}:" not in out, out
+    for top, dirs, files in os.walk(prefix):
+        for n in dirs + files:
+            st = os.lstat(os.path.join(top, n))
+            if not os.path.islink(os.path.join(top, n)) and "bridge" not in top and n != "bridge":
+                assert not st.st_mode & 0o022, os.path.join(top, n)
+    # Done once: a second run changes nothing, and still says the brain is incomplete until
+    # install.sh writes the marker whole (brain_tree_complete).
+    before = sorted(os.listdir(prefix))
+    assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == layout.INCOMPLETE
+    assert sorted(os.listdir(prefix)) == before
+    (prefix / ".root-layout").write_text("rebuilt as root's\n")
+    assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == 0
+
+
+def _brain_box(tmp):
+    prefix, state = pathlib.Path(tmp, "opt"), pathlib.Path(tmp, "state")
+    brain = prefix / "brain"
+    (brain / "bin").mkdir(parents=True)
+    (brain / "lib").mkdir()
+    (brain / "lib/a.py").write_text("a = 1\n")
+    state.mkdir()
+    return prefix, state, brain
+
+
+def test_only_the_venvs_own_interpreter_links_come_over():
+    """A link the package lists, re-pointed while the tree was the run user's, must not come
+    over: the next install of the package would have dpkg write through it as root."""
+    import hashlib
+    tmp = tempdir("teaport-layout-links-")
+    prefix, state, brain = _brain_box(tmp)
+    os.symlink("/usr/bin/python3.12", brain / "bin/python")          # the venv's: kept
+    os.symlink("python", brain / "bin/python3")                      # relative, not to python3: refused
+    os.symlink("/usr/bin/X11", brain / "bin/python3.12")             # /usr/bin/X11 -> . (Ubuntu): refused
+    os.symlink("/opt/teaport/brain/bin/python3/../../home/u", brain / "lib2")   # listed as a directory
+    listed = [str(brain), str(brain / "bin"), str(brain / "bin/python"), str(brain / "bin/python3"),
+              str(brain / "bin/python3.12"), str(brain / "lib"), str(brain / "lib/a.py"), str(brain / "lib2"),
+              str(brain / "lib2/x.py")]
+    layout = _layout()
+    layout._dpkg_files = lambda package: (listed, {str(brain / "lib/a.py"): hashlib.md5(b"a = 1\n").hexdigest()})  # noqa: S324
+    owner = (os.getuid(), os.getgid())
+    assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == layout.INCOMPLETE
+    assert os.readlink(brain / "bin/python") == "/usr/bin/python3.12"
+    for gone in ("bin/python3", "bin/python3.12", "lib2"):
+        assert not os.path.lexists(brain / gone), gone
+    links = [os.path.join(t, n) for t, ds, fs in os.walk(prefix) for n in ds + fs if os.path.islink(os.path.join(t, n))]
+    assert links == [str(brain / "bin/python")], links
+
+
+def test_an_unusual_tree_is_refused_and_a_stopped_run_is_finished_or_cleared():
+    layout = _layout()
+    layout._dpkg_files = lambda package: ([], {})
+    owner = (os.getuid(), os.getgid())
+    # A symlinked tree: not rebuilt (what is behind it would be orphaned), and said.
+    tmp = tempdir("teaport-layout-odd-")
+    real = pathlib.Path(tmp, "real")
+    real.mkdir()
+    (real / "keep").write_text("x\n")
+    os.symlink(real, pathlib.Path(tmp, "opt"))
+    try:
+        layout.migrate(os.path.join(tmp, "opt"), os.path.join(tmp, "state"), "teaport-brain", owner)
+    except SystemExit as e:
+        assert "symlink or a mount point" in str(e), e
+    else:
+        raise AssertionError("a symlinked tree was rebuilt")
+    assert (real / "keep").exists()
+    # A run stopped between its two renames: the finished new tree is put in place; other
+    # leftovers (an unfinished new tree, an old tree set aside) are removed.
+    tmp = tempdir("teaport-layout-stopped-")
+    done_new = pathlib.Path(tmp, "opt.new-20261117000000")
+    done_new.mkdir()
+    (done_new / ".root-layout").write_text("rebuilt as root's\n")
+    (done_new / "bin").mkdir()
+    pathlib.Path(tmp, "opt.new-20261116000000").mkdir()
+    pathlib.Path(tmp, "opt.pre-root-20261117000000").mkdir()
+    pathlib.Path(tmp, "state").mkdir()
+    layout.migrate(os.path.join(tmp, "opt"), os.path.join(tmp, "state"), "teaport-brain", owner)
+    assert sorted(os.listdir(tmp)) == ["opt", "state"], os.listdir(tmp)
+    assert pathlib.Path(tmp, "opt/bin").is_dir()
+
+
+def test_a_tree_that_cannot_be_written_is_not_swapped_in():
+    import errno
+    import hashlib
+    tmp = tempdir("teaport-layout-enospc-")
+    prefix, state, brain = _brain_box(tmp)
+    layout = _layout()
+    layout._dpkg_files = lambda package: ([str(brain), str(brain / "lib"), str(brain / "lib/a.py")],
+                                          {str(brain / "lib/a.py"): hashlib.md5(b"a = 1\n").hexdigest()})  # noqa: S324
+    real_write = layout.os.write
+
+    class FullOs:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        @staticmethod
+        def write(fd, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+    layout.os = FullOs()
+    try:
+        layout.migrate(str(prefix), str(state), "teaport-brain", (os.getuid(), os.getgid()))
+    except OSError as e:
+        assert e.errno == errno.ENOSPC
+    else:
+        raise AssertionError("a full disk went unnoticed")
+    finally:
+        layout.os = os
+        assert real_write is os.write
+    # The old tree is where it was, untouched; no half-built tree is left.
+    assert (brain / "lib/a.py").read_text() == "a = 1\n" and sorted(os.listdir(tmp)) == ["opt", "state"]
+
+
+def test_a_fresh_box_gets_root_trees_and_the_marker():
+    tmp = tempdir("teaport-layout-")
+    layout = _layout()
+    layout._dpkg_files = lambda package: ([], {})
+    owner = (os.getuid(), os.getgid())
+    prefix, state = os.path.join(tmp, "opt"), os.path.join(tmp, "state")
+    assert layout.migrate(prefix, state, "teaport-brain", owner) == 0
+    assert layout.done(prefix, state, owner) and os.path.isdir(os.path.join(prefix, "bin/g2p"))
+    assert layout.main(["migrate", prefix, state]) == 2
 
 
 def test_a_root_run_reads_no_configuration_from_a_home():
@@ -770,6 +940,9 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
     assert p.returncode == 0 and "no polkit here" in p.stderr, p.stderr
     cli = CLI.read_text()
     assert 'systemctl start --no-block "$UPDATE_UNIT"' in cli and "SUDO systemctl start" not in cli
+    # Run as root, the CLI never runs the brain's venv as root.
+    assert '"$venv/bin/python"' not in re.sub(r"brain_python\(\) \{.*?\n\}", "", cli, flags=re.S).replace(
+        '[ -x "$venv/bin/python" ]', ""), "a venv call outside brain_python"
 
 
 if __name__ == "__main__":

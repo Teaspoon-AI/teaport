@@ -189,7 +189,9 @@ read_env_file() {
 # starts and leaves running (a gateway, say) inherits nothing, so the lock ends with the
 # run. The lock file is root's (0644), which every user can open to lock. A dry run takes
 # no lock; it says when a real run would stop.
-INSTALL_LOCK="$STATE/install.lock"
+# In /run, root's (and never part of $STATE, which own_install_trees may rebuild while the
+# lock is held). TEAPORT_INSTALL_LOCK moves it, for tests.
+INSTALL_LOCK="${TEAPORT_INSTALL_LOCK:-/run/teaport-install.lock}"
 installer_lock() {
   local me="$HERE/${BASH_SOURCE[0]##*/}" rc=0
   [ -z "${TEAPORT_INSTALL_LOCKED:-}" ] || return 0   # the child: flock(1) holds it for us
@@ -200,9 +202,6 @@ installer_lock() {
     return 0
   fi
   if [ ! -f "$me" ]; then warn "not run from a file, so not locked: nothing stops a second install.sh from running beside this one"; return 0; fi
-  # $STATE is root's before the lock is touched (own_dir): in a directory another user could
-  # write, a symlink in the lock's place would aim the root touch and chmod anywhere.
-  own_dir "$STATE"
   if [ -L "$INSTALL_LOCK" ] || { [ -e "$INSTALL_LOCK" ] && [ ! -f "$INSTALL_LOCK" ]; }; then SUDO rm -f "$INSTALL_LOCK"; fi
   if [ ! -e "$INSTALL_LOCK" ]; then SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
   TEAPORT_INSTALL_LOCKED=1 flock -n -o -E 75 "$INSTALL_LOCK" bash "$me" ${ARGS[@]+"${ARGS[@]}"} || rc=$?
@@ -212,101 +211,43 @@ installer_lock() {
 
 # --- root owns the install ------------------------------------------------------
 # /opt/teaport ($PREFIX) and /var/lib/teaport ($STATE) are root's, and so is everything an
-# install keeps in them: the engine's files and models, its staged files and rollback
-# copies, the installed manifest, the brain package's tree, the downloads, the license
-# receipt and the lock. The units run as the run user and only read there. `teaport update`
-# runs this installer as root, and the run user may start that without a password (the
-# polkit rule packaging/deb/sudoers-sync writes): a tree they could write would let them
-# aim its root writes, or the code it runs, anywhere.
-#
-# Installs before this one handed both trees to the run user, so what is in them may have
-# been put there by anything that runs as that user (the agent does). own_install_trees
-# takes them back on every run, before anything else:
-#   - what an install only ever writes and reads back as data it trusts -- the engine's
-#     staged files and rollback copies (a copy's unit is written back as root), the
-#     downloads -- is REMOVED when any of it is not root's: adopting it would adopt a plant;
-#   - the engine's live files, the models, the installed manifest and the third-party
-#     notices are taken over (the engine runs as the run user anyway, and a run replaces
-#     whatever differs from the manifest), as is the license receipt in $STATE;
-#   - the brain package's tree is taken over, with any symlink in it that leads outside it
-#     or /usr/bin removed (root never runs its code: teaport update runs the brain's
-#     comparison as the run user, and reads only its step names);
-#   - in all of them no symlink or special file is left (the brain's own links aside); what
-#     is still not root's after two passes stops the run.
-# Left as they are: $PREFIX/bridge (the Discord bridge's npm tree, the run user's; no update
-# touches it) and anything else at the top of $PREFIX, now in a directory they cannot
-# rename or add in.
-PREFIX_KEPT=(bin models manifest.json THIRD_PARTY_NOTICES.txt)
-PREFIX_DROPPED=(engine.staged engine.rollback engine.swapping)
-STATE_KEPT=("eula-accepted.json" "EULA-v*.txt" "install.lock")   # patterns, matched by case
+# install keeps in them; the units run as the run user and only read there. `teaport
+# update` runs this installer as root, and the run user may start that without a password
+# (the polkit rule packaging/deb/sudoers-sync writes): a tree they could write would let
+# them aim its root writes anywhere. Installers before this one gave both trees to the run
+# user, and a tree that was theirs cannot be made root's in place (an ACL, an open handle,
+# a plant would survive), so own_install_trees has packaging/install/root_layout.py
+# REBUILD them once, from what can be checked, and swap them in (the script says what it
+# carries over and why). From then on its marker, $PREFIX/.root-layout, makes this a check.
 # own_dir <dir> -- the directory itself root's and 0755 (never a symlink: its parent is root's).
 own_dir() {
   if [ -L "$1" ]; then die "$1 is a symlink — the installer's trees must be directories; remove it and run again"; fi
   SUDO mkdir -p "$1"; SUDO chown root:root "$1"; SUDO chmod 0755 "$1"
 }
-# not_roots <path> -- true when anything at or under <path> is not root's, or is writable by
-# group or others.
-not_roots() { [ -n "$(SUDO find "$1" \( ! -user root -o ! -group root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; }
-# own_tree <path> [<keep-symlinks-under>] -- root's all the way down, nothing group- or
-# world-writable, no special file, and no symlink but one whose target is under the given
-# directory or /usr/bin (the venv's bin/python). Called only once the directory holding
-# <path> is root's.
-own_tree() {
-  local p="$1" keep="${2:-}" l t
-  if [ -L "$p" ]; then warn "removing the symlink $p (the installer makes none there)"; SUDO rm -f -- "$p"; return 0; fi
-  [ -e "$p" ] || return 0
-  SUDO chown -R -h -P root:root "$p"; SUDO chmod -R go-w "$p"
-  SUDO chown -R -h -P root:root "$p"; SUDO chmod -R go-w "$p"
-  # A directory stays the run user's until chown -R has done what is under it, so something
-  # made there meanwhile can escape both passes: anything still not root's stops the run.
-  if not_roots "$p"; then die "$p kept changing while it was being made root's (something running as $RUN_USER?): nothing was installed; run this again"; fi
-  if [ -n "$(SUDO find "$p" ! -type f ! -type d ! -type l -print -quit 2>/dev/null)" ]; then
-    warn "removing special files under $p (the installer makes none)"
-    SUDO find "$p" ! -type f ! -type d ! -type l -delete
-  fi
-  while IFS= read -r -d '' l; do
-    t="$(readlink -f -- "$l" 2>/dev/null || true)"
-    if [ -n "$keep" ] && { case "$t" in "$keep"/*|/usr/bin/*) true ;; *) false ;; esac; }; then continue; fi
-    warn "removing the symlink $l (-> ${t:-?}): the installer makes none there"
-    SUDO rm -f -- "$l"
-  done < <(SUDO find "$p" -type l -print0 2>/dev/null)
-}
+BRAIN_TREE_INCOMPLETE=0   # the rebuild left brain package files out; an install of the package puts them back
 own_install_trees() {
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] make %s and %s, and what an install keeps in them, root'"'"'s\n' "$PREFIX" "$STATE"; return 0; fi
-  sudo_ready "take the install trees back for root"
-  local e f
-  own_dir "$PREFIX"
-  for e in "${PREFIX_DROPPED[@]}"; do
-    if { [ -e "$PREFIX/$e" ] || [ -L "$PREFIX/$e" ]; } && { [ -L "$PREFIX/$e" ] || not_roots "$PREFIX/$e"; }; then
-      warn "removing $PREFIX/$e: it was not root's, so what is in it cannot be trusted (an engine rollback copy here is gone; the next engine update keeps a new one)"
-      SUDO rm -rf -- "$PREFIX/$e"
-    fi
-  done
-  for e in "${PREFIX_KEPT[@]}" "${PREFIX_DROPPED[@]}"; do own_tree "$PREFIX/$e"; done
-  if [ -L "$PREFIX/brain" ]; then
-    warn "removing the symlink $PREFIX/brain: the brain package's tree is a directory (install.sh --only brain puts it back)"
-    SUDO rm -f -- "$PREFIX/brain"
-  elif [ -d "$PREFIX/brain" ]; then
-    # The brain package's tree: dpkg made it root's; an older installer's chown -R gave it
-    # away. Root never runs its code (teaport update compares as the run user); a later
-    # --only brain reinstalls the package's files over it.
-    own_tree "$PREFIX/brain" "$PREFIX/brain"
-  fi
-  own_dir "$STATE"
-  # find, not a glob: no name is skipped, dot-dot ones included.
-  while IFS= read -r -d '' f; do
-    local kept=0 k
-    for k in "${STATE_KEPT[@]}"; do
-      # shellcheck disable=SC2254  # STATE_KEPT holds patterns
-      case "${f##*/}" in $k) kept=1 ;; esac
-    done
-    if [ "$kept" = 0 ] && { [ -L "$f" ] || not_roots "$f"; }; then
-      warn "removing $f: it was not root's, so what is in it cannot be trusted (a download in it is fetched again)"
-      SUDO rm -rf -- "$f"
-    else
-      own_tree "$f"
-    fi
-  done < <(SUDO find "$STATE" -mindepth 1 -maxdepth 1 -print0)
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] make sure %s and %s are root'"'"'s (rebuilt once, on a box an older installer set up)\n' "$PREFIX" "$STATE"; return 0; fi
+  sudo_ready "make sure the install trees are root's"
+  local rc=0
+  SUDO python3 -I "$HERE/packaging/install/root_layout.py" migrate "$PREFIX" "$STATE" "$BRAIN_PKG" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) BRAIN_TREE_INCOMPLETE=1 ;;
+    *) die "could not make $PREFIX and $STATE root's (packaging/install/root_layout.py) — nothing was installed" ;;
+  esac
+}
+# brain_tree_complete -- the brain package was installed: its tree is whole again, which the
+# rebuild's marker records (root_layout.py's COMPLETE).
+brain_tree_complete() {
+  [ "$DRY_RUN" != 1 ] || return 0
+  printf "rebuilt as root's\n" | SUDO tee "$PREFIX/.root-layout" >/dev/null || true
+  BRAIN_TREE_INCOMPLETE=0
+}
+# brain_tree_needed <what> -- stop a run that would restart the brain on a tree the rebuild
+# could not bring over whole.
+brain_tree_needed() {
+  [ "$BRAIN_TREE_INCOMPLETE" = 1 ] || return 0
+  die "the brain's files are not all in place since $PREFIX was rebuilt as root's — run install.sh --only brain first (it puts them back), then $1 again"
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -803,7 +744,9 @@ engine_swap_recover() {
   local kept
   [ -f "$ENGINE_SWAP_MARK" ] || return 0
   kept="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"
-  case "$kept" in "$ENGINE_ROLLBACKS"/*) ;; *) kept="" ;; esac   # only ever one of ours
+  # Only ever one of ours: a direct child of $ENGINE_ROLLBACKS named as engine_keep_live names them.
+  case "$kept" in "$ENGINE_ROLLBACKS"/[0-9][0-9][0-9][0-9][0-9][0-9]-*) ;; *) kept="" ;; esac
+  case "$kept" in "$ENGINE_ROLLBACKS"/*/*|*..*) kept="" ;; esac
   if [ "$DRY_RUN" = 1 ]; then
     warn "an engine swap was stopped half way ($ENGINE_SWAP_MARK): a real run puts ${kept:+${kept##*/}, }the engine before it, back first"
     return 0
@@ -1200,11 +1143,11 @@ engine_swap() {
 # sip_brain_detach's and migrate_brain_dropins' unit edits. The price: a commit that
 # touches install.sh for the engine or SIP alone also asks for a git pull first.
 # Keep in step with those functions (test_install_brain_only.py checks the paths).
-BRAIN_ONLY_PATHS=(systemd packaging/xvf3800 packaging/resolved install.sh)
+BRAIN_ONLY_PATHS=(systemd packaging/xvf3800 packaging/resolved packaging/install install.sh)
 # The same for --only engine: the engine's unit template (render_unit) and install.sh, which
 # holds how the engine is installed and the engine.env keys it adds. The engine itself
 # comes from the manifest, not the checkout. (test_install_engine_only.py checks the paths.)
-ENGINE_ONLY_PATHS=(systemd/teaport-engine.service.in install.sh)
+ENGINE_ONLY_PATHS=(systemd/teaport-engine.service.in packaging/install install.sh)
 # brain_src_fetch -- fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command --
@@ -1429,11 +1372,10 @@ brain_deb_verify() {
 }
 
 # brain_deb_keep -- BRAIN_DEB into $BRAIN_DEBS under its canonical name; sets
-# BRAIN_DEB_CACHED. The download directory belongs to the run user (the brain, and what
-# its agent runs), so the file apt installs as root is a root-owned COPY, and it is the
-# copy that is checked: its sha256 against the manifest's, its package fields against the
-# ones read from the original. Nothing the run user does to the original afterwards reaches
-# the install.
+# BRAIN_DEB_CACHED. The file apt installs as root is a root-owned COPY, and it is the copy
+# that is checked: its sha256 against the manifest's, its package fields against the ones
+# read from the original. The download is root's too ($STATE), but TEAPORT_BRAIN_DEB can
+# name a file anyone wrote: nothing done to the original afterwards reaches the install.
 brain_deb_keep() {
   BRAIN_DEB_CACHED="$(brain_deb_path "$BRAIN_DEB_NEW")"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] keep %s as %s\n' "$BRAIN_DEB" "$BRAIN_DEB_CACHED"; return 0; fi
@@ -1578,6 +1520,7 @@ brain_swap() {
   sudo_ready "install the brain package and restart its units"
   log "teaport-brain ${prev:-(none)} -> $BRAIN_DEB_NEW"
   if brain_deb_apply "$deb" && brain_render_units; then
+    brain_tree_complete
     brain_sudoers
     brain_units
     # shellcheck disable=SC2086
@@ -1628,6 +1571,8 @@ brain_swap() {
     if [ "$BRAIN_DEB_DOWNLOADED" != 1 ]; then from=" ($BRAIN_DEB stays)"; fi
     die "rolled back: the brain is running on $prev again. $BRAIN_DEB_NEW failed and is no longer kept in $BRAIN_DEBS$from — see: $journal"
   fi
+  # The package that failed is no rollback target, whatever happened after it.
+  if [ "$deb" != "$prevdeb" ]; then SUDO rm -f "$deb" || true; fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }
 
@@ -1640,6 +1585,7 @@ phase_brain() {
   brain_deb_keep
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] apt-get install %s\n' "$BRAIN_DEB_CACHED"; return 0; fi
   brain_deb_apply "$BRAIN_DEB_CACHED" || die "installing $BRAIN_DEB_CACHED failed — see: journalctl -u teaport-brain -n 50; dpkg -s $BRAIN_PKG"
+  brain_tree_complete
 }
 
 # The phone busy lamp (brain/teaport_brain/xvf_led.py): the brain turns a ReSpeaker
@@ -1800,7 +1746,8 @@ detect_sandbox() {
   { have nemoclaw || [ -x "$RUN_HOME/.local/bin/nemoclaw" ]; } || return 0
   [ -f "$sj" ] || return 0
   # sandboxes.json = {defaultSandbox, sandboxes:{<name>:...}} — prefer the default.
-  SANDBOX="$(python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("defaultSandbox") or (list(d.get("sandboxes",{})) or [""])[0])' "$sj" 2>/dev/null || true)"
+  # A timeout: the file is the run user's, and a special file there must not hold the run.
+  SANDBOX="$(timeout 10 python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("defaultSandbox") or (list(d.get("sandboxes",{})) or [""])[0])' "$sj" 2>/dev/null || true)"
   # A name from a file the run user writes, which goes into units root writes (render_unit):
   # a plain sandbox name, or none.
   case "$SANDBOX" in *[!A-Za-z0-9._-]*|-*) warn "ignoring the NemoClaw sandbox name in $sj: not a plain name"; SANDBOX="" ;; esac
@@ -2056,7 +2003,7 @@ JSON
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] write %s/openclaw_token from openclaw.json gateway.auth.token (mode 600)\n' "$SECRETS"
   else
-    local octok; octok="$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("gateway",{}).get("auth",{}).get("token",""))' "$RUN_HOME/.openclaw/openclaw.json" 2>/dev/null || true)"
+    local octok; octok="$(timeout 10 python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("gateway",{}).get("auth",{}).get("token",""))' "$RUN_HOME/.openclaw/openclaw.json" 2>/dev/null || true)"
     if [ -n "$octok" ]; then
       mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
       printf '%s' "$octok" > "$SECRETS/openclaw_token"; chmod 600 "$SECRETS/openclaw_token"
@@ -3633,6 +3580,7 @@ main_rollback_brain() {
 # nothing else (see the header). An engine must already be installed: this updates one.
 main_engine_only() {
   log "teaport installer — engine only  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  brain_tree_needed "--only engine"   # the engine's restart takes the brain with it
   if [ ! -f "$PREFIX/bin/voxtral" ] || ! systemctl cat teaport-engine.service >/dev/null 2>&1; then
     local msg="no installed engine here ($PREFIX/bin/voxtral, teaport-engine.service) — --only engine updates one; run install.sh without --only first"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
@@ -3682,6 +3630,7 @@ main_engine_only() {
 # brain): a failure is said, and the next --rollback is how to go back.
 main_rollback_engine() {
   log "teaport installer — engine rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  brain_tree_needed "--rollback engine"
   local target="" rel replacing=""
   # A swap that was stopped half way: putting back the engine before it IS the rollback.
   if [ -f "$ENGINE_SWAP_MARK" ]; then

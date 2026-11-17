@@ -15,8 +15,9 @@
 #      installed brain's venv), run AS THE RUN USER, so whatever that tree holds runs with
 #      no more than their rights. Its answer is data, and only two things in it are used: the
 #      steps (each one of STEPS) and the channel (stable or beta). Nothing to do: done.
-#      The manifest is then read here, from the download host's fixed address for that
-#      channel, and the installer is the one it names in REPO (brain.tag): nothing the
+#      The manifest is then read here, once, from the download host's fixed address for
+#      that channel (both steps install from this one copy), and the installer is the one
+#      it names in REPO (brain.tag): nothing the
 #      brain says can point the run at another manifest or another repository. The most a
 #      lying answer does is install the release the channel names anyway.
 #   2. The installer: a shallow clone of REPO at brain.tag. A box keeps no checkout; this is what
@@ -105,10 +106,16 @@ def _write_shared(path, text, gid):
 
 
 def run_user(systemctl=subprocess.run) -> str:
-    """Who the brain runs as: the User= of its unit (as sudoers-sync reads it)."""
-    out = systemctl(["systemctl", "show", "-p", "User", "--value", BRAIN_UNIT],
+    """Who the brain runs as: the User= of its unit (as sudoers-sync reads it); root for a
+    loaded unit that names none. A unit that is not there (masked, never installed) names
+    nobody: then this refuses, rather than run the brain's comparison as root."""
+    out = systemctl(["systemctl", "show", "-p", "LoadState,User", BRAIN_UNIT],
                     capture_output=True, text=True)
-    return out.stdout.strip() or "root"
+    props = dict(ln.partition("=")[::2] for ln in out.stdout.splitlines())
+    if props.get("LoadState") != "loaded":
+        raise RuntimeError(f"{BRAIN_UNIT} is not installed here ({props.get('LoadState') or '?'}): "
+                           "nothing to update")
+    return props.get("User") or "root"
 
 
 def read_plan(entry, runner=subprocess.run) -> dict:
@@ -141,17 +148,29 @@ def manifest_url(channel: str) -> str:
     return f"{MANIFEST_BASE}/{channel}.json"
 
 
-def read_source(channel: str, fetch=None) -> dict:
-    """{repo, tag}: the installer the channel's manifest names, read here (not from the
-    brain's answer). Only REPO's. Raises RuntimeError."""
+def read_manifest(channel: str, dest: str, fetch=None) -> dict:
+    """The channel's manifest, from the download host's fixed address, saved to <dest> (in
+    this run's root-only work directory): both steps install from this one copy, so a
+    release published while the run goes on cannot mix with this one. Raises RuntimeError."""
     def load(url):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 -- a fixed https URL
-            return json.load(r)
+            return r.read(4 << 20)
     try:
-        manifest = (fetch or load)(manifest_url(channel))
+        body = (fetch or load)(manifest_url(channel))
+        manifest = json.loads(body)
     except Exception as e:  # noqa: BLE001 -- unreadable, not JSON
         raise RuntimeError(f"cannot read the release manifest: {e}") from None
+    if not isinstance(manifest, dict):
+        raise RuntimeError("the release manifest is not a JSON object")
+    with open(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+        f.write(body if isinstance(body, bytes) else body.encode())
+    return manifest
+
+
+def read_source(manifest: dict) -> dict:
+    """{repo, tag}: the installer <manifest> names (brain.repo, brain.tag), only REPO's.
+    Raises RuntimeError."""
     brain = manifest.get("brain") if isinstance(manifest, dict) else None
     repo, tag = (brain or {}).get("repo"), (brain or {}).get("tag")
     if repo != REPO or not isinstance(tag, str) or "TODO" in tag.upper():
@@ -201,16 +220,15 @@ def clone(source: dict, into: str, runner=subprocess.run) -> str:
     return dest
 
 
-def step_env(user: str, home: str, manifest_url: str) -> dict:
+def step_env(user: str, home: str, manifest: str) -> dict:
     """install.sh's environment: the brain's user (RUN_USER; install.sh finds their home
     itself, as data) and their secrets directory, root's own HOME (no tool root runs reads
     its configuration from the run user's home: a ~/.curlrc, a Python user site, a
-    ~/.gitconfig), the manifest the plan was read from, and the wait for nobody to be
-    talking."""
+    ~/.gitconfig), this run's copy of the manifest, and the wait for nobody to be talking."""
     return {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C.UTF-8", "HOME": "/root", "TEAPORT_USER": user,
             "TEAPORT_SECRETS_DIR": os.path.join(home, ".config", "teaport"),
-            "TEAPORT_MANIFEST_URL": manifest_url,
+            "TEAPORT_MANIFEST_URL": manifest,
             "TEAPORT_WAIT_IDLE_SECS": str(WAIT_IDLE_SECS)}
 
 
@@ -234,8 +252,12 @@ def run_step(installer: str, step: str, env: dict, log, popen=subprocess.Popen) 
 
 def main() -> int:
     """One run. Its parts are module functions, so a test replaces them (run_user,
-    read_plan, read_source, clone, run_step) and STATE/ROOT_UID."""
-    user = run_user()
+    read_plan, read_manifest, clone, run_step) and STATE/ROOT_UID."""
+    try:
+        user = run_user()
+    except RuntimeError as e:
+        print(f"teaport-update: {e}", file=sys.stderr)
+        return 1
     try:
         entry = pwd.getpwnam(user)
     except KeyError:
@@ -267,10 +289,11 @@ def main() -> int:
                                                      f"{', '.join(manual)}" if manual else "")))
             return 0
         record.set(step="fetch")
-        source = read_source(plan["channel"])
         work = tempfile.mkdtemp(prefix="teaport-update-")
+        manifest_copy = os.path.join(work, "manifest.json")
+        source = read_source(read_manifest(plan["channel"], manifest_copy))
         installer = clone(source, work)
-        env = step_env(user, entry.pw_dir, manifest_url(plan["channel"]))
+        env = step_env(user, entry.pw_dir, manifest_copy)
         with open(LOG, "a", encoding="utf-8") as log:
             for step in steps:
                 record.set(step=step)

@@ -5,14 +5,14 @@ description: Check a device against its release manifest, install the update wit
 
 The `teaport update --check` command compares the device with the release manifest and names the parts that differ; it changes nothing. `teaport update` installs a new brain, engine, or model by itself, through the installer's narrower paths: `install.sh --only brain` installs the brain package alone, and `install.sh --only engine` updates the engine alone. You can run those yourself too. A change to anything else takes a full installer run. `install.sh --rollback brain` and `install.sh --rollback engine` put the previous one back.
 
-<!-- source: cli/teaport:467-477#1d13aff3; install.sh:9-13#3bf0e543 -->
+<!-- source: cli/teaport:479-489#1d13aff3; install.sh:9-13#3bf0e543 -->
 
 ## Before you begin
 
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update --check` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: brain/teaport_brain/updates.py:73-84,468-469#c715a888; install.sh:1000,3673#cb7eb1ce -->
+<!-- source: brain/teaport_brain/updates.py:73-84,468-469#c715a888; install.sh:943,3621#cb7eb1ce -->
 
 ## Check for updates
 
@@ -43,13 +43,15 @@ To install what the check found:
 
 The update runs as the `teaport-update` service, and the command prints its output until it ends. The user that runs the brain can start that service without a password; anyone else is asked for an administrator's password. To install without the question, for example from a script, run `teaport update --yes`.
 
-<!-- source: cli/teaport:562-615#291d187a -->
+<!-- source: cli/teaport:574-627#cdc96203 -->
 
 The service fetches the installer of the release, at the release tag that the manifest names. It never runs an installer from a branch, or one from before `teaport update` existed. When the engine or the models changed, it runs `install.sh --only engine`; when the brain changed, it then runs `install.sh --only brain`. Each run downloads first. Before it swaps in the new engine or brain, it waits until nobody is talking to the device: no phone call, no Talk session, and no conversation with the device's microphone. After an hour of conversation, the run stops before the swap and keeps what it downloaded, so the next try is quick. Each run puts the previous engine or brain back by itself if the new one doesn't come back healthy, as the next sections describe.
 
+On a device that an older installer set up, the first update also rebuilds `/opt/teaport` and `/var/lib/teaport` as root's; [the installer reference](/reference/installer/#files-and-directories) says what that keeps. The kept engine rollback copies are not kept, and the next downloads start over.
+
 If the engine's license is newer than the one you accepted, the engine update stops and asks for a terminal. Run `install.sh --only engine` from the one-line install in a terminal, accept the license, and then run `teaport update` again.
 
-<!-- source: packaging/deb/update_apply.py:3-8,14-34,71#89e1734c; install.sh:1013-1019#90143c15 -->
+<!-- source: packaging/deb/update_apply.py:3-8,14-36,73#56a7a7da; install.sh:956-962#90143c15 -->
 
 The device updates from its own channel, `TEAPORT_UPDATE_CHANNEL` in `/etc/teaport/brain.env`. A change to the plugin or to the OpenClaw version needs a full installer run, described in [Update everything](#update-everything).
 
@@ -61,13 +63,13 @@ teaport update --status
 
 The command prints `running`, `done`, `failed`, or `interrupted`, for a run that a power cut stopped, with the step and the reason. The full output is in `/var/lib/teaport-update/log` and in `journalctl -u teaport-update`.
 
-<!-- source: cli/teaport:478-479,541-560#bb2a926c; packaging/deb/update_apply.py:37-42#22b253f7 -->
+<!-- source: cli/teaport:490-491,553-572#bb2a926c; packaging/deb/update_apply.py:38-43#22b253f7 -->
 
 ### Update only the brain
 
 The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helper that the configuration page runs as root.
 
-<!-- source: install.sh:1348-1351#cee553a8; packaging/nfpm.yaml:61-89#bb01814d -->
+<!-- source: install.sh:1291-1294#cee553a8; packaging/nfpm.yaml:61-89#bb01814d -->
 
 From a checkout of the teaport repository, update the source and install the package the release manifest names:
 
@@ -87,19 +89,19 @@ To install a package file that you have, for example a build from a pull request
 TEAPORT_BRAIN_DEB=/path/to/teaport-brain_VERSION_arm64.deb ./install.sh --only brain
 ```
 
-<!-- source: install.sh:3,17-19#108120c1; install.sh:1396-1453#41aa50c6 -->
+<!-- source: install.sh:3,17-19#108120c1; install.sh:1339-1395#16cbf337 -->
 
 The run downloads the package and checks its sha256, keeps a copy in `/var/cache/teaport`, and installs it with `apt-get`. It renders the units that run brain code (`teaport-brain`, plus the audio bridge and the Wi-Fi setup when the device has them), restarts `teaport-brain`, and checks that the brain comes back. If the brain does not come back healthy, the run installs the package that was installed before and fails. If `apt-get` cannot install the package at all, for example because another package manager holds the lock for more than two minutes, the run stops with the device as it was and restarts nothing.
 
-<!-- source: install.sh:17-23#03f10c8d; install.sh:1556-1632#13642914 -->
+<!-- source: install.sh:17-23#03f10c8d; install.sh:1499-1578#bf71ba3c -->
 
 The `teaport-brain` unit waits for the brain to report that it is serving, so a restart fails when the new brain never gets ready. The swap restarts the local audio bridge with the brain when the `teaport-local-audio` service is active; the brain's health alone decides whether the swap stays.
 
-<!-- source: systemd/teaport-brain.service.in:12-17#78e8f1b4; install.sh:1556-1632#13642914 -->
+<!-- source: systemd/teaport-brain.service.in:12-17#78e8f1b4; install.sh:1499-1578#bf71ba3c -->
 
 A Talk session in progress ends at the restart. A phone call stays connected at the gateway, and the brain rejoins it with a short notice that it lost the connection.
 
-<!-- source: install.sh:1337#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
+<!-- source: install.sh:1280#38ebb95b; brain/teaport_brain/sip_server.py:45-52#9213415f -->
 
 Nothing else changes: no engine download, no license prompt, no system packages beyond the package's own dependencies, and no edit to `/etc/teaport`. A brain change that needs a new setting there ships in a full run instead.
 
@@ -127,31 +129,31 @@ bash <(curl -fsSL https://get.teaspoon.tech/teaport) --only engine
 
 The engine comes from the release manifest, and the `teaport-engine` unit comes from the checkout. The run downloads only the files whose sha256 differs from the manifest, out of the engine's binary, its pronunciation dictionary, its part-of-speech tagger, `THIRD_PARTY_NOTICES.txt`, and its two models. It downloads them beside the live files, so the engine keeps serving, and checks them as a full run does. If a download is interrupted, the next run continues it where it stopped.
 
-<!-- source: install.sh:37-41,624-629,660,668-682,987-988#6e99dc07 -->
+<!-- source: install.sh:37-41,565-570,601,609-623,930-931#6e99dc07 -->
 
 Then the run keeps a copy of the live engine for a rollback, moves the new files in, renders `teaport-engine.service`, and restarts the engine. The brain reconnects to it. The run checks that the engine listens on its port within three minutes, stays up, and loaded its pronunciation dictionary. If the engine does not come back healthy, the run puts back the previous engine with its models and its unit, removes the keys it added to `engine.env`, and fails.
 
-<!-- source: install.sh:42-45,1074,1082,1093,1159-1177#671772e7 -->
+<!-- source: install.sh:42-45,1017,1025,1036,1102-1120#671772e7 -->
 
 If the run stops while it moves the new files in, it puts the previous engine back. If a power cut stops it there, the next run of the installer does that first. The installer runs one at a time: a second run started while one is running stops right away with `another install.sh is running on this box`.
 
-<!-- source: install.sh:192-211,757-762,785-818#2f2f6f33 -->
+<!-- source: install.sh:192-210,698-703,726-761#7f5b003a -->
 
 The engine takes about a minute to load its models after a restart, and a Talk session or a phone call in progress loses the engine. When the engine's files, its unit, and `engine.env` are already current and the engine is running, the run checks the engine and doesn't restart it.
 
-<!-- source: install.sh:49,1108,1151-1157#7a387a56; brain/teaport_brain/config_schema.toml:66#80379fdf -->
+<!-- source: install.sh:49,1051,1094-1100#7a387a56; brain/teaport_brain/config_schema.toml:66#80379fdf -->
 
 `/etc/teaport/engine.env` gains only the keys it lacks. A value that is already in the file stays, so a `KOKORO_RESERVE_FPT` that you tuned survives the update. A full run writes the installer's values over it.
 
-<!-- source: install.sh:46-47,2416,2430,2800-2801#1d268b76 -->
+<!-- source: install.sh:46-47,2363,2377,2747-2748#1d268b76 -->
 
 The run asks you to accept the engine license only when its version differs from the one you accepted. It installs no system packages: it checks that `espeak-ng`, `libopenblas.so.0`, and `libcudnn.so.9` are present, and stops when one is missing. Nothing else changes: no brain build and no other unit.
 
-<!-- source: install.sh:47-48,3650-3656#d2f3ce52 -->
+<!-- source: install.sh:47-48,3598-3604#d2f3ce52 -->
 
 If a drop-in changes the engine's unit, for example one that a manual deployment left in `/run`, the run names it and leaves it in place. Remove it if you don't need it, and then run `sudo systemctl daemon-reload`.
 
-<!-- source: install.sh:1118-1127#c43a4851 -->
+<!-- source: install.sh:1061-1070#c43a4851 -->
 
 ### Update everything
 
@@ -177,7 +179,7 @@ To put the previous brain package back, run the rollback on its own:
 
 The run installs the newest other package kept in `/var/cache/teaport`, restarts the brain, and checks it comes back. The `teaport` command and the configuration helper come with the package, so they go back together with the brain. The package that the run replaces stays kept, so running the rollback again undoes it.
 
-<!-- source: install.sh:3610-3630#a43d31fd -->
+<!-- source: install.sh:3557-3577#a43d31fd -->
 
 The installer accepts two components, `brain` and `engine`, and `--only` and `--rollback` do not combine in one run.
 
@@ -199,11 +201,11 @@ To put the previous engine back, run the rollback on its own:
 
 The run takes the newest engine kept in `engine.rollback/` in the install root and makes it the live engine again, with the unit it ran under and any model it kept. It keeps the live engine there first, moves the kept files back, restarts the engine, and checks that it comes back. To undo the rollback, run it again.
 
-<!-- source: install.sh:13,50-51,825-844,3679-3717#785fce8d -->
+<!-- source: install.sh:13,50-51,768-787,3627-3666#ae3e99b4 -->
 
 The engine-only update rolls back on its own when the engine fails its check. A rollback doesn't: if the engine doesn't come back, the run stops and says so. A full run doesn't roll back either; use the rollback by hand there.
 
-<!-- source: install.sh:45,51-52,992,3681-3682,3713#a9536167 -->
+<!-- source: install.sh:45,51-52,935,3629-3630,3662#a9536167 -->
 
 ## Choose a release channel
 
@@ -227,11 +229,11 @@ The installer takes its channel from that variable alone; `teaport update` passe
 
 The installer keeps the newest three brain packages in `/var/cache/teaport`, plus the installed one, and removes the rest after each install. A rollback goes back to the newest other package in that directory.
 
-<!-- source: install.sh:1366-1367#5997041c; install.sh:1464-1473#4f210a86 -->
+<!-- source: install.sh:1309-1310#5997041c; install.sh:1406-1415#4f210a86 -->
 
 A run that changes the engine's files first keeps the engine they replace in `engine.rollback/` in the install root: its files, the unit it ran under, its entry from the installed manifest, and any model the run replaces. Each copy is numbered, so the newest copy is the one with the highest number, whatever the device's clock says. The installer keeps the newest two and removes the rest. A run that changes no engine file keeps nothing. A copy that holds a model takes that model's disk space until the installer removes the copy; the speech-to-text model is about 4.4 GB.
 
-<!-- source: install.sh:630-637,644-650,658,720-731,856-860#e163601c -->
+<!-- source: install.sh:571-578,585-591,599,661-672,799-803#e163601c -->
 
 ## What's next
 

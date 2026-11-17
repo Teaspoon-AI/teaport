@@ -464,6 +464,18 @@ cmd_doctor() {
   return "$RC"
 }
 
+# brain_python <venv> <args...> -- the brain's python, as the brain's user. Run as root (sudo
+# teaport ...), the CLI does not run the venv's code as root: the brain's tree is code for
+# the run user, and root runs none of it. setpriv to the user the brain unit names; none,
+# or root itself: refused.
+brain_python() {
+  local venv="$1"; shift
+  if [ "$(id -u)" != 0 ]; then "$venv/bin/python" "$@"; return; fi
+  local u; u="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+  [ -n "$u" ] && [ "$u" != root ] || die "as root, this runs the brain's code as the user teaport-brain runs as, and that unit names none — run it as that user instead"
+  setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups -- "$venv/bin/python" "$@"
+}
+
 # ---- update ----------------------------------------------------------------
 # Is a newer release out, and install it. The comparison is the brain's
 # (teaport_brain.updates), the same code that checks once a day for /health: run under the
@@ -579,7 +591,7 @@ cmd_update() {
   if [ "$mode" = check ]; then
     [ "$as_json" = 0 ] || pass+=(--json)
     [ -z "$channel" ] || pass+=(--channel "$channel")
-    "$venv/bin/python" -I -m teaport_brain.updates check "${pass[@]}" || exit $?
+    brain_python "$venv" -I -m teaport_brain.updates check "${pass[@]}" || exit $?
     return 0
   fi
   [ -z "$channel" ] || die "--channel goes with --check: teaport update installs from the box's own channel (TEAPORT_UPDATE_CHANNEL in $ETC/brain.env)"
@@ -593,8 +605,8 @@ cmd_update() {
   # (brain.env), the default address and layout. So neither a channel or manifest address in
   # this shell nor a moved TEAPORT_PREFIX / TEAPORT_ETC makes it describe another plan.
   local rc=0
-  env -u TEAPORT_MANIFEST_URL -u TEAPORT_UPDATE_CHANNEL "$venv/bin/python" -I -m teaport_brain.updates check --exit-code \
-    --prefix /opt/teaport --etc /etc/teaport || rc=$?
+  ( unset TEAPORT_MANIFEST_URL TEAPORT_UPDATE_CHANNEL
+    brain_python "$venv" -I -m teaport_brain.updates check --exit-code --prefix /opt/teaport --etc /etc/teaport ) || rc=$?
   case "$rc" in
     0) return 0 ;;    # nothing teaport update installs: the check said what there is
     10) ;;
@@ -621,7 +633,7 @@ cmd_update() {
 cmd_licenses() {
   local venv="$PREFIX/brain"
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
-  "$venv/bin/python" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
+  brain_python "$venv" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
 }
 
 # ---- logs ------------------------------------------------------------------

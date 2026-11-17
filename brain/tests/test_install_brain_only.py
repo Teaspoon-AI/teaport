@@ -36,6 +36,7 @@ die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+brain_tree_needed() { :; }; brain_tree_complete() { :; }   # the rebuild's marker: not here
 RUN_HOME="$HOME"
 own_dir() { mkdir -p "$1"; }   # root's on a box (own_install_trees); a test cannot chown
 # sudo can read the unreadable (as root would), or is refused (SUDO_REFUSED=1). Every
@@ -567,7 +568,7 @@ def test_only_brain_is_refused_for_upstream_commits_to_what_it_installs():
         rc, out = _check(tmp, here, "brain")
         assert rc != 0, (touching, out)
         assert ("1 commit(s) behind origin/main in what --only brain installs "
-                "(systemd packaging/xvf3800 packaging/resolved install.sh)") in out, (touching, out)
+                "(systemd packaging/xvf3800 packaging/resolved packaging/install install.sh)") in out, (touching, out)
 
 
 def test_uncommitted_changes_in_any_installed_path_are_named():
