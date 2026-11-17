@@ -105,7 +105,8 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     env = ran[0][1]
     user = mod.run_user()
     home = __import__("pwd").getpwnam(user).pw_dir
-    assert env["TEAPORT_USER"] == user and env["HOME"] == home, env
+    # Root's own HOME: no tool the root run starts reads a config from the run user's home.
+    assert env["TEAPORT_USER"] == user and env["HOME"] == "/root", env
     assert env["TEAPORT_SECRETS_DIR"] == os.path.join(home, ".config", "teaport"), env
     assert env["TEAPORT_MANIFEST_URL"] == "https://get.teaspoon.tech/manifest/stable.json"
     assert int(env["TEAPORT_WAIT_IDLE_SECS"]) > 0, env
@@ -194,6 +195,14 @@ def test_the_brains_code_runs_as_root_only_when_dpkg_vouches_for_all_of_it():
             return _P(0, listed)
         return _P(0, verify["out"])
     assert real.untrusted_brain(runner) is None
+    # A symlink the package lists, but leading out of the tree (a directory swapped for one
+    # while the tree was the run user's): what it leads to is not checked, so it is refused.
+    link = os.path.join(tree, "bin", "python")
+    os.unlink(link)
+    os.symlink(tmp, link)
+    assert "leads out of the package's tree" in real.untrusted_brain(runner)
+    os.unlink(link)
+    os.symlink("/usr/bin/python3", link)
     # A file the package does not list (a .pth, say, which every python start runs).
     stray = pathlib.Path(tree, "evil.pth")
     stray.write_text("import os\n")
@@ -257,12 +266,42 @@ def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
         else:
             raise AssertionError((repo, tag))
     assert seen == []
-    calls = []
-    got = mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}, "/w",
-                    runner=lambda cmd, **k: (calls.append((cmd, k["env"])), P(0))[1])
-    cmd, env = calls[0]
-    assert got == "/w/teaport" and cmd[-3:] == ["brain-v0.1.1", "https://github.com/Teaspoon-AI/teaport.git", "/w/teaport"]
-    assert "--depth" in cmd and env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_CONFIG_GLOBAL"] == os.devnull
+    # A release tag, the checkout at its commit, an installer that says UPDATE_PROTOCOL=1.
+    def git_fake(tags, head="c0ffee", protocol=True):
+        calls = []
+
+        def runner(cmd, **k):
+            calls.append((cmd, k))
+            if cmd[1] == "ls-remote":
+                return P(0, "".join(f"{sha}\t{ref}\n" for ref, sha in tags.items()))
+            if cmd[1] == "clone":
+                os.makedirs(cmd[-1])
+                pathlib.Path(cmd[-1], "install.sh").write_text(
+                    "#!/bin/bash\nset -e\n" + ("UPDATE_PROTOCOL=1\n" if protocol else "") + "main\n")
+                return P(0)
+            if cmd[1] == "rev-parse":
+                return P(0, head + "\n")
+            raise AssertionError(cmd)
+        return runner, calls
+    w = tempdir("teaport-clone-")
+    runner, calls = git_fake({"refs/tags/brain-v0.1.1": "aaa", "refs/tags/brain-v0.1.1^{}": "c0ffee"})
+    got = mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}, w, runner=runner)
+    assert got == os.path.join(w, "teaport"), got
+    clone_cmd, k = next((c, k) for c, k in calls if c[1] == "clone")
+    assert clone_cmd[-3:] == ["brain-v0.1.1", "https://github.com/Teaspoon-AI/teaport.git", got], clone_cmd
+    assert "--depth" in clone_cmd and k["env"]["GIT_TERMINAL_PROMPT"] == "0" and k["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
+    # A branch (no such tag: "main" moves), a checkout not at the tag, an older installer.
+    for tags, head, protocol, why in (
+            ({}, "c0ffee", True, "not a release tag"),
+            ({"refs/tags/brain-v0.1.1": "c0ffee"}, "beef", True, "is not at brain-v0.1.1"),
+            ({"refs/tags/brain-v0.1.1": "c0ffee"}, "c0ffee", False, "predates teaport update")):
+        runner, calls = git_fake(tags, head, protocol)
+        try:
+            mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}, tempdir("teaport-clone-"), runner=runner)
+        except RuntimeError as e:
+            assert why in str(e), (why, e)
+        else:
+            raise AssertionError(why)
     try:
         mod.clone({"repo": "a/b", "tag": "main"}, "/w", runner=lambda *a, **k: P(128, err="fatal: not found"))
     except RuntimeError as e:
@@ -383,7 +422,14 @@ def test_the_install_trees_are_written_only_as_root():
     # The trees are taken back first thing; the restarts wait for idle, before engine.env.
     assert "  installer_lock\n  own_install_trees\n" in text
     assert "  wait_for_idle\n  log \"engine.env:" in text
-    assert "  wait_for_idle\n  sip_brain_detach\n" in text
+    assert "  wait_for_idle\n  brain_deb_keep\n" in text
+
+
+OWN_STUB = r"""
+SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; case "$1" in chown|chmod) : ;; *) "$@" ;; esac; }
+sudo_ready() { :; }
+DRY_RUN=0 BRAIN_PKG=teaport-brain
+"""
 
 
 def test_taking_a_tree_back_removes_what_an_install_never_makes_there():
@@ -394,18 +440,80 @@ def test_taking_a_tree_back_removes_what_an_install_never_makes_there():
     os.symlink("/etc/shadow", root / "bin/g2p/kokoro_g2p.v2.dict")
     os.mkfifo(root / "bin/pipe")
     os.symlink("/etc", root / "models")
-    stub = r'''
-SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; case "$1" in chown|chmod) : ;; *) "$@" ;; esac; }
-sudo_ready() { :; }
-DRY_RUN=0
-'''
-    rc, out = _bash(tmp, stub + _fn("own_tree") + f'own_tree "{root}/bin"; own_tree "{root}/models"; own_tree "{root}/missing"\n')
+    rc, out = _bash(tmp, OWN_STUB + _fn("own_tree") + f'own_tree "{root}/bin"; own_tree "{root}/models"; own_tree "{root}/missing"\n')
     assert rc == 0, out
     assert (root / "bin/voxtral").read_text() == "engine\n"
     assert not os.path.lexists(root / "bin/g2p/kokoro_g2p.v2.dict") and not os.path.lexists(root / "bin/pipe"), out
     assert not os.path.lexists(root / "models") and os.path.isdir("/etc"), out
     calls = pathlib.Path(tmp, "sudo.log").read_text()
-    assert f"chown -R -h -P root:root {root}/bin" in calls and f"chmod -R go-w {root}/bin" in calls, calls
+    # Twice: a file made in a directory before the first pass reached it is caught by the second.
+    assert calls.count(f"chown -R -h -P root:root {root}/bin") == 2 and f"chmod -R go-w {root}/bin" in calls, calls
+
+
+def test_what_the_run_user_made_in_the_trees_is_dropped_not_adopted():
+    """A box from before root owned the install: everything in it is the run user's (here,
+    the test's own user, so every path counts as "not root's")."""
+    tmp = tempdir("teaport-owninstall-")
+    prefix, state = pathlib.Path(tmp, "opt"), pathlib.Path(tmp, "state")
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin/voxtral").write_text("engine\n")
+    (prefix / "manifest.json").write_text("{}\n")
+    snap = prefix / "engine.rollback/999999-x"
+    snap.mkdir(parents=True)
+    (snap / "teaport-engine.service").write_text("[Service]\nUser=root\n")
+    (prefix / "engine.swapping").write_text(str(snap) + "\n")
+    brain = prefix / "brain"
+    (brain / "bin").mkdir(parents=True)
+    (brain / "bin/teaport-brain").write_text("#!/bin/sh\n")
+    os.symlink("/usr/bin/python3", brain / "bin/python")
+    os.symlink(tmp, brain / "lib")                       # a listed directory, swapped for a link out
+    evil = brain / "bin" / "x\n"                          # a name with a newline...
+    (evil / "etc").mkdir(parents=True)                    # ...that reads "/etc" on its own line
+    state.mkdir()
+    (state / "eula-accepted.json").write_text('{"version": "1.0"}\n')
+    (state / "brain-deb").mkdir()
+    (state / "brain-deb/teaport-brain_9_arm64.deb").write_text("plant\n")
+    listed = "\n".join(["/.", str(prefix), str(brain), str(brain / "bin"), str(brain / "bin/teaport-brain"),
+                        str(brain / "bin/python"), str(brain / "lib")])
+    pathlib.Path(tmp, "listed").write_text(listed + "\n")
+    stub = OWN_STUB + (f'PREFIX="{prefix}" STATE="{state}"\n'
+                       + _line("PREFIX_KEPT=") + _line("PREFIX_DROPPED=") + _line("STATE_KEPT=")
+                       + "brain_package_version() { echo 0.1.0; }\n"
+                       + 'dpkg-query() { cat "$T/listed"; }\n'
+                       + "die() { printf 'DIE %s\\n' \"$*\"; exit 1; }\n")
+    fns = "".join(_fn(f) for f in ("own_dir", "not_roots", "own_tree", "own_install_trees"))
+    rc, out = _bash(tmp, stub + fns + "own_install_trees\n")
+    assert rc == 0, out
+    # The engine's staged and kept copies and the swap marker: removed, not adopted.
+    assert not (prefix / "engine.rollback").exists() and not (prefix / "engine.swapping").exists(), out
+    # The live engine and the manifest: taken over.
+    assert (prefix / "bin/voxtral").exists() and (prefix / "manifest.json").exists(), out
+    # The brain's tree: the venv's link to /usr stays; the link out goes; the name with a
+    # newline goes as itself, and nothing named /etc is touched.
+    assert os.path.islink(brain / "bin/python") and not os.path.lexists(brain / "lib"), out
+    assert not os.path.lexists(evil) and (brain / "bin/teaport-brain").exists(), out
+    calls = pathlib.Path(tmp, "sudo.log").read_text()
+    assert "rm -rf -- /etc\n" not in calls, calls
+    # $STATE: downloads the run user made go; the license receipt is taken over.
+    assert not (state / "brain-deb").exists() and (state / "eula-accepted.json").exists(), out
+
+
+def test_a_root_run_reads_no_configuration_from_a_home():
+    """install.sh as root for the run user (teaport update) runs python, curl and git; none
+    of them may read a config from a home the run user writes."""
+    code = [ln for ln in INSTALL.read_text().splitlines() if not ln.lstrip().startswith("#")]
+    for ln in code:
+        if re.search(r"\bpython3 -(c|) ", ln) and "python3 -I" not in ln:
+            raise AssertionError(f"python3 without -I: {ln}")
+        for m in re.finditer(r"\bcurl (-\S+)", ln):
+            if 'warn "' in ln:
+                continue   # an instruction for a person, not a command
+            assert m.group(1) == "-q", f"curl without -q first: {ln}"
+    git = [ln for ln in code if re.search(r"\bgit -C", ln)]
+    assert all("fetch" in ln or "config core.sshCommand" in ln for ln in git), git   # the operator's own fetch only
+    homes = [ln for ln in code if "$HOME" in ln]
+    assert homes == ['RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"; RUN_HOME="${RUN_HOME:-$HOME}"'], homes
+    assert "\nUPDATE_PROTOCOL=1\n" in INSTALL.read_text()
 
 
 def test_a_unit_takes_values_from_the_run_users_home_literally():
@@ -414,7 +522,7 @@ def test_a_unit_takes_values_from_the_run_users_home_literally():
     pathlib.Path(tmp, "systemd/x.service.in").write_text("[Service]\nUser=@USER@\nExecStart=/bin/nemoclaw @SANDBOX@ connect\n")
     stub = (r'''
 write_root() { printf '%s\n' "$2" > "$T/out.service"; }
-DRY_RUN=0 RUN_USER=bob PREFIX=/opt/teaport ETC=/etc/teaport SECRETS=/home/bob/.config/teaport
+DRY_RUN=0 RUN_USER=bob PREFIX=/opt/teaport ETC=/etc/teaport SECRETS=/home/bob/.config/teaport RUN_HOME=/home/bob
 ''' + f'HERE="{tmp}"\n')
     evil = "x#;s#^User=.*#touch $T/pwned#e;s#zz#zz"
     rc, out = _bash(tmp, stub + _fn("sed_value") + _fn("render_unit") + f"SANDBOX='{evil}'; render_unit x.service.in x.service\n")
@@ -433,7 +541,7 @@ DRY_RUN=0 RUN_USER=bob PREFIX=/opt/teaport ETC=/etc/teaport SECRETS=/home/bob/.c
     (home / ".local/bin/nemoclaw").chmod(0o755)
     for name, want in (("my-sandbox_1.2", "my-sandbox_1.2"), (evil, ""), ("-x", ""), ("a b", "")):
         (home / ".nemoclaw/sandboxes.json").write_text(json.dumps({"defaultSandbox": name}))
-        rc, out = _bash(tmp, "have() { false; }\nSANDBOX=\n" + _fn("detect_sandbox") + 'detect_sandbox; echo "SB[$SANDBOX]"\n',
+        rc, out = _bash(tmp, f"have() {{ false; }}\nSANDBOX=\nRUN_HOME='{home}'\n" + _fn("detect_sandbox") + 'detect_sandbox; echo "SB[$SANDBOX]"\n',
                         {"HOME": str(home)})
         assert rc == 0 and f"SB[{want}]" in out, (name, out)
 
@@ -500,7 +608,7 @@ def test_a_conversation_that_outlasts_the_wait_stops_the_run_and_nothing_else_ho
 
 # --- the CLI ----------------------------------------------------------------------------
 
-def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=False, inv=None):
+def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=False, inv=None, delay=0):
     """`teaport update ...` with the brain's python, systemctl and sudo stubbed in PATH."""
     bindir = pathlib.Path(tmp, "bin")
     bindir.mkdir(exist_ok=True)
@@ -517,8 +625,12 @@ def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=
         "  *ActiveState*) cat \"$T/active\" ;;\n"
         "  *InvocationID*) cat \"$T/inv\" 2>/dev/null || true ;;\n"
         # The unit runs: a new invocation, which writes its state (the test's) and ends.
-        "  start*) echo inv-new > \"$T/inv\"\n"
-        "    [ ! -e \"$T/run.next\" ] || { sed \"s/STARTED/$(date +%s)/\" \"$T/run.next\" > \"$T/state/run.json\"; cp \"$T/log.next\" \"$T/state/log\"; } ;;\n"
+        "  *list-jobs*) [ ! -e \"$T/queued\" ] || echo '1 teaport-update.service start waiting' ;;\n"
+        "  start*) [ ! -e \"$T/run.next\" ] || {\n"
+        "      run() { sed \"s/STARTED/$(date +%s)/\" \"$T/run.next\" > \"$T/state/run.json\"; cp \"$T/log.next\" \"$T/state/log\"; }\n"
+        # Delayed: the job waits in the queue (the unit not loaded yet: no InvocationID), then runs.
+        "      if [ \"${DELAY:-0}\" = 0 ]; then echo inv-new > \"$T/inv\"; run\n"
+        "      else : > \"$T/queued\"; ( sleep \"$DELAY\"; rm -f \"$T/queued\"; run ) & fi; } ;;\n"
         "esac\n")
     (bindir / "sudo").write_text("#!/bin/sh\necho \"SUDO $*\" >> \"$T/calls\"\nexec \"$@\"\n")
     for f in bindir.iterdir():
@@ -531,7 +643,7 @@ def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=
         pathlib.Path(tmp, "log.next").write_text(log)
     if inv is not None:
         pathlib.Path(tmp, "inv").write_text(inv + "\n")
-    env = {**os.environ, "T": str(tmp), "PATH": f"{bindir}:{os.environ['PATH']}",
+    env = {**os.environ, "T": str(tmp), "PATH": f"{bindir}:{os.environ['PATH']}", "DELAY": str(delay),
            "TEAPORT_PREFIX": os.path.join(tmp, "opt"), "TEAPORT_ETC": os.path.join(tmp, "etc"),
            "TEAPORT_UPDATE_STATE": str(state), "HOME": str(tmp)}
     cmd = ["bash", str(CLI), "update", *args]
@@ -544,7 +656,7 @@ def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=
         calls.read_text() if calls.exists() else ""
 
 
-def test_update_starts_the_unit_with_the_sudoers_lines_arguments_and_follows_it_to_its_end():
+def test_update_starts_the_unit_and_follows_it_to_its_end():
     tmp = tempdir("teaport-cli-update-")
     run = {"state": "done", "started": "STARTED", "message": "installed: brain", "channel": "stable"}
     rc, out, calls = _cli(tmp, "--yes", run_json=run, log="==> download teaport-brain_0.1.1\n==> done\n")
@@ -566,6 +678,17 @@ def test_an_earlier_run_is_never_taken_for_this_one():
     run = {"state": "failed", "started": "STARTED", "message": "install.sh --only brain failed: x"}
     rc, out, calls = _cli(tmp, "--yes", run_json=run, inv="inv-old")
     assert rc == 1 and "install.sh --only brain failed: x" in out and "installed: engine" not in out, out
+    # The start waits in systemd's queue, and the unit (unloaded since its last run) has no
+    # InvocationID yet: the old run.json is still not taken for this run, and the wait is
+    # not "did not start".
+    tmp = tempdir("teaport-cli-update-")
+    state = pathlib.Path(tmp, "state")
+    state.mkdir()
+    (state / "run.json").write_text(json.dumps({"state": "done", "started": 1.0, "invocation": "inv-old",
+                                                "message": "installed: engine"}))
+    run = {"state": "done", "started": "STARTED", "message": "installed: brain"}
+    rc, out, calls = _cli(tmp, "--yes", run_json=run, inv="", delay=3)
+    assert rc == 0 and "update: installed: brain" in out and "installed: engine" not in out, out
 
 
 def test_a_failed_run_fails_the_command_and_names_the_reason():
@@ -613,7 +736,7 @@ def test_status_says_how_the_last_run_went():
 
 # --- the package ------------------------------------------------------------------------
 
-def test_the_package_ships_the_helper_and_its_unit_and_the_one_line_that_starts_it():
+def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_it():
     recipe = (ROOT / "packaging/nfpm.yaml").read_text()
     assert "- src: packaging/deb/update_apply.py\n    dst: /usr/lib/teaport/update_apply.py\n" in recipe
     assert ("- src: packaging/deb/teaport-update.service\n"

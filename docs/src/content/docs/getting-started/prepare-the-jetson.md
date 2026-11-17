@@ -10,7 +10,7 @@ Prepare the Jetson for installation: confirm the JetPack release, stop the deskt
 - A Jetson Orin Nano Dev Kit (8 GB) flashed with JetPack 7.2. To flash it, follow NVIDIA's flashing guide.
 - Screen or SSH access to the device.
 
-<!-- source: README.md:17,24#a49fa2b7; install.sh:366#227cbba2 -->
+<!-- source: README.md:17,24#a49fa2b7; install.sh:420#227cbba2 -->
 
 ## Check the JetPack release
 
@@ -24,7 +24,7 @@ cat /etc/nv_tegra_release
 
 The release appears in the output as `R38` or `R39`. If the output shows a different release, flash JetPack 7.2 before you continue. The installer stops on unsupported releases.
 
-<!-- source: install.sh:362-368,373-380#eed93c5e -->
+<!-- source: install.sh:416-422,427-434#eed93c5e -->
 
 ## Trim the desktop
 

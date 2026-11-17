@@ -496,34 +496,34 @@ except (OSError, ValueError, AttributeError):
 print("" if v is None else v)' "$UPDATE_STATE/run.json" "$1" 2>/dev/null || true
 }
 update_log_lines() { wc -l 2>/dev/null < "$UPDATE_STATE/log" || echo 0; }
-# update_follow [<before>] -- print the log of the unit's run as it grows, until that run has
-# ended. The run is told by the unit's InvocationID, which update_apply.py writes into
-# run.json: one other than <before> (the unit's before this command started it), never an
-# earlier run's, whatever the clock says. Interrupted, the run goes on without the terminal.
+# update_follow new <before> | join -- print the log of the update's run as it grows, until
+# that run has ended. The run is told by the invocation update_apply.py writes into run.json
+# when it starts (systemd's $INVOCATION_ID, unique to each run): `new`, one other than
+# <before>, which run.json held before this command started the unit; `join`, the one the
+# unit is running now. Never an earlier run's, whatever the clock says, and whether or not
+# systemd still has the unit loaded. A start that waits in systemd's queue (for the network,
+# say) is waited for. Interrupted, the run goes on without the terminal.
+update_job_queued() { [ -n "$(systemctl list-jobs --no-legend "$UPDATE_UNIT" 2>/dev/null || true)" ]; }
 update_follow() {
-  local before="${1:-}" inv="" cur shown=0 lines state waited=0
+  local mode="$1" before="${2:-}" want="" cur shown=0 lines state waited=0 mine=0
   [ -r "$UPDATE_STATE/run.json" ] || [ ! -e "$UPDATE_STATE/run.json" ] \
     || die "cannot read $UPDATE_STATE (the brain's user and group can) — follow it with: journalctl -u $UPDATE_UNIT -f"
+  [ "$mode" != join ] || want="$(update_invocation)"
   trap 'printf "\nthe update goes on without this terminal; teaport update --status shows it\n"; exit 130' INT
   while :; do
-    if [ -z "$inv" ]; then
-      cur="$(update_invocation)"
-      if [ -n "$cur" ] && [ "$cur" != "$before" ]; then inv="$cur"
-      else
-        # A run that ended before the unit was asked: run.json names it.
-        cur="$(update_field invocation)"
-        if [ -n "$cur" ] && [ "$cur" != "$before" ] && ! update_running; then inv="$cur"; fi
-      fi
-    fi
-    if [ -n "$inv" ] && [ "$(update_field invocation)" = "$inv" ]; then
+    cur="$(update_field invocation)"
+    if [ "$mode" = join ]; then
+      [ -z "$want" ] || [ "$cur" != "$want" ] || mine=1
+    elif [ -n "$cur" ] && [ "$cur" != "$before" ]; then mine=1; fi
+    if [ "$mine" = 1 ]; then
       lines="$(update_log_lines)"
       # sed, not tail | head: under pipefail, head closing early fails the pipe.
       if [ "$lines" -gt "$shown" ]; then sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"; shown="$lines"; fi
       state="$(update_field state)"
       if [ "$state" != running ] || ! update_running; then break; fi
-    elif ! update_running; then
+    elif ! update_running && ! update_job_queued; then
       waited=$((waited + 1))
-      [ "$waited" -lt 15 ] || die "the update did not start — see: journalctl -u $UPDATE_UNIT"
+      [ "$waited" -lt 10 ] || die "the update did not start — see: journalctl -u $UPDATE_UNIT"
     fi
     sleep 1
   done
@@ -586,14 +586,14 @@ cmd_update() {
   [ "$as_json" = 0 ] || die "--json goes with --check or --status"
   if update_running; then
     echo "an update is being installed already; following it (Ctrl-C leaves it running)"
-    update_follow
+    update_follow join
     return
   fi
-  # The question is about what the unit installs, which reads it itself: the box's channel,
-  # the default address and layout. So neither a manifest address in this shell nor a moved
-  # TEAPORT_PREFIX / TEAPORT_ETC makes it describe another plan.
+  # The question is about what the unit installs, which reads it itself: the box's channel
+  # (brain.env), the default address and layout. So neither a channel or manifest address in
+  # this shell nor a moved TEAPORT_PREFIX / TEAPORT_ETC makes it describe another plan.
   local rc=0
-  env -u TEAPORT_MANIFEST_URL "$venv/bin/python" -I -m teaport_brain.updates check --exit-code \
+  env -u TEAPORT_MANIFEST_URL -u TEAPORT_UPDATE_CHANNEL "$venv/bin/python" -I -m teaport_brain.updates check --exit-code \
     --prefix /opt/teaport --etc /etc/teaport || rc=$?
   case "$rc" in
     0) return 0 ;;    # nothing teaport update installs: the check said what there is
@@ -608,10 +608,10 @@ cmd_update() {
   fi
   # Not sudo: the package's polkit rule lets the brain's user start this unit (and only it);
   # anyone else gets systemd's own password prompt.
-  local before; before="$(update_invocation)"
+  local before; before="$(update_field invocation)"
   systemctl start --no-block "$UPDATE_UNIT" || die "could not start $UPDATE_UNIT"
   echo "installing (Ctrl-C leaves it running; teaport update --status shows it)"
-  update_follow "$before"
+  update_follow new "$before"
 }
 
 # ---- licenses --------------------------------------------------------------

@@ -36,6 +36,7 @@ die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+RUN_HOME="$HOME"
 own_dir() { mkdir -p "$1"; }   # root's on a box (own_install_trees); a test cannot chown
 # sudo can read the unreadable (as root would), or is refused (SUDO_REFUSED=1). Every
 # call is recorded in $T/sudo.log, so a test can tell when it was not asked at all.
@@ -237,9 +238,9 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     rc, out = _brain_only(tempdir("teaport-only-"))
     assert rc == 0, out
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
-    # The wait for nobody talking (teaport update's runs) comes after the download, right
-    # before the first thing that would cut a conversation.
-    assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "wait_for_idle", "sip_brain_detach",
+    # The wait for nobody talking (teaport update's runs) comes after the download and before
+    # the package is kept: a wait that gives up leaves the cache --rollback brain reads as it was.
+    assert order == ["check_brain_source", "brain_deb_fetch", "wait_for_idle", "brain_deb_keep", "sip_brain_detach",
                      "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
                      "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
@@ -544,7 +545,7 @@ def _behind(touching):
 def _check(tmp, here, only):
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     script = f'{_line("BRAIN_ONLY_PATHS=")}HERE="{here}"; ONLY="{only}"; check_brain_source; echo CHECKED'
-    return _run(tmp, script, ["brain_src_fetch", "check_brain_source"], env)
+    return _run(tmp, script, ["brain_src_fetch", "check_brain_source", "git_read"], env)
 
 
 def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():

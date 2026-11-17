@@ -19,10 +19,14 @@
 #      it read, and where the installer comes from ("source": brain.repo at brain.tag, what
 #      the one-line installer clones). Nothing to do: done.
 #   2. The installer: a shallow clone of that source. A box keeps no checkout; this is what
-#      `bash <(curl -fsSL https://get.teaspoon.tech/teaport)` does too.
+#      `bash <(curl -fsSL https://get.teaspoon.tech/teaport)` does too. Only a release's:
+#      brain.tag must be a tag (a branch is whatever was pushed last), and the installer must
+#      say UPDATE_PROTOCOL=1, which an installer that kept the install trees root's and the
+#      run user's home as data does. An older one is never run as root from here.
 #   3. Each step, in order: install.sh --only engine, then --only brain, for the brain's run
 #      user (TEAPORT_USER: the User= of teaport-brain.service), against the manifest read in
-#      1. Each puts the previous engine or brain back by itself if the new one does not come
+#      1, with root's own HOME: no tool it runs as root reads its configuration from the run
+#      user's home. Each puts the previous engine or brain back by itself if the new one does not come
 #      up. TEAPORT_WAIT_IDLE_SECS makes each wait, before its restart, until nobody is
 #      talking (install.sh's wait_for_idle); the downloads come first, while they still are.
 #      A step that fails stops the run; what it installed is already rolled back.
@@ -69,7 +73,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class Run:
-    """One run's record: update-run.json, rewritten whole at every change."""
+    """One run's record: run.json, rewritten whole at every change."""
 
     def __init__(self, user_gid=None):
         self.gid = user_gid
@@ -109,7 +113,7 @@ def untrusted_brain(runner=subprocess.run) -> str | None:
     """Why the installed brain's code must not run as root, or None when it may: every
     directory above it and every entry in it root's and not group- or world-writable,
     nothing in it that teaport-brain does not list, nothing it lists changed."""
-    for d in above(PREFIX):
+    for d in above(PREFIX) + [BRAIN_TREE]:
         st = os.lstat(d)
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != ROOT_UID or st.st_mode & 0o022:
             return f"{d} is not root's own directory"
@@ -125,6 +129,13 @@ def untrusted_brain(runner=subprocess.run) -> str | None:
                 return f"{path} is not root's alone"
             if path not in owned:
                 return f"{path} is not the package's"
+            # A symlink only to within the tree (walked here) or to the system's /usr (the
+            # venv's bin/python): one dpkg lists as a directory but that leads elsewhere would
+            # put files no check here sees on the path python reads at start.
+            if stat.S_ISLNK(st.st_mode):
+                target = os.path.realpath(path)
+                if not (target.startswith(BRAIN_TREE + "/") or target.startswith("/usr/")):
+                    return f"{path} leads out of the package's tree ({target})"
     verify = runner(["dpkg", "--verify", BRAIN_PACKAGE], capture_output=True, text=True)
     if verify.returncode != 0 or verify.stdout.strip():
         changed = (verify.stdout.strip().splitlines() or ["?"])[0]
@@ -157,31 +168,54 @@ def read_plan(runner=subprocess.run) -> dict:
 
 
 def clone(source: dict, into: str, runner=subprocess.run) -> str:
-    """A shallow clone of github.com/<repo> at <tag> (anonymous, never a prompt): the
-    installer of the release. Returns the checkout's path."""
+    """A shallow clone of github.com/<repo> at the release tag <tag> (anonymous, never a
+    prompt): the installer of the release. Returns the checkout's path. Refuses a <tag> that
+    is not a tag there (a branch moves), a checkout that is not at that tag's commit, and an
+    installer that does not declare UPDATE_PROTOCOL=1."""
     repo, tag = source["repo"], source["tag"]
     # updates.source() checked both; checked again, as they reach git's command line.
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) \
             or not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*", tag):
         raise RuntimeError(f"the manifest names no installer this can fetch ({repo!r} at {tag!r})")
-    dest = os.path.join(into, "teaport")
+    url = f"https://github.com/{repo}.git"
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "GIT_TERMINAL_PROMPT": "0",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "HOME": into}
-    p = runner(["git", "clone", "--quiet", "--depth", "1", "--branch", tag,
-                f"https://github.com/{repo}.git", dest],
-               capture_output=True, text=True, env=env, timeout=CLONE_TIMEOUT_SECS)
-    if p.returncode != 0:
-        raise RuntimeError(f"could not fetch the installer (github.com/{repo} at {tag}): "
-                           + ((p.stderr.strip().splitlines() or ["?"])[-1]))
+
+    def git(*args, cwd=None):
+        p = runner(["git", *args], capture_output=True, text=True, env=env, cwd=cwd,
+                   timeout=CLONE_TIMEOUT_SECS)
+        if p.returncode != 0:
+            raise RuntimeError(f"could not fetch the installer (github.com/{repo} at {tag}): "
+                               + ((p.stderr.strip().splitlines() or ["?"])[-1]))
+        return p.stdout
+    refs = {}
+    for line in git("ls-remote", url, f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}").splitlines():
+        sha, _, ref = line.partition("\t")
+        refs[ref] = sha
+    commit = refs.get(f"refs/tags/{tag}^{{}}") or refs.get(f"refs/tags/{tag}")
+    if not commit:
+        raise RuntimeError(f"the release manifest names {tag!r}, which is not a release tag of "
+                           f"github.com/{repo} (an update installs only a release's installer)")
+    dest = os.path.join(into, "teaport")
+    git("clone", "--quiet", "--depth", "1", "--branch", tag, url, dest)
+    head = git("rev-parse", "HEAD", cwd=dest).strip()
+    if head != commit:
+        raise RuntimeError(f"the installer fetched is not at {tag} ({head[:12]}, the tag is {commit[:12]})")
+    with open(os.path.join(dest, "install.sh"), encoding="utf-8", errors="replace") as f:
+        if "\nUPDATE_PROTOCOL=1\n" not in f.read():
+            raise RuntimeError(f"the installer of {tag} predates teaport update; install it by hand "
+                               "(install.sh --only brain / --only engine)")
     return dest
 
 
 def step_env(user: str, home: str, manifest_url: str) -> dict:
-    """install.sh's environment: the brain's user's, not root's (RUN_USER, their secrets
-    and home, which detect_agent reads), the manifest the plan was read from, and the wait
-    for nobody to be talking."""
+    """install.sh's environment: the brain's user (RUN_USER; install.sh finds their home
+    itself, as data) and their secrets directory, root's own HOME (no tool root runs reads
+    its configuration from the run user's home: a ~/.curlrc, a Python user site, a
+    ~/.gitconfig), the manifest the plan was read from, and the wait for nobody to be
+    talking."""
     return {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "LANG": "C.UTF-8", "HOME": home, "TEAPORT_USER": user,
+            "LANG": "C.UTF-8", "HOME": "/root", "TEAPORT_USER": user,
             "TEAPORT_SECRETS_DIR": os.path.join(home, ".config", "teaport"),
             "TEAPORT_MANIFEST_URL": manifest_url,
             "TEAPORT_WAIT_IDLE_SECS": str(WAIT_IDLE_SECS)}

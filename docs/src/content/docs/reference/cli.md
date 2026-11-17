@@ -12,7 +12,7 @@ and the release manifest, and it reads the layout the installer creates: `/opt/t
 The `teaport-brain` package installs the command at `/usr/bin/teaport`. Run `teaport` with no arguments, or `teaport help`, to print the
 command summary. An unknown command or option prints an error and exits 1.
 
-<!-- source: install.sh:1307#9d1a0148; cli/teaport:38,1775-1787#ac17e130 -->
+<!-- source: install.sh:1367#9d1a0148; cli/teaport:38,1775-1787#ac17e130 -->
 
 The paths and ports in this reference are the defaults that the command reads at startup.
 `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`,
@@ -125,7 +125,7 @@ older release.
 | `--yes` | Installs without asking. Without it, the command asks first, and when it isn't run in a terminal it stops and names this option. |
 | `--status` | Prints how the last update went. It changes nothing. |
 
-<!-- source: cli/teaport:562-615#ee89cb6f; brain/teaport_brain/updates.py:440-479#8078c9b0 -->
+<!-- source: cli/teaport:562-615#291d187a; brain/teaport_brain/updates.py:440-479#8078c9b0 -->
 
 Without `--channel`, the command uses the `TEAPORT_UPDATE_CHANNEL` setting in
 `/etc/teaport/brain.env`. When that is empty, it uses the channel the installed manifest
@@ -148,7 +148,7 @@ device's own channel, so `--channel` goes with `--check` only. It exits 0 when t
 is installed or there is nothing it installs, and 1 when the update fails.
 [Update teaport](/guides/updating/#apply-an-update) has the details.
 
-<!-- source: cli/teaport:467-477,499-540,562-615#0a8a233b; brain/teaport_brain/updates.py:59-64,268-273#7903fe49 -->
+<!-- source: cli/teaport:467-477,499-540,562-615#d6b82eeb; brain/teaport_brain/updates.py:59-64,268-273#7903fe49 -->
 
 Press Ctrl+C to stop following: the update goes on. `teaport update --status` prints the
 last run's state, `running`, `done`, `failed`, or `interrupted` for a run that a power cut

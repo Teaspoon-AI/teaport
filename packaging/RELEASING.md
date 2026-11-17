@@ -99,7 +99,7 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 
 ```json
 "brain": {
-  "repo": "Teaspoon-AI/teaport", "tag": "main",
+  "repo": "Teaspoon-AI/teaport", "tag": "brain-vX.Y.Z",
   "deb": {
     "url": "https://get.teaspoon.tech/dl/brain/teaport-brain_X.Y.Z_arm64.deb",
     "sha256": "<the .sha256 file's hash>"
@@ -107,6 +107,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 }
 ```
 
+- [ ] `brain.tag` is the release tag, not `main`: `teaport update` runs that tag's
+      `install.sh` as root, and refuses a branch (it moves) and any installer without
+      `UPDATE_PROTOCOL=1`. The Discord bridge is cloned from the same tag.
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.

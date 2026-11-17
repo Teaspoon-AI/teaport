@@ -38,6 +38,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*"; else "$@"; fi; }
 as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+RUN_HOME="$HOME"
 # GNU sha256sum's two forms, on any system (macOS's has no --status).
 _sha() { python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 sha256sum() {
@@ -951,7 +952,7 @@ def _behind(touching):
 def _check(tmp, here):
     script = (f'{_line("BRAIN_ONLY_PATHS=")}{_line("ENGINE_ONLY_PATHS=")}BRAIN_SRC="" ALLOW_STALE_SOURCE=0 '
               f'HERE="{here}"; check_brain_source; echo CHECKED')
-    return _run(tmp, script, ["brain_src_fetch", "check_brain_source"],
+    return _run(tmp, script, ["brain_src_fetch", "check_brain_source", "git_read"],
                 {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
 
 

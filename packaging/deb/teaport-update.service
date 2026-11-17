@@ -1,8 +1,8 @@
 # teaport-update.service -- install the newer release of the box's channel (#60's updater,
 # the apply step): /usr/lib/teaport/update_apply.py, as root. `teaport update` starts it
-# (and, later, the brain when the owner says yes), through the one sudoers line
-# sudoers-sync writes for it: `systemctl start --no-block teaport-update.service`, nothing
-# else. The unit takes no arguments: what it installs is read from the release manifest.
+# (and, later, the brain when the owner says yes), through the polkit rule sudoers-sync
+# writes for it, which lets the run user start this unit and nothing else. The unit takes no
+# arguments: what it installs is read from the release manifest.
 #
 # Static (no [Install]): it runs when started, never at boot. It belongs to no other unit,
 # so the restarts it makes (the engine, the brain) do not stop it. A second start while it
