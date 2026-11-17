@@ -54,7 +54,7 @@ jobs:
       cancel-in-progress: ${{ matrix.runner == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install the brain from uv.lock (the set that ships)
@@ -193,7 +193,7 @@ jobs:
             if ! grep -qxF "$pkg" "$RUNNER_TEMP/depends"; then echo "not in Depends: $pkg"; missing=1; fi
           done
           [ "$missing" = 0 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: teaport-brain-deb
           path: |
@@ -206,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Syntax-check the plugin
@@ -238,13 +238,13 @@ jobs:
       TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "11" # TLC needs 11+; matches the desktop the suite was verified on
       - name: Cache tla2tools.jar
         id: cache-tla
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tla2tools.jar
           key: tla2tools-${{ env.TLA_TAG }}
