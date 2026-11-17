@@ -2,7 +2,8 @@
 # postinst for teaport-brain (#60). `configure` runs after every install and upgrade,
 # and on a downgrade (a rollback is `apt install` of the kept .deb).
 #
-#  1. The run user's sudoers lines: the config page's, and starting the update (sudoers-sync).
+#  1. The run user's grants: the config page's sudoers line, and the polkit rule that lets
+#     them start the update (sudoers-sync).
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.

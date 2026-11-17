@@ -36,6 +36,7 @@ die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+own_dir() { mkdir -p "$1"; }   # root's on a box (own_install_trees); a test cannot chown
 # sudo can read the unreadable (as root would), or is refused (SUDO_REFUSED=1). Every
 # call is recorded in $T/sudo.log, so a test can tell when it was not asked at all.
 sudo() {
@@ -463,7 +464,7 @@ def _render(tmp, dry_run=False, masked=""):
               f'readlink() {{ [ "$1" = "/etc/systemd/system/{masked}" ] && echo /dev/null; }}\n'
               'render_unit teaport-brain.service.in teaport-brain.service\n'
               'render_unit teaport-engine.service.in teaport-engine.service\n')
-    return _run(tmp, script, ["write_root", "render_unit"])
+    return _run(tmp, script, ["write_root", "render_unit", "sed_value"])
 
 
 def test_a_unit_is_written_through_write_root_and_reads_back_as_anyone():
@@ -1138,7 +1139,8 @@ def test_postrm_takes_the_link_on_remove_and_the_sudoers_line_on_purge_and_nothi
     opt = pathlib.Path(tmp, "opt/teaport")
     opt.mkdir(parents=True)
     sudoers = pathlib.Path(tmp, "teaport-config")
-    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers))])
+    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers)),
+                                      ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
 
     def run(action, link_to="brain"):
         if os.path.lexists(opt / "venv"):

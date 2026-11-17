@@ -9,15 +9,20 @@
 #     nobody to be talking. A failed step stops the run; nothing to do is done. The run's
 #     state (run.json) says which, and why.
 #   - It takes nothing it is not sure of: a step it does not know, an installer source that
-#     is not a plain repo and ref, a state directory that is not root's own.
-#   - install.sh, run as root for another user, does the run user's part as that user
-#     (as_user: setpriv), so no root write lands where the run user could aim it; and the
-#     engine's file operations all go through it. wait_for_idle holds a restart while the
-#     brain says someone is talking, up to its limit, with the token off curl's command line.
-#   - `teaport update` asks, starts the unit through sudo with exactly the arguments the
-#     sudoers line names, and follows the run to its end; --status says how the last one went.
-#   - The package ships the helper and the unit, depends on git, and sudoers-sync writes the
-#     one line that starts it.
+#     is not a plain repo and ref, a manifest from anywhere but the download host, a state
+#     directory that is not root's own, and a brain tree it would run as root that is not
+#     root's throughout, has a file dpkg does not list, or one dpkg says changed.
+#   - install.sh keeps the install trees root's (own_install_trees: a symlink or special
+#     file in them is removed) and writes there only as root; the run user's own part goes
+#     through as_user (setpriv) when root runs it for them. render_unit takes values from the
+#     run user's home literally (no sed injection, no extra unit line); a sandbox name that
+#     is not a plain name is dropped. wait_for_idle holds a restart while the brain says
+#     someone is talking, up to its limit, with the token off curl's command line.
+#   - `teaport update` asks, starts the unit with plain systemctl (polkit lets the brain's
+#     user), and follows that run by its InvocationID to its end; --status says how the
+#     last one went.
+#   - The package ships the helper and the unit, depends on git and polkitd, and
+#     sudoers-sync writes the polkit rule that lets the run user start it and nothing else.
 #
 # Everything runs against temp dirs with the commands around it stubbed; nothing is
 # installed and no unit is started.
@@ -50,6 +55,7 @@ def _helper(state):
     mod.STATE, mod.STATUS, mod.LOG = state, os.path.join(state, "run.json"), os.path.join(state, "log")
     mod.ROOT_UID = os.getuid()
     mod.run_user = lambda: os.environ.get("USER") or __import__("pwd").getpwuid(os.getuid()).pw_name
+    mod.untrusted_brain = lambda: None
     return mod
 
 
@@ -158,12 +164,66 @@ def test_a_state_directory_that_is_not_roots_own_is_refused():
     assert mod.main() == 1 and not os.path.exists(os.path.join(state, "run.json"))
 
 
+class _P:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_the_brains_code_runs_as_root_only_when_dpkg_vouches_for_all_of_it():
+    tmp = tempdir("teaport-apply-trust-")
+    mod = _helper(_state(tmp))
+    spec = importlib.util.spec_from_file_location("ua_trust", HELPER)
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    prefix = os.path.join(tmp, "opt")
+    tree = os.path.join(prefix, "brain")
+    os.makedirs(os.path.join(tree, "bin"))
+    pathlib.Path(tree, "bin", "teaport-brain").write_text("#!/bin/sh\n")
+    os.symlink("/usr/bin/python3", os.path.join(tree, "bin", "python"))
+    for d in (prefix, tree, os.path.join(tree, "bin")):
+        os.chmod(d, 0o755)
+    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o755)
+    real.ROOT_UID, real.PREFIX, real.BRAIN_TREE = os.getuid(), prefix, tree
+    real.above = lambda p: [p]
+    listed = "\n".join(["/.", prefix, tree + "/", os.path.join(tree, "bin"),
+                        os.path.join(tree, "bin", "teaport-brain"), os.path.join(tree, "bin", "python")])
+    verify = {"out": ""}
+
+    def runner(cmd, **k):
+        if cmd[0] == "dpkg-query":
+            return _P(0, listed)
+        return _P(0, verify["out"])
+    assert real.untrusted_brain(runner) is None
+    # A file the package does not list (a .pth, say, which every python start runs).
+    stray = pathlib.Path(tree, "evil.pth")
+    stray.write_text("import os\n")
+    stray.chmod(0o644)
+    assert "is not the package's" in real.untrusted_brain(runner)
+    stray.unlink()
+    # One another user could write.
+    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o775)
+    assert "is not root's alone" in real.untrusted_brain(runner)
+    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o755)
+    # A file dpkg says changed.
+    verify["out"] = "??5?????? /opt/teaport/brain/lib/x.py\n"
+    assert "changed after it was installed" in real.untrusted_brain(runner)
+    verify["out"] = ""
+    # The directory above it writable by others, or no package at all.
+    os.chmod(prefix, 0o777)
+    assert "is not root's own directory" in real.untrusted_brain(runner)
+    os.chmod(prefix, 0o755)
+    assert "not installed" in real.untrusted_brain(lambda cmd, **k: _P(1))
+    # main() stops on it before the plan is read, and says how to repair it.
+    mod.untrusted_brain = lambda: "/opt/teaport/brain/evil.pth is not the package's"
+    mod.read_plan = lambda: (_ for _ in ()).throw(AssertionError("must not run the brain's code"))
+    assert mod.main() == 1
+    msg = _status(mod)["message"]
+    assert "evil.pth" in msg and "install.sh --only brain" in msg, msg
+
+
 def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
     mod = _helper(tempdir("teaport-apply-"))
-
-    class P:
-        def __init__(self, rc, out="", err=""):
-            self.returncode, self.stdout, self.stderr = rc, out, err
+    P = _P
     plan = mod.read_plan(runner=lambda *a, **k: P(0, json.dumps(_plan(["engine"]))))
     assert plan["steps"] == ["engine"]
     for steps in (["rm -rf /"], ["--only"], "engine"):
@@ -173,6 +233,15 @@ def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
             assert "cannot run" in str(e)
         else:
             raise AssertionError(steps)
+    # A plan against a manifest from anywhere but the download host is not installed.
+    for url in ("https://evil.example/manifest/stable.json", "/tmp/m.json",
+                "https://get.teaspoon.tech/manifest/stable.json.evil"):
+        try:
+            mod.read_plan(runner=lambda *a, **k: P(0, json.dumps({**_plan(["brain"]), "url": url})))
+        except RuntimeError as e:
+            assert "does not install from" in str(e), e
+        else:
+            raise AssertionError(url)
     try:
         mod.read_plan(runner=lambda *a, **k: P(1, err="cannot read the release manifest: offline"))
     except RuntimeError as e:
@@ -278,31 +347,95 @@ DRY_RUN=0
     assert rc == 0 and "SETPRIV" not in out and "[dry-run] rm -rf /x" in out and "[dry-run] rm -rf /y" in out, out
 
 
-# The functions that write the run user's files under $PREFIX (the engine) and $STATE (the
-# brain's download): every write, rename, link and removal in them goes through as_user
-# (or run/SUDO), never a bare one that root would do in a directory the run user owns.
-RUN_USER_FUNCTIONS = ("download", "engine_fetch", "engine_keep_live", "engine_swap_in",
-                      "engine_swap_abort", "engine_swap_recover", "engine_restore",
-                      "manifest_take_py", "brain_deb_keep", "main_rollback_engine")
-BARE = re.compile(r"(?:^|[;&|{(]\s*|\bthen\s+|\belse\s+|\bdo\s+)(mv|ln|cp|mkdir|rm|ldd|python3|touch|chmod)\s")
+# The functions that write the install trees ($PREFIX's engine files, $STATE's downloads):
+# the trees are root's, so every write, rename, link and removal there is SUDO's, never the
+# run user's (run/as_user) and never a bare one. ldd is the run user's: it can run what it
+# looks at.
+ROOT_TREE_FUNCTIONS = ("download", "engine_fetch", "engine_keep_live", "engine_swap_in",
+                       "engine_swap_abort", "engine_swap_recover", "engine_restore", "engine_prune",
+                       "manifest_take_py", "brain_deb_fetch", "brain_deb_keep", "main_rollback_engine",
+                       "phase_engine", "eula_gate", "own_dir", "own_tree", "own_install_trees",
+                       "installer_lock")
+TEMP_WRITE = re.compile(r'-o "\$(txt|tmp)" ')
+WRITE = re.compile(r"(?:^|[;&|{(!]\s*|\bthen\s+|\belse\s+|\bdo\s+|\|\|\s*|&&\s*)(mv|ln|cp|mkdir|rm|touch|chmod|chown|tee|curl|install)\s")
 
 
-def test_the_run_users_files_are_never_written_by_a_bare_root_command():
+def test_the_install_trees_are_written_only_as_root():
     text = INSTALL.read_text()
-    for name in RUN_USER_FUNCTIONS:
+    for name in ROOT_TREE_FUNCTIONS:
         for raw in _fn(name).splitlines()[1:]:
             ln = raw.split(" #")[0].strip()
             if ln.startswith("#"):
                 continue
-            for m in BARE.finditer(ln):
-                before = ln[:m.start(1)]
-                assert re.search(r"(as_user|run|SUDO)\s*$", before), (name, raw)
-            assert not re.search(r"[^2&]>\s*\"\$", ln) or "as_user tee" in ln or "/dev/null" in ln, (name, raw)
-    # ldd can run what it looks at: never as root on the run user's binary.
+            if TEMP_WRITE.search(ln):
+                continue   # into this run's own temp file (mktemp), not the trees
+            for m in WRITE.finditer(ln):
+                assert re.search(r"SUDO\s+(env\s+\S+\s+)?$", ln[:m.start(1)]), (name, raw)
+            assert not re.search(r"[^2&]>\s*\"\$", ln) or "/dev/null" in ln, (name, raw)
+            assert "as_user" not in ln or "as_user ldd" in ln, (name, raw)
+            assert not re.search(r"\brun\s+(mv|ln|cp|mkdir|rm|touch|chmod|curl)\b", ln), (name, raw)
+            assert "chown" not in ln or "RUN_USER" not in ln, (name, raw)
+    # Nothing hands the engine's files or the downloads to the run user any more; the one
+    # tree that stays theirs is the bridge's.
+    handed = [ln for ln in text.splitlines() if re.search(r"chown\b.*RUN_USER", ln) and not ln.lstrip().startswith("#")]
+    assert handed == ['  SUDO mkdir -p "$PREFIX/bridge"; SUDO chown -R -h -P "$RUN_USER" "$PREFIX/bridge"'], handed
     assert "as_user ldd \"$bin\"" in text
-    # The restarts wait for idle, right before they happen.
-    assert "  wait_for_idle\n  engine_swap\n" in text
+    # The trees are taken back first thing; the restarts wait for idle, before engine.env.
+    assert "  installer_lock\n  own_install_trees\n" in text
+    assert "  wait_for_idle\n  log \"engine.env:" in text
     assert "  wait_for_idle\n  sip_brain_detach\n" in text
+
+
+def test_taking_a_tree_back_removes_what_an_install_never_makes_there():
+    tmp = tempdir("teaport-owntree-")
+    root = pathlib.Path(tmp, "opt")
+    (root / "bin/g2p").mkdir(parents=True)
+    (root / "bin/voxtral").write_text("engine\n")
+    os.symlink("/etc/shadow", root / "bin/g2p/kokoro_g2p.v2.dict")
+    os.mkfifo(root / "bin/pipe")
+    os.symlink("/etc", root / "models")
+    stub = r'''
+SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; case "$1" in chown|chmod) : ;; *) "$@" ;; esac; }
+sudo_ready() { :; }
+DRY_RUN=0
+'''
+    rc, out = _bash(tmp, stub + _fn("own_tree") + f'own_tree "{root}/bin"; own_tree "{root}/models"; own_tree "{root}/missing"\n')
+    assert rc == 0, out
+    assert (root / "bin/voxtral").read_text() == "engine\n"
+    assert not os.path.lexists(root / "bin/g2p/kokoro_g2p.v2.dict") and not os.path.lexists(root / "bin/pipe"), out
+    assert not os.path.lexists(root / "models") and os.path.isdir("/etc"), out
+    calls = pathlib.Path(tmp, "sudo.log").read_text()
+    assert f"chown -R -h -P root:root {root}/bin" in calls and f"chmod -R go-w {root}/bin" in calls, calls
+
+
+def test_a_unit_takes_values_from_the_run_users_home_literally():
+    tmp = tempdir("teaport-render-")
+    (pathlib.Path(tmp, "systemd")).mkdir()
+    pathlib.Path(tmp, "systemd/x.service.in").write_text("[Service]\nUser=@USER@\nExecStart=/bin/nemoclaw @SANDBOX@ connect\n")
+    stub = (r'''
+write_root() { printf '%s\n' "$2" > "$T/out.service"; }
+DRY_RUN=0 RUN_USER=bob PREFIX=/opt/teaport ETC=/etc/teaport SECRETS=/home/bob/.config/teaport
+''' + f'HERE="{tmp}"\n')
+    evil = "x#;s#^User=.*#touch $T/pwned#e;s#zz#zz"
+    rc, out = _bash(tmp, stub + _fn("sed_value") + _fn("render_unit") + f"SANDBOX='{evil}'; render_unit x.service.in x.service\n")
+    assert rc == 0, out
+    unit = pathlib.Path(tmp, "out.service").read_text()
+    assert "User=bob\n" in unit and f"ExecStart=/bin/nemoclaw {evil} connect" in unit, unit
+    assert not os.path.exists(os.path.join(tmp, "pwned")), "sed ran the injected command"
+    # A value with a line break would add a line to the unit: refused.
+    rc, out = _bash(tmp, stub + _fn("sed_value") + _fn("render_unit") + "SANDBOX=$'a\\nUser=root'; render_unit x.service.in x.service\n")
+    assert rc == 1 and "spans lines" in out, out
+    # The sandbox name itself must be a plain name, or there is none.
+    home = pathlib.Path(tmp, "home")
+    (home / ".nemoclaw").mkdir(parents=True)
+    (home / ".local/bin").mkdir(parents=True)
+    (home / ".local/bin/nemoclaw").write_text("#!/bin/sh\n")
+    (home / ".local/bin/nemoclaw").chmod(0o755)
+    for name, want in (("my-sandbox_1.2", "my-sandbox_1.2"), (evil, ""), ("-x", ""), ("a b", "")):
+        (home / ".nemoclaw/sandboxes.json").write_text(json.dumps({"defaultSandbox": name}))
+        rc, out = _bash(tmp, "have() { false; }\nSANDBOX=\n" + _fn("detect_sandbox") + 'detect_sandbox; echo "SB[$SANDBOX]"\n',
+                        {"HOME": str(home)})
+        assert rc == 0 and f"SB[{want}]" in out, (name, out)
 
 
 def _idle_script(tmp, answers, secs="60"):
@@ -367,7 +500,7 @@ def test_a_conversation_that_outlasts_the_wait_stops_the_run_and_nothing_else_ho
 
 # --- the CLI ----------------------------------------------------------------------------
 
-def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=False):
+def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=False, inv=None):
     """`teaport update ...` with the brain's python, systemctl and sudo stubbed in PATH."""
     bindir = pathlib.Path(tmp, "bin")
     bindir.mkdir(exist_ok=True)
@@ -380,9 +513,12 @@ def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=
     state.mkdir(exist_ok=True)
     (bindir / "systemctl").write_text(
         "#!/bin/sh\necho \"SYSTEMCTL $*\" >> \"$T/calls\"\n"
-        "case \"$1\" in show) cat \"$T/active\" ;; start)\n"
-        # The unit runs: it writes its state (the test's, with a fresh start time) and ends.
-        "  [ ! -e \"$T/run.next\" ] || { sed \"s/STARTED/$(date +%s)/\" \"$T/run.next\" > \"$T/state/run.json\"; cp \"$T/log.next\" \"$T/state/log\"; } ;;\n"
+        "case \"$*\" in\n"
+        "  *ActiveState*) cat \"$T/active\" ;;\n"
+        "  *InvocationID*) cat \"$T/inv\" 2>/dev/null || true ;;\n"
+        # The unit runs: a new invocation, which writes its state (the test's) and ends.
+        "  start*) echo inv-new > \"$T/inv\"\n"
+        "    [ ! -e \"$T/run.next\" ] || { sed \"s/STARTED/$(date +%s)/\" \"$T/run.next\" > \"$T/state/run.json\"; cp \"$T/log.next\" \"$T/state/log\"; } ;;\n"
         "esac\n")
     (bindir / "sudo").write_text("#!/bin/sh\necho \"SUDO $*\" >> \"$T/calls\"\nexec \"$@\"\n")
     for f in bindir.iterdir():
@@ -390,8 +526,11 @@ def _cli(tmp, *args, active="inactive", check_rc=10, run_json=None, log="", tty=
     (venv / "python").chmod(0o755)
     pathlib.Path(tmp, "active").write_text(active + "\n")
     if run_json is not None:
+        run_json = {"invocation": "inv-new", **run_json}
         pathlib.Path(tmp, "run.next").write_text(json.dumps(run_json))
         pathlib.Path(tmp, "log.next").write_text(log)
+    if inv is not None:
+        pathlib.Path(tmp, "inv").write_text(inv + "\n")
     env = {**os.environ, "T": str(tmp), "PATH": f"{bindir}:{os.environ['PATH']}",
            "TEAPORT_PREFIX": os.path.join(tmp, "opt"), "TEAPORT_ETC": os.path.join(tmp, "etc"),
            "TEAPORT_UPDATE_STATE": str(state), "HOME": str(tmp)}
@@ -410,10 +549,23 @@ def test_update_starts_the_unit_with_the_sudoers_lines_arguments_and_follows_it_
     run = {"state": "done", "started": "STARTED", "message": "installed: brain", "channel": "stable"}
     rc, out, calls = _cli(tmp, "--yes", run_json=run, log="==> download teaport-brain_0.1.1\n==> done\n")
     assert rc == 0, out
-    assert "SUDO systemctl start --no-block teaport-update.service" in calls, calls
+    assert "SYSTEMCTL start --no-block teaport-update.service" in calls and "SUDO" not in calls, calls
     assert "==> download teaport-brain_0.1.1" in out and "update: installed: brain" in out, out
     # The check ran once, asking whether there is a step.
     assert calls.count("PY ") == 1 and "check --exit-code" in calls, calls
+
+
+def test_an_earlier_run_is_never_taken_for_this_one():
+    # The last run's run.json, with a start time from a clock ahead of this one (a box with no
+    # RTC): the new run is told by its invocation, not by its time.
+    tmp = tempdir("teaport-cli-update-")
+    state = pathlib.Path(tmp, "state")
+    state.mkdir()
+    (state / "run.json").write_text(json.dumps({"state": "done", "started": time.time() + 86400,
+                                                "invocation": "inv-old", "message": "installed: engine"}))
+    run = {"state": "failed", "started": "STARTED", "message": "install.sh --only brain failed: x"}
+    rc, out, calls = _cli(tmp, "--yes", run_json=run, inv="inv-old")
+    assert rc == 1 and "install.sh --only brain failed: x" in out and "installed: engine" not in out, out
 
 
 def test_a_failed_run_fails_the_command_and_names_the_reason():
@@ -473,22 +625,38 @@ def test_the_package_ships_the_helper_and_its_unit_and_the_one_line_that_starts_
     assert "[Install]" not in unit.splitlines()   # started on request, never at boot
     helper = HELPER.read_text()
     assert 'STATE = "/var/lib/teaport-update"' in helper   # the unit's StateDirectory, root's
-    # sudoers-sync: the update's line is exactly the command the CLI runs, no wildcard.
+    assert "\n  - polkitd\n" in recipe
+    # sudoers-sync: the polkit rule names the unit, the verb and the user; sudoers has only
+    # the config page's line.
     tmp = tempdir("teaport-sudoers-")
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     text = text.replace("f=/etc/sudoers.d/teaport-config", f"f={tmp}/out")
     text = text.replace("helper=/usr/lib/teaport/config_apply.py", f"helper={tmp}/helper")
-    text = text.replace("install -m 0440 -o root -g root", "install -m 0440")
+    text = text.replace("rules=/etc/polkit-1/rules.d/50-teaport-update.rules", f"rules={tmp}/rules.d/50-teaport-update.rules")
+    text = text.replace("install -m 0440 -o root -g root", "install -m 0440").replace("install -m 0644 -o root -g root", "install -m 0644")
     pathlib.Path(tmp, "helper").write_text("")
+    pathlib.Path(tmp, "rules.d").mkdir()
     pathlib.Path(tmp, "s").write_text(text)
     p = subprocess.run(["sh", f"{tmp}/s", "bob"], capture_output=True, text=True)
     if p.returncode != 0 and "visudo" in p.stderr + p.stdout:
         appliance.skip("no visudo here")
     assert p.returncode == 0, p.stderr
     lines = [ln for ln in pathlib.Path(tmp, "out").read_text().splitlines() if not ln.startswith("#")]
-    assert lines[1] == "bob ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block teaport-update.service", lines
+    assert lines == ["bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/helper *"], lines
+    rule = pathlib.Path(tmp, "rules.d/50-teaport-update.rules").read_text()
+    for want in ('action.id == "org.freedesktop.systemd1.manage-units"', 'action.lookup("unit") == "teaport-update.service"',
+                 'action.lookup("verb") == "start"', 'subject.user == "bob"', "return polkit.Result.YES"):
+        assert want in rule, (want, rule)
+    if shutil.which("node"):   # the rule parses as JavaScript
+        js = "var polkit={addRule:function(f){var r=f({id:'org.freedesktop.systemd1.manage-units',lookup:function(k){return {unit:'teaport-update.service',verb:'start'}[k];}},{user:'bob'}); if(r!=='yes') process.exit(3);},Result:{YES:'yes'}};" + rule
+        assert subprocess.run(["node", "-e", js]).returncode == 0
+    # No polkit on the box: no rule, said, and the config page's line all the same.
+    pathlib.Path(tmp, "rules.d/50-teaport-update.rules").unlink()
+    pathlib.Path(tmp, "rules.d").rmdir()
+    p = subprocess.run(["sh", f"{tmp}/s", "bob"], capture_output=True, text=True)
+    assert p.returncode == 0 and "no polkit here" in p.stderr, p.stderr
     cli = CLI.read_text()
-    assert 'SUDO systemctl start --no-block "$UPDATE_UNIT"' in cli and "UPDATE_UNIT=teaport-update.service" in cli
+    assert 'systemctl start --no-block "$UPDATE_UNIT"' in cli and "SUDO systemctl start" not in cli
 
 
 if __name__ == "__main__":

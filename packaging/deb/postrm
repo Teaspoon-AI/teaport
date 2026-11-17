@@ -1,7 +1,7 @@
 #!/bin/sh
 # postrm for teaport-brain (#60). Removing the package takes the tree with it, so what
 # pointed into the tree goes too: the /opt/teaport/venv link that postinst made, and on
-# purge the sudoers lines (they name programs the package shipped).
+# purge the run user's grants (the sudoers line and the polkit rule name what the package shipped).
 set -e
 case "$1" in
   remove|purge)
@@ -10,7 +10,7 @@ case "$1" in
     fi
     ;;
 esac
-if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config; fi
+if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config /etc/polkit-1/rules.d/50-teaport-update.rules; fi
 # The update's unit went with the package; systemd forgets it at a reload.
 case "$1" in
   remove|purge) if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi ;;

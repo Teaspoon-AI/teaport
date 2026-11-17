@@ -2,11 +2,17 @@
 #
 # teaport — install a newer release: what teaport-update.service runs, as root (the
 # updater's apply step). Started by `teaport update` (and, later, by the brain when the
-# owner says yes), through one sudoers line that allows exactly
-#     systemctl start --no-block teaport-update.service
-# and nothing else (packaging/deb/sudoers-sync). It takes no arguments: what to install is
-# read here, from the release manifest of the box's channel, so whoever may start the
-# unit can choose when, never what.
+# owner says yes), through a polkit rule that lets the run user start this one unit and
+# nothing else (packaging/deb/sudoers-sync). It takes no arguments: what to install is read
+# here, from the release manifest of the box's channel, so whoever may start the unit can
+# choose when, never what.
+#
+# Nothing it runs as root is the run user's to change (the run user is who the agent runs
+# as). The install trees are root's (install.sh's own_install_trees), and before the
+# brain's own code is run for the plan, its tree is checked: root's throughout, no file
+# dpkg does not list, none changed (dpkg --verify). A box that fails that has not been
+# repaired since an older installer handed the trees out: `install.sh --only brain`, by
+# hand, does it.
 #
 #   1. The plan: the brain's own comparison (teaport_brain.updates check --json, under the
 #      installed brain's venv): which install.sh runs ("steps": engine, brain), the manifest
@@ -37,6 +43,7 @@ import pwd
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,7 +52,12 @@ import time
 STATE = "/var/lib/teaport-update"
 STATUS = os.path.join(STATE, "run.json")
 LOG = os.path.join(STATE, "log")
-BRAIN_PYTHON = "/opt/teaport/brain/bin/python"
+PREFIX = "/opt/teaport"
+BRAIN_TREE = PREFIX + "/brain"
+BRAIN_PYTHON = BRAIN_TREE + "/bin/python"
+BRAIN_PACKAGE = "teaport-brain"
+# Where a manifest may come from: the download host (updates.MANIFEST_BASE).
+MANIFEST_URL = re.compile(r"https://get\.teaspoon\.tech/manifest/(stable|beta)\.json")
 BRAIN_UNIT = "teaport-brain.service"
 # How long a step waits for the conversation in progress to end before it gives up, its
 # downloads kept for the next try (install.sh's wait_for_idle).
@@ -61,9 +73,11 @@ class Run:
 
     def __init__(self, user_gid=None):
         self.gid = user_gid
+        # The unit's InvocationID (systemd sets $INVOCATION_ID): how `teaport update` tells
+        # this run from an earlier one, whatever the clock says.
         self.state = {"state": "running", "started": time.time(), "finished": None,
                       "step": "check", "steps": [], "channel": None, "message": "",
-                      "pid": os.getpid()}
+                      "pid": os.getpid(), "invocation": os.environ.get("INVOCATION_ID", "")}
 
     def set(self, **changes):
         self.state.update(changes)
@@ -83,6 +97,41 @@ def _write_shared(path, text, gid):
     os.replace(tmp, path)
 
 
+def above(path: str) -> list[str]:
+    """The directories from / down to <path>."""
+    out = [path]
+    while out[-1] != "/":
+        out.append(os.path.dirname(out[-1]))
+    return out[::-1]
+
+
+def untrusted_brain(runner=subprocess.run) -> str | None:
+    """Why the installed brain's code must not run as root, or None when it may: every
+    directory above it and every entry in it root's and not group- or world-writable,
+    nothing in it that teaport-brain does not list, nothing it lists changed."""
+    for d in above(PREFIX):
+        st = os.lstat(d)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != ROOT_UID or st.st_mode & 0o022:
+            return f"{d} is not root's own directory"
+    listed = runner(["dpkg-query", "-L", BRAIN_PACKAGE], capture_output=True, text=True)
+    if listed.returncode != 0:
+        return f"{BRAIN_PACKAGE} is not installed"
+    owned = {ln.rstrip("/") for ln in listed.stdout.splitlines() if ln.startswith(BRAIN_TREE)}
+    for top, dirs, files in os.walk(BRAIN_TREE):
+        for name in dirs + files:
+            path = os.path.join(top, name)
+            st = os.lstat(path)
+            if st.st_uid != ROOT_UID or (not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022):
+                return f"{path} is not root's alone"
+            if path not in owned:
+                return f"{path} is not the package's"
+    verify = runner(["dpkg", "--verify", BRAIN_PACKAGE], capture_output=True, text=True)
+    if verify.returncode != 0 or verify.stdout.strip():
+        changed = (verify.stdout.strip().splitlines() or ["?"])[0]
+        return f"a file of {BRAIN_PACKAGE} changed after it was installed ({changed})"
+    return None
+
+
 def run_user(systemctl=subprocess.run) -> str:
     """Who the brain runs as: the User= of its unit (as sudoers-sync reads it)."""
     out = systemctl(["systemctl", "show", "-p", "User", "--value", BRAIN_UNIT],
@@ -93,7 +142,8 @@ def run_user(systemctl=subprocess.run) -> str:
 def read_plan(runner=subprocess.run) -> dict:
     """The brain's comparison, as `teaport update --check --json` prints it."""
     p = runner([BRAIN_PYTHON, "-I", "-m", "teaport_brain.updates", "check", "--json"],
-               capture_output=True, text=True, timeout=120)
+               capture_output=True, text=True, timeout=120, cwd="/",
+               env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "HOME": "/root"})
     if p.returncode != 0:
         said = (p.stderr or p.stdout).strip().splitlines()
         raise RuntimeError("the release check failed: " + (said[-1] if said else f"exit {p.returncode}"))
@@ -101,6 +151,8 @@ def read_plan(runner=subprocess.run) -> dict:
     steps = plan.get("steps") or []
     if not isinstance(steps, list) or any(s not in STEPS for s in steps):
         raise RuntimeError(f"the check named steps this cannot run: {steps!r}")
+    if steps and not MANIFEST_URL.fullmatch(str(plan.get("url"))):
+        raise RuntimeError(f"the check read a manifest this does not install from: {plan.get('url')!r}")
     return plan
 
 
@@ -154,8 +206,8 @@ def run_step(installer: str, step: str, env: dict, log, popen=subprocess.Popen) 
 
 
 def main() -> int:
-    """One run. Its parts are module functions, so a test replaces them (run_user, read_plan,
-    clone, run_step) and STATE/ROOT_UID."""
+    """One run. Its parts are module functions, so a test replaces them (run_user,
+    untrusted_brain, read_plan, clone, run_step) and STATE/ROOT_UID."""
     user = run_user()
     try:
         entry = pwd.getpwnam(user)
@@ -178,6 +230,10 @@ def main() -> int:
     try:
         _write_shared(LOG, "", gid)
         record.set()
+        why = untrusted_brain()
+        if why:
+            raise RuntimeError(f"{why}: the brain's code is not run as root like this. Run "
+                               "`install.sh --only brain` by hand once, which repairs it")
         plan = read_plan()
         steps = plan.get("steps") or []
         record.set(channel=plan.get("channel"), steps=steps)

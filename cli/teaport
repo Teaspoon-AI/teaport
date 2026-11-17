@@ -469,13 +469,16 @@ cmd_doctor() {
 # (teaport_brain.updates), the same code that checks once a day for /health: run under the
 # brain's own venv, isolated (-I), so there is one copy of it and no second one in bash.
 # Installing is teaport-update.service's (/usr/lib/teaport/update_apply.py, as root),
-# started here through the package's one sudoers line for it, and followed through its log
-# until it ends: the engine and models (install.sh --only engine), then the brain package
+# started here with plain systemctl (the package's polkit rule lets the brain's user start
+# that unit; anyone else is asked for an administrator's password), and followed through
+# its log until it ends: the engine and models (install.sh --only engine), then the brain package
 # (--only brain), each put back by itself if it does not come up, each restart waiting until
 # nobody is talking. From the box's own channel (TEAPORT_UPDATE_CHANNEL in brain.env). A
 # plugin or OpenClaw change still takes a full install.sh run; --check says so.
 UPDATE_UNIT=teaport-update.service
 UPDATE_STATE="${TEAPORT_UPDATE_STATE:-/var/lib/teaport-update}"   # update_apply.py's run.json + log
+# The unit's current invocation (empty before its first start).
+update_invocation() { systemctl show -p InvocationID --value "$UPDATE_UNIT" 2>/dev/null || true; }
 # The unit is starting or running (a oneshot is "activating" while it runs).
 update_running() {
   case "$(systemctl show -p ActiveState --value "$UPDATE_UNIT" 2>/dev/null || true)" in
@@ -493,16 +496,26 @@ except (OSError, ValueError, AttributeError):
 print("" if v is None else v)' "$UPDATE_STATE/run.json" "$1" 2>/dev/null || true
 }
 update_log_lines() { wc -l 2>/dev/null < "$UPDATE_STATE/log" || echo 0; }
-# update_follow <since> -- print the run's log as it grows, until the run that started at or
-# after <since> (epoch seconds) has ended. Interrupted, the run goes on without the terminal.
+# update_follow [<before>] -- print the log of the unit's run as it grows, until that run has
+# ended. The run is told by the unit's InvocationID, which update_apply.py writes into
+# run.json: one other than <before> (the unit's before this command started it), never an
+# earlier run's, whatever the clock says. Interrupted, the run goes on without the terminal.
 update_follow() {
-  local since="$1" shown=0 lines state started waited=0
+  local before="${1:-}" inv="" cur shown=0 lines state waited=0
   [ -r "$UPDATE_STATE/run.json" ] || [ ! -e "$UPDATE_STATE/run.json" ] \
     || die "cannot read $UPDATE_STATE (the brain's user and group can) — follow it with: journalctl -u $UPDATE_UNIT -f"
   trap 'printf "\nthe update goes on without this terminal; teaport update --status shows it\n"; exit 130' INT
   while :; do
-    started="$(update_field started)"; started="${started%.*}"
-    if [ -n "$started" ] && [ "$started" -ge "$since" ]; then
+    if [ -z "$inv" ]; then
+      cur="$(update_invocation)"
+      if [ -n "$cur" ] && [ "$cur" != "$before" ]; then inv="$cur"
+      else
+        # A run that ended before the unit was asked: run.json names it.
+        cur="$(update_field invocation)"
+        if [ -n "$cur" ] && [ "$cur" != "$before" ] && ! update_running; then inv="$cur"; fi
+      fi
+    fi
+    if [ -n "$inv" ] && [ "$(update_field invocation)" = "$inv" ]; then
       lines="$(update_log_lines)"
       # sed, not tail | head: under pipefail, head closing early fails the pipe.
       if [ "$lines" -gt "$shown" ]; then sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"; shown="$lines"; fi
@@ -573,11 +586,15 @@ cmd_update() {
   [ "$as_json" = 0 ] || die "--json goes with --check or --status"
   if update_running; then
     echo "an update is being installed already; following it (Ctrl-C leaves it running)"
-    update_follow "$(update_field started | cut -d. -f1)"
+    update_follow
     return
   fi
+  # The question is about what the unit installs, which reads it itself: the box's channel,
+  # the default address and layout. So neither a manifest address in this shell nor a moved
+  # TEAPORT_PREFIX / TEAPORT_ETC makes it describe another plan.
   local rc=0
-  "$venv/bin/python" -I -m teaport_brain.updates check --exit-code "${pass[@]}" || rc=$?
+  env -u TEAPORT_MANIFEST_URL "$venv/bin/python" -I -m teaport_brain.updates check --exit-code \
+    --prefix /opt/teaport --etc /etc/teaport || rc=$?
   case "$rc" in
     0) return 0 ;;    # nothing teaport update installs: the check said what there is
     10) ;;
@@ -589,10 +606,12 @@ cmd_update() {
     read -r -p "Install it now? [y/N] " answer || true
     case "$answer" in y|Y|yes|YES) ;; *) echo "nothing installed."; return 0 ;; esac
   fi
-  local since; since="$(date +%s)"
-  SUDO systemctl start --no-block "$UPDATE_UNIT" || die "could not start $UPDATE_UNIT"
+  # Not sudo: the package's polkit rule lets the brain's user start this unit (and only it);
+  # anyone else gets systemd's own password prompt.
+  local before; before="$(update_invocation)"
+  systemctl start --no-block "$UPDATE_UNIT" || die "could not start $UPDATE_UNIT"
   echo "installing (Ctrl-C leaves it running; teaport update --status shows it)"
-  update_follow "$since"
+  update_follow "$before"
 }
 
 # ---- licenses --------------------------------------------------------------

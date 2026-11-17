@@ -54,17 +54,25 @@ sudo() {
     *) return 1 ;;
   esac
 }
-# SUDO: recorded; the writes land (tee, write_root's install), ownership is skipped (a user
-# cannot chown to root, and no test checks it), systemctl is only recorded.
+# SUDO: recorded; the writes land (the install trees are root's, so every engine write is
+# SUDO's), ownership is skipped (a user cannot chown to root, and no test checks it),
+# systemctl is only recorded.
 SUDO() {
   printf '%s\n' "$*" >> "$T/sudo.log"
   if [ "$DRY_RUN" = 1 ]; then printf 'DRY sudo %s\n' "$*"; return 0; fi
   case "$1" in
     tee) [ ! -e "$2" ] || chmod u+rw "$2"; command tee "$2" ;;   # root writes through the mode
-    install) mkdir -p "$(dirname "${@: -1}")"; cat > "${@: -1}" ;;
-    mkdir|rm|touch) "$@" ;;
-    *) : ;;
+    install) _install "${@:2}" ;;
+    chown|systemctl|journalctl|apt-get|udevadm) : ;;
+    *) "$@" ;;
   esac
+}
+# install(1) as root uses it: [-D] [-m M] [-o U] [-g G] SRC DEST, SRC /dev/stdin or a file.
+_install() {
+  local args=() a
+  while [ $# -gt 0 ]; do case "$1" in -m|-o|-g) shift ;; -D|-d) ;; *) args+=("$1") ;; esac; shift; done
+  mkdir -p "$(dirname "${args[1]}")"
+  if [ "${args[0]}" = /dev/stdin ]; then cat > "${args[1]}"; else command cp "${args[0]}" "${args[1]}"; fi
 }
 '''
 
@@ -608,7 +616,7 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
             continue
         assert rc == 0, out
         want = ["check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "phase_engine",
-                "detect_agent", "env_add_missing", "wait_for_idle", "engine_swap", "manifest_take"]
+                "detect_agent", "wait_for_idle", "env_add_missing", "engine_swap", "manifest_take"]
         if not dry:
             want.insert(4, "engine_libs_check")   # a dry run only says it would check
         assert steps == want, (installed, dry, out)
@@ -820,7 +828,7 @@ def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
 # --- one installer at a time -----------------------------------------------------------------
 
 def _lock_script(tmp):
-    body = (STUBS + "".join(_fn(f) for f in ("installer_lock",)) +
+    body = (STUBS + "".join(_fn(f) for f in ("installer_lock", "own_dir")) +
             f'STATE="{tmp}/state"\n' + _line("INSTALL_LOCK=") +
             'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; ARGS=("$@")\n'
             'installer_lock; echo "LOCKED RUN ${TEAPORT_INSTALL_LOCKED:-no} $*"\n')

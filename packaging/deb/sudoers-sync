@@ -1,18 +1,21 @@
 #!/bin/sh
-# sudoers-sync [RUN_USER] -- the run user's sudoers lines (#60), both for one root-owned
-# program the package ships and nothing else:
+# sudoers-sync [RUN_USER] -- the run user's two grants (#60), each for one root-owned thing
+# the package ships and nothing else:
 #
-#  - The config page writes /etc/teaport/*.env and restarts teaport-* units, as root,
-#    through one script: /usr/lib/teaport/config_apply.py, root-owned, run by the SYSTEM
-#    python, never the venv's interpreter.
-#  - `teaport update` (and the brain, when the owner says yes) starts the update:
-#    exactly `systemctl start --no-block teaport-update.service`, no other arguments. The
-#    unit decides what it installs (update_apply.py), so this grants when, never what.
+#  - A sudoers line: the config page writes /etc/teaport/*.env and restarts teaport-*
+#    units, as root, through one script: /usr/lib/teaport/config_apply.py, root-owned, run
+#    by the SYSTEM python, never the venv's interpreter.
+#  - A polkit rule: `teaport update` (and the brain, when the owner says yes) may start
+#    teaport-update.service, and do nothing else with systemd. systemd asks polkit with the
+#    unit and the verb, so the rule names both. The unit takes no arguments and decides what
+#    it installs (update_apply.py): this grants when, never what. polkit, not sudo: the
+#    standard way a system service is started on an unprivileged client's request
+#    (PackageKit, fwupd), and the brain needs no sudo for it.
 #
-# The lines name the run user, who the package does not know: it is
-# the User= of the rendered teaport-brain unit, or the argument (install.sh passes it right
-# after it renders the unit, on a first install where the unit did not exist yet when the
-# package was configured).
+# Both name the run user, who the package does not know: it is the User= of the rendered
+# teaport-brain unit, or the argument (install.sh passes it right after it renders the
+# unit, on a first install where the unit did not exist yet when the package was
+# configured).
 #
 # Run by postinst and by install.sh; one writer, so the helper path in the line and in
 # config_ui.APPLY_HELPER change together with the package. A line that does not pass
@@ -21,12 +24,12 @@
 set -eu
 f=/etc/sudoers.d/teaport-config
 helper=/usr/lib/teaport/config_apply.py
-systemctl=/usr/bin/systemctl
+rules=/etc/polkit-1/rules.d/50-teaport-update.rules
 user="${1:-}"
 if [ -z "$user" ]; then
   user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
 fi
-# No unit yet, or a root brain: nothing to grant (root needs no line).
+# No unit yet, or a root brain: nothing to grant (root needs neither).
 if [ -z "$user" ] || [ "$user" = root ]; then exit 0; fi
 case "$user" in
   *[!A-Za-z0-9._-]*|-*) echo "sudoers-sync: refusing the user name '$user'" >&2; exit 1 ;;
@@ -34,12 +37,34 @@ esac
 [ -f "$helper" ] || { echo "sudoers-sync: $helper is missing" >&2; exit 1; }
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+
+# The polkit rule. polkitd reads rules.d as it changes; a box without polkit gets none, and
+# `teaport update` then asks for an administrator's password instead.
+if [ -d "$(dirname "$rules")" ]; then
+  cat > "$tmp" <<EOF
+// teaport update (written by the teaport-brain package: /usr/lib/teaport/sudoers-sync).
+// Lets the brain's user start teaport-update.service, and nothing else of systemd's.
+// The unit takes no arguments and reads what to install itself (update_apply.py).
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "teaport-update.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "$user") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+  if ! { [ -f "$rules" ] && cmp -s "$tmp" "$rules"; }; then
+    install -m 0644 -o root -g root "$tmp" "$rules"
+  fi
+else
+  echo "sudoers-sync: no polkit here ($(dirname "$rules")): teaport update will ask for an administrator's password" >&2
+fi
+
 printf '%s\n' \
   "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
   "# through this one root-owned script and nothing else. See config_apply.py." \
-  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" \
-  "# teaport: start the update, which reads what to install itself. See update_apply.py." \
-  "$user ALL=(root) NOPASSWD: $systemctl start --no-block teaport-update.service" > "$tmp"
+  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" > "$tmp"
 if [ -f "$f" ] && cmp -s "$tmp" "$f"; then exit 0; fi
 visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated line does not pass visudo; $f left as it was" >&2; exit 1; }
 install -m 0440 -o root -g root "$tmp" "$f"
