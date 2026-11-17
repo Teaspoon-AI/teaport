@@ -53,7 +53,7 @@ jobs:
       group: ci-brain-${{ matrix.runner }}-${{ github.ref }}
       cancel-in-progress: ${{ matrix.runner == 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -112,7 +112,7 @@ jobs:
       cancel-in-progress: false
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the .deb
@@ -205,7 +205,7 @@ jobs:
   plugin:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -237,7 +237,7 @@ jobs:
       TLA_TAG: v1.7.4
       TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -261,7 +261,7 @@ jobs:
   installer:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Shell syntax
         # The SIP rigs under brain/test are in here too. Nothing else parses them —
         # they only run on a box with a gateway — so a syntax error in the shared
