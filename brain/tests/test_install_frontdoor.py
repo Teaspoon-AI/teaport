@@ -66,7 +66,7 @@ def _fn(name: str) -> str:
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
-FNS = ("box_id", "frontdoor_name_taken", "resolve_frontdoor", "check_own_cert", "write_root",
+FNS = ("box_id", "frontdoor_name_taken", "resolve_frontdoor", "host_name_ok", "check_own_cert", "write_root",
        "write_caddyfile", "reissue_short_intermediate", "install_caddy_apt")
 # The lifetimes, as install.sh sets them.
 LIFETIMES = next(ln for ln in INSTALL.read_text().splitlines() if ln.startswith("LEAF_LIFETIME="))

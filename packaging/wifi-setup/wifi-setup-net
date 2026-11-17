@@ -1,7 +1,7 @@
 #!/bin/sh
-# teaport Wi-Fi setup: the unit's root-side network pieces (installed by install.sh as
+# teaport Wi-Fi setup: the root-side network pieces (installed by install.sh as
 # /usr/local/lib/teaport/wifi-setup-net, root:root 0755; run as root by
-# teaport-wifi-setup.service). Plain sh outside the brain venv, so it runs even while
+# teaport-wifi-setup-net.service, with no /etc/teaport environment). Plain sh outside the brain venv, so it runs even while
 # install.sh swaps the venv.
 #
 #   up    port 80 on the setup network's address to the page (an iptables DNAT rule)
@@ -18,8 +18,7 @@
 # (teaport-captive.conf). Change them together. Why DNAT and not REDIRECT, and why
 # iptables: systemd/teaport-wifi-setup.service.in.
 set -u
-# Root, with the unit's EnvironmentFile (wifi-setup.env) in the environment: the tools
-# come from the system's own directories only.
+# Root: the tools come from the system's own directories only.
 PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
 
 ADDR=10.42.0.1

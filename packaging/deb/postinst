@@ -35,6 +35,22 @@ if [ -e /usr/local/bin/teaport ]; then
   echo "teaport-brain: /usr/local/bin/teaport shadows the package's /usr/bin/teaport. If it is the old installer's CLI, install.sh retires it once the brain is back; after a plain apt install, remove it or run ./install.sh --only brain from a checkout" >&2
 fi
 
+# A Wi-Fi setup unit rendered before its root steps moved to their own unit
+# (teaport-wifi-setup-net) still runs them as root with brain.env's environment, which the
+# config page writes on the run user's behalf. Until install.sh renders the new pair (every
+# --only brain does), a drop-in turns those root steps off: setup still runs, without the
+# port-80 redirect (phones open the page at 10.42.0.1:7869 themselves). install.sh removes
+# the drop-in once the new unit is in.
+wifi=/etc/systemd/system/teaport-wifi-setup.service
+stopgap=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+if [ -f "$wifi" ] && grep -q '^ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net' "$wifi"; then
+  mkdir -p "$(dirname "$stopgap")"
+  printf '%s\n' "# teaport-brain postinst: the old unit's root steps are off until install.sh renders" \
+    "# teaport-wifi-setup and teaport-wifi-setup-net (install.sh --only brain does)." \
+    "[Service]" "ExecStartPre=" "ExecStopPost=" > "$stopgap"
+  echo "teaport-brain: Wi-Fi setup's root steps are off until install.sh --only brain renders its new units" >&2
+fi
+
 # Not under systemd (a container, a chroot, an image build): nothing to restart.
 [ -d /run/systemd/system ] || exit 0
 for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup.service; do

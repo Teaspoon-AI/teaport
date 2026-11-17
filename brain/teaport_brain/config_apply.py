@@ -32,7 +32,15 @@ the files carry tokens, so they must not pile up in /etc), writes a temp file
 in the same directory with the original owner and mode, and renames it into
 place, so a crash mid-write leaves the old file intact. The content is checked
 line-by-line: only KEY=value, comments and blank lines — a stray shell line
-cannot reach an EnvironmentFile through here.
+cannot reach an EnvironmentFile through here — and no key that changes how a
+program loads code (LD_PRELOAD, PYTHONPATH, PATH, BASH_ENV and their kind,
+UNSAFE_KEY). These files are the environment of units that run as the run user,
+on whose behalf this writes, so such a key gains that user nothing; it is refused
+all the same, in case a command that runs as root ever loads one of them. None
+does (teaport-wifi-setup's root side is its own unit, teaport-wifi-setup-net, with
+no environment file; tests/test_wifi_root_env.py checks every unit). Whatever a
+value says is the run user's choice: install.sh, which reads a few back as root
+(the front door's name), checks each before it uses it.
 
 restart: `systemd-run --on-active=2 systemctl restart <unit>`. Deferred and
 detached because the brain restarting ITSELF from a request handler would be
@@ -69,6 +77,14 @@ BACKUP_RE = re.compile(r"\.bak-\d{8}-\d{6}(-\d+)?$")
 # around `=`): the UI preserves every line it did not touch verbatim, so a line
 # its parser reads but this check refuses would make the whole file unsaveable.
 LINE_RE = re.compile(r"^(?:\s*(?:#.*)?|\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=.*)$")
+KEY_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+# Variables that make a program load or run other code: the dynamic loader's, the
+# interpreters' and the shells'. No teaport setting is one of them.
+UNSAFE_KEY = re.compile(r"^(LD_\w*|GCONV_PATH|LOCPATH|PATH|IFS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS"
+                        r"|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PYTHONUSERBASE|PYTHONEXECUTABLE"
+                        r"|PYTHONWARNINGS|NODE_OPTIONS|NODE_PATH|PERL5OPT|PERL5LIB|PERLLIB|RUBYOPT"
+                        r"|RUBYLIB|XTABLES_LIBDIR|GIO_MODULE_DIR|GIO_EXTRA_MODULES|OPENSSL_CONF"
+                        r"|OPENSSL_MODULES|OPENSSL_ENGINES)$")
 
 
 def write(name: str, content: str) -> str:
@@ -79,6 +95,10 @@ def write(name: str, content: str) -> str:
     for i, line in enumerate(content.splitlines(), 1):
         if not LINE_RE.match(line):
             raise SystemExit(f"line {i} is not KEY=value or a comment: {line[:60]!r}")
+        key = KEY_RE.match(line)
+        if key and UNSAFE_KEY.match(key.group(1)):
+            raise SystemExit(f"line {i}: {key.group(1)} changes how programs load code; "
+                             "it is not a teaport setting and is not written here")
     if content and not content.endswith("\n"):
         content += "\n"
     path = os.path.join(ETC, name)
