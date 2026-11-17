@@ -1,9 +1,15 @@
 #!/bin/sh
-# sudoers-sync [RUN_USER] -- the one sudoers line the config page needs (#60).
+# sudoers-sync [RUN_USER] -- the run user's sudoers lines (#60), both for one root-owned
+# program the package ships and nothing else:
 #
-# The config page writes /etc/teaport/*.env and restarts teaport-* units, as root, through
-# one script and nothing else: /usr/lib/teaport/config_apply.py, root-owned, run by the
-# SYSTEM python, never the venv's interpreter. The line names the run user, who the package does not know: it is
+#  - The config page writes /etc/teaport/*.env and restarts teaport-* units, as root,
+#    through one script: /usr/lib/teaport/config_apply.py, root-owned, run by the SYSTEM
+#    python, never the venv's interpreter.
+#  - `teaport update` (and the brain, when the owner says yes) starts the update:
+#    exactly `systemctl start --no-block teaport-update.service`, no other arguments. The
+#    unit decides what it installs (update_apply.py), so this grants when, never what.
+#
+# The lines name the run user, who the package does not know: it is
 # the User= of the rendered teaport-brain unit, or the argument (install.sh passes it right
 # after it renders the unit, on a first install where the unit did not exist yet when the
 # package was configured).
@@ -15,6 +21,7 @@
 set -eu
 f=/etc/sudoers.d/teaport-config
 helper=/usr/lib/teaport/config_apply.py
+systemctl=/usr/bin/systemctl
 user="${1:-}"
 if [ -z "$user" ]; then
   user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
@@ -30,7 +37,9 @@ trap 'rm -f "$tmp"' EXIT
 printf '%s\n' \
   "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
   "# through this one root-owned script and nothing else. See config_apply.py." \
-  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" > "$tmp"
+  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" \
+  "# teaport: start the update, which reads what to install itself. See update_apply.py." \
+  "$user ALL=(root) NOPASSWD: $systemctl start --no-block teaport-update.service" > "$tmp"
 if [ -f "$f" ] && cmp -s "$tmp" "$f"; then exit 0; fi
 visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated line does not pass visudo; $f left as it was" >&2; exit 1; }
 install -m 0440 -o root -g root "$tmp" "$f"

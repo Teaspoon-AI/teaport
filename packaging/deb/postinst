@@ -2,7 +2,7 @@
 # postinst for teaport-brain (#60). `configure` runs after every install and upgrade,
 # and on a downgrade (a rollback is `apt install` of the kept .deb).
 #
-#  1. The sudoers line the config page needs (sudoers-sync).
+#  1. The run user's sudoers lines: the config page's, and starting the update (sudoers-sync).
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.
@@ -37,6 +37,9 @@ fi
 
 # Not under systemd (a container, a chroot, an image build): nothing to restart.
 [ -d /run/systemd/system ] || exit 0
+# The package ships a unit (teaport-update.service): systemd reads it, or a changed copy,
+# only after a reload.
+systemctl daemon-reload || true
 for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup.service; do
   # try-restart: only a unit that is running. The wifi unit is on demand and the audio
   # bridge is optional; a brain that is enabled but stopped is the operator's to start.

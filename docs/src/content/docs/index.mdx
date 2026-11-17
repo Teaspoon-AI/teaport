@@ -28,20 +28,20 @@ answers in speech. Your voice does not leave the device.
 		Check the JetPack release and trim the desktop before you run the
 		installer. See [Prepare the Jetson](/getting-started/prepare-the-jetson/).
 
-		{/* source: install.sh:275-281,286-293#eed93c5e */}
+		{/* source: install.sh:304-310,315-322#eed93c5e */}
 	</Card>
 	<Card title="Configure teaport" icon="setting">
 		Point the brain at its large language model. Change settings in the
 		configuration page. A restart applies the change; nothing hot-reloads.
 		See [Configure teaport](/guides/configuration/).
 
-		{/* source: install.sh:1978,2009#f9381768; brain/teaport_brain/gateway_server.py:27#8b91144b; brain/teaport_brain/config_ui.py:42-43#433b1e87 */}
+		{/* source: install.sh:2050,2081#f9381768; brain/teaport_brain/gateway_server.py:27#8b91144b; brain/teaport_brain/config_ui.py:42-43#433b1e87 */}
 	</Card>
 	<Card title="Set up phone calls" icon="phone">
 		Answer phone calls on the device over a SIP trunk. `teaport sip configure`
 		sets the line up. See [Set up phone calls](/guides/phone-calls/).
 
-		{/* source: systemd/teaport-sip.service.in:3-7#0d07b370; cli/teaport:13#3a503be3 */}
+		{/* source: systemd/teaport-sip.service.in:3-7#0d07b370; cli/teaport:15#3a503be3 */}
 	</Card>
 	<Card title="Connect the device to Wi-Fi" icon="signal">
 		If the device has no internet connection, setup mode opens a

@@ -67,6 +67,11 @@
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
+#   TEAPORT_USER           whose appliance it is (default: who runs this). Run as root for
+#                          another user, the run user's part of the work is done as them (as_user)
+#   TEAPORT_WAIT_IDLE_SECS before --only brain/engine restart anything, wait up to this long
+#                          for nobody to be talking to the box (default 0: no wait; set by
+#                          teaport update's teaport-update.service)
 #   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
 #   TEAPORT_HOST           the front door's name (default teaport.local, or teaport-<id>.local
 #                          when another box already answers to teaport.local)
@@ -122,10 +127,28 @@ log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 todo() { printf '\033[1;35mTODO:\033[0m %s\n' "$*"; }
-# run: execute a command, or just print it under --dry-run.
-run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"; else "$@"; fi; }
-# SUDO: privileged op (root when not already root). Honors --dry-run via run().
-SUDO() { if [ "$(id -u)" = 0 ]; then run "$@"; else run sudo "$@"; fi; }
+# run: execute a command as the run user (as_user), or just print it under --dry-run.
+run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"; else as_user "$@"; fi; }
+# SUDO: privileged op (root when not already root). Honors --dry-run as run() does.
+SUDO() {
+  if [ "$(id -u)" != 0 ]; then run sudo "$@"
+  elif [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"
+  else "$@"; fi
+}
+# as_user <cmd...> -- <cmd> as the run user. A run as root for another user (TEAPORT_USER:
+# the updater's teaport-update.service, or sudo with TEAPORT_USER set) does the run user's
+# part of the work as them, exactly as a run by that user would: the files under $PREFIX and
+# $STATE are theirs (phase_engine hands them over), and root must not write, rename or link
+# where they can point it elsewhere -- a symlink planted there would send a root write
+# anywhere. Root's part is SUDO's alone, as in any run. ldd goes through here too: it can
+# run the program it is asked about. setpriv, not runuser: no PAM session per command.
+as_user() {
+  if [ "$(id -u)" = 0 ] && [ "$RUN_USER" != root ]; then
+    setpriv --reuid="$RUN_USER" --regid="$(id -g "$RUN_USER")" --init-groups -- "$@"
+  else
+    "$@"
+  fi
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 # contains <needle> <haystack> — substring test that replaces `cmd | grep -q needle`.
 # Under `set -o pipefail` that idiom is a trap: grep -q exits at the first match, the writer
@@ -165,7 +188,13 @@ installer_lock() {
     return 0
   fi
   if [ ! -f "$me" ]; then warn "not run from a file, so not locked: nothing stops a second install.sh from running beside this one"; return 0; fi
-  if [ ! -e "$INSTALL_LOCK" ]; then SUDO mkdir -p "$STATE"; SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
+  if [ ! -e "$INSTALL_LOCK" ]; then
+    SUDO mkdir -p "$STATE"
+    # As root for another user, $STATE is theirs (as_user): the file is made as them,
+    # never by a root touch and chmod that a symlink put there would aim elsewhere.
+    if [ "$(id -u)" = 0 ] && [ "$RUN_USER" != root ]; then SUDO chown "$RUN_USER" "$STATE"; as_user touch "$INSTALL_LOCK"
+    else SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
+  fi
   TEAPORT_INSTALL_LOCKED=1 flock -n -o -E 75 "$INSTALL_LOCK" bash "$me" ${ARGS[@]+"${ARGS[@]}"} || rc=$?
   if [ "$rc" = 75 ]; then die "another install.sh is running on this box (it holds $INSTALL_LOCK) — let it finish, then run this again"; fi
   exit "$rc"
@@ -206,8 +235,8 @@ download() {
   if [ "$DRY_RUN" != 1 ]; then
     # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
     # stage is kept across runs, #158), and fail the same way each time.
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
-    mv "$dest.part" "$dest"
+    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { as_user rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
+    as_user mv "$dest.part" "$dest"
   fi
 }
 
@@ -537,7 +566,7 @@ engine_fetch() {
   run mkdir -p "$(dirname "$dest")"
   if [ "$(cat "$dest.sha256" 2>/dev/null || true)" != "$sha" ]; then
     if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part"; fi
-    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" > "$dest.sha256"; fi
+    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" | as_user tee "$dest.sha256" >/dev/null; fi
   fi
   download "$url" "$dest" "$sha"
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
@@ -596,23 +625,23 @@ engine_keep_live() {
   fi
   fail="could not keep the live engine for a rollback in $snap (disk full?) — nothing was swapped"
   log "keeping the live engine ($ENGINE_RELEASE) for --rollback engine: $snap"
-  rm -rf "$snap.partial"
-  mkdir -p "$snap.partial" || die "$fail"
+  as_user rm -rf "$snap.partial"
+  as_user mkdir -p "$snap.partial" || die "$fail"
   for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
     [ -f "$PREFIX/$rel" ] || continue
-    mkdir -p "$(dirname "$snap.partial/$rel")" || { rm -rf "$snap.partial"; die "$fail"; }
+    as_user mkdir -p "$(dirname "$snap.partial/$rel")" || { as_user rm -rf "$snap.partial"; die "$fail"; }
     if contains " $rel " "$replacing"; then
-      ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
-        || { rm -rf "$snap.partial"; die "$fail"; }
+      as_user ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || as_user cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
+        || { as_user rm -rf "$snap.partial"; die "$fail"; }
     elif contains " $rel " " ${ENGINE_FILES[*]} "; then
-      cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { rm -rf "$snap.partial"; die "$fail"; }
+      as_user cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { as_user rm -rf "$snap.partial"; die "$fail"; }
     fi
   done
   if [ -f "$ENGINE_UNIT" ]; then
-    cp "$ENGINE_UNIT" "$snap.partial/teaport-engine.service" || { rm -rf "$snap.partial"; die "$fail"; }
+    as_user tee "$snap.partial/teaport-engine.service" < "$ENGINE_UNIT" >/dev/null || { as_user rm -rf "$snap.partial"; die "$fail"; }
   fi
-  printf '%s\n' "$ENGINE_ENTRY" > "$snap.partial/engine.json" || { rm -rf "$snap.partial"; die "$fail"; }
-  mv "$snap.partial" "$snap"
+  printf '%s\n' "$ENGINE_ENTRY" | as_user tee "$snap.partial/engine.json" >/dev/null || { as_user rm -rf "$snap.partial"; die "$fail"; }
+  as_user mv "$snap.partial" "$snap"
   ENGINE_KEPT="$snap"
 }
 
@@ -631,15 +660,15 @@ engine_swap_in() {
   fi
   engine_keep_live "$ENGINE_CHANGED"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] move the new%s into %s\n' "$ENGINE_CHANGED" "$PREFIX"; return 0; fi
-  printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK" || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
+  printf '%s\n' "$ENGINE_KEPT" | as_user tee "$ENGINE_SWAP_MARK" >/dev/null || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
   trap 'engine_swap_abort "the run was stopped while it moved the engine files in"' INT TERM HUP
   for rel in $ENGINE_CHANGED; do
-    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
+    { as_user mkdir -p "$(dirname "$PREFIX/$rel")" && as_user mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
       || engine_swap_abort "could not move $rel into place"
   done
   trap - INT TERM HUP
-  rm -f "$ENGINE_SWAP_MARK"
-  rm -rf "$ENGINE_STAGE"
+  as_user rm -f "$ENGINE_SWAP_MARK"
+  as_user rm -rf "$ENGINE_STAGE"
   log "engine files live:$ENGINE_CHANGED"
   engine_prune
 }
@@ -651,7 +680,7 @@ engine_swap_abort() {
   if [ -n "$ENGINE_KEPT" ] && [ -f "$ENGINE_KEPT/bin/voxtral" ]; then
     warn "$1 — putting the engine before this run back (${ENGINE_KEPT##*/})"
     engine_restore "$ENGINE_KEPT"
-    rm -f "$ENGINE_SWAP_MARK"
+    as_user rm -f "$ENGINE_SWAP_MARK"
     die "$1; the engine is back as it was before this run — run this again"
   fi
   die "$1; the engine files may be a mix of two releases — run this again to finish"
@@ -676,7 +705,7 @@ engine_swap_recover() {
   else
     warn "an engine swap was stopped half way, and nothing was kept from before it: this run replaces what is live"
   fi
-  rm -f "$ENGINE_SWAP_MARK"
+  as_user rm -f "$ENGINE_SWAP_MARK"
 }
 
 # engine_restore <copy> — rename a rollback copy's files back over the live ones (its models
@@ -694,14 +723,14 @@ engine_restore() {
     [ -f "$snap/$rel" ] || continue
     # The copy keeps a file as a hard link (engine_keep_live): one a stopped swap never
     # replaced is still the live file, and GNU mv refuses to move a file onto itself.
-    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then rm -f "$snap/$rel"; continue; fi
-    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$snap/$rel" "$PREFIX/$rel"; } \
+    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then as_user rm -f "$snap/$rel"; continue; fi
+    { as_user mkdir -p "$(dirname "$PREFIX/$rel")" && as_user mv -f "$snap/$rel" "$PREFIX/$rel"; } \
       || die "could not move $rel back from $snap — the engine files may be a mix of two releases (what is left to move back is in $snap)"
     if contains " $rel " " ${ENGINE_MODELS[*]} "; then models="$models ${rel##*/}"; fi
   done
   if [ -f "$snap/teaport-engine.service" ]; then write_root "$ENGINE_UNIT" "$(cat "$snap/teaport-engine.service")"; fi
   if [ -f "$snap/engine.json" ]; then manifest_take "$snap/engine.json" engine; fi
-  rm -rf "$snap"
+  as_user rm -rf "$snap"
   log "engine files back from ${snap##*/}${models:+, with the model(s)$models}"
 }
 
@@ -737,7 +766,7 @@ engine_prune() {
 # ($PREFIX/manifest.json, what `teaport update` compares) to <from.json>'s, and leave the
 # rest as it is: --only engine installs the engine and checks the models, not the brain or
 # the plugin a new manifest may also name; a rollback puts back one engine entry.
-manifest_take_py() { python3 - "$@" <<'PY'
+manifest_take_py() { as_user python3 - "$@" <<'PY'
 import json, os, sys
 dest, src, keys = sys.argv[1], sys.argv[2], sys.argv[3:]
 try:
@@ -785,7 +814,7 @@ phase_engine() {
   # .so is a crisp message here rather than a crash-looping unit after the ~15GB of models
   # below. phase_sysdeps already installed libopenblas0, so a miss now is a real ABI gap.
   if [ "$DRY_RUN" != 1 ]; then
-    local unresolved; unresolved="$(ldd "$bin" 2>/dev/null | grep 'not found' || true)"
+    local unresolved; unresolved="$(as_user ldd "$bin" 2>/dev/null | grep 'not found' || true)"
     if [ -n "$unresolved" ]; then
       die "engine binary has unresolved libraries on this L4T (R${L4T_RELEASE:-?}):
 $unresolved
@@ -867,6 +896,49 @@ sudo_ready() {
   if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
     sudo -v || die "sudo is needed to $1 — nothing was swapped"
   fi
+}
+
+# wait_for_idle -- with TEAPORT_WAIT_IDLE_SECS set (teaport update's runs), the restart that
+# would cut a conversation waits until nobody is talking to the box: the brain's
+# /talk/status "live" (a call, a Talk session, a room conversation; a sleeping room mic is
+# not one), asked with brain.env's token. Up to that long, then the run stops with nothing
+# swapped; what it downloaded is kept, so the next try is quick. Only the restart waits:
+# the downloads before it go on meanwhile. A brain that does not answer has no conversation
+# to cut; one that answers but cannot be read is said, and does not hold the update.
+WAIT_IDLE_SECS="${TEAPORT_WAIT_IDLE_SECS:-0}"
+WAIT_IDLE_POLL_SECS=10
+wait_for_idle() {
+  case "$WAIT_IDLE_SECS" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$WAIT_IDLE_SECS" -gt 0 ] && [ "$DRY_RUN" != 1 ] || return 0
+  local envtxt port token body code live said=0 deadline=$((SECONDS + WAIT_IDLE_SECS))
+  envtxt="$(read_env_file "$ETC/brain.env" --lenient)"
+  port="$(sed -n 's/^BRAIN_PORT=//p' <<<"$envtxt" | tail -1)"; port="${port//[\"\']/}"; port="${port:-$BRAIN_PORT}"
+  token="$(sed -n 's/^GATEWAY_TOKEN=//p' <<<"$envtxt" | tail -1)"; token="${token//[\"\' ]/}"
+  body="$(mktemp)"
+  while :; do
+    # The token on curl's stdin (-K -), not its command line, where every user can read it.
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "${token//\\/}" \
+      | curl -s -K - -o "$body" -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/talk/status" 2>/dev/null)" || true
+    if [ "$code" = 000 ] || [ -z "$code" ]; then rm -f "$body"; return 0; fi
+    if [ "$code" != 200 ]; then
+      warn "cannot tell whether anyone is talking to the box (the brain's /talk/status answered $code) — going ahead"
+      rm -f "$body"; return 0
+    fi
+    live="$(python3 -c 'import json,sys; print(1 if json.load(open(sys.argv[1])).get("live") else 0)' "$body" 2>/dev/null || echo 0)"
+    if [ "$live" != 1 ]; then
+      [ "$said" = 0 ] || log "nobody is talking now — going ahead"
+      rm -f "$body"; return 0
+    fi
+    if [ "$said" = 0 ]; then
+      log "someone is talking to the box — waiting for the conversation to end before restarting (up to $((WAIT_IDLE_SECS / 60)) min)"
+      said=1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      rm -f "$body"
+      die "someone was still talking to the box after $((WAIT_IDLE_SECS / 60)) min — nothing was swapped; the download is kept, so the next try is quick"
+    fi
+    sleep "$WAIT_IDLE_POLL_SECS"
+  done
 }
 
 # engine_verify — did the engine come up, and STAY up? It must listen on its port (ENGINE_PORT
@@ -1262,7 +1334,7 @@ brain_deb_keep() {
     if [ "$ok" != 1 ]; then SUDO rm -f "$tmp"; die "$BRAIN_DEB did not check out when it was copied to $BRAIN_DEBS — nothing was installed"; fi
     SUDO mv -f "$tmp" "$BRAIN_DEB_CACHED"
   fi
-  if [ "$BRAIN_DEB_DOWNLOADED" = 1 ]; then rm -f "$BRAIN_DEB" || true; fi
+  if [ "$BRAIN_DEB_DOWNLOADED" = 1 ]; then as_user rm -f "$BRAIN_DEB" || true; fi
 }
 
 # brain_deb_apply <file> -- apt installs <file>, over any version (--allow-downgrades: a
@@ -3380,6 +3452,7 @@ main_brain_only() {
   # Before the swap, never after: the new brain is the phone line's front-end itself, and
   # the old SIP brain must not be left running beside it. Its unit goes only once the swap
   # is verified; a rollback puts it back (see sip_brain_detach).
+  wait_for_idle
   sip_brain_detach
   brain_swap "$BRAIN_DEB_CACHED" --auto-rollback
   sip_brain_retire
@@ -3457,6 +3530,7 @@ main_engine_only() {
   engine_env_lines
   log "engine.env: only the keys it lacks are added; a value already there stays"
   env_add_missing "$ETC/engine.env" "${ENGINE_ENV[@]}"
+  wait_for_idle
   engine_swap
   manifest_take "$MF" engine models
   log "done — engine $(mget engine.release 2>/dev/null || echo '?') from $MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
@@ -3490,9 +3564,9 @@ main_rollback_engine() {
     engine_keep_live "$replacing"
     # The renames back are one per file, as in a swap: marked the same way, so a run stopped
     # among them is put back whole (to the engine kept just now) by the next one.
-    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK"; fi
+    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" | as_user tee "$ENGINE_SWAP_MARK" >/dev/null; fi
     engine_restore "$target"
-    if [ "$DRY_RUN" != 1 ]; then rm -f "$ENGINE_SWAP_MARK"; fi
+    if [ "$DRY_RUN" != 1 ]; then as_user rm -f "$ENGINE_SWAP_MARK"; fi
   fi
   SUDO systemctl daemon-reload
   if [ "$DRY_RUN" = 1 ]; then

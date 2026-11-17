@@ -10,9 +10,10 @@ What a release is, end to end:
                       ->  manifest PR (url + sha256)  ->  merge publishes the manifest
 
 `install.sh` reads `manifest/stable.json` from get.teaspoon.tech, so a package a box can
-install by itself exists only once its manifest entry is merged *and* published. (`teaport
-update` does not announce a new brain package yet: it still compares `brain.tag`. That
-changes with the updater's apply step.)
+install by itself exists only once its manifest entry is merged *and* published. From then
+on `teaport update` offers it to every box on the channel whose installed package is older
+(it reads the version from the `.deb`'s file name, so keep the name as below), and installs
+it with the installer at `brain.repo`/`brain.tag`.
 
 ## Before the tag
 

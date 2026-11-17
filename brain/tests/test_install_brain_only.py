@@ -35,6 +35,7 @@ warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
 # sudo can read the unreadable (as root would), or is refused (SUDO_REFUSED=1). Every
 # call is recorded in $T/sudo.log, so a test can tell when it was not asked at all.
 sudo() {
@@ -183,7 +184,7 @@ def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
 ONLY_BRAIN_STUBS = r'''
 BRAIN_DEB_CACHED=/cache/x.deb BRAIN_DEB_NEW=2.0
 systemctl() { [ "$1" = cat ] && [ "${NO_UNIT:-0}" = 0 ]; }   # the brain unit is installed
-for f in check_brain_source brain_deb_fetch brain_deb_keep sip_brain_detach brain_swap sip_brain_retire \
+for f in check_brain_source brain_deb_fetch brain_deb_keep wait_for_idle sip_brain_detach brain_swap sip_brain_retire \
          brain_retire_old_tools brain_retire_old_venvs install_busy_lamp install_dns_resilience install_arp_multihome \
          brain_deb_prune; do eval "$f() { echo STEP $f; }"; done
 '''
@@ -235,7 +236,9 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     rc, out = _brain_only(tempdir("teaport-only-"))
     assert rc == 0, out
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
-    assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "sip_brain_detach",
+    # The wait for nobody talking (teaport update's runs) comes after the download, right
+    # before the first thing that would cut a conversation.
+    assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "wait_for_idle", "sip_brain_detach",
                      "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
                      "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order

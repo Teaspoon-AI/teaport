@@ -37,6 +37,7 @@ die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*"; else "$@"; fi; }
+as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
 # GNU sha256sum's two forms, on any system (macOS's has no --status).
 _sha() { python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 sha256sum() {
@@ -591,7 +592,8 @@ def test_nothing_changed_is_checked_not_restarted():
 def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_order():
     stubs = ''.join(f'{f}() {{ echo "STEP {f}"; }}\n' for f in
                     ("check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "engine_libs_check",
-                     "phase_engine", "detect_agent", "env_add_missing", "engine_swap", "manifest_take"))
+                     "phase_engine", "detect_agent", "env_add_missing", "wait_for_idle", "engine_swap",
+                     "manifest_take"))
     stubs += 'mget() { echo 1.6; }\nengine_env_lines() { ENGINE_ENV=(A=1); }\nMANIFEST_URL=mf MF="$T/mf.json" HERE="$T/src"\n'
     for installed, dry in ((False, 0), (False, 1), (True, 0)):
         tmp = tempdir("teaport-eng-main-")
@@ -606,7 +608,7 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
             continue
         assert rc == 0, out
         want = ["check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "phase_engine",
-                "detect_agent", "env_add_missing", "engine_swap", "manifest_take"]
+                "detect_agent", "env_add_missing", "wait_for_idle", "engine_swap", "manifest_take"]
         if not dry:
             want.insert(4, "engine_libs_check")   # a dry run only says it would check
         assert steps == want, (installed, dry, out)

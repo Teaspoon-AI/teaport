@@ -6,6 +6,8 @@
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update --check [--json] [--channel stable|beta]
 #                                 is a newer release out? (diff installed vs the channel's manifest)
+#   teaport update [--yes]        install it: the engine and models, the brain package (asks first)
+#   teaport update --status [--json]   the last update run: running, done or failed, and why
 #   teaport licenses [PACKAGE | --notices] [--json]
 #                                 the licenses of the software on the device: the brain's Python packages,
 #                                 one package's license text, or the third-party notices
@@ -159,9 +161,11 @@ ch = u.get("channel", "")
 stale = "" if u.get("fresh", True) else " (last check failed; this is the last known)"
 text = {"unknown": "not checked yet",
         "current": "up to date (%s)%s" % (ch, stale),
-        "available": "a new release is out on %s: %s%s -- teaport update --check" % (
+        "available": "a new release is out on %s: %s%s -- teaport update" % (
             ch, ", ".join(u.get("changed") or []), stale)}[st]
 print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
+  # One being installed says so instead: the brain's look predates it.
+  if update_running; then line="available"$'\t'"an update is being installed now -- teaport update --status"; fi
   [ -n "$line" ] || return 0
   local col="0"; case "${line%%$'\t'*}" in current) col="$GREEN" ;; available) col="$YEL" ;; esac
   printf '  %-28s %s\n' "release" "$(c "$col" "${line#*$'\t'}")"
@@ -461,25 +465,134 @@ cmd_doctor() {
 }
 
 # ---- update ----------------------------------------------------------------
-# Is a newer release out? The comparison is the brain's (teaport_brain.updates), the same
-# code that checks once a day for /health: run under the brain's own venv, isolated (-I),
-# so there is one copy of it and no second one in bash. Applying is not wired yet.
+# Is a newer release out, and install it. The comparison is the brain's
+# (teaport_brain.updates), the same code that checks once a day for /health: run under the
+# brain's own venv, isolated (-I), so there is one copy of it and no second one in bash.
+# Installing is teaport-update.service's (/usr/lib/teaport/update_apply.py, as root),
+# started here through the package's one sudoers line for it, and followed through its log
+# until it ends: the engine and models (install.sh --only engine), then the brain package
+# (--only brain), each put back by itself if it does not come up, each restart waiting until
+# nobody is talking. From the box's own channel (TEAPORT_UPDATE_CHANNEL in brain.env). A
+# plugin or OpenClaw change still takes a full install.sh run; --check says so.
+UPDATE_UNIT=teaport-update.service
+UPDATE_STATE="${TEAPORT_UPDATE_STATE:-/var/lib/teaport-update}"   # update_apply.py's run.json + log
+# The unit is starting or running (a oneshot is "activating" while it runs).
+update_running() {
+  case "$(systemctl show -p ActiveState --value "$UPDATE_UNIT" 2>/dev/null || true)" in
+    activating|active|reloading) return 0 ;;
+  esac
+  return 1
+}
+# update_field <name> -- one field of the last run's run.json; empty when there is none.
+update_field() {
+  python3 -c 'import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get(sys.argv[2])
+except (OSError, ValueError, AttributeError):
+    v = None
+print("" if v is None else v)' "$UPDATE_STATE/run.json" "$1" 2>/dev/null || true
+}
+update_log_lines() { wc -l 2>/dev/null < "$UPDATE_STATE/log" || echo 0; }
+# update_follow <since> -- print the run's log as it grows, until the run that started at or
+# after <since> (epoch seconds) has ended. Interrupted, the run goes on without the terminal.
+update_follow() {
+  local since="$1" shown=0 lines state started waited=0
+  [ -r "$UPDATE_STATE/run.json" ] || [ ! -e "$UPDATE_STATE/run.json" ] \
+    || die "cannot read $UPDATE_STATE (the brain's user and group can) — follow it with: journalctl -u $UPDATE_UNIT -f"
+  trap 'printf "\nthe update goes on without this terminal; teaport update --status shows it\n"; exit 130' INT
+  while :; do
+    started="$(update_field started)"; started="${started%.*}"
+    if [ -n "$started" ] && [ "$started" -ge "$since" ]; then
+      lines="$(update_log_lines)"
+      # sed, not tail | head: under pipefail, head closing early fails the pipe.
+      if [ "$lines" -gt "$shown" ]; then sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"; shown="$lines"; fi
+      state="$(update_field state)"
+      if [ "$state" != running ] || ! update_running; then break; fi
+    elif ! update_running; then
+      waited=$((waited + 1))
+      [ "$waited" -lt 15 ] || die "the update did not start — see: journalctl -u $UPDATE_UNIT"
+    fi
+    sleep 1
+  done
+  trap - INT
+  # The tail of a log written in the last second.
+  lines="$(update_log_lines)"
+  [ "$lines" -le "$shown" ] || sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"
+  state="$(update_field state)"
+  case "$state" in
+    done) printf '%s\n' "$(c "$GREEN" "update: $(update_field message)")" ;;
+    running) die "the update stopped before it said how it ended — see: journalctl -u $UPDATE_UNIT" ;;
+    *) die "update failed: $(update_field message) — the full log: teaport update --status" ;;
+  esac
+}
+update_status() {
+  local as_json="$1" state
+  if [ ! -e "$UPDATE_STATE/run.json" ]; then
+    if [ "$as_json" = 1 ]; then echo '{"state": "none"}'; else echo "no update has been run on this box"; fi
+    return 0
+  fi
+  [ -r "$UPDATE_STATE/run.json" ] || die "cannot read $UPDATE_STATE (the brain's user and group can)"
+  state="$(update_field state)"
+  # A run.json that says running for a unit that is not: the run was cut off (a power cut).
+  if [ "$state" = running ] && ! update_running; then state=interrupted; fi
+  if [ "$as_json" = 1 ]; then
+    python3 -c 'import json, sys
+d = json.load(open(sys.argv[1])); d["state"] = sys.argv[2]; print(json.dumps(d))' "$UPDATE_STATE/run.json" "$state"
+    return 0
+  fi
+  local when; when="$(update_field started)"; when="$(date -d "@${when%.*}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+  printf 'update   %s  (started %s, channel %s)\n' "$state" "$when" "$(update_field channel)"
+  case "$state" in running) printf '  now      %s\n' "$(update_field step)" ;; esac
+  [ -z "$(update_field message)" ] || printf '  %s\n' "$(update_field message)"
+  printf '  log      %s/log  (and journalctl -u %s)\n' "$UPDATE_STATE" "$UPDATE_UNIT"
+}
 cmd_update() {
-  local venv="$PREFIX/brain" check_only=0 pass=(--prefix "$PREFIX" --etc "$ETC")
+  local venv="$PREFIX/brain" mode=apply yes=0 as_json=0 channel="" pass=(--prefix "$PREFIX" --etc "$ETC")
+  local usage="teaport update [--yes] | --check [--json] [--channel stable|beta] | --status [--json]"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --check) check_only=1 ;;
-      --json) pass+=(--json) ;;
-      --channel) [ $# -ge 2 ] || die "--channel needs stable or beta"; pass+=(--channel "$2"); shift ;;
-      --channel=*) pass+=(--channel "${1#*=}") ;;
-      *) die "unknown argument: $1 (try: teaport update --check [--json] [--channel stable|beta])" ;;
+      --check) mode=check ;;
+      --status) mode=status ;;
+      --yes|-y) yes=1 ;;
+      --json) as_json=1 ;;
+      --channel) [ $# -ge 2 ] || die "--channel needs stable or beta"; channel="$2"; shift ;;
+      --channel=*) channel="${1#*=}" ;;
+      *) die "unknown argument: $1 (try: $usage)" ;;
     esac
     shift
   done
+  if [ "$mode" = status ]; then update_status "$as_json"; return; fi
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
-  "$venv/bin/python" -I -m teaport_brain.updates check ${pass[@]+"${pass[@]}"} || exit $?
-  [ "$check_only" = 1 ] && return 0
-  die "applying an update is not wired yet — for a brain change run: install.sh --only brain (installs the teaport-brain package, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+  if [ "$mode" = check ]; then
+    [ "$as_json" = 0 ] || pass+=(--json)
+    [ -z "$channel" ] || pass+=(--channel "$channel")
+    "$venv/bin/python" -I -m teaport_brain.updates check "${pass[@]}" || exit $?
+    return 0
+  fi
+  [ -z "$channel" ] || die "--channel goes with --check: teaport update installs from the box's own channel (TEAPORT_UPDATE_CHANNEL in $ETC/brain.env)"
+  [ "$as_json" = 0 ] || die "--json goes with --check or --status"
+  if update_running; then
+    echo "an update is being installed already; following it (Ctrl-C leaves it running)"
+    update_follow "$(update_field started | cut -d. -f1)"
+    return
+  fi
+  local rc=0
+  "$venv/bin/python" -I -m teaport_brain.updates check --exit-code "${pass[@]}" || rc=$?
+  case "$rc" in
+    0) return 0 ;;    # nothing teaport update installs: the check said what there is
+    10) ;;
+    *) exit "$rc" ;;
+  esac
+  if [ "$yes" != 1 ]; then
+    [ -t 0 ] || die "not on a terminal, so not asking: teaport update --yes installs without a question"
+    local answer=""
+    read -r -p "Install it now? [y/N] " answer || true
+    case "$answer" in y|Y|yes|YES) ;; *) echo "nothing installed."; return 0 ;; esac
+  fi
+  local since; since="$(date +%s)"
+  SUDO systemctl start --no-block "$UPDATE_UNIT" || die "could not start $UPDATE_UNIT"
+  echo "installing (Ctrl-C leaves it running; teaport update --status shows it)"
+  update_follow "$since"
 }
 
 # ---- licenses --------------------------------------------------------------
