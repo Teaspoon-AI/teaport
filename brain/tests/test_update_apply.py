@@ -8,10 +8,10 @@
 #     run user, against the manifest the plan was read from, each restart waiting for
 #     nobody to be talking. A failed step stops the run; nothing to do is done. The run's
 #     state (run.json) says which, and why.
-#   - It takes nothing it is not sure of: a step it does not know, an installer source that
-#     is not a plain repo and ref, a manifest from anywhere but the download host, a state
-#     directory that is not root's own, and a brain tree it would run as root that is not
-#     root's throughout, has a file dpkg does not list, or one dpkg says changed.
+#   - It takes nothing it is not sure of: the brain's comparison runs as the run user and
+#     only its steps and channel are used; the manifest is read here from the download
+#     host's address for that channel; only Teaspoon-AI/teaport's release tag is cloned, at
+#     the tag's commit, with UPDATE_PROTOCOL=1; the state directory must be root's own.
 #   - install.sh keeps the install trees root's (own_install_trees: a symlink or special
 #     file in them is removed) and writes there only as root; the run user's own part goes
 #     through as_user (setpriv) when root runs it for them. render_unit takes values from the
@@ -55,7 +55,7 @@ def _helper(state):
     mod.STATE, mod.STATUS, mod.LOG = state, os.path.join(state, "run.json"), os.path.join(state, "log")
     mod.ROOT_UID = os.getuid()
     mod.run_user = lambda: os.environ.get("USER") or __import__("pwd").getpwuid(os.getuid()).pw_name
-    mod.untrusted_brain = lambda: None
+    mod.read_source = lambda channel: {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
     return mod
 
 
@@ -83,7 +83,7 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     tmp = tempdir("teaport-apply-")
     mod = _helper(_state(tmp))
     clones, ran = [], []
-    mod.read_plan = lambda: _plan(["engine", "brain"])
+    mod.read_plan = lambda *a: _plan(["engine", "brain"])
 
     def clone(source, into):
         clones.append((source, into))
@@ -110,7 +110,8 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     assert env["TEAPORT_SECRETS_DIR"] == os.path.join(home, ".config", "teaport"), env
     assert env["TEAPORT_MANIFEST_URL"] == "https://get.teaspoon.tech/manifest/stable.json"
     assert int(env["TEAPORT_WAIT_IDLE_SECS"]) > 0, env
-    assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "main"}
+    # The installer the channel's manifest names (read_source), not one the plan names.
+    assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
     assert not os.path.exists(clones[0][1]), "the clone is removed after the run"
     with open(mod.LOG) as f:
         assert f.read() == "output of engine\noutput of brain\n"
@@ -121,7 +122,7 @@ def test_a_failed_step_stops_the_run_and_says_why():
     tmp = tempdir("teaport-apply-")
     mod = _helper(_state(tmp))
     ran = []
-    mod.read_plan = lambda: _plan(["engine", "brain"])
+    mod.read_plan = lambda *a: _plan(["engine", "brain"])
     mod.clone = lambda source, into: into
     mod.run_step = lambda installer, step, env, log: (ran.append(step), (1, "the engine did not come back"))[1]
     assert mod.main() == 1
@@ -137,13 +138,17 @@ def test_a_failed_step_stops_the_run_and_says_why():
 def test_nothing_to_do_is_done_and_names_what_only_a_full_run_updates():
     tmp = tempdir("teaport-apply-")
     mod = _helper(_state(tmp))
-    mod.read_plan = lambda: _plan([], manual=["plugin"])
+    mod.read_plan = lambda *a: _plan([], manual=["plugin"])
     mod.clone = lambda *a: (_ for _ in ()).throw(AssertionError("nothing to clone"))
     assert mod.main() == 0
     st = _status(mod)
     assert st["state"] == "done" and "plugin" in st["message"] and "full install.sh" in st["message"], st
-    # A plan with steps but no installer to fetch fails before anything.
-    mod.read_plan = lambda: _plan(["brain"], source=False)
+    # A plan with steps but a manifest that names no installer this takes fails before anything.
+    mod.read_plan = lambda *a: _plan(["brain"])
+
+    def no_source(channel):
+        raise RuntimeError("the release manifest names no installer this installs from")
+    mod.read_source = no_source
     assert mod.main() == 1 and "names no installer" in _status(mod)["message"]
 
 
@@ -151,7 +156,7 @@ def test_a_state_directory_that_is_not_roots_own_is_refused():
     tmp = tempdir("teaport-apply-")
     state = _state(tmp)
     mod = _helper(state)
-    mod.read_plan = lambda: (_ for _ in ()).throw(AssertionError("must not get this far"))
+    mod.read_plan = lambda *a: (_ for _ in ()).throw(AssertionError("must not get this far"))
     os.chmod(state, 0o777)
     assert mod.main() == 1 and not os.path.exists(mod.STATUS)
     os.chmod(state, 0o755)
@@ -161,7 +166,7 @@ def test_a_state_directory_that_is_not_roots_own_is_refused():
     link = os.path.join(tmp, "link")
     os.symlink(state, link)
     mod = _helper(link)
-    mod.read_plan = lambda: (_ for _ in ()).throw(AssertionError("must not get this far"))
+    mod.read_plan = lambda *a: (_ for _ in ()).throw(AssertionError("must not get this far"))
     assert mod.main() == 1 and not os.path.exists(os.path.join(state, "run.json"))
 
 
@@ -170,102 +175,85 @@ class _P:
         self.returncode, self.stdout, self.stderr = rc, out, err
 
 
-def test_the_brains_code_runs_as_root_only_when_dpkg_vouches_for_all_of_it():
-    tmp = tempdir("teaport-apply-trust-")
-    mod = _helper(_state(tmp))
-    spec = importlib.util.spec_from_file_location("ua_trust", HELPER)
-    real = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(real)
-    prefix = os.path.join(tmp, "opt")
-    tree = os.path.join(prefix, "brain")
-    os.makedirs(os.path.join(tree, "bin"))
-    pathlib.Path(tree, "bin", "teaport-brain").write_text("#!/bin/sh\n")
-    os.symlink("/usr/bin/python3", os.path.join(tree, "bin", "python"))
-    for d in (prefix, tree, os.path.join(tree, "bin")):
-        os.chmod(d, 0o755)
-    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o755)
-    real.ROOT_UID, real.PREFIX, real.BRAIN_TREE = os.getuid(), prefix, tree
-    real.above = lambda p: [p]
-    listed = "\n".join(["/.", prefix, tree + "/", os.path.join(tree, "bin"),
-                        os.path.join(tree, "bin", "teaport-brain"), os.path.join(tree, "bin", "python")])
-    verify = {"out": ""}
+def test_the_brains_code_runs_as_the_run_user_and_its_answer_is_only_data():
+    mod = _helper(tempdir("teaport-apply-"))
+    import pwd as _pwd
+    entry = _pwd.getpwuid(os.getuid())
+    seen = []
 
     def runner(cmd, **k):
-        if cmd[0] == "dpkg-query":
-            return _P(0, listed)
-        return _P(0, verify["out"])
-    assert real.untrusted_brain(runner) is None
-    # A symlink the package lists, but leading out of the tree (a directory swapped for one
-    # while the tree was the run user's): what it leads to is not checked, so it is refused.
-    link = os.path.join(tree, "bin", "python")
-    os.unlink(link)
-    os.symlink(tmp, link)
-    assert "leads out of the package's tree" in real.untrusted_brain(runner)
-    os.unlink(link)
-    os.symlink("/usr/bin/python3", link)
-    # A file the package does not list (a .pth, say, which every python start runs).
-    stray = pathlib.Path(tree, "evil.pth")
-    stray.write_text("import os\n")
-    stray.chmod(0o644)
-    assert "is not the package's" in real.untrusted_brain(runner)
-    stray.unlink()
-    # One another user could write.
-    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o775)
-    assert "is not root's alone" in real.untrusted_brain(runner)
-    os.chmod(os.path.join(tree, "bin", "teaport-brain"), 0o755)
-    # A file dpkg says changed.
-    verify["out"] = "??5?????? /opt/teaport/brain/lib/x.py\n"
-    assert "changed after it was installed" in real.untrusted_brain(runner)
-    verify["out"] = ""
-    # The directory above it writable by others, or no package at all.
-    os.chmod(prefix, 0o777)
-    assert "is not root's own directory" in real.untrusted_brain(runner)
-    os.chmod(prefix, 0o755)
-    assert "not installed" in real.untrusted_brain(lambda cmd, **k: _P(1))
-    # main() stops on it before the plan is read, and says how to repair it.
-    mod.untrusted_brain = lambda: "/opt/teaport/brain/evil.pth is not the package's"
-    mod.read_plan = lambda: (_ for _ in ()).throw(AssertionError("must not run the brain's code"))
-    assert mod.main() == 1
-    msg = _status(mod)["message"]
-    assert "evil.pth" in msg and "install.sh --only brain" in msg, msg
+        seen.append((cmd, k))
+        return _P(0, json.dumps({**_plan(["brain", "engine", "brain"]),
+                                 "url": "https://evil.example/m.json",
+                                 "source": {"repo": "evil/repo", "tag": "x"},
+                                 "manual": ["plugin", "$(id)"]}))
+    plan = mod.read_plan(entry, runner=runner)
+    cmd, k = seen[0]
+    # As the run user (setpriv to their ids), never root; root's HOME is not theirs.
+    assert cmd[:5] == ["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups", "--"], cmd
+    assert cmd[5:] == [mod.BRAIN_PYTHON, "-I", "-m", "teaport_brain.updates", "check", "--json"], cmd
+    assert k["env"]["HOME"] == entry.pw_dir and k["cwd"] == "/", k
+    # Only the steps (in STEPS order, once each), the channel and plain part names come out.
+    assert plan == {"steps": ["engine", "brain"], "channel": "stable", "manual": ["plugin"]}, plan
+    for bad in ({"steps": ["rm"], "channel": "stable"}, {"steps": [], "channel": "nightly"},
+                {"steps": "engine", "channel": "stable"}):
+        try:
+            mod.read_plan(entry, runner=lambda *a, **k: _P(0, json.dumps(bad)))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(bad)
+    for rc, out in ((1, ""), (0, "not json")):
+        try:
+            mod.read_plan(entry, runner=lambda *a, **k: _P(rc, out, "boom"))
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError((rc, out))
+
+
+def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
+    mod = _helper(tempdir("teaport-apply-"))
+    spec = importlib.util.spec_from_file_location("ua_src", HELPER)
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    asked = []
+
+    def fetch(manifest):
+        def f(url):
+            asked.append(url)
+            return manifest
+        return f
+    got = real.read_source("beta", fetch=fetch({"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}))
+    assert got == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}
+    assert asked == ["https://get.teaspoon.tech/manifest/beta.json"], asked
+    for manifest in ({"brain": {"repo": "evil/teaport", "tag": "v1"}}, {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "TODO"}},
+                     {"brain": {"repo": "Teaspoon-AI/teaport"}}, {}, []):
+        try:
+            real.read_source("stable", fetch=fetch(manifest))
+        except RuntimeError as e:
+            assert "names no installer" in str(e), e
+        else:
+            raise AssertionError(manifest)
+    try:
+        real.read_source("stable", fetch=lambda url: (_ for _ in ()).throw(OSError("offline")))
+    except RuntimeError as e:
+        assert "cannot read the release manifest" in str(e)
+    # main(): the steps run against that channel's manifest, from that installer.
+    state = _state(tempdir("teaport-apply-"))
+    mod = _helper(state)
+    mod.read_plan = lambda *a: {"steps": ["brain"], "channel": "beta", "manual": []}
+    srcs, envs = [], []
+    mod.read_source = lambda ch: (srcs.append(ch), {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"})[1]
+    mod.clone = lambda source, into: (srcs.append(source["tag"]), into)[1]
+    mod.run_step = lambda installer, step, env, log: (envs.append(env), (0, ""))[1]
+    assert mod.main() == 0
+    assert srcs == ["beta", "brain-v0.2.0"] and envs[0]["TEAPORT_MANIFEST_URL"] == "https://get.teaspoon.tech/manifest/beta.json"
 
 
 def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
     mod = _helper(tempdir("teaport-apply-"))
     P = _P
-    plan = mod.read_plan(runner=lambda *a, **k: P(0, json.dumps(_plan(["engine"]))))
-    assert plan["steps"] == ["engine"]
-    for steps in (["rm -rf /"], ["--only"], "engine"):
-        try:
-            mod.read_plan(runner=lambda *a, **k: P(0, json.dumps({**_plan([]), "steps": steps})))
-        except RuntimeError as e:
-            assert "cannot run" in str(e)
-        else:
-            raise AssertionError(steps)
-    # A plan against a manifest from anywhere but the download host is not installed.
-    for url in ("https://evil.example/manifest/stable.json", "/tmp/m.json",
-                "https://get.teaspoon.tech/manifest/stable.json.evil"):
-        try:
-            mod.read_plan(runner=lambda *a, **k: P(0, json.dumps({**_plan(["brain"]), "url": url})))
-        except RuntimeError as e:
-            assert "does not install from" in str(e), e
-        else:
-            raise AssertionError(url)
-    try:
-        mod.read_plan(runner=lambda *a, **k: P(1, err="cannot read the release manifest: offline"))
-    except RuntimeError as e:
-        assert str(e) == "the release check failed: cannot read the release manifest: offline"
-    else:
-        raise AssertionError("a failed check")
-    seen = []
-    for repo, tag in (("x/y", "-u"), ("x/y/z", "main"), ("x y/z", "main"), ("x/y", "a b")):
-        try:
-            mod.clone({"repo": repo, "tag": tag}, "/tmp", runner=lambda *a, **k: seen.append(a))
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError((repo, tag))
-    assert seen == []
     # A release tag, the checkout at its commit, an installer that says UPDATE_PROTOCOL=1.
     def git_fake(tags, head="c0ffee", protocol=True):
         calls = []
@@ -422,13 +410,17 @@ def test_the_install_trees_are_written_only_as_root():
     # The trees are taken back first thing; the restarts wait for idle, before engine.env.
     assert "  installer_lock\n  own_install_trees\n" in text
     assert "  wait_for_idle\n  log \"engine.env:" in text
-    assert "  wait_for_idle\n  brain_deb_keep\n" in text
+    assert "  brain_deb_fetch\n  wait_for_idle\n" in text and "  brain_deb_keep\n  brain_swap " in text
 
 
 OWN_STUB = r"""
-SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"; case "$1" in chown|chmod) : ;; *) "$@" ;; esac; }
+# chown is recorded, not done (a test cannot chown to root); what was chowned counts as root's.
+SUDO() { printf 'SUDO %s\n' "$*" >> "$T/sudo.log"
+  case "$1" in chown) printf '%s\n' "${@: -1}" >> "$T/chowned" ;; chmod) : ;; *) "$@" ;; esac; }
+not_roots() { ! grep -qxF -- "$1" "$T/chowned" 2>/dev/null; }
 sudo_ready() { :; }
-DRY_RUN=0 BRAIN_PKG=teaport-brain
+die() { printf 'DIE %s\n' "$*"; exit 1; }
+DRY_RUN=0 BRAIN_PKG=teaport-brain RUN_USER=bob
 """
 
 
@@ -448,6 +440,9 @@ def test_taking_a_tree_back_removes_what_an_install_never_makes_there():
     calls = pathlib.Path(tmp, "sudo.log").read_text()
     # Twice: a file made in a directory before the first pass reached it is caught by the second.
     assert calls.count(f"chown -R -h -P root:root {root}/bin") == 2 and f"chmod -R go-w {root}/bin" in calls, calls
+    # What is still not root's after both passes (made meanwhile) stops the run.
+    rc, out = _bash(tmp, OWN_STUB + "not_roots() { true; }\n" + _fn("own_tree") + f'own_tree "{root}/bin"\n')
+    assert rc == 1 and "kept changing while it was being made root's" in out, out
 
 
 def test_what_the_run_user_made_in_the_trees_is_dropped_not_adopted():
@@ -473,27 +468,22 @@ def test_what_the_run_user_made_in_the_trees_is_dropped_not_adopted():
     (state / "eula-accepted.json").write_text('{"version": "1.0"}\n')
     (state / "brain-deb").mkdir()
     (state / "brain-deb/teaport-brain_9_arm64.deb").write_text("plant\n")
-    listed = "\n".join(["/.", str(prefix), str(brain), str(brain / "bin"), str(brain / "bin/teaport-brain"),
-                        str(brain / "bin/python"), str(brain / "lib")])
-    pathlib.Path(tmp, "listed").write_text(listed + "\n")
     stub = OWN_STUB + (f'PREFIX="{prefix}" STATE="{state}"\n'
                        + _line("PREFIX_KEPT=") + _line("PREFIX_DROPPED=") + _line("STATE_KEPT=")
-                       + "brain_package_version() { echo 0.1.0; }\n"
-                       + 'dpkg-query() { cat "$T/listed"; }\n'
-                       + "die() { printf 'DIE %s\\n' \"$*\"; exit 1; }\n")
-    fns = "".join(_fn(f) for f in ("own_dir", "not_roots", "own_tree", "own_install_trees"))
+                       )
+    fns = "".join(_fn(f) for f in ("own_dir", "own_tree", "own_install_trees"))
     rc, out = _bash(tmp, stub + fns + "own_install_trees\n")
     assert rc == 0, out
     # The engine's staged and kept copies and the swap marker: removed, not adopted.
     assert not (prefix / "engine.rollback").exists() and not (prefix / "engine.swapping").exists(), out
     # The live engine and the manifest: taken over.
     assert (prefix / "bin/voxtral").exists() and (prefix / "manifest.json").exists(), out
-    # The brain's tree: the venv's link to /usr stays; the link out goes; the name with a
-    # newline goes as itself, and nothing named /etc is touched.
+    # The brain's tree: the venv's link to /usr/bin stays; the link out goes; a name with a
+    # newline is never split into a path of its own.
     assert os.path.islink(brain / "bin/python") and not os.path.lexists(brain / "lib"), out
-    assert not os.path.lexists(evil) and (brain / "bin/teaport-brain").exists(), out
+    assert (brain / "bin/teaport-brain").exists(), out
     calls = pathlib.Path(tmp, "sudo.log").read_text()
-    assert "rm -rf -- /etc\n" not in calls, calls
+    assert "rm -rf -- /etc\n" not in calls and "rm -f -- /etc\n" not in calls, calls
     # $STATE: downloads the run user made go; the license receipt is taken over.
     assert not (state / "brain-deb").exists() and (state / "eula-accepted.json").exists(), out
 

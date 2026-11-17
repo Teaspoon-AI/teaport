@@ -8,24 +8,25 @@
 # choose when, never what.
 #
 # Nothing it runs as root is the run user's to change (the run user is who the agent runs
-# as). The install trees are root's (install.sh's own_install_trees), and before the
-# brain's own code is run for the plan, its tree is checked: root's throughout, no file
-# dpkg does not list, none changed (dpkg --verify). A box that fails that has not been
-# repaired since an older installer handed the trees out: `install.sh --only brain`, by
-# hand, does it.
+# as): the install trees are root's (install.sh's own_install_trees), and the brain's own
+# code never runs as root here.
 #
 #   1. The plan: the brain's own comparison (teaport_brain.updates check --json, under the
-#      installed brain's venv): which install.sh runs ("steps": engine, brain), the manifest
-#      it read, and where the installer comes from ("source": brain.repo at brain.tag, what
-#      the one-line installer clones). Nothing to do: done.
-#   2. The installer: a shallow clone of that source. A box keeps no checkout; this is what
+#      installed brain's venv), run AS THE RUN USER, so whatever that tree holds runs with
+#      no more than their rights. Its answer is data, and only two things in it are used: the
+#      steps (each one of STEPS) and the channel (stable or beta). Nothing to do: done.
+#      The manifest is then read here, from the download host's fixed address for that
+#      channel, and the installer is the one it names in REPO (brain.tag): nothing the
+#      brain says can point the run at another manifest or another repository. The most a
+#      lying answer does is install the release the channel names anyway.
+#   2. The installer: a shallow clone of REPO at brain.tag. A box keeps no checkout; this is what
 #      `bash <(curl -fsSL https://get.teaspoon.tech/teaport)` does too. Only a release's:
 #      brain.tag must be a tag (a branch is whatever was pushed last), and the installer must
 #      say UPDATE_PROTOCOL=1, which an installer that kept the install trees root's and the
 #      run user's home as data does. An older one is never run as root from here.
 #   3. Each step, in order: install.sh --only engine, then --only brain, for the brain's run
 #      user (TEAPORT_USER: the User= of teaport-brain.service), against the manifest read in
-#      1, with root's own HOME: no tool it runs as root reads its configuration from the run
+#      1 (the channel's), with root's own HOME: no tool it runs as root reads its configuration from the run
 #      user's home. Each puts the previous engine or brain back by itself if the new one does not come
 #      up. TEAPORT_WAIT_IDLE_SECS makes each wait, before its restart, until nobody is
 #      talking (install.sh's wait_for_idle); the downloads come first, while they still are.
@@ -47,21 +48,23 @@ import pwd
 import re
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 STATE = "/var/lib/teaport-update"
 STATUS = os.path.join(STATE, "run.json")
 LOG = os.path.join(STATE, "log")
-PREFIX = "/opt/teaport"
-BRAIN_TREE = PREFIX + "/brain"
-BRAIN_PYTHON = BRAIN_TREE + "/bin/python"
-BRAIN_PACKAGE = "teaport-brain"
-# Where a manifest may come from: the download host (updates.MANIFEST_BASE).
-MANIFEST_URL = re.compile(r"https://get\.teaspoon\.tech/manifest/(stable|beta)\.json")
+BRAIN_PYTHON = "/opt/teaport/brain/bin/python"
+CHANNELS = ("stable", "beta")
+# The manifest of a channel: the download host's (updates.MANIFEST_BASE), nothing else.
+MANIFEST_BASE = "https://get.teaspoon.tech/manifest"
+# The download host refuses urllib's default agent (updates.USER_AGENT says the same).
+USER_AGENT = "teaport-update (+https://github.com/Teaspoon-AI/teaport)"
+# The only repository whose installer runs here.
+REPO = "Teaspoon-AI/teaport"
 BRAIN_UNIT = "teaport-brain.service"
 # How long a step waits for the conversation in progress to end before it gives up, its
 # downloads kept for the next try (install.sh's wait_for_idle).
@@ -101,48 +104,6 @@ def _write_shared(path, text, gid):
     os.replace(tmp, path)
 
 
-def above(path: str) -> list[str]:
-    """The directories from / down to <path>."""
-    out = [path]
-    while out[-1] != "/":
-        out.append(os.path.dirname(out[-1]))
-    return out[::-1]
-
-
-def untrusted_brain(runner=subprocess.run) -> str | None:
-    """Why the installed brain's code must not run as root, or None when it may: every
-    directory above it and every entry in it root's and not group- or world-writable,
-    nothing in it that teaport-brain does not list, nothing it lists changed."""
-    for d in above(PREFIX) + [BRAIN_TREE]:
-        st = os.lstat(d)
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != ROOT_UID or st.st_mode & 0o022:
-            return f"{d} is not root's own directory"
-    listed = runner(["dpkg-query", "-L", BRAIN_PACKAGE], capture_output=True, text=True)
-    if listed.returncode != 0:
-        return f"{BRAIN_PACKAGE} is not installed"
-    owned = {ln.rstrip("/") for ln in listed.stdout.splitlines() if ln.startswith(BRAIN_TREE)}
-    for top, dirs, files in os.walk(BRAIN_TREE):
-        for name in dirs + files:
-            path = os.path.join(top, name)
-            st = os.lstat(path)
-            if st.st_uid != ROOT_UID or (not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022):
-                return f"{path} is not root's alone"
-            if path not in owned:
-                return f"{path} is not the package's"
-            # A symlink only to within the tree (walked here) or to the system's /usr (the
-            # venv's bin/python): one dpkg lists as a directory but that leads elsewhere would
-            # put files no check here sees on the path python reads at start.
-            if stat.S_ISLNK(st.st_mode):
-                target = os.path.realpath(path)
-                if not (target.startswith(BRAIN_TREE + "/") or target.startswith("/usr/")):
-                    return f"{path} leads out of the package's tree ({target})"
-    verify = runner(["dpkg", "--verify", BRAIN_PACKAGE], capture_output=True, text=True)
-    if verify.returncode != 0 or verify.stdout.strip():
-        changed = (verify.stdout.strip().splitlines() or ["?"])[0]
-        return f"a file of {BRAIN_PACKAGE} changed after it was installed ({changed})"
-    return None
-
-
 def run_user(systemctl=subprocess.run) -> str:
     """Who the brain runs as: the User= of its unit (as sudoers-sync reads it)."""
     out = systemctl(["systemctl", "show", "-p", "User", "--value", BRAIN_UNIT],
@@ -150,21 +111,53 @@ def run_user(systemctl=subprocess.run) -> str:
     return out.stdout.strip() or "root"
 
 
-def read_plan(runner=subprocess.run) -> dict:
-    """The brain's comparison, as `teaport update --check --json` prints it."""
-    p = runner([BRAIN_PYTHON, "-I", "-m", "teaport_brain.updates", "check", "--json"],
+def read_plan(entry, runner=subprocess.run) -> dict:
+    """The brain's comparison, as `teaport update --check --json` prints it, run as the run
+    user (<entry>, their passwd entry): {"steps", "channel", "manual"}, the only parts used,
+    each checked. Raises RuntimeError."""
+    p = runner(["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups",
+                "--", BRAIN_PYTHON, "-I", "-m", "teaport_brain.updates", "check", "--json"],
                capture_output=True, text=True, timeout=120, cwd="/",
-               env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "HOME": "/root"})
+               env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
+                    "HOME": entry.pw_dir, "USER": entry.pw_name})
     if p.returncode != 0:
         said = (p.stderr or p.stdout).strip().splitlines()
         raise RuntimeError("the release check failed: " + (said[-1] if said else f"exit {p.returncode}"))
-    plan = json.loads(p.stdout)
-    steps = plan.get("steps") or []
+    try:
+        plan = json.loads(p.stdout)
+    except ValueError:
+        raise RuntimeError("the release check printed no plan") from None
+    steps, channel = plan.get("steps") or [], plan.get("channel")
     if not isinstance(steps, list) or any(s not in STEPS for s in steps):
         raise RuntimeError(f"the check named steps this cannot run: {steps!r}")
-    if steps and not MANIFEST_URL.fullmatch(str(plan.get("url"))):
-        raise RuntimeError(f"the check read a manifest this does not install from: {plan.get('url')!r}")
-    return plan
+    if channel not in CHANNELS:
+        raise RuntimeError(f"the check named no channel this installs from: {channel!r}")
+    manual = [m for m in (plan.get("manual") or []) if isinstance(m, str) and re.fullmatch(r"[a-z]+", m)]
+    # In STEPS order, once each, whatever order the answer gave.
+    return {"steps": [s for s in STEPS if s in steps], "channel": channel, "manual": manual}
+
+
+def manifest_url(channel: str) -> str:
+    return f"{MANIFEST_BASE}/{channel}.json"
+
+
+def read_source(channel: str, fetch=None) -> dict:
+    """{repo, tag}: the installer the channel's manifest names, read here (not from the
+    brain's answer). Only REPO's. Raises RuntimeError."""
+    def load(url):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 -- a fixed https URL
+            return json.load(r)
+    try:
+        manifest = (fetch or load)(manifest_url(channel))
+    except Exception as e:  # noqa: BLE001 -- unreadable, not JSON
+        raise RuntimeError(f"cannot read the release manifest: {e}") from None
+    brain = manifest.get("brain") if isinstance(manifest, dict) else None
+    repo, tag = (brain or {}).get("repo"), (brain or {}).get("tag")
+    if repo != REPO or not isinstance(tag, str) or "TODO" in tag.upper():
+        raise RuntimeError(f"the release manifest names no installer this installs from "
+                           f"({repo!r} at {tag!r}; only {REPO}'s release tags)")
+    return {"repo": repo, "tag": tag}
 
 
 def clone(source: dict, into: str, runner=subprocess.run) -> str:
@@ -173,7 +166,7 @@ def clone(source: dict, into: str, runner=subprocess.run) -> str:
     is not a tag there (a branch moves), a checkout that is not at that tag's commit, and an
     installer that does not declare UPDATE_PROTOCOL=1."""
     repo, tag = source["repo"], source["tag"]
-    # updates.source() checked both; checked again, as they reach git's command line.
+    # Checked again, as they reach git's command line.
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) \
             or not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*", tag):
         raise RuntimeError(f"the manifest names no installer this can fetch ({repo!r} at {tag!r})")
@@ -241,7 +234,7 @@ def run_step(installer: str, step: str, env: dict, log, popen=subprocess.Popen) 
 
 def main() -> int:
     """One run. Its parts are module functions, so a test replaces them (run_user,
-    untrusted_brain, read_plan, clone, run_step) and STATE/ROOT_UID."""
+    read_plan, read_source, clone, run_step) and STATE/ROOT_UID."""
     user = run_user()
     try:
         entry = pwd.getpwnam(user)
@@ -264,11 +257,7 @@ def main() -> int:
     try:
         _write_shared(LOG, "", gid)
         record.set()
-        why = untrusted_brain()
-        if why:
-            raise RuntimeError(f"{why}: the brain's code is not run as root like this. Run "
-                               "`install.sh --only brain` by hand once, which repairs it")
-        plan = read_plan()
+        plan = read_plan(entry)
         steps = plan.get("steps") or []
         record.set(channel=plan.get("channel"), steps=steps)
         if not steps:
@@ -277,12 +266,11 @@ def main() -> int:
                 "nothing teaport update installs" + (f"; a full install.sh run would update: "
                                                      f"{', '.join(manual)}" if manual else "")))
             return 0
-        if not plan.get("source"):
-            raise RuntimeError("the release manifest names no installer to fetch (brain.repo, brain.tag)")
         record.set(step="fetch")
+        source = read_source(plan["channel"])
         work = tempfile.mkdtemp(prefix="teaport-update-")
-        installer = clone(plan["source"], work)
-        env = step_env(user, entry.pw_dir, plan["url"])
+        installer = clone(source, work)
+        env = step_env(user, entry.pw_dir, manifest_url(plan["channel"]))
         with open(LOG, "a", encoding="utf-8") as log:
             for step in steps:
                 record.set(step=step)

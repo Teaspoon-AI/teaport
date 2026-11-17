@@ -228,11 +228,11 @@ installer_lock() {
 #   - the engine's live files, the models, the installed manifest and the third-party
 #     notices are taken over (the engine runs as the run user anyway, and a run replaces
 #     whatever differs from the manifest), as is the license receipt in $STATE;
-#   - the brain package's tree is taken over, and anything in it dpkg does not list, and any
-#     symlink in it that leads outside it or /usr, is removed (teaport update runs that
-#     tree's code as root only when dpkg vouches for all of it: update_apply.py);
-#   - in all of them no symlink or special file is left, and ownership is set twice: a file
-#     made inside a directory before the first pass reached it is caught by the second.
+#   - the brain package's tree is taken over, with any symlink in it that leads outside it
+#     or /usr/bin removed (root never runs its code: teaport update runs the brain's
+#     comparison as the run user, and reads only its step names);
+#   - in all of them no symlink or special file is left (the brain's own links aside); what
+#     is still not root's after two passes stops the run.
 # Left as they are: $PREFIX/bridge (the Discord bridge's npm tree, the run user's; no update
 # touches it) and anything else at the top of $PREFIX, now in a directory they cannot
 # rename or add in.
@@ -249,20 +249,24 @@ own_dir() {
 not_roots() { [ -n "$(SUDO find "$1" \( ! -user root -o ! -group root -o \( ! -type l -perm /022 \) \) -print -quit 2>/dev/null)" ]; }
 # own_tree <path> [<keep-symlinks-under>] -- root's all the way down, nothing group- or
 # world-writable, no special file, and no symlink but one whose target is under the given
-# directory or /usr. Called only once the directory holding <path> is root's.
+# directory or /usr/bin (the venv's bin/python). Called only once the directory holding
+# <path> is root's.
 own_tree() {
   local p="$1" keep="${2:-}" l t
   if [ -L "$p" ]; then warn "removing the symlink $p (the installer makes none there)"; SUDO rm -f -- "$p"; return 0; fi
   [ -e "$p" ] || return 0
   SUDO chown -R -h -P root:root "$p"; SUDO chmod -R go-w "$p"
   SUDO chown -R -h -P root:root "$p"; SUDO chmod -R go-w "$p"
+  # A directory stays the run user's until chown -R has done what is under it, so something
+  # made there meanwhile can escape both passes: anything still not root's stops the run.
+  if not_roots "$p"; then die "$p kept changing while it was being made root's (something running as $RUN_USER?): nothing was installed; run this again"; fi
   if [ -n "$(SUDO find "$p" ! -type f ! -type d ! -type l -print -quit 2>/dev/null)" ]; then
     warn "removing special files under $p (the installer makes none)"
     SUDO find "$p" ! -type f ! -type d ! -type l -delete
   fi
   while IFS= read -r -d '' l; do
     t="$(readlink -f -- "$l" 2>/dev/null || true)"
-    if [ -n "$keep" ] && { case "$t" in "$keep"/*|/usr/*) true ;; *) false ;; esac; }; then continue; fi
+    if [ -n "$keep" ] && { case "$t" in "$keep"/*|/usr/bin/*) true ;; *) false ;; esac; }; then continue; fi
     warn "removing the symlink $l (-> ${t:-?}): the installer makes none there"
     SUDO rm -f -- "$l"
   done < <(SUDO find "$p" -type l -print0 2>/dev/null)
@@ -283,21 +287,14 @@ own_install_trees() {
     warn "removing the symlink $PREFIX/brain: the brain package's tree is a directory (install.sh --only brain puts it back)"
     SUDO rm -f -- "$PREFIX/brain"
   elif [ -d "$PREFIX/brain" ]; then
+    # The brain package's tree: dpkg made it root's; an older installer's chown -R gave it
+    # away. Root never runs its code (teaport update compares as the run user); a later
+    # --only brain reinstalls the package's files over it.
     own_tree "$PREFIX/brain" "$PREFIX/brain"
-    # Nothing in it the package does not list. NUL-separated: a name may hold a newline.
-    if [ -n "$(brain_package_version)" ]; then
-      local n=0
-      while IFS= read -r -d '' f; do
-        [ -n "$f" ] || continue
-        n=$((n + 1)); SUDO rm -rf -- "$f"
-      done < <(comm -z -13 <(dpkg-query -L "$BRAIN_PKG" 2>/dev/null | sed 's#/$##' | tr '\n' '\0' | sort -zu) \
-                           <(SUDO find "$PREFIX/brain" -print0 | sort -zu))
-      [ "$n" = 0 ] || warn "removed $n path(s) under $PREFIX/brain that $BRAIN_PKG does not list (written there while the tree was not root's)"
-    fi
   fi
   own_dir "$STATE"
-  for f in "$STATE"/* "$STATE"/.[!.]*; do
-    [ -e "$f" ] || [ -L "$f" ] || continue
+  # find, not a glob: no name is skipped, dot-dot ones included.
+  while IFS= read -r -d '' f; do
     local kept=0 k
     for k in "${STATE_KEPT[@]}"; do
       # shellcheck disable=SC2254  # STATE_KEPT holds patterns
@@ -309,7 +306,7 @@ own_install_trees() {
     else
       own_tree "$f"
     fi
-  done
+  done < <(SUDO find "$STATE" -mindepth 1 -maxdepth 1 -print0)
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -1028,6 +1025,7 @@ wait_for_idle() {
   local envtxt port token body code live said=0 deadline=$((SECONDS + WAIT_IDLE_SECS))
   envtxt="$(read_env_file "$ETC/brain.env" --lenient)"
   port="$(sed -n 's/^BRAIN_PORT=//p' <<<"$envtxt" | tail -1)"; port="${port//[\"\']/}"; port="${port:-$BRAIN_PORT}"
+  case "$port" in ''|*[!0-9]*) port="$BRAIN_PORT" ;; esac   # a port, never a host to send the token to
   token="$(sed -n 's/^GATEWAY_TOKEN=//p' <<<"$envtxt" | tail -1)"; token="${token//[\"\' ]/}"
   body="$(mktemp)"
   while :; do
@@ -3583,14 +3581,16 @@ main_brain_only() {
   fi
   check_brain_source
   brain_deb_fetch
-  # Before the package is kept: a wait that gives up leaves the cache, which --rollback
-  # brain picks from, as it was; the download stays in $STATE for the next try.
   wait_for_idle
-  brain_deb_keep
   # Before the swap, never after: the new brain is the phone line's front-end itself, and
   # the old SIP brain must not be left running beside it. Its unit goes only once the swap
   # is verified; a rollback puts it back (see sip_brain_detach).
   sip_brain_detach
+  # Kept right before the swap, nothing in between: a run that stops earlier (a wait that
+  # gives up, a drop-in that cannot move) leaves the cache --rollback brain picks from as it
+  # was, and the download stays in $STATE for the next try. brain_swap takes a package that
+  # fails back out of the cache itself.
+  brain_deb_keep
   brain_swap "$BRAIN_DEB_CACHED" --auto-rollback
   sip_brain_retire
   brain_retire_old_tools

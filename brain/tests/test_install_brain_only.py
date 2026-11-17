@@ -240,7 +240,7 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
     # The wait for nobody talking (teaport update's runs) comes after the download and before
     # the package is kept: a wait that gives up leaves the cache --rollback brain reads as it was.
-    assert order == ["check_brain_source", "brain_deb_fetch", "wait_for_idle", "brain_deb_keep", "sip_brain_detach",
+    assert order == ["check_brain_source", "brain_deb_fetch", "wait_for_idle", "sip_brain_detach", "brain_deb_keep",
                      "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
                      "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
