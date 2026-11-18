@@ -696,6 +696,9 @@ def test_an_update_installs_no_older_brain_than_the_installed_one():
     script = real_cmp + f'BRAIN_DEB_SRC="{deb}"; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"'
     rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1.1", "TEAPORT_NEWER_ONLY": "1"})
     assert rc != 0 and "an update installs no older brain" in out and "--rollback brain" in out, out
+    # A half-configured package (a brain the run user kept from coming up) counts too.
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1.1", "STATUS": "half-configured", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "an update installs no older brain" in out, out
     # The same version, a newer one, nothing installed, or a run that is not an update.
     for env in ({"INSTALLED": "0.1.0", "TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.0~dev1", "TEAPORT_NEWER_ONLY": "1"},
                 {"TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.1"}):

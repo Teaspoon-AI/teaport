@@ -56,10 +56,12 @@ def _helper(state):
     mod.ROOT_UID = os.getuid()
     mod.run_user = lambda: os.environ.get("USER") or __import__("pwd").getpwuid(os.getuid()).pw_name
     def read_manifest(channel, dest):
-        manifest = {"channel": channel, "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}}
+        manifest = {"channel": channel, "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1",
+                    "deb": {"url": "https://get.teaspoon.tech/dl/brain/teaport-brain_0.1.1_arm64.deb"}}}
         pathlib.Path(dest).write_text(json.dumps(manifest))
         return manifest
     mod.read_manifest = read_manifest
+    mod.box_brain = lambda: "0.1.0"   # the brain on the box, in any state: older than the release
     return mod
 
 
@@ -259,7 +261,8 @@ def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
     def read_manifest(channel, dest):
         seen.append(channel)
         pathlib.Path(dest).write_text("{}")
-        return {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}
+        return {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0",
+                          "deb": {"url": "https://get.teaspoon.tech/dl/brain/teaport-brain_0.2.0_arm64.deb"}}}
     mod.read_manifest = read_manifest
     mod.clone = lambda source, into: (seen.append(source["tag"]), into)[1]
     mod.run_step = lambda installer, step, env, log: (envs.append(dict(env)), (0, ""))[1]
@@ -560,6 +563,43 @@ def _brain_box(tmp):
     (brain / "lib/a.py").write_text("a = 1\n")
     state.mkdir()
     return prefix, state, brain
+
+
+def test_an_older_release_is_refused_before_anything_of_it_is_fetched_or_run():
+    # The run user picks the channel; the other may name an older release, whose
+    # install.sh this would run as root, and whose engine goes in before the brain step.
+    tmp = tempdir("teaport-apply-older-")
+    mod = _helper(_state(tmp))
+    mod.read_plan = lambda *a: _plan(["engine", "brain"])
+    mod.clone = lambda *a: (_ for _ in ()).throw(AssertionError("an older release was cloned"))
+    mod.box_brain = lambda: "0.1.2"   # newer than the channel's 0.1.1 (half-configured counts)
+    assert mod.main() == 1
+    st = _status(mod)
+    assert st["state"] == "failed" and "older release (brain 0.1.1) than this box has (0.1.2)" in st["message"], st
+    # A manifest naming no brain package cannot be told from an older one.
+    mod.read_manifest = lambda channel, dest: {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}}
+    mod.box_brain = lambda: "0.1.0"
+    assert mod.main() == 1 and "names no brain package" in _status(mod)["message"]
+
+
+def test_root_reads_the_brain_on_the_box_in_any_state_and_the_name_as_the_brain_does():
+    from teaport_brain import updates
+    mod = _helper(_state(tempdir("teaport-apply-floor-")))
+    for out, want in (("installed 0.1.1", "0.1.1"), ("half-configured 0.1.1", "0.1.1"),
+                      ("triggers-awaiting 0.1.1", "0.1.1"), ("config-files 0.1.1", None), ("", None)):
+        runner = lambda *a, **k: subprocess.CompletedProcess(a, 0 if out else 1, out, "")  # noqa: E731
+        assert _real_box_brain(mod)(runner) == want, out
+    for url in ("https://x/dl/brain/teaport-brain_0.1.1_arm64.deb", "https://x/teaport-brain_1.0~rc1_amd64.deb?x=1",
+                "https://x/brain.deb", "TODO", None, "https://x/teaport-brain__arm64.deb"):
+        m = {"brain": {"deb": {"url": url}}}
+        assert mod.channel_brain(m) == updates.deb_version(m), url
+
+
+def _real_box_brain(mod):
+    spec = importlib.util.spec_from_file_location(f"update_apply_real_{time.monotonic_ns()}", HELPER)
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    return real.box_brain
 
 
 def test_the_cli_runs_every_python_isolated():

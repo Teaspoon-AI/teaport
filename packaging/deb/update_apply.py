@@ -53,6 +53,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 STATE = "/var/lib/teaport-update"
@@ -166,6 +167,57 @@ def read_manifest(channel: str, dest: str, fetch=None) -> dict:
     with open(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
         f.write(body if isinstance(body, bytes) else body.encode())
     return manifest
+
+
+# The brain package's file name in brain.deb.url, read as updates.py reads it (its
+# _DEB_NAME; test_update_apply checks the two agree). Root does not import the brain's code.
+DEB_NAME = re.compile(r"^teaport-brain_([0-9][A-Za-z0-9.+~:-]*)_[a-z0-9]+\.deb$")
+BRAIN_PACKAGE = "teaport-brain"
+# dpkg states that leave none of the package's files on the box.
+GONE = ("not-installed", "config-files")
+# dpkg's own tools, with root's PATH and nothing of the caller's.
+ROOT_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+
+
+def channel_brain(manifest: dict) -> str | None:
+    """The brain package version the release manifest names (brain.deb.url's file name)."""
+    url = ((manifest.get("brain") or {}).get("deb") or {}).get("url") if isinstance(manifest, dict) else None
+    if not isinstance(url, str):
+        return None
+    m = DEB_NAME.match(os.path.basename(urllib.parse.urlparse(url).path))
+    return m.group(1) if m else None
+
+
+def box_brain(runner=subprocess.run) -> str | None:
+    """The brain package's version on this box in any state that leaves its files here —
+    half-configured too: a brain the run user keeps from coming up (it runs as that
+    user) leaves dpkg there, and must not hide the version from the floor below."""
+    try:
+        p = runner(["dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", BRAIN_PACKAGE],
+                   capture_output=True, text=True, timeout=30, env=ROOT_ENV)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    status, _, version = p.stdout.strip().partition(" ")
+    return version if p.returncode == 0 and status not in GONE and version else None
+
+
+def not_older(manifest: dict, have: str | None, runner=subprocess.run) -> None:
+    """Refuse a release older than the brain on the box, before anything of it is fetched
+    or run: the run user picks the channel, and the other one may name an older release —
+    one whose engine a newer release fixed, or whose install.sh a later one hardened, and
+    this runs that install.sh as root. Going back is install.sh --rollback, by hand.
+    Raises RuntimeError."""
+    if have is None:
+        return   # no brain package here to be older than (install.sh says what is missing)
+    new = channel_brain(manifest)
+    if new is None:
+        raise RuntimeError("the release manifest names no brain package, so it cannot be told "
+                           "from an older release than this box has; nothing was done")
+    lt = runner(["dpkg", "--compare-versions", new, "lt", have], env=ROOT_ENV, timeout=30)
+    if lt.returncode == 0:
+        raise RuntimeError(f"the {manifest.get('channel') or 'chosen'} channel names an older release "
+                           f"(brain {new}) than this box has ({have}); teaport update never goes "
+                           "back (install.sh --rollback does, by hand)")
 
 
 def read_source(manifest: dict) -> dict:
@@ -294,7 +346,9 @@ def main() -> int:
         record.set(step="fetch")
         work = tempfile.mkdtemp(prefix="teaport-update-")
         manifest_copy = os.path.join(work, "manifest.json")
-        source = read_source(read_manifest(plan["channel"], manifest_copy))
+        manifest = read_manifest(plan["channel"], manifest_copy)
+        source = read_source(manifest)
+        not_older(manifest, box_brain())   # before anything of the release is fetched or run
         installer = clone(source, work)
         env = step_env(user, entry.pw_dir, manifest_copy)
         with open(LOG, "a", encoding="utf-8") as log:

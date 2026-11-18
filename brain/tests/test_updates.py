@@ -89,6 +89,41 @@ def test_what_the_channel_has_not_released_is_not_an_update():
     assert not _compare(_manifest(), beta)["available"]
 
 
+def test_a_release_older_than_the_brain_on_the_box_offers_nothing():
+    # The other channel may name an older release: its engine and models are that
+    # release's too, and teaport update runs nothing from it (update_apply.not_older).
+    older = _manifest(engine="1.5", sha="00", brain="0.0.9")
+    got = updates.compare(_manifest(), older, BRAIN, floor=BRAIN)
+    assert got["older"] and not got["available"] and got["steps"] == [] and got["changed"] == [], got
+    assert not any(row["changed"] for row in got["components"].values())
+    # A half-configured brain (installed_brain None) still sets the floor.
+    assert updates.compare(_manifest(), older, None, floor=BRAIN)["older"]
+    # A channel that names no brain package cannot be told from an older one.
+    nodeb = _manifest(engine="1.7")
+    del nodeb["brain"]["deb"]
+    assert updates.compare(_manifest(), nodeb, BRAIN, floor=BRAIN)["older"]
+    # The same release, or a newer one: as before.
+    assert not updates.compare(_manifest(), _manifest(engine="1.7"), BRAIN, floor=BRAIN)["older"]
+    assert updates.compare(_manifest(), _manifest(engine="1.7"), BRAIN, floor=BRAIN)["steps"] == ["engine"]
+    # Said as such, not as "up to date".
+    text = updates.render({"channel": "beta", "url": "u", **got})
+    assert "names an older release than this box has" in text and "up to date" not in text, text
+    # No brain package on the box at all: no floor.
+    assert not updates.compare(_manifest(), older, None, floor=None)["older"]
+
+
+def test_the_floor_counts_a_brain_in_any_state_that_leaves_its_files():
+    real = updates.subprocess.run
+    try:
+        for out, installed, floor in (("installed 0.1.1", "0.1.1", "0.1.1"), ("half-configured 0.1.1", None, "0.1.1"),
+                                      ("unpacked 0.1.1", None, "0.1.1"), ("triggers-pending 0.1.1", None, "0.1.1"),
+                                      ("config-files 0.1.1", None, None), ("not-installed ", None, None)):
+            updates.subprocess.run = lambda *a, _out=out, **k: type("P", (), {"returncode": 0, "stdout": _out})()
+            assert (updates.installed_brain(), updates.box_brain()) == (installed, floor), out
+    finally:
+        updates.subprocess.run = real
+
+
 def test_a_placeholder_model_hash_does_not_hide_a_real_change_in_another():
     latest = _manifest()
     latest["models"] = {"kokoro": {"sha256": "TODO"}, "voxtral": {"sha256": "cc"}}

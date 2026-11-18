@@ -153,15 +153,29 @@ def deb_version(manifest: dict) -> str | None:
     return m.group(1) if m else None
 
 
-def installed_brain() -> str | None:
-    """The installed teaport-brain package's version (dpkg's); None when there is none."""
+def _brain_status() -> tuple[str, str]:
+    """dpkg's (status, version) for teaport-brain; ("", "") when it cannot say."""
     try:
         out = subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Status} ${Version}",
                               BRAIN_PACKAGE], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return "", ""
     status, _, version = out.stdout.strip().partition(" ")
-    return version if out.returncode == 0 and status == "installed" and version else None
+    return (status, version) if out.returncode == 0 and version else ("", "")
+
+
+def installed_brain() -> str | None:
+    """The installed teaport-brain package's version (dpkg's); None when there is none."""
+    status, version = _brain_status()
+    return version if status == "installed" else None
+
+
+def box_brain() -> str | None:
+    """teaport-brain's version in any state that leaves its files on the box (half-configured
+    too): the floor no update goes below (compare(); update_apply.not_older does the same as
+    root, before it runs anything)."""
+    status, version = _brain_status()
+    return version if status and status not in ("not-installed", "config-files") else None
 
 
 def _version_part(a: str, b: str) -> int:
@@ -223,14 +237,21 @@ def released(value: str | None) -> bool:
     return value is not None and "TODO" not in value.upper()
 
 
-def compare(installed: dict, latest: dict, brain: str | None = None) -> dict:
+def compare(installed: dict, latest: dict, brain: str | None = None, floor: str | None = None) -> dict:
     """The installed manifest against the channel's. {"components": {name: {"installed",
     "latest", "changed"}}, "changed": [names], "available": bool, "steps": [...],
-    "manual": [...]} (plan()). A component the channel has not released is never changed,
-    nor is the version on its own. One the box has no record of, and the channel has, is
-    (the box was installed before the manifest named it). `brain` is the installed brain
-    package's version (installed_brain()): the brain is changed when the channel's package
-    is newer than it, or when the box has none."""
+    "manual": [...], "older": bool} (plan()). A component the channel has not released is
+    never changed, nor is the version on its own. One the box has no record of, and the
+    channel has, is (the box was installed before the manifest named it). `brain` is the
+    installed brain package's version (installed_brain()): the brain is changed when the
+    channel's package is newer than it, or when the box has none.
+
+    `floor` is the brain package's version on the box in any state (box_brain()). A
+    channel whose brain is older than that, or that names none, offers nothing ("older"):
+    its engine and models are an older release's too, and teaport update runs nothing
+    from one (update_apply.not_older)."""
+    channel_brain = deb_version(latest)
+    older = floor is not None and (channel_brain is None or version_cmp(channel_brain, floor) < 0)
     rows, changed = {}, []
     for name in COMPONENTS:
         have, new = component(installed, name), component(latest, name)
@@ -261,7 +282,11 @@ def compare(installed: dict, latest: dict, brain: str | None = None) -> dict:
                       "changed": differs}
         if differs:
             changed.append(name)
-    return {"components": rows, "changed": changed, "available": bool(changed),
+    if older:
+        for row in rows.values():
+            row["changed"] = False
+        changed = []
+    return {"components": rows, "changed": changed, "available": bool(changed), "older": older,
             **plan(changed)}
 
 
@@ -285,17 +310,19 @@ def source(latest: dict) -> dict | None:
 
 
 def check(channel: str | None = None, *, fetch=load, installed: dict | None = None,
-          clock=time.time, env=os.environ, brain=None) -> dict:
+          clock=time.time, env=os.environ, brain=None, floor=None) -> dict:
     """One look: the status dict (see Monitor.status), with "url" (the manifest read) and
     "source" (source()). `brain()` is the installed brain package's version (default
-    installed_brain). Raises what `fetch` raises."""
+    installed_brain), `floor()` its version in any state (default box_brain, or `brain`
+    when that is given). Raises what `fetch` raises."""
     installed = read_installed() if installed is None else installed
     ch = channel_of(channel, installed)
     url = manifest_url(ch, env)
     latest = fetch(url)
     return {"channel": ch, "url": url, "checked": clock(), "fresh": True,
             "source": source(latest),
-            **compare(installed, latest, (brain or installed_brain)())}
+            **compare(installed, latest, (brain or installed_brain)(),
+                      (floor or brain or box_brain)())}
 
 
 def configured_channel() -> str:
@@ -342,6 +369,7 @@ class Monitor:
         return {"state": "available" if last["available"] else "current",
                 "channel": last["channel"], "checked": last["checked"],
                 "fresh": not self._failed, "changed": last["changed"],
+                "older": bool(last.get("older")),
                 "components": last["components"], **plan(last["changed"])}
 
     def _load(self) -> None:
@@ -421,6 +449,10 @@ def render(status: dict) -> str:
         else:
             new = row["latest"] or "not released"
         lines.append(f"  {name:9} {have}  {'->' if row['changed'] else '=='}  {new}")
+    if status.get("older"):
+        lines.append(f"the {status['channel']} channel names an older release than this box has: "
+                     "teaport update does not go back (install.sh --rollback does, by hand).")
+        return "\n".join(lines)
     if not status["changed"]:
         lines.append("up to date.")
         return "\n".join(lines)

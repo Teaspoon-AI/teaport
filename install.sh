@@ -1328,11 +1328,12 @@ brain_installed_version() {
   { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } | awk '$1=="installed"{print $2; exit}'
 }
 # The package's version in any state that leaves files on the box, a half-configured one
-# included (a postinst that failed): what --rollback and the cache pruning must not treat as
-# gone. brain_installed_version is only a package that is fully there.
+# included (a postinst that failed), and one waiting on triggers: what --rollback, the cache
+# pruning and TEAPORT_NEWER_ONLY must not treat as gone. brain_installed_version is only a
+# package that is fully there.
 brain_package_version() {
   { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } \
-    | awk '$1=="installed"||$1=="half-configured"||$1=="unpacked"||$1=="half-installed"{print $2; exit}'
+    | awk 'NF==2 && $1!="not-installed" && $1!="config-files"{print $2; exit}'
 }
 brain_deb_path() { printf '%s/%s_%s_%s.deb\n' "$BRAIN_DEBS" "$BRAIN_PKG" "$1" "$(brain_deb_arch)"; }
 
@@ -1365,10 +1366,12 @@ brain_deb_fetch() {
   fi
   brain_deb_verify "$BRAIN_DEB"
   BRAIN_DEB_NEW="$(dpkg-deb -f "$BRAIN_DEB" Version)"
-  # teaport update (TEAPORT_NEWER_ONLY=1): never an older package than the installed one.
+  # teaport update (TEAPORT_NEWER_ONLY=1): never an older package than the one on the box.
   # The run user picks the channel, and the other one may name an older release, one a
-  # newer has fixed; going back is --rollback brain, by hand.
-  local cur; cur="$(brain_installed_version)"
+  # newer has fixed; going back is --rollback brain, by hand. Any state that leaves files
+  # counts: the brain runs as the run user, who can keep it from coming up, and a
+  # half-configured package must not hide its version.
+  local cur; cur="$(brain_package_version)"
   if [ "${TEAPORT_NEWER_ONLY:-0}" = 1 ] && [ -n "$cur" ] && dpkg --compare-versions "$BRAIN_DEB_NEW" lt "$cur"; then
     die "the release names $BRAIN_PKG $BRAIN_DEB_NEW, older than the installed $cur — an update installs no older brain (go back with install.sh --rollback brain)"
   fi

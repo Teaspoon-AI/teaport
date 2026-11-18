@@ -160,7 +160,8 @@ st = u["state"]
 ch = u.get("channel", "")
 stale = "" if u.get("fresh", True) else " (last check failed; this is the last known)"
 text = {"unknown": "not checked yet",
-        "current": "up to date (%s)%s" % (ch, stale),
+        "current": ("the %s channel names an older release than this box has%s" if u.get("older")
+                    else "up to date (%s)%s") % (ch, stale),
         "available": "a new release is out on %s: %s%s -- teaport update" % (
             ch, ", ".join(u.get("changed") or []), stale)}[st]
 print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
