@@ -820,7 +820,9 @@ class Setup:
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
-                self.created = None  # kept: it is the box's network now
+                if self.created:     # kept: it is the box's network now, and not deletable
+                    self.nm.keep(self.created)
+                self.created = None
                 account = self._adopt_key()
                 self.status.set("connected", target=target,
                                 **({"account": account} if account else {}))

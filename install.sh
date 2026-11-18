@@ -1290,7 +1290,7 @@ brain_deb_prune() {
 # did not exist yet when the package was configured. One writer: the package's own script.
 brain_sudoers() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] /usr/lib/teaport/sudoers-sync %s\n' "$RUN_USER"; return 0; fi
-  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the config page's sudoers line was not written (/usr/lib/teaport/sudoers-sync failed)"
+  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page and Wi-Fi were not written (/usr/lib/teaport/sudoers-sync failed)"
 }
 
 # brain_retire_old_tools -- the pre-package installer's CLI and config helper, once the
@@ -3197,8 +3197,9 @@ phase_sip() {
 # the network and types its password. Three system pieces make that work as the run user:
 #   - the unit (never enabled; exits by itself) and its root-side steps, a small sh
 #     script in /usr/local/lib/teaport (wifi-setup-net), so they do not need the venv;
-#   - a polkit rule letting the run user change NetworkManager's Wi-Fi (its scope and
-#     trade-off: packaging/wifi-setup/50-teaport-wifi-setup.rules.in);
+#   - a polkit rule letting the run user scan for Wi-Fi networks, and nothing else: every
+#     change goes through wifi_apply.py under sudo (packaging/wifi-setup/
+#     50-teaport-wifi-setup.rules.in, packaging/deb/sudoers-sync);
 #   - NM shared-mode DNS that answers every name with the box, so phones open the page.
 #     Kept here in /usr/local/lib/teaport (root-owned: dnsmasq runs what a conf names) and
 #     copied into /etc/NetworkManager/dnsmasq-shared.d only while the unit runs — NM gives
@@ -3217,9 +3218,16 @@ phase_sip() {
 # may have been started by the old unit, whose root
 # steps went with it, so its root side is brought up to take the rule and the captive DNS
 # file down when it ends (up first clears what the old run put in, then puts it back).
+# The package's other drop-in (WIFI_SETUP_HELPER_DROPIN) lifted the old unit's
+# NoNewPrivileges= for sudo (wifi_apply.py); the new unit has none, so it goes too.
 WIFI_SETUP_STOPGAP=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+WIFI_SETUP_HELPER_DROPIN=/etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf
 wifi_setup_split_done() {
-  if [ -e "$WIFI_SETUP_STOPGAP" ]; then SUDO rm -f "$WIFI_SETUP_STOPGAP"; SUDO systemctl daemon-reload; fi
+  local f gone=
+  for f in "$WIFI_SETUP_STOPGAP" "$WIFI_SETUP_HELPER_DROPIN"; do
+    if [ -e "$f" ]; then SUDO rm -f "$f"; gone=1; fi
+  done
+  if [ -n "$gone" ]; then SUDO systemctl daemon-reload; fi
   if systemctl is-active --quiet teaport-wifi-setup.service 2>/dev/null; then
     SUDO systemctl start teaport-wifi-setup-net.service || warn "teaport-wifi-setup-net did not start: the port-80 rule of the setup running now stays until it is next run or the box restarts"
   fi
@@ -3230,7 +3238,7 @@ phase_wifi_setup() {
     return 0
   fi
   log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
-  have pkaction || warn "wifi setup: polkit not found — the run user cannot change NetworkManager's Wi-Fi without it"
+  have pkaction || warn "wifi setup: polkit not found — the run user cannot scan for Wi-Fi networks without it"
   # The root side in its own unit, which loads no /etc/teaport environment (see the unit).
   render_unit teaport-wifi-setup-net.service.in teaport-wifi-setup-net.service
   render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
