@@ -13,7 +13,7 @@
 #     once the line is in;
 #   - the setup unit can use sudo (no NoNewPrivileges=), and an old one gets a drop-in.
 #
-# Run: pytest test_wifi_apply.py   (or via pytest test_suite.py)
+# Run: python test_wifi_apply.py   (or via pytest test_suite.py)
 #
 import io
 import json
@@ -356,3 +356,7 @@ def test_an_old_setup_unit_gets_sudo_back_from_the_package():
     unit.write_text((ROOT / "systemd/teaport-wifi-setup.service.in").read_text())
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
     assert p.returncode == 0 and not dropin.exists(), p.stderr
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
