@@ -207,6 +207,11 @@ class NM:
         """Drop a profile a join created (the helper deletes no other)."""
         self._helper("delete", {"uuid": uuid})
 
+    def keep(self, uuid: str) -> None:
+        """A profile a join created is the box's network now: the helper no longer lets it
+        be deleted."""
+        self._helper("keep", {"uuid": uuid})
+
     def join(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
         """Join `ssid` (wifi_apply.Ops.join). Returns (ok, why-not, UUID of a profile
         created for it — the caller drops it if it does not keep it)."""
@@ -241,6 +246,8 @@ def switch(nm: "NM", dev: str, ssid: str, password: str, hidden: bool) -> tuple[
     previous = nm.active(dev)
     ok, why, created = nm.join(dev, ssid, password, hidden)
     if ok and nm.online(dev):
+        if created:
+            nm.keep(created)
         return True, ""
     if ok:
         why = N_("it joined but there is no internet through it")

@@ -756,6 +756,7 @@ class _WifiNM:
     def scan(self, dev): return [{"ssid": "cafe", "signal": 70, "open": False, "security": "WPA2"}]
     def up(self, profile, wait=45): self.events.append(("up", profile)); return True
     def delete(self, profile): self.events.append(("delete", profile))
+    def keep(self, profile): self.events.append(("keep", profile))
 
     def join(self, dev, ssid, pw, hidden):
         self.events.append(("join", ssid, pw, hidden))

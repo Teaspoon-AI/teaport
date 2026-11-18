@@ -133,6 +133,7 @@ def test_a_stop_in_the_middle_of_a_join_puts_the_old_password_back(monkeypatch, 
     monkeypatch.setattr(wifi_apply.sys, "stdin", io.StringIO("{}"))
     monkeypatch.setattr(wifi_apply, "Ops", lambda: _Ops(nm))
     monkeypatch.setattr(wifi_apply.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(wifi_apply, "_lock", lambda: 0)
 
     def stopped_mid_join(ops, verb, req, **kw):
         ops._pending = ("psk", "u1", "0", "old:pass1")
@@ -145,6 +146,89 @@ def test_a_stop_in_the_middle_of_a_join_puts_the_old_password_back(monkeypatch, 
 
 
 _Ops = wifi_apply.Ops
+
+
+def test_a_stop_while_the_old_password_is_being_put_back_still_puts_it_back():
+    # The restore itself cut short (the run user can SIGTERM its own sudo): it stays to do.
+    nm = FakeNmcli({}, profiles=[{"ssid": "home", "psk": "old:pass1", "uuid": "u1"}])
+    ops = wifi_apply.Ops(nm)
+    ops._pending = ("psk", "u1", "0", "old:pass1")
+    nm.profiles["u1"]["psk"] = "wrongpass1"
+    real = ops.nmcli
+
+    def stopped_mid_modify(*args, **kw):
+        if "modify" in args:
+            raise wifi_apply._Stopped
+        return real(*args, **kw)
+    ops.nmcli = stopped_mid_modify
+    with pytest.raises(wifi_apply._Stopped):
+        ops.undo()
+    assert ops._pending is not None   # not cleared before it happened
+    ops.nmcli = real
+    ops.undo()
+    assert nm.profiles["u1"]["psk"] == "old:pass1" and ops._pending is None
+
+
+def test_a_stopped_request_leaves_no_profile_it_made(monkeypatch, capsys, tmp_path):
+    nm = FakeNmcli({"cafe": "cafepass1"})
+    monkeypatch.setattr(wifi_apply.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(wifi_apply.sys, "stdin", io.StringIO(json.dumps(
+        {"dev": "wlan0", "ssid": "cafe", "password": "cafepass1"})))
+    monkeypatch.setattr(wifi_apply, "Ops", lambda: _Ops(nm))
+    monkeypatch.setattr(wifi_apply.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(wifi_apply, "_lock", lambda: 0)
+    monkeypatch.setattr(wifi_apply, "CREATED_PATH", str(tmp_path / "created"))
+    real_handle = wifi_apply.handle
+
+    def stopped_after_the_join(*a, **kw):   # the stop lands before the reply goes out
+        real_handle(*a, **kw)
+        raise wifi_apply._Stopped
+    monkeypatch.setattr(wifi_apply, "handle", stopped_after_the_join)
+    assert wifi_apply.main(["join"]) == 3
+    assert nm.profiles == {}, nm.profiles          # the caller never learned its UUID
+    assert wifi_apply.Created(str(tmp_path / "created"))._load() == set()
+    assert json.loads(capsys.readouterr().out)["stopped"] is True
+
+
+def test_one_change_at_a_time(tmp_path):
+    # Two joins at once would each take the other's half-done password for the old one.
+    path = str(tmp_path / "run/lock")
+    held = wifi_apply._lock(path)
+    try:
+        with pytest.raises(wifi_apply._Busy):
+            wifi_apply._lock(path, wait=0.3)
+    finally:
+        os.close(held)
+    os.close(wifi_apply._lock(path, wait=0.3))   # free again once the first is done
+    assert oct(os.stat(path).st_mode & 0o777) == oct(0o600)
+    assert oct(os.stat(os.path.dirname(path)).st_mode & 0o777) == oct(0o700)
+
+
+def test_main_takes_the_lock_for_every_change_and_says_busy(monkeypatch, capsys):
+    monkeypatch.setattr(wifi_apply.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(wifi_apply.signal, "signal", lambda *a: None)
+    taken = []
+
+    def busy():
+        taken.append(1)
+        raise wifi_apply._Busy
+    monkeypatch.setattr(wifi_apply, "_lock", busy)
+    for verb in ("join", "ap-up", "ap-down", "up", "delete", "keep"):
+        monkeypatch.setattr(wifi_apply.sys, "stdin", io.StringIO("{}"))
+        assert wifi_apply.main([verb]) == 2
+        assert "another Wi-Fi change" in json.loads(capsys.readouterr().out)["refused"]
+    assert len(taken) == 6
+
+
+def test_a_kept_network_can_no_longer_be_deleted():
+    nm = FakeNmcli({"cafe": "cafepass1"})
+    created = wifi_apply.Created()
+    r = _handle(nm, "join", {"dev": "wlan0", "ssid": "cafe", "password": "cafepass1"}, created)
+    assert r["ok"] and r["created"]
+    _handle(nm, "keep", {"uuid": r["created"]}, created)
+    with pytest.raises(wifi_apply.Refused, match="not a profile this helper created"):
+        _handle(nm, "delete", {"uuid": r["created"]}, created)
+    assert r["created"] in nm.profiles
 
 
 def _fake_sudo(tmp_path, reply, rc=0):
@@ -190,7 +274,7 @@ def test_the_package_ships_the_helper_and_the_setup_unit_can_reach_it():
     assert not re.search(r"^NoNewPrivileges=", unit, re.M), "sudo cannot run under NoNewPrivileges="
     # Standard library only: it runs on the system python, outside the venv.
     imports = set(re.findall(r"^(?:import|from) (\w+)", (ROOT / "brain/teaport_brain/wifi_apply.py").read_text(), re.M))
-    assert imports <= {"json", "os", "re", "signal", "subprocess", "sys"}, imports
+    assert imports <= {"fcntl", "json", "os", "re", "signal", "subprocess", "sys", "time"}, imports
 
 
 def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True):

@@ -65,13 +65,13 @@ Signing in to OpenRouter instead of pasting a key does not work in setup mode: n
 
 <!-- source: brain/teaport_brain/wifi_setup.py:291-310#9c83724e -->
 
-<!-- source: brain/teaport_brain/wifi_setup.py:285-288#85aa669c; brain/teaport_brain/wifi_setup.py:720-733#3ae9aa03; brain/teaport_brain/wifi_setup.py:871-876#4d349386; brain/teaport_brain/wifi_voice.py:123-134#457019ed; systemd/teaport-wifi-setup.service.in:38-42#ddd3d10e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:285-288#85aa669c; brain/teaport_brain/wifi_setup.py:720-733#3ae9aa03; brain/teaport_brain/wifi_setup.py:873-878#4d349386; brain/teaport_brain/wifi_voice.py:123-134#457019ed; systemd/teaport-wifi-setup.service.in:38-42#ddd3d10e -->
 
 ## If the device connects
 
 The page tells you that the device is joining your network, so switch your phone back to it. The device leaves setup mode and says that it is connected to your network and online again; a screen shows "Connected to" and the network's name under the title "Wi-Fi" for a few seconds.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:378-387#99955446; brain/teaport_brain/wifi_voice.py:982-987#799aa40d; brain/teaport_brain/wifi_setup.py:828-830#534563de -->
+<!-- source: brain/teaport_brain/wifi_setup.py:378-387#99955446; brain/teaport_brain/wifi_voice.py:982-987#799aa40d; brain/teaport_brain/wifi_setup.py:830-832#534563de -->
 
 ## If the join fails
 

@@ -351,12 +351,13 @@ class _SwitchNM:
     def online(self, dev): return self._online
     def delete(self, p): self.events.append(("delete", p))
     def up(self, p, wait=45): self.events.append(("up", p)); return True
+    def keep(self, p): self.events.append(("keep", p))
 
 
 def test_an_online_switch_that_fails_puts_the_old_network_back():
     good = _SwitchNM((True, "", "u-cafe"), after={"name": "cafe", "uuid": "u-cafe"})
     assert wifi.switch(good, "wlan0", "cafe", "pw123456", False) == (True, "")
-    assert good.events == []
+    assert good.events == [("keep", "u-cafe")]   # the box's network now: not deletable
     bad = _SwitchNM((False, "the password did not work", "u-cafe"))
     assert wifi.switch(bad, "wlan0", "cafe", "x" * 8, False) == (False, "the password did not work")
     assert bad.events == [("delete", "u-cafe"), ("up", "u-home")]
@@ -397,6 +398,7 @@ class FakeNM:
     def ap_down(self): self.events.append(("ap_down",))
     def ap_delete(self): self.events.append(("ap_delete",))
     def up(self, profile, wait=45): self.events.append(("up", profile, wait)); return True
+    def keep(self, profile): self.events.append(("keep", profile))
     def delete(self, profile): self.events.append(("delete", profile))
     def undo(self): self.events.append(("undo",))
     def online(self, dev): return self._online

@@ -17,15 +17,20 @@
 #                 caller can drop it;
 #   up            a saved Wi-Fi client profile (not an access point), to put one back;
 #   delete        a profile this helper created (kept in CREATED_PATH until boot), only;
+#   keep          a profile it created is the box's network now: no longer deletable;
 #   connectivity  NetworkManager's connectivity check, which needs network-control.
+# One change at a time (LOCK_PATH): two joins at once would each take the other's
+# half-done password for the one to put back. The helper never brings up an access point
+# other than setup's own: a hotspot the Wi-Fi ran before setup is not put back.
 # What that leaves the run user: moving the box's Wi-Fi to a network whose password it has,
 # and the setup network while setup runs. That is what Wi-Fi setup is.
 #
 # The verb is the only argument; the rest is a JSON object on stdin, so a password never
 # goes on a command line, where any user's ps can read it. The reply is a JSON object on
 # stdout; a request this does not do gets {"refused": why} and exit 2. A stop (SIGTERM:
-# systemd stopping setup sends it to every process of the unit, sudo passes it on) undoes
-# a join half-done before this exits.
+# systemd stopping setup sends it to every process of the unit, sudo passes it on, and the
+# run user can send it) undoes a join half-done, and drops a profile the request made,
+# before this exits: the caller never got the answer that names it.
 #
 # Run as the sudoers line (packaging/deb/sudoers-sync) names it:
 #   /usr/bin/python3 /usr/lib/teaport/wifi_apply.py <verb>
@@ -34,12 +39,14 @@
 # what wifi.py reads NetworkManager with, as the run user, and tests run all of it
 # in-process (handle()) against a pretend nmcli.
 #
+import fcntl
 import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import time
 
 AP_CONNECTION = "teaport-setup"
 # The setup network's address, pinned in its profile (ipv4.addresses) rather than left to
@@ -54,6 +61,9 @@ WIFI_TYPE = "802-11-wireless"
 PSK_KINDS = ("wpa-psk", "sae")
 SETUP_UNIT = "teaport-wifi-setup.service"
 CREATED_PATH = "/run/teaport-wifi-apply/created"
+LOCK_PATH = "/run/teaport-wifi-apply/lock"
+# How long a change waits for the one before it (a join takes up to about two minutes).
+LOCK_WAIT_SECS = 180
 MAX_REQUEST = 4096
 # Why a join failed, as codes; wifi.py turns them into the words people see.
 SAVED_FAILED, NO_CONNECT, BAD_PASSWORD, NOT_FOUND = "saved_failed", "no_connect", "password", "not_found"
@@ -114,6 +124,8 @@ class Ops:
         # What the join in progress has changed, for undo(): ("psk", uuid, flags, psk)
         # or ("new", uuids before it, ssid). None when nothing is half-done.
         self._pending: tuple | None = None
+        # The profile the join in progress created, once known: a stopped request drops it.
+        self.made: str | None = None
 
     def nmcli(self, *args: str, timeout: float = 60) -> tuple[int, str, str]:
         return self._run(["nmcli", *args], timeout=timeout)
@@ -262,6 +274,7 @@ class Ops:
             self.rescan(dev)
             rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
         created = next(iter(self._new_profiles(before, ssid)), None)
+        self.made = created
         self._pending = None
         if rc == 0:
             return True, "", created
@@ -278,7 +291,7 @@ class Ops:
         """Put back what the join in progress changed — after a password that did not
         work, or when a stop came in the middle of a join: the profile's old password, or
         no profile created for it."""
-        pending, self._pending = self._pending, None
+        pending = self._pending
         if not pending:
             return
         if pending[0] == "psk":
@@ -289,6 +302,8 @@ class Ops:
             _, before, ssid = pending
             for uuid in self._new_profiles(before, ssid):
                 self.delete(uuid)
+        # Only now: a stop that cut the restore short finds it still to do (main()).
+        self._pending = None
 
 
 # --- the requests ------------------------------------------------------------------
@@ -376,6 +391,9 @@ def handle(ops: Ops, verb: str, req, *, created: Created, setup_running) -> dict
         if not ops.client_profile(uuid):
             raise Refused("not a saved Wi-Fi network")
         return {"ok": ops.up(uuid, wait)}
+    if verb == "keep":
+        created.discard(_text(req, "uuid"))
+        return {"ok": True}
     if verb == "delete":
         uuid = _text(req, "uuid")
         if uuid not in created:
@@ -425,6 +443,27 @@ def _reply(obj: dict) -> None:
     sys.stdout.flush()
 
 
+class _Busy(Exception):
+    pass
+
+
+def _lock(path: str = LOCK_PATH, wait: float = LOCK_WAIT_SECS) -> int:
+    """An exclusive lock on root's own file, held until the process exits; _Busy when the
+    change before this one holds it longer than `wait`."""
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise _Busy from None
+            time.sleep(0.2)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if os.geteuid() != 0:
@@ -435,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(s, _on_stop)
-    ops = Ops()
+    ops, created = Ops(), Created(CREATED_PATH)
     try:
         data = sys.stdin.read(MAX_REQUEST + 1)
         if len(data) > MAX_REQUEST:
@@ -444,13 +483,22 @@ def main(argv: list[str] | None = None) -> int:
             req = json.loads(data) if data.strip() else {}
         except ValueError:
             raise Refused("the request is not JSON") from None
-        _reply(handle(ops, argv[0], req, created=Created(CREATED_PATH), setup_running=_setup_running))
+        if argv[0] != "connectivity":   # a read; every other verb changes something
+            try:
+                _lock()
+            except _Busy:
+                raise Refused("another Wi-Fi change is still going on") from None
+        _reply(handle(ops, argv[0], req, created=created, setup_running=_setup_running))
         return 0
     except Refused as e:
         _reply({"refused": str(e)})
         return 2
     except _Stopped:
+        # Signals are ignored from here (_on_stop): this runs to its end.
         ops.undo()
+        if ops.made:   # the caller never got the answer that names it
+            ops.delete(ops.made)
+            created.discard(ops.made)
         _reply({"ok": False, "why": NO_CONNECT, "stopped": True})
         return 3
 
