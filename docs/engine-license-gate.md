@@ -97,23 +97,85 @@ was never recorded with Teaspoon AI, and asks for acceptance again:
 
 That re-acceptance is the point: those owners never sent Teaspoon AI an acceptance.
 
-### Order of steps
+### Runbook
 
-1. Deploy the Worker with `GATE = "open"`. Move the domain from the bucket's custom domain
-   to the Worker's custom domain. Check that the manifest, `/teaport`, `/eula`, `/connect`,
-   `/dl/brain` and an engine file all still answer 200, with the same bytes. Downloads keep
-   working for every installer.
-2. Run a fresh install on a Jetson from this branch's installer. Check that the acceptance
-   row appears in D1.
-3. Merge the PR. The one-liner now installs with the new installer.
-4. Set `GATE = "enforce"` (the default in `wrangler.toml`), then `wrangler deploy`. Unsigned
-   engine and model URLs now answer 403. Turn off r2.dev on the bucket if it is on. Set the
-   repo secret `TEAPORT_DL_TOKEN`, then re-run the publish workflow's check.
-5. Tell the known boxes' owners (there are few before the first release) to `git pull` or
-   use the one-liner, and to accept again with an email address.
+The Worker ships with `GATE = "open"` in `wrangler.toml`. It enforces only after the PR
+that brings the new installer to `main` has merged: until then the one-liner clones the old
+installer, and an enforcing gate would break every fresh install.
+
+**1. Deploy, gate open.** Needs `npx wrangler@4 login` (Node 22 or later) on an account with
+Workers, D1, R2 and the teaspoon.tech zone.
+
+```sh
+cd get-worker
+npx wrangler@4 d1 create teaport-engine-license        # put its database_id in wrangler.toml
+npx wrangler@4 d1 migrations apply teaport-engine-license --remote
+openssl rand -base64 48 | npx wrangler@4 secret put SIGNING_KEY
+ci="$(openssl rand -hex 32)"
+printf %s "$ci" | npx wrangler@4 secret put CI_TOKEN
+printf %s "$ci" | gh secret set TEAPORT_DL_TOKEN -R Teaspoon-AI/teaport
+gh variable set TEAPORT_GATE --body open -R Teaspoon-AI/teaport   # manifest/check.py: expect public
+unset ci
+# Against the real bucket and database, before the domain moves (a local URL, no routes):
+npx wrangler@4 dev --remote --port 8788 &
+./verify.sh open http://127.0.0.1:8788
+```
+
+**2. Move the domain.** About a minute of downtime between the two commands.
+
+```sh
+npx wrangler@4 r2 bucket domain list teaport-get           # note what is attached
+npx wrangler@4 r2 bucket domain remove teaport-get --domain get.teaspoon.tech
+npx wrangler@4 deploy                                      # attaches get.teaspoon.tech to the Worker
+./verify.sh open
+npx wrangler@4 r2 bucket dev-url get teaport-get           # if enabled: r2 bucket dev-url disable
+```
+
+**3. End-to-end install, gate open,** from the PR's branch on a Jetson. This is a full install:
+system packages, units, Caddy.
+
+```sh
+git clone -b engine-license-gate https://github.com/Teaspoon-AI/teaport.git ~/teaport-gate
+cd ~/teaport-gate && ./install.sh                # read, type accept, give an email
+./install.sh                                     # repair run: "already accepted", no prompt
+teaport doctor
+```
+
+Then the row exists:
+
+```sh
+npx wrangler@4 d1 execute teaport-engine-license --remote \
+  --command "SELECT id, license_version, license_sha256, accepted_at, method, installer_version, email FROM acceptances"
+```
+
+The box's `/var/lib/teaport/eula-accepted.json` has the same `acceptance_id`. The install
+log shows the engine and models downloaded (through signed URLs: `?aid=…&sig=…`).
+
+**4. Merge the PR.** The one-liner now runs the new installer.
+
+**5. Enforce.** A one-line PR, then the deploy and the checks:
+
+```sh
+sed -i 's/^GATE = "open"/GATE = "enforce"/' get-worker/wrangler.toml   # commit, PR, merge
+cd get-worker && npx wrangler@4 deploy
+gh variable set TEAPORT_GATE --body enforce -R Teaspoon-AI/teaport
+./verify.sh enforce
+curl -sS -o /dev/null -w '%{http_code}\n' https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-l4t38-cu13   # 403
+gh workflow run publish.yml -R Teaspoon-AI/teaport --ref main   # check.py: 403 plain, sha ok with the token
+```
+
+Then run `./install.sh` once more on the Jetson. It should renew its URLs and find every
+file in place. To test a download through the gate, remove one small file first, such as
+`/opt/teaport/bin/g2p/kokoro_pos.bin`.
+
+**6. Tell the known boxes' owners** (there are few before the first release) to `git pull` or
+use the one-liner, and to accept again with an email address.
 
 The deprecated bare `--accept-eula` and `TEAPORT_ACCEPT_EULA=1` keep working for one release,
 with a warning. Remove them in the next release that changes `install.sh`'s flags.
 
 **Rollback:** set `GATE = "open"` and deploy. That takes seconds and needs no DNS change.
-The bucket's custom domain can be re-attached if the Worker itself has to go.
+If the Worker itself has to go, remove its custom domain in the dashboard (Workers >
+teaport-get > Settings > Domains), then
+`npx wrangler@4 r2 bucket domain add teaport-get --domain get.teaspoon.tech --zone-id <teaspoon.tech zone id>`.
+That puts the bucket back exactly as it was before the gate, public objects and all.

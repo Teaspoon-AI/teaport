@@ -14,7 +14,10 @@
 #   - the engine's files and models (/dl/engine/, /dl/models/, not the notices) are served
 #     only past the engine license gate (get-worker/): each must answer 403 to a plain
 #     request, and is fetched with the CI token in TEAPORT_DL_TOKEN (the Worker's CI_TOKEN;
-#     a repo secret). Without the token they cannot be checked, which is a problem;
+#     a repo secret). Without the token they cannot be checked, which is a problem.
+#     TEAPORT_GATE=open (the Worker's GATE=open, during the switchover only: the repo
+#     variable TEAPORT_GATE) expects them public instead: a plain request that gets
+#     them is fine, and they are checked with it when there is no token;
 #   - a url with no sha256 (models.voxtral.aux) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
@@ -188,6 +191,10 @@ def check(manifest_path, placeholders_ok):
         manifest = json.load(f)
     problems, checked = [], 0
     token = os.environ.get("TEAPORT_DL_TOKEN", "")
+    gate_open = os.environ.get("TEAPORT_GATE", "enforce") == "open"
+    if gate_open:
+        print("::notice::TEAPORT_GATE=open: the engine and its models are expected to be public "
+              "(the switchover); set it to enforce once get.teaspoon.tech enforces the license")
 
     def placeholder(where, value):
         if not placeholders_ok:
@@ -214,7 +221,7 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
-        if gated(url):
+        if gated(url) and not gate_open:
             why = ungated_answer(url)
             if why:
                 problems.append(f"{where}: {url} {why}")

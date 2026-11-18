@@ -17,8 +17,9 @@ routes = [{ pattern = "get.teaspoon.tech", custom_domain = true }]
 
 [vars]
 # "enforce": an unsigned engine/model download is 403. "open": served as before the gate,
-# for the switchover only (docs/engine-license-gate.md). Flip with a deploy.
-GATE = "enforce"
+# for the switchover only, until the installer that accepts through the Worker is on main
+# (docs/engine-license-gate.md, "Enforce"). Unset, the Worker enforces.
+GATE = "open"
 URL_TTL_SECONDS = "7200"   # signed download URLs: checked when a request starts
 RETENTION_DAYS = "2557"    # 7 years: docs/engine-license-data.md
 PUBLIC_ORIGIN = "https://get.teaspoon.tech"

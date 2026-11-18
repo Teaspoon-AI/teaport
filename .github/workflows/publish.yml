@@ -64,8 +64,11 @@ jobs:
         # reads them with the Worker's CI token, a repo secret (not r2-publish's: this job
         # runs on pull requests too), and checks a plain request gets 403. A PR from a fork
         # has no secrets, so its check of those entries fails; a maintainer re-runs it.
+        # TEAPORT_GATE is a repo variable: "open" only while the Worker runs GATE=open
+        # (docs/engine-license-gate.md); unset, a public engine file fails the check.
         env:
           TEAPORT_DL_TOKEN: ${{ secrets.TEAPORT_DL_TOKEN }}
+          TEAPORT_GATE: ${{ vars.TEAPORT_GATE || 'enforce' }}
         run: |
           python3 manifest/check.py manifest/stable.json
           python3 manifest/check.py --placeholders-ok manifest/beta.json
