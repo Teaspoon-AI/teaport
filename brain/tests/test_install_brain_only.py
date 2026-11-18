@@ -1147,7 +1147,7 @@ def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_th
                                        ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
-    assert "sudoers line was not written" in p.stderr
+    assert "sudoers lines for the config page and Wi-Fi, or the update's polkit rule, were not written" in p.stderr
     assert "shadows" not in p.stderr   # no old CLI: nothing to say
     old_cli.write_text("#!/bin/sh\n")
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)

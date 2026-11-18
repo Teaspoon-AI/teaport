@@ -1033,14 +1033,18 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
     assert 'STATE = "/var/lib/teaport-update"' in helper   # the unit's StateDirectory, root's
     assert "\n  - polkitd\n" in recipe
     # sudoers-sync: the polkit rule names the unit, the verb and the user; sudoers has only
-    # the config page's line.
+    # the two helpers' lines (the config page's, the Wi-Fi's).
     tmp = tempdir("teaport-sudoers-")
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     text = text.replace("f=/etc/sudoers.d/teaport-config", f"f={tmp}/out")
     text = text.replace("helper=/usr/lib/teaport/config_apply.py", f"helper={tmp}/helper")
-    text = text.replace("rules=/etc/polkit-1/rules.d/50-teaport-update.rules", f"rules={tmp}/rules.d/50-teaport-update.rules")
+    text = text.replace("wifi=/usr/lib/teaport/wifi_apply.py", f"wifi={tmp}/wifi")
+    text = text.replace("update_rules=/etc/polkit-1/rules.d/50-teaport-update.rules", f"update_rules={tmp}/rules.d/50-teaport-update.rules")
+    text = text.replace("wifi_rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules", f"wifi_rules={tmp}/no-wifi-setup.rules")
+    assert "/etc/polkit-1" not in text.split("set -eu", 1)[1], "a path left pointing at the real box"
     text = text.replace("install -m 0440 -o root -g root", "install -m 0440").replace("install -m 0644 -o root -g root", "install -m 0644")
     pathlib.Path(tmp, "helper").write_text("")
+    pathlib.Path(tmp, "wifi").write_text("")
     pathlib.Path(tmp, "rules.d").mkdir()
     pathlib.Path(tmp, "s").write_text(text)
     p = subprocess.run(["sh", f"{tmp}/s", "bob"], capture_output=True, text=True)
@@ -1048,7 +1052,8 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
         appliance.skip("no visudo here")
     assert p.returncode == 0, p.stderr
     lines = [ln for ln in pathlib.Path(tmp, "out").read_text().splitlines() if not ln.startswith("#")]
-    assert lines == ["bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/helper *"], lines
+    assert lines == ["bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/helper *",
+                     "bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/wifi *"], lines
     rule = pathlib.Path(tmp, "rules.d/50-teaport-update.rules").read_text()
     for want in ('action.id == "org.freedesktop.systemd1.manage-units"', 'action.lookup("unit") == "teaport-update.service"',
                  'action.lookup("verb") == "start"', 'subject.user == "bob"', "return polkit.Result.YES"):

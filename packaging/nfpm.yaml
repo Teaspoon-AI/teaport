@@ -85,6 +85,24 @@ contents:
       owner: root
       group: root
 
+  # The Wi-Fi changes' privileged helper, the same way (see wifi_apply.py): every change
+  # Wi-Fi setup and the config page make to NetworkManager, checked, and nothing else.
+  - src: brain/teaport_brain/wifi_apply.py
+    dst: /usr/lib/teaport/wifi_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
+  # The Wi-Fi setup polkit rule's template: sudoers-sync rewrites a rule an earlier
+  # install rendered (which granted more) from it, with no install.sh run needed.
+  - src: packaging/wifi-setup/50-teaport-wifi-setup.rules.in
+    dst: /usr/lib/teaport/50-teaport-wifi-setup.rules.in
+    file_info:
+      mode: 0o644
+      owner: root
+      group: root
+
   # The license material (#60): the Debian copyright file, and the third-party summary
   # that says where the source of the LGPL parts is and how to replace them.
   - src: packaging/deb/copyright
@@ -123,5 +141,18 @@ contents:
     dst: /usr/lib/teaport/sudoers-sync
     file_info:
       mode: 0o755
+      owner: root
+      group: root
+
+  # The root side of Wi-Fi setup, the one unit this package carries rather than install.sh
+  # rendering it: it names no user or directory, and a box whose Wi-Fi setup unit predates
+  # it must have it from the package alone. postinst points that old unit at it
+  # (Requires=) and turns off the old unit's own root steps, so an apt or updater upgrade
+  # leaves no root command reading brain.env and keeps the port-80 redirect. install.sh
+  # renders the same file into /etc/systemd/system, which takes precedence.
+  - src: systemd/teaport-wifi-setup-net.service.in
+    dst: /usr/lib/systemd/system/teaport-wifi-setup-net.service
+    file_info:
+      mode: 0o644
       owner: root
       group: root

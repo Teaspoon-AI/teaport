@@ -2,8 +2,9 @@
 # postinst for teaport-brain (#60). `configure` runs after every install and upgrade,
 # and on a downgrade (a rollback is `apt install` of the kept .deb).
 #
-#  1. The run user's grants: the config page's sudoers line, and the polkit rule that lets
-#     them start the update (sudoers-sync).
+#  1. The run user's grants (sudoers-sync): the sudoers lines the config page and Wi-Fi
+#     changes need, the polkit rule that lets them start the update, and the Wi-Fi setup
+#     polkit rule narrowed to a scan.
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.
@@ -21,7 +22,7 @@ set -e
 # A line that cannot be written (no visudo, a user name sudoers would reject) is the config
 # page's problem, not the brain's: it must not leave new files unpacked under a brain that
 # was never restarted, so it is said and the script goes on. install.sh says it again.
-/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the config page's sudoers line was not written (/usr/lib/teaport/sudoers-sync)" >&2
+/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the sudoers lines for the config page and Wi-Fi, or the update's polkit rule, were not written (/usr/lib/teaport/sudoers-sync)" >&2
 
 if [ ! -e /opt/teaport/venv ] || [ -L /opt/teaport/venv ]; then
   if [ -d /opt/teaport ]; then ln -sfn /opt/teaport/brain /opt/teaport/venv; fi
@@ -36,11 +37,57 @@ if [ -e /usr/local/bin/teaport ]; then
   echo "teaport-brain: /usr/local/bin/teaport shadows the package's /usr/bin/teaport. If it is the old installer's CLI, install.sh retires it once the brain is back; after a plain apt install, remove it or run ./install.sh --only brain from a checkout" >&2
 fi
 
-# Not under systemd (a container, a chroot, an image build): nothing to restart.
+# A Wi-Fi setup unit rendered before its root steps moved to their own unit
+# (teaport-wifi-setup-net, which this package ships) still runs them as root with
+# brain.env's environment, which the config page writes on the run user's behalf. A
+# drop-in turns those steps off and Requires= the root unit instead, which runs the same
+# steps with no environment: setup works as it does with the new unit, port-80 redirect
+# and clean-up included. install.sh removes the drop-in once it renders the new pair
+# (every --only brain does). The root unit is also copied into /etc/systemd/system, where
+# install.sh renders the same file: a rollback to a package that does not ship it (0.1.0)
+# deletes this package's copy but keeps the drop-in (dpkg runs postrm `upgrade`, not
+# `remove`), and the drop-in's Requires= would then stop setup from starting at all.
+wifi=/etc/systemd/system/teaport-wifi-setup.service
+stopgap=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+net=teaport-wifi-setup-net.service
+reload=
+if [ -f "$wifi" ] && grep -q '^ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net' "$wifi"; then
+  [ -e "/etc/systemd/system/$net" ] || install -m 0644 "/usr/lib/systemd/system/$net" "/etc/systemd/system/$net"
+  mkdir -p "$(dirname "$stopgap")"
+  printf '%s\n' "# teaport-brain postinst: the old unit's root steps run from teaport-wifi-setup-net," \
+    "# until install.sh renders the new teaport-wifi-setup (install.sh --only brain does)." \
+    "[Unit]" "Requires=teaport-wifi-setup-net.service" "After=teaport-wifi-setup-net.service" \
+    "[Service]" "ExecStartPre=" "ExecStopPost=" > "$stopgap"
+  echo "teaport-brain: Wi-Fi setup's root steps now run from teaport-wifi-setup-net" >&2
+  reload=1
+fi
+
+# A Wi-Fi setup unit rendered before the Wi-Fi changes moved to wifi_apply.py under sudo
+# has NoNewPrivileges=yes, under which sudo cannot run: setup could change nothing. A
+# drop-in lifts it until install.sh renders the unit again (and removes the drop-in).
+helper_dropin=/etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf
+if [ -f "$wifi" ] && grep -q '^NoNewPrivileges=yes' "$wifi"; then
+  mkdir -p "$(dirname "$helper_dropin")"
+  printf '%s\n' "# teaport-brain postinst: Wi-Fi setup changes the Wi-Fi through sudo (wifi_apply.py)," \
+    "# until install.sh renders the new teaport-wifi-setup (install.sh --only brain does)." \
+    "[Service]" "NoNewPrivileges=no" > "$helper_dropin"
+  reload=1
+fi
+
+# Not under systemd (a container, a chroot, an image build): nothing to reload or restart.
 [ -d /run/systemd/system ] || exit 0
-# The package ships a unit (teaport-update.service): systemd reads it, or a changed copy,
-# only after a reload.
+# Always a reload: the package ships units (teaport-update.service,
+# teaport-wifi-setup-net.service), which systemd reads, or a changed copy, only after one.
+# And a Wi-Fi drop-in written above is loaded before anything restarts: a running unit keeps
+# the definition it started with until a reload, and a restart under the old one would run
+# its root steps with brain.env again. After the reload, a setup that is running has lost
+# the old clean-up step, so the root unit is started for it at once (its `up` leaves a rule
+# that is already there as it is), not left to setup's restart below, which a brain that
+# fails to come up first would skip: the root unit's stop cleans up when setup ends.
 systemctl daemon-reload || true
+if [ -n "$reload" ] && systemctl is-active --quiet teaport-wifi-setup.service; then
+  systemctl start "$net" || echo "teaport-brain: $net did not start: the port-80 rule of the Wi-Fi setup running now stays until it is next run or the box restarts" >&2
+fi
 for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup.service; do
   # try-restart: only a unit that is running. The wifi unit is on demand and the audio
   # bridge is optional; a brain that is enabled but stopped is the operator's to start.

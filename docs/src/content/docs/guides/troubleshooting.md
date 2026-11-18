@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2206#2ca3ef5a; install.sh:2635-2704#d970b544 -->
+<!-- source: install.sh:2211#2ca3ef5a; install.sh:2656-2725#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +211,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2036-2049#3bb53588 -->
+<!-- source: install.sh:2041-2054#3bb53588; install.sh:2040-2053#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +242,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2054-2058#bf1269bd -->
+<!-- source: install.sh:2059-2063#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +273,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1886-1898#a65c0a82 -->
+<!-- source: install.sh:1891-1903#a65c0a82 -->
 
 **Fix**
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2635-2704#d970b544; install.sh:2507-2552#cd323bfa -->
+<!-- source: install.sh:2656-2725#d970b544; install.sh:2523-2573#a3eb07c3; install.sh:2505-2508,2523-2577#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2724-2728#3c1e6011; install.sh:2808-2811#b1e28ef5 -->
+<!-- source: install.sh:2745-2749#3c1e6011; install.sh:2829-2832#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -517,7 +517,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2141-2149,2176-2182#4287c4a8; install.sh:2196-2199#cefd034b -->
+<!-- source: install.sh:2146-2154,2181-2187#4287c4a8; install.sh:2201-2204#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -525,7 +525,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2186-2194#b3851890 -->
+<!-- source: install.sh:2191-2199#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -633,7 +633,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2036-2049#3bb53588 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2041-2054#3bb53588; install.sh:2040-2053#e0d335b8 -->
 
 **Fix**
 

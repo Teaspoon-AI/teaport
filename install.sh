@@ -1458,7 +1458,7 @@ brain_deb_prune() {
 # did not exist yet when the package was configured. One writer: the package's own script.
 brain_sudoers() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] /usr/lib/teaport/sudoers-sync %s\n' "$RUN_USER"; return 0; fi
-  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the config page's sudoers line or the update's polkit rule was not written (/usr/lib/teaport/sudoers-sync failed)"
+  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page and Wi-Fi, or the update's polkit rule, were not written (/usr/lib/teaport/sudoers-sync failed)"
 }
 
 # brain_retire_old_tools -- the pre-package installer's CLI and config helper, once the
@@ -1524,8 +1524,13 @@ brain_retire_old_venvs() {
 brain_render_units() {
   render_unit teaport-brain.service.in teaport-brain.service
   [ ! -e /etc/systemd/system/teaport-local-audio.service ] || render_unit teaport-local-audio.service.in teaport-local-audio.service
-  [ ! -e /etc/systemd/system/teaport-wifi-setup.service ] || render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
+  if [ -e /etc/systemd/system/teaport-wifi-setup.service ]; then
+    # With its root side, which it Requires= (a unit rendered before that split has none).
+    render_unit teaport-wifi-setup-net.service.in teaport-wifi-setup-net.service
+    render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
+  fi
   SUDO systemctl daemon-reload
+  [ ! -e /etc/systemd/system/teaport-wifi-setup.service ] || wifi_setup_split_done
 }
 
 # brain_swap <deb> <mode> -- install <deb> over the brain, render the units, restart and
@@ -2491,6 +2496,17 @@ frontdoor_name_taken() {
   return 1
 }
 
+# host_name_ok <name> -- a DNS host name: dot-separated labels of ASCII letters, digits and
+# inner hyphens. The name goes into root's files (avahi-daemon.conf through sed, the
+# Caddyfile, run by caddy, which holds the local CA's key); a saved one comes from
+# brain.env, which the config page writes on the run user's behalf, so anything else in it
+# could be a sed command or a Caddyfile line. LC_ALL=C: under a UTF-8 locale bash's [a-z]
+# follows its collation and takes ø, é, ² and over a thousand more.
+host_name_ok() {
+  local LC_ALL=C
+  [ "${#1}" -le 253 ] && [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
 # resolve_frontdoor — settle the front door's name, its local CA's name, and the operator's
 # certificate if one is given, before phase_agent hands the name to OpenClaw (publicUrl)
 # and phase_services writes them into brain.env (#251, #249).
@@ -2508,6 +2524,7 @@ resolve_frontdoor() {
   local id; id="$(box_id)"
   # Host names are case-insensitive; avahi and the QR link get one spelling.
   FRONTDOOR_HOST="$(printf '%s' "$FRONTDOOR_HOST" | tr 'A-Z' 'a-z')"
+  host_name_ok "$FRONTDOOR_HOST" || die "TEAPORT_HOST is not a host name: $(printf '%q' "$FRONTDOOR_HOST")"
   have openssl || die "openssl is needed to read the front door's certificates: sudo apt-get install openssl"
   # The operator's certificate is kept across re-runs the way the name is: a repair run
   # without TEAPORT_TLS_CERT must not quietly put every device back on an untrusted one.
@@ -2523,6 +2540,10 @@ resolve_frontdoor() {
   if [ -z "${TEAPORT_HOST:-}" ]; then
     local had; had="$(read_env_file "$ETC/brain.env" --lenient | grep -E '^TEAPORT_FRONTDOOR_HOST=' | tail -1 || true)"
     had="$(printf '%s' "${had#*=}" | tr 'A-Z' 'a-z')"   # lowercased like TEAPORT_HOST above
+    if [ -n "$had" ] && ! host_name_ok "$had"; then
+      warn "ignoring TEAPORT_FRONTDOOR_HOST in $ETC/brain.env: not a host name ($(printf '%q' "$had"))"
+      had=""
+    fi
     if [ -n "$had" ]; then FRONTDOOR_HOST="$had"; fi
     # A .local name another machine answers to does not reach this box at all (avahi
     # renamed it on the wire), so keeping it only keeps phones on the other box: a saved
@@ -3366,8 +3387,9 @@ phase_sip() {
 # the network and types its password. Three system pieces make that work as the run user:
 #   - the unit (never enabled; exits by itself) and its root-side steps, a small sh
 #     script in /usr/local/lib/teaport (wifi-setup-net), so they do not need the venv;
-#   - a polkit rule letting the run user change NetworkManager's Wi-Fi (its scope and
-#     trade-off: packaging/wifi-setup/50-teaport-wifi-setup.rules.in);
+#   - a polkit rule letting the run user scan for Wi-Fi networks, and nothing else: every
+#     change goes through wifi_apply.py under sudo (packaging/wifi-setup/
+#     50-teaport-wifi-setup.rules.in, packaging/deb/sudoers-sync);
 #   - NM shared-mode DNS that answers every name with the box, so phones open the page.
 #     Kept here in /usr/local/lib/teaport (root-owned: dnsmasq runs what a conf names) and
 #     copied into /etc/NetworkManager/dnsmasq-shared.d only while the unit runs — NM gives
@@ -3380,14 +3402,38 @@ phase_sip() {
 # this installer, so a repair leaves it alone. Without that file each setup makes a fresh
 # random one, twelve characters in three groups of four like that example
 # (wifi_setup.setup_password).
+# wifi_setup_split_done -- after the two units are rendered (and systemd reloaded): the
+# package's stopgap drop-in, which pointed the old unit at teaport-wifi-setup-net in place
+# of its own root steps (postinst), has nothing left to do; and a setup run going on now
+# may have been started by the old unit, whose root
+# steps went with it, so its root side is brought up to take the rule and the captive DNS
+# file down when it ends (up first clears what the old run put in, then puts it back).
+# The package's other drop-in (WIFI_SETUP_HELPER_DROPIN) lifted the old unit's
+# NoNewPrivileges= for sudo (wifi_apply.py); the new unit has none, so it goes too.
+WIFI_SETUP_STOPGAP=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+WIFI_SETUP_HELPER_DROPIN=/etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf
+wifi_setup_split_done() {
+  local f gone=
+  for f in "$WIFI_SETUP_STOPGAP" "$WIFI_SETUP_HELPER_DROPIN"; do
+    if [ -e "$f" ]; then SUDO rm -f "$f"; gone=1; fi
+  done
+  if [ -n "$gone" ]; then SUDO systemctl daemon-reload; fi
+  if systemctl is-active --quiet teaport-wifi-setup.service 2>/dev/null; then
+    SUDO systemctl start teaport-wifi-setup-net.service || warn "teaport-wifi-setup-net did not start: the port-80 rule of the setup running now stays until it is next run or the box restarts"
+  fi
+}
 phase_wifi_setup() {
   if ! have nmcli || [ ! -x /usr/sbin/iptables ]; then
     log "wifi setup: needs NetworkManager (nmcli) and iptables (/usr/sbin/iptables) — skipped"
     return 0
   fi
   log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
-  have pkaction || warn "wifi setup: polkit not found — the run user cannot change NetworkManager's Wi-Fi without it"
+  have pkaction || warn "wifi setup: polkit not found — the run user cannot scan for Wi-Fi networks without it"
+  # The root side in its own unit, which loads no /etc/teaport environment (see the unit).
+  render_unit teaport-wifi-setup-net.service.in teaport-wifi-setup-net.service
   render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
+  SUDO systemctl daemon-reload
+  wifi_setup_split_done
   local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup" tmp
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> %s\n' 50-teaport-wifi-setup.rules.in "$rules"
   else

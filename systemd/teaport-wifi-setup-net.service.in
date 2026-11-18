@@ -1,0 +1,25 @@
+# teaport-wifi-setup-net — the root side of Wi-Fi setup: the port-80 rule and the captive
+# DNS file (/usr/local/lib/teaport/wifi-setup-net up), and their clean-up (down), for as
+# long as teaport-wifi-setup runs. That unit Requires= this one; StopWhenUnneeded= takes
+# this one down after it, and its ExecStopPost runs after a stop and after a start that
+# failed alike. No substitutions (it names no user or directory): the teaport-brain
+# package ships it as is to /usr/lib/systemd/system, and install.sh renders it into
+# /etc/systemd/system.
+#
+# Its own unit, so that no command running as root ever has /etc/teaport's environment:
+# teaport-wifi-setup runs as the run user and loads brain.env, which the config page
+# writes on that user's behalf (config_apply.py). Before this unit, its root steps were
+# ExecStartPre=+ / ExecStopPost=+ lines there, with brain.env's environment: an
+# LD_PRELOAD in brain.env was root. No EnvironmentFile= here, ever
+# (test_wifi_root_env.py checks every unit for it).
+[Unit]
+Description=teaport Wi-Fi setup: port-80 rule and captive DNS (root side)
+After=NetworkManager.service
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/teaport/wifi-setup-net up
+ExecStopPost=-/usr/local/lib/teaport/wifi-setup-net down
+SyslogIdentifier=teaport-wifi-setup
