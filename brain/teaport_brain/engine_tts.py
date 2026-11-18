@@ -314,14 +314,13 @@ _PREFIX_ESPEAK = {
     "i": "it",     # Italian
     "p": "pt-br",  # Brazilian Portuguese
     "j": "ja",     # Japanese  (espeak g2p — lower quality than misaki)
-    "z": "cmn",    # Mandarin  (espeak g2p — lower quality than misaki)
+    "z": "cmn",    # Mandarin  (the engine's port of misaki's G2P, teaport-engine #122)
 }
 _ESPEAK_PREFIX = {v: k for k, v in _PREFIX_ESPEAK.items()}  # "es" -> "e", etc.
 
-# Voice inventory of the engine GGUF (50 of 54 upstream voices — the four
-# male-Mandarin zm_* packs are absent from TTS.cpp's converter default list; see
-# docs/SINGLE_CUDA_CONTEXT_SCOPE.md). Grouped by the language the prefix letter implies.
-# Source of truth for the list_voices / switch_voice tools.
+# Voice inventory of the engine GGUF (all 54 upstream voices; the four male-Mandarin
+# zm_* packs were added with teaport-engine PR #122). Grouped by the language the
+# prefix letter implies. Source of truth for the list_voices / switch_voice tools.
 ENGINE_VOICES = {
     "en-us": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
               "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
@@ -335,7 +334,8 @@ ENGINE_VOICES = {
     "it": ["if_sara", "im_nicola"],
     "ja": ["jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo"],
     "pt-br": ["pf_dora", "pm_alex", "pm_santa"],
-    "cmn": ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi"],
+    "cmn": ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+            "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"],
 }
 
 LANG_NAMES = {

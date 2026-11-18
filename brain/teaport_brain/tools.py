@@ -1333,7 +1333,7 @@ async def _list_voices(params: FunctionCallParams, tts=None):
             getattr(tts, "espeak_language", ""), getattr(tts, "espeak_language", "?")),
         "voices_by_language": {LANG_NAMES.get(k, k): v
                                for k, v in ENGINE_VOICES.items()},
-        "note": "Japanese and Mandarin voices use a lower-quality phonemizer.",
+        "note": "Japanese voices use a lower-quality phonemizer.",
     })
 
 
