@@ -18,12 +18,18 @@
 #
 # The root-side pieces (the port-80 rule, the captive DNS file, the clean-up) are
 # /usr/local/lib/teaport/wifi-setup-net (packaging/wifi-setup/, installed by install.sh):
-# plain sh, outside the brain venv. It names 10.42.0.1, which is wifi.AP_ADDRESS, the
+# plain sh, outside the brain venv, run by its own root unit, teaport-wifi-setup-net,
+# which this one Requires=. Never by an ExecStartPre=+ here: this unit loads brain.env,
+# and no root command may have that environment (see teaport-wifi-setup-net.service.in). It names 10.42.0.1, which is wifi.AP_ADDRESS, the
 # address the code pins in the setup network's profile (ipv4.addresses): the port-80
 # rule and the captive DNS answer need it before the network exists. Change them together.
 [Unit]
 Description=teaport Wi-Fi setup (temporary setup network + phone page)
 After=NetworkManager.service
+# The root side (the port-80 rule, the captive DNS file) is up before this starts, and a
+# failure to put the rule in fails this start; it goes down after this stops.
+Requires=teaport-wifi-setup-net.service
+After=teaport-wifi-setup-net.service
 
 [Service]
 Type=simple
@@ -39,7 +45,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 # Captive-portal probes go to port 80, which is the front door's (Caddy). While this
 # runs, port 80 on the setup network's address is sent to the page (PAGE_PORT in
-# wifi_setup.py); "+" runs this as root, the page itself does not need to be. DNAT to
+# wifi_setup.py), by teaport-wifi-setup-net as root; the page itself does not need to be. DNAT to
 # the pinned address, not REDIRECT: REDIRECT rewrites to the incoming interface's FIRST
 # IPv4 address, which just after the setup network comes up can still be the old home
 # network's, where the page is not bound. iptables, not an nft rule: the Jetson kernel
@@ -55,7 +61,6 @@ RuntimeDirectoryPreserve=yes
 # box ever runs (a hotspot, shared Ethernet). Known limit: one started WHILE setup runs
 # gets it too. The source is root-owned — dnsmasq would run what a conf file names. A
 # copy left by a crash or power cut mid-setup is removed at boot (tmpfiles.d, install.sh).
-ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net up
 NoNewPrivileges=yes
 SyslogIdentifier=teaport-wifi-setup
 # The package's venv: a real tree dpkg replaces in place, and the postinst restarts this
@@ -70,9 +75,9 @@ SuccessExitStatus=2 3
 # ask for the old connection back; it needs a moment for nmcli, not systemd's 90 s.
 TimeoutStopSec=60
 # Belt and braces: never leave the setup network, the port-80 rule or the captive DNS behind
-# (the code takes the network down itself). Each is checked before it goes, so a normal
-# end logs nothing; a setup network left up (a kill -9) is named in one line.
-ExecStopPost=-+/usr/local/lib/teaport/wifi-setup-net down
+# (the code takes the network down itself): teaport-wifi-setup-net's ExecStopPost, once
+# this unit has stopped, however it ended. Each is checked before it goes, so a normal end
+# logs nothing; a setup network left up (a kill -9) is named in one line.
 # The code gives up after ten minutes; this is the hard stop above it.
 RuntimeMaxSec=900
 Restart=no

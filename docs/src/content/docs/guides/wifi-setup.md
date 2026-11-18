@@ -53,7 +53,7 @@ If you start setup by voice, the screen shows its words in the language that the
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-12,90-97#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:3188-3192#0fa4dad8 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-12,90-97#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:3209-3213#0fa4dad8 -->
 
 ## Connect your AI account
 
@@ -65,7 +65,7 @@ Signing in to OpenRouter instead of pasting a key does not work in setup mode: n
 
 <!-- source: brain/teaport_brain/wifi_setup.py:291-310#9c83724e -->
 
-<!-- source: brain/teaport_brain/wifi_setup.py:285-288#85aa669c; brain/teaport_brain/wifi_setup.py:720-733#3ae9aa03; brain/teaport_brain/wifi_setup.py:871-876#4d349386; brain/teaport_brain/wifi_voice.py:120-131#457019ed; systemd/teaport-wifi-setup.service.in:31-35#ddd3d10e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:285-288#85aa669c; brain/teaport_brain/wifi_setup.py:720-733#3ae9aa03; brain/teaport_brain/wifi_setup.py:871-876#4d349386; brain/teaport_brain/wifi_voice.py:120-131#457019ed; systemd/teaport-wifi-setup.service.in:37-41#ddd3d10e -->
 
 ## If the device connects
 
@@ -83,7 +83,7 @@ The device drops the network profile it tried, the setup network comes back, and
 
 The device leaves setup mode on its own, undoes a half-finished join, and restores the connection it had before. The service stops itself at the 15-minute mark at the latest.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:31-32#f8886e10; systemd/teaport-wifi-setup.service.in:76-77#364bb92a -->
+<!-- source: brain/teaport_brain/wifi_setup.py:31-32#f8886e10; systemd/teaport-wifi-setup.service.in:81-82#364bb92a -->
 
 ## Leave setup mode
 
@@ -95,7 +95,7 @@ sudo systemctl stop teaport-wifi-setup
 
 The device takes the setup network down, undoes a half-finished join, and restores the previous connection.
 
-<!-- source: systemd/teaport-wifi-setup.service.in:64-66#70ebb3ad; brain/teaport_brain/wifi_setup.py:737#21bb505f -->
+<!-- source: systemd/teaport-wifi-setup.service.in:69-71#70ebb3ad; brain/teaport_brain/wifi_setup.py:737#21bb505f -->
 
 ## What's next
 

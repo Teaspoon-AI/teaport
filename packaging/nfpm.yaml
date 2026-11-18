@@ -105,3 +105,16 @@ contents:
       mode: 0o755
       owner: root
       group: root
+
+  # The root side of Wi-Fi setup, the one unit this package carries rather than install.sh
+  # rendering it: it names no user or directory, and a box whose Wi-Fi setup unit predates
+  # it must have it from the package alone. postinst points that old unit at it
+  # (Requires=) and turns off the old unit's own root steps, so an apt or updater upgrade
+  # leaves no root command reading brain.env and keeps the port-80 redirect. install.sh
+  # renders the same file into /etc/systemd/system, which takes precedence.
+  - src: systemd/teaport-wifi-setup-net.service.in
+    dst: /usr/lib/systemd/system/teaport-wifi-setup-net.service
+    file_info:
+      mode: 0o644
+      owner: root
+      group: root
