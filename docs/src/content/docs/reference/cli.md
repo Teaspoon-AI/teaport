@@ -12,7 +12,7 @@ and the release manifest, and it reads the layout the installer creates: `/opt/t
 The `teaport-brain` package installs the command at `/usr/bin/teaport`. Run `teaport` with no arguments, or `teaport help`, to print the
 command summary. An unknown command or option prints an error and exits 1.
 
-<!-- source: install.sh:1308#9d1a0148; cli/teaport:38,1787-1799#ac17e130 -->
+<!-- source: install.sh:1310#9d1a0148; cli/teaport:38,1787-1799#ac17e130 -->
 
 The paths and ports in this reference are the defaults that the command reads at startup.
 `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`,
@@ -75,7 +75,7 @@ the trunk registration. When it finds a NemoClaw sandbox record, it names the co
 sandbox. Each check prints one line: a check mark for pass, `!` for warning, and a cross
 for failure.
 
-<!-- source: cli/teaport:355-462#f0653a7f; cli/teaport:64-111,333-340#ce2e5130; cli/teaport:322-331#06ca79b5 -->
+<!-- source: cli/teaport:355-462#a156caf0; cli/teaport:64-111,333-340#cf26bf6b; cli/teaport:322-331#06ca79b5 -->
 
 Option:
 
@@ -156,13 +156,13 @@ stopped, with the step it is on and its message. The full output is in
 `/var/lib/teaport-update/log`, which the user that runs the brain can read, and in
 `journalctl -u teaport-update`.
 
-<!-- source: cli/teaport:490-491,553-572#bb2a926c -->
+<!-- source: cli/teaport:490-491,553-572#8393ae64 -->
 
 The brain also does the check by itself every day (the `TEAPORT_UPDATE_CHECK_SECS`
 setting; `0` turns it off), and `teaport status` shows the result on a `release` line, or
 `an update is being installed now` while one is.
 
-<!-- source: brain/teaport_brain/updates.py:317-345,390-405#0bdde50c; cli/teaport:152-171#ea52e518 -->
+<!-- source: brain/teaport_brain/updates.py:317-345,390-405#0bdde50c; cli/teaport:152-171#7e6070ac -->
 
 Example:
 

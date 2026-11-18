@@ -115,6 +115,8 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     # This run's own copy of the channel's manifest (read once, in the work directory).
     assert env["TEAPORT_MANIFEST_URL"].endswith("/manifest.json"), env
     assert int(env["TEAPORT_WAIT_IDLE_SECS"]) > 0, env
+    # The channel is the run user's to pick: an update never installs an older brain.
+    assert env["TEAPORT_NEWER_ONLY"] == "1", env
     # The installer the channel's manifest names (read_source), not one the plan names.
     assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
     assert not os.path.exists(clones[0][1]), "the clone is removed after the run"
@@ -560,6 +562,16 @@ def _brain_box(tmp):
     return prefix, state, brain
 
 
+def test_the_cli_runs_every_python_isolated():
+    # `sudo teaport ...` started in a directory the run user owns: a python3 without -I
+    # puts that directory first on sys.path, and a json.py planted there runs as root.
+    lines = [ln for ln in (ROOT / "cli/teaport").read_text().splitlines() if not ln.lstrip().startswith("#")]
+    runs = [ln for ln in lines if re.search(r"(^|[\s|;(&])python3(\s|$)", ln)]
+    assert runs, "the CLI runs no python3?"
+    bare = [ln.strip() for ln in runs if not re.search(r"python3 -I\b", ln)]
+    assert not bare, bare
+
+
 def test_only_the_venvs_own_interpreter_links_come_over():
     """A link the package lists, re-pointed while the tree was the run user's, must not come
     over: the next install of the package would have dpkg write through it as root."""
@@ -567,7 +579,7 @@ def test_only_the_venvs_own_interpreter_links_come_over():
     tmp = tempdir("teaport-layout-links-")
     prefix, state, brain = _brain_box(tmp)
     os.symlink("/usr/bin/python3.12", brain / "bin/python")          # the venv's: kept
-    os.symlink("python", brain / "bin/python3")                      # relative, not to python3: refused
+    os.symlink("python", brain / "bin/python3")                      # relative, the venv's own: kept
     os.symlink("/usr/bin/X11", brain / "bin/python3.12")             # /usr/bin/X11 -> . (Ubuntu): refused
     os.symlink("/opt/teaport/brain/bin/python3/../../home/u", brain / "lib2")   # listed as a directory
     listed = [str(brain), str(brain / "bin"), str(brain / "bin/python"), str(brain / "bin/python3"),
@@ -578,10 +590,11 @@ def test_only_the_venvs_own_interpreter_links_come_over():
     owner = (os.getuid(), os.getgid())
     assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == layout.INCOMPLETE
     assert os.readlink(brain / "bin/python") == "/usr/bin/python3.12"
-    for gone in ("bin/python3", "bin/python3.12", "lib2"):
+    assert os.readlink(brain / "bin/python3") == "python"
+    for gone in ("bin/python3.12", "lib2"):
         assert not os.path.lexists(brain / gone), gone
     links = [os.path.join(t, n) for t, ds, fs in os.walk(prefix) for n in ds + fs if os.path.islink(os.path.join(t, n))]
-    assert links == [str(brain / "bin/python")], links
+    assert sorted(links) == [str(brain / "bin/python"), str(brain / "bin/python3")], links
 
 
 def test_an_unusual_tree_is_refused_and_a_stopped_run_is_finished_or_cleared():
@@ -614,6 +627,17 @@ def test_an_unusual_tree_is_refused_and_a_stopped_run_is_finished_or_cleared():
     layout.migrate(os.path.join(tmp, "opt"), os.path.join(tmp, "state"), "teaport-brain", owner)
     assert sorted(os.listdir(tmp)) == ["opt", "state"], os.listdir(tmp)
     assert pathlib.Path(tmp, "opt/bin").is_dir()
+    # A run stopped after the run user's own entries moved into the new tree, before the
+    # swap: they go back to the tree they came from, not out with the unfinished one.
+    tmp = tempdir("teaport-layout-stopped-mid-")
+    prefix, state, brain = _brain_box(tmp)
+    unfinished = pathlib.Path(f"{prefix}.new-20261117000000")
+    (unfinished / "bridge").mkdir(parents=True)
+    (unfinished / "bridge/settings.json").write_text("{}\n")
+    (unfinished / "bin").mkdir()   # ours: goes with the unfinished tree
+    layout.migrate(str(prefix), str(state), "teaport-brain", owner)
+    assert not unfinished.exists() and sorted(os.listdir(tmp)) == ["opt", "state"], os.listdir(tmp)
+    assert (prefix / "bridge/settings.json").read_text() == "{}\n"
 
 
 def test_a_tree_that_cannot_be_written_is_not_swapped_in():

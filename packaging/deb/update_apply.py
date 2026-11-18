@@ -229,7 +229,10 @@ def step_env(user: str, home: str, manifest: str) -> dict:
             "LANG": "C.UTF-8", "HOME": "/root", "TEAPORT_USER": user,
             "TEAPORT_SECRETS_DIR": os.path.join(home, ".config", "teaport"),
             "TEAPORT_MANIFEST_URL": manifest,
-            "TEAPORT_WAIT_IDLE_SECS": str(WAIT_IDLE_SECS)}
+            "TEAPORT_WAIT_IDLE_SECS": str(WAIT_IDLE_SECS),
+            # Never an older brain package than the installed one: the channel is the run
+            # user's to pick, and the other one may name an older release.
+            "TEAPORT_NEWER_ONLY": "1"}
 
 
 def run_step(installer: str, step: str, env: dict, log, popen=subprocess.Popen) -> tuple[int, str]:

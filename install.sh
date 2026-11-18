@@ -69,6 +69,8 @@
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
 #   TEAPORT_USER           whose appliance it is (default: who runs this). Run as root for
 #                          another user, the run user's part of the work is done as them (as_user)
+#   TEAPORT_NEWER_ONLY=1   --only brain installs no package older than the installed one
+#                          (set by teaport update's teaport-update.service)
 #   TEAPORT_WAIT_IDLE_SECS before --only brain/engine restart anything, wait up to this long
 #                          for nobody to be talking to the box (default 0: no wait; set by
 #                          teaport update's teaport-update.service)
@@ -1363,6 +1365,13 @@ brain_deb_fetch() {
   fi
   brain_deb_verify "$BRAIN_DEB"
   BRAIN_DEB_NEW="$(dpkg-deb -f "$BRAIN_DEB" Version)"
+  # teaport update (TEAPORT_NEWER_ONLY=1): never an older package than the installed one.
+  # The run user picks the channel, and the other one may name an older release, one a
+  # newer has fixed; going back is --rollback brain, by hand.
+  local cur; cur="$(brain_installed_version)"
+  if [ "${TEAPORT_NEWER_ONLY:-0}" = 1 ] && [ -n "$cur" ] && dpkg --compare-versions "$BRAIN_DEB_NEW" lt "$cur"; then
+    die "the release names $BRAIN_PKG $BRAIN_DEB_NEW, older than the installed $cur — an update installs no older brain (go back with install.sh --rollback brain)"
+  fi
 }
 
 # brain_deb_verify <file> -- dies unless <file> is a $BRAIN_PKG package for this machine.
@@ -1554,7 +1563,7 @@ brain_swap() {
   fi
   warn "the brain did not come back on $BRAIN_DEB_NEW — putting ${prev} back"
   sip_brain_restore
-  brain_deb_apply "$prevdeb" || true
+  if brain_deb_apply "$prevdeb"; then brain_tree_complete; fi
   brain_units
   # shellcheck disable=SC2086
   set -- $SWAP_JUDGE

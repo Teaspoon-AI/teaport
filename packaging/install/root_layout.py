@@ -64,9 +64,16 @@ SMALL = 1 << 20   # a kept $STATE note larger than this is not one of ours
 ACL_XATTRS = ("system.posix_acl_access", "system.posix_acl_default")
 # A failure writing the new tree (not reading the old one): the rebuild stops, nothing swapped.
 WRITE_ERRORS = (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS)
-# The only symlinks a brain tree carries over: the venv's interpreter links, exactly so.
-VENV_LINKS = re.compile(r"brain/bin/python(3(\.\d+)?)?")
-VENV_LINK_TARGET = re.compile(r"(/usr/bin/)?python3(\.\d+)?")
+# The only symlinks a brain tree carries over: the venv's own, exactly as uv makes them
+# (the released package has bin/python -> /usr/bin/python3.12, bin/python3 and
+# bin/python3.12 -> python, lib64 -> lib). A bare target has no "/" to bend it out of its
+# directory; the one absolute target allowed is the system interpreter itself.
+VENV_LINKS = {
+    "brain/bin/python": re.compile(r"/usr/bin/python3(\.\d+)?|python3(\.\d+)?"),
+    "brain/bin/python3": re.compile(r"/usr/bin/python3(\.\d+)?|python(3(\.\d+)?)?"),
+    "brain/lib64": re.compile(r"lib"),
+}
+VENV_VERSIONED_LINK = re.compile(r"brain/bin/python3\.\d+")
 # Exit code: the trees are root's, but the brain package's tree lacks files it should have
 # (left out by the rebuild) and no install of the package has put them back yet: install.sh
 # then refuses what would restart the brain on it (--only engine, --rollback engine).
@@ -247,8 +254,8 @@ def _dpkg_files(package: str):
 def _rebuild_brain(old: Tree, prefix: str, new: str, package: str, owner) -> tuple[int, int]:
     """The brain package's tree in <new>/brain from what dpkg lists: (taken, left out).
     Every directory is made new (a real one, whatever the old tree had there); a regular
-    file is copied when its MD5 is dpkg's; of symlinks, only the venv's interpreter links,
-    to a python3 by name (VENV_LINKS, VENV_LINK_TARGET). Any other symlink is left out: a
+    file is copied when its MD5 is dpkg's; of symlinks, only the venv's own, each to the
+    one target it has (VENV_LINKS). Any other symlink is left out: a
     link that leads anywhere but where dpkg put it would have dpkg itself write through it,
     as root, on the next install of the package."""
     paths, sums = _dpkg_files(package)
@@ -270,7 +277,9 @@ def _rebuild_brain(old: Tree, prefix: str, new: str, package: str, owner) -> tup
             taken += 1
         elif stat.S_ISLNK(st.st_mode):
             target = old.readlink(rel)
-            if VENV_LINKS.fullmatch(rel) and target and VENV_LINK_TARGET.fullmatch(target):
+            allowed = VENV_LINKS.get(rel) or (VENV_LINKS["brain/bin/python3"]
+                                              if VENV_VERSIONED_LINK.fullmatch(rel) else None)
+            if target and allowed and allowed.fullmatch(target):
                 os.symlink(target, dest)
                 os.chown(dest, *owner, follow_symlinks=False)
                 taken += 1
@@ -307,6 +316,14 @@ def _settle(path: str, owner) -> None:
                 os.rename(full, path)
                 say(f"put {path} back from a run that stopped between its renames")
                 continue
+        if name.startswith(base + ".new-") and os.path.isdir(full) and not os.path.islink(full) \
+                and os.path.isdir(path) and not os.path.islink(path):
+            # Stopped after the run user's entries moved in and before the swap: they go
+            # back where they were, not out with the unfinished tree.
+            for entry in sorted(os.listdir(full)):
+                if entry not in MANAGED and not entry.startswith(".") \
+                        and not os.path.lexists(os.path.join(path, entry)):
+                    os.rename(os.path.join(full, entry), os.path.join(path, entry))
         if name.startswith(base + ".new-") or name.startswith(base + ".pre-root-"):
             if os.path.isdir(full) and not os.path.islink(full):
                 shutil.rmtree(full, ignore_errors=True)

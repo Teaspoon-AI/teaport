@@ -687,6 +687,22 @@ def test_a_given_package_is_checked_and_kept_under_its_canonical_name():
     assert rc != 0 and "is not a file" in out, out
 
 
+def test_an_update_installs_no_older_brain_than_the_installed_one():
+    # teaport update sets TEAPORT_NEWER_ONLY=1: the run user picks the channel, and the
+    # other one may name an older release, one a newer has fixed.
+    tmp = tempdir("teaport-deb-")
+    deb = _deb(pathlib.Path(tmp, "in/old.deb"), "0.1.0")
+    real_cmp = 'dpkg() { case "$1" in --print-architecture) echo arm64 ;; *) command dpkg "$@" ;; esac; }\n'
+    script = real_cmp + f'BRAIN_DEB_SRC="{deb}"; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"'
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1.1", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "an update installs no older brain" in out and "--rollback brain" in out, out
+    # The same version, a newer one, nothing installed, or a run that is not an update.
+    for env in ({"INSTALLED": "0.1.0", "TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.0~dev1", "TEAPORT_NEWER_ONLY": "1"},
+                {"TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.1"}):
+        rc, out = _debrun(tmp, script, env=env)
+        assert rc == 0 and "NEW 0.1.0" in out, (env, out)
+
+
 def test_without_a_package_the_manifest_names_one_or_the_run_says_how_to_give_one():
     tmp = tempdir("teaport-deb-")
     mf = pathlib.Path(tmp, "m.json")
