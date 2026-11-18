@@ -150,9 +150,9 @@ Restart the service that reads the file you changed. The table lists each config
 
 <!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1149#38ebb95b -->
 
-A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request.
+A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request. To fix a new setup password in it and print it for a card, run `teaport setup-card --new-password`; see [teaport setup-card](/reference/cli/#teaport-setup-card).
 
-<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84 -->
+<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84; cli/teaport:541-587#ca104852 -->
 
 On the configuration page, the restart runs the same command two seconds later. The delay gives the brain time to answer the page before it replaces itself, and the timer survives the brain exiting.
 
@@ -188,6 +188,18 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 
 <!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:238-257#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
+### From the command line
+
+On the device, `teaport key set` takes the key the way the setup page does: it checks the key with the endpoint in `brain.env`, and saves it only if the endpoint accepts it: for the brain and, on a device with OpenClaw and an OpenRouter endpoint, for OpenClaw too, as [One key for OpenClaw too](/guides/configuration/#one-key-for-openclaw-too) describes. Run it as the user the brain runs as:
+
+```bash
+teaport key set
+```
+
+In a terminal on the device, the command asks for the key without showing it. It also reads the key from standard input, for example `teaport key set < key.txt`; over SSH, use that form, because without a terminal there is no prompt, and your own terminal shows the key as you type it. The next conversation uses the new key; the brain needs no restart. The [teaport key set](/reference/cli/#teaport-key-set) reference lists its options and exit statuses.
+
+<!-- source: brain/teaport_brain/provision.py:138-142,145-194#4d4c2267; cli/teaport:518-539#7ceed65b -->
+
 ### In the configuration files
 
 1. On the device, set the endpoint in `/etc/teaport/brain.env`:
@@ -209,7 +221,7 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 
    - `API_KEY`: the key your endpoint gave you.
 
-   The mode keeps the file readable only by you, as the installer writes it.
+   The mode keeps the file readable only by you, as the installer writes it. A key written this way is not checked, and OpenClaw doesn't get it; [teaport key set](/reference/cli/#teaport-key-set) checks it and, where OpenClaw shares the brain's key, gives it to OpenClaw too.
 
    <!-- source: install.sh:2025-2027#37da8b7d -->
 
@@ -218,9 +230,9 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 
 ## The included trial credit
 
-A device can ship with a starter key: an OpenRouter key with a small spending limit, so that the device answers before you connect your own account. Provisioning marks which key that is in `~/.local/state/teaport/starter_key_sha256`, the run user's state directory: the SHA-256 of the key in hexadecimal, alone on one line. The file holds the hash only, never the key. Write it with `printf %s "$KEY" | sha256sum | cut -d' ' -f1 > ~/.local/state/teaport/starter_key_sha256`, where `$KEY` holds the key without a newline; the hash of the key followed by one newline, which `sha256sum` of a key file gives, also counts. Any other key that you save later is your own, and everything in this section stops.
+A device can ship with a starter key: an OpenRouter key with a small spending limit, so that the device answers before you connect your own account. Provisioning gives the device that key with `teaport key set --starter`, which saves it and then marks it as the starter key in `~/.local/state/teaport/starter_key_sha256`, the run user's state directory: the SHA-256 of the key in hexadecimal, alone on one line. The file holds the hash only, never the key. To mark a key by hand instead, write the file with `printf %s "$KEY" | sha256sum | cut -d' ' -f1 > ~/.local/state/teaport/starter_key_sha256`, where `$KEY` holds the key without a newline; the hash of the key followed by one newline, which `sha256sum` of a key file gives, also counts. Any other key that you save later is your own, and everything in this section stops.
 
-<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:59#cb5b8dc8 -->
+<!-- source: brain/teaport_brain/credit.py:5-14#fc01df58; brain/teaport_brain/credit.py:59#cb5b8dc8; brain/teaport_brain/provision.py:145-194#4e21552e -->
 
 While the device runs on the starter key, the brain reads the key's limit and what is left from OpenRouter, `GET /api/v1/key`, every 30 minutes and after each conversation. The read never holds up a reply, and a read that fails changes nothing. The device warns you at three points:
 
@@ -242,17 +254,17 @@ When nothing is left, the device stops answering questions. It does not switch t
 
 ## One key for OpenClaw too
 
-On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page or on the setup page, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice. Unless `OPENCLAW_AGENT_ID` names an agent, OpenClaw chooses the agent itself, its only configured agent; with several agents and none named, the save fails and nothing changes.
+On a device with OpenClaw beside the brain, OpenClaw also pays for its answers at OpenRouter. When you save a key on the configuration page, on the setup page, or with `teaport key set`, the brain gives OpenClaw the same key as its OpenRouter key, so the device has one key and one balance. The brain does this with OpenClaw's own command, `openclaw models auth paste-api-key --provider openrouter`, and passes the key on its input, never on the command line. OpenClaw keeps its model choice. Unless `OPENCLAW_AGENT_ID` names an agent, OpenClaw chooses the agent itself, its only configured agent; with several agents and none named, the save fails and nothing changes.
 
 <!-- source: brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:34-39#688a246f -->
 
-Both take the key, or neither does, and one save runs at a time, even when the setup page and the configuration page save at the same time. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, or a save stops midway, the page asks you to save the key again, and `teaport status` says that the two might be on different keys until a save goes through. When OpenClaw's gateway runs on another host and does not share this device's auth store, sharing does not apply: the brain saves the key alone, and `teaport status` says that OpenClaw keeps its own key there. Each time the brain starts, it reads OpenClaw's `gateway.mode` again, so a save shares the key again after the gateway is local.
+Both take the key, or neither does, and one save runs at a time, even when the setup page, the configuration page, and `teaport key set` save at the same time. If OpenClaw cannot take it, the brain keeps the key that it had, and the page says that the key was not saved. If OpenClaw might have taken the new key before it failed, the brain gives it the previous key back. When that is not possible, or a save stops midway, the page asks you to save the key again, and `teaport status` says that the two might be on different keys until a save goes through. When OpenClaw's gateway runs on another host and does not share this device's auth store, sharing does not apply: the brain saves the key alone, and `teaport status` says that OpenClaw keeps its own key there. Each time the brain starts, it reads OpenClaw's `gateway.mode` again, so a save shares the key again after the gateway is local.
 
 <!-- source: brain/teaport_brain/agent_key.py:67-77#2758bddd; brain/teaport_brain/agent_key.py:11-32#5a301540; brain/teaport_brain/agent_key.py:565-573#c05312bd -->
 
 When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:169-199#a609a6f5 -->
+<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:174-204#a609a6f5 -->
 
 ## What's next
 
