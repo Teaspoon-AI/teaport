@@ -108,8 +108,20 @@ def test_a_release_older_than_the_brain_on_the_box_offers_nothing():
     # Said as such, not as "up to date".
     text = updates.render({"channel": "beta", "url": "u", **got})
     assert "names an older release than this box has" in text and "up to date" not in text, text
-    # No brain package on the box at all: no floor.
-    assert not updates.compare(_manifest(), older, None, floor=None)["older"]
+    # No brain package on the box at all: no brain floor.
+    assert not updates.compare(_manifest(), _manifest(brain="0.0.9"), None, floor=None)["older"]
+
+
+def test_two_channels_with_one_brain_do_not_take_the_engine_back():
+    # Beta tests an engine with the stable brain: stable then names an older engine.
+    beta, stable = _manifest(engine="1.7"), _manifest(engine="1.6")
+    got = updates.compare(beta, stable, BRAIN, floor=BRAIN)
+    assert got["older"] and not got["available"] and got["steps"] == [], got
+    # An engine release dpkg cannot order against the box's is not offered either.
+    assert updates.compare(_manifest(), _manifest(engine="next"), BRAIN, floor=BRAIN)["older"]
+    # A newer engine is an update; an installed record that is not a version sets no floor.
+    assert updates.compare(stable, beta, BRAIN, floor=BRAIN)["steps"] == ["engine"]
+    assert not updates.compare(_manifest(engine="dev"), stable, BRAIN, floor=BRAIN)["older"]
 
 
 def test_the_floor_counts_a_brain_in_any_state_that_leaves_its_files():

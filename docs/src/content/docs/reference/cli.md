@@ -112,11 +112,11 @@ release, the brain package, the plugin version, the OpenClaw version, and the mo
 A part the channel hasn't released yet (an empty value or `TODO`) isn't an update, and a
 new version name on its own isn't one either. The brain counts as changed only when the
 channel's `teaport-brain` package is newer than the installed one, in the order `apt` uses,
-or when the device has no package. A channel that names an older release than the brain
-on the device, or no brain package at all, offers nothing: the check says so, and
+or when the device has no package. A channel that names an older brain or engine than the
+device has, or no brain package at all, offers nothing: the check says so, and
 `teaport update` installs nothing from it.
 
-<!-- source: brain/teaport_brain/updates.py:57,146-179,209-222,241-290#d3c13c8f -->
+<!-- source: brain/teaport_brain/updates.py:57,148-181,211-224,243-299#66490518 -->
 
 | Option | Description |
 | --- | --- |
@@ -126,7 +126,7 @@ on the device, or no brain package at all, offers nothing: the check says so, an
 | `--yes` | Installs without asking. Without it, the command asks first, and when it isn't run in a terminal it stops and names this option. |
 | `--status` | Prints how the last update went. It changes nothing. |
 
-<!-- source: cli/teaport:575-628#cdc96203; brain/teaport_brain/updates.py:472-511#8078c9b0 -->
+<!-- source: cli/teaport:575-628#cdc96203; brain/teaport_brain/updates.py:481-520#8078c9b0 -->
 
 Without `--channel`, the command uses the `TEAPORT_UPDATE_CHANNEL` setting in
 `/etc/teaport/brain.env`. When that is empty, it uses the channel the installed manifest
@@ -136,7 +136,7 @@ prints `changed:` and the names of the parts, then `teaport update installs:` wi
 parts the command installs by itself, and `needs a full install.sh run:` with the rest. It
 exits 1 when the installed manifest is missing or the channel's manifest can't be read.
 
-<!-- source: brain/teaport_brain/updates.py:92-105,328-338,441-467,499-509#59b5acda -->
+<!-- source: brain/teaport_brain/updates.py:94-107,337-347,450-476,508-518#59b5acda -->
 
 Without `--check`, the command installs the update. It prints the same comparison and,
 when the engine, the models, or the brain changed, asks `Install it now?`. Then it starts
@@ -149,7 +149,7 @@ device's own channel, so `--channel` goes with `--check` only. It exits 0 when t
 is installed or there is nothing it installs, and 1 when the update fails.
 [Update teaport](/guides/updating/#apply-an-update) has the details.
 
-<!-- source: cli/teaport:480-490,512-553,575-628#7cef04d8; brain/teaport_brain/updates.py:59-64,293-298#7903fe49 -->
+<!-- source: cli/teaport:480-490,512-553,575-628#7cef04d8; brain/teaport_brain/updates.py:59-64,302-307#7903fe49 -->
 
 Press Ctrl+C to stop following: the update goes on. `teaport update --status` prints the
 last run's state, `running`, `done`, `failed`, or `interrupted` for a run that a power cut
@@ -163,7 +163,7 @@ The brain also does the check by itself every day (the `TEAPORT_UPDATE_CHECK_SEC
 setting; `0` turns it off), and `teaport status` shows the result on a `release` line, or
 `an update is being installed now` while one is.
 
-<!-- source: brain/teaport_brain/updates.py:344-373,418-433#0101cf37; cli/teaport:152-172#4f6e5e5b -->
+<!-- source: brain/teaport_brain/updates.py:353-382,427-442#0101cf37; cli/teaport:152-172#4f6e5e5b -->
 
 Example:
 

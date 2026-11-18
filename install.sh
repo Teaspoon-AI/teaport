@@ -1371,9 +1371,17 @@ brain_deb_fetch() {
   # newer has fixed; going back is --rollback brain, by hand. Any state that leaves files
   # counts: the brain runs as the run user, who can keep it from coming up, and a
   # half-configured package must not hide its version.
-  local cur; cur="$(brain_package_version)"
-  if [ "${TEAPORT_NEWER_ONLY:-0}" = 1 ] && [ -n "$cur" ] && dpkg --compare-versions "$BRAIN_DEB_NEW" lt "$cur"; then
-    die "the release names $BRAIN_PKG $BRAIN_DEB_NEW, older than the installed $cur — an update installs no older brain (go back with install.sh --rollback brain)"
+  # It runs only from teaport-update.service, which the package ships, so a version dpkg
+  # cannot say, or one it cannot order, stops the run rather than slipping past.
+  if [ "${TEAPORT_NEWER_ONLY:-0}" = 1 ]; then
+    local cur rc=0; cur="$(brain_package_version)"
+    [ -n "$cur" ] || die "cannot read the $BRAIN_PKG version on this box (dpkg-query) — an update installs no brain it cannot compare"
+    dpkg --compare-versions "$BRAIN_DEB_NEW" lt "$cur" || rc=$?
+    case "$rc" in
+      1) ;;
+      0) die "the release names $BRAIN_PKG $BRAIN_DEB_NEW, older than the installed $cur — an update installs no older brain (go back with install.sh --rollback brain)" ;;
+      *) die "cannot compare $BRAIN_PKG $BRAIN_DEB_NEW with the installed $cur — an update installs no brain it cannot compare" ;;
+    esac
   fi
 }
 

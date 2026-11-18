@@ -201,23 +201,73 @@ def box_brain(runner=subprocess.run) -> str | None:
     return version if p.returncode == 0 and status not in GONE and version else None
 
 
-def not_older(manifest: dict, have: str | None, runner=subprocess.run) -> None:
-    """Refuse a release older than the brain on the box, before anything of it is fetched
-    or run: the run user picks the channel, and the other one may name an older release —
-    one whose engine a newer release fixed, or whose install.sh a later one hardened, and
-    this runs that install.sh as root. Going back is install.sh --rollback, by hand.
-    Raises RuntimeError."""
+# What install.sh last installed (/opt/teaport/manifest.json): its engine.release is the
+# engine's floor. Root's since the rebuild (root_layout.py); before that the run user could
+# write it, and a file that is not root's alone says nothing.
+INSTALLED_MANIFEST = "/opt/teaport/manifest.json"
+# A version dpkg can order (engine releases are "1.6", "1.7").
+VERSION = re.compile(r"[0-9][A-Za-z0-9.+~-]*")
+
+
+def box_engine(path: str = INSTALLED_MANIFEST) -> str | None:
+    """The installed engine release, from a manifest root alone can write; else None."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, encoding="utf-8") as f:
+            st, parent = os.fstat(f.fileno()), os.stat(os.path.dirname(path))
+            if any(s.st_uid != ROOT_UID or s.st_mode & 0o022 for s in (st, parent)):
+                return None
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    release = (data.get("engine") or {}).get("release") if isinstance(data, dict) else None
+    return release if isinstance(release, str) and VERSION.fullmatch(release) else None
+
+
+def _older(new: str, have: str, runner) -> bool:
+    """`new` sorts before `have` (dpkg's order). Anything dpkg cannot order raises: a
+    version the floor cannot read is not let past it."""
+    rc = runner(["dpkg", "--compare-versions", new, "lt", have], env=ROOT_ENV, timeout=30).returncode
+    if rc not in (0, 1):
+        raise RuntimeError(f"cannot compare the release's {new!r} with this box's {have!r}; nothing was done")
+    return rc == 0
+
+
+def not_older(manifest: dict, have: str | None, engine: str | None = None,
+              runner=subprocess.run) -> None:
+    """Refuse a release older than what is on the box, before anything of it is fetched or
+    run: the run user picks the channel, and the other one may name an older release — one
+    whose engine a newer release fixed, or whose install.sh a later one hardened, and this
+    runs that install.sh as root. Going back is install.sh --rollback, by hand.
+
+    `have` is the brain package on the box in any state (box_brain), `engine` the installed
+    engine release (box_engine). The brain must not go back, and nor may the engine: two
+    channels can name the same brain with different engines (beta testing one). A release
+    whose engine dpkg cannot order against the box's is refused too. Raises RuntimeError."""
+    channel = manifest.get("channel") or "chosen"
     if have is None:
-        return   # no brain package here to be older than (install.sh says what is missing)
+        # This runs from the brain package, so dpkg has one: it could not say which.
+        raise RuntimeError("cannot read the brain package's version on this box (dpkg-query); "
+                           "nothing was done")
     new = channel_brain(manifest)
     if new is None:
         raise RuntimeError("the release manifest names no brain package, so it cannot be told "
                            "from an older release than this box has; nothing was done")
-    lt = runner(["dpkg", "--compare-versions", new, "lt", have], env=ROOT_ENV, timeout=30)
-    if lt.returncode == 0:
-        raise RuntimeError(f"the {manifest.get('channel') or 'chosen'} channel names an older release "
-                           f"(brain {new}) than this box has ({have}); teaport update never goes "
-                           "back (install.sh --rollback does, by hand)")
+    if _older(new, have, runner):
+        raise RuntimeError(f"the {channel} channel names an older release (brain {new}) than this "
+                           f"box has ({have}); teaport update never goes back (install.sh "
+                           "--rollback does, by hand)")
+    new_engine = (manifest.get("engine") or {}).get("release")
+    if engine is None or not isinstance(new_engine, str) or "TODO" in new_engine.upper() \
+            or new_engine == engine:
+        return
+    if not VERSION.fullmatch(new_engine) or _older(new_engine, engine, runner):
+        raise RuntimeError(f"the {channel} channel names an older engine ({new_engine}) than this "
+                           f"box has ({engine}); teaport update never goes back (install.sh "
+                           "--rollback engine does, by hand)")
 
 
 def read_source(manifest: dict) -> dict:
@@ -348,7 +398,7 @@ def main() -> int:
         manifest_copy = os.path.join(work, "manifest.json")
         manifest = read_manifest(plan["channel"], manifest_copy)
         source = read_source(manifest)
-        not_older(manifest, box_brain())   # before anything of the release is fetched or run
+        not_older(manifest, box_brain(), box_engine())   # before anything of it is fetched or run
         installer = clone(source, work)
         env = step_env(user, entry.pw_dir, manifest_copy)
         with open(LOG, "a", encoding="utf-8") as log:

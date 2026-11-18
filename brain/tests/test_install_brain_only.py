@@ -701,9 +701,15 @@ def test_an_update_installs_no_older_brain_than_the_installed_one():
     assert rc != 0 and "an update installs no older brain" in out, out
     # The same version, a newer one, nothing installed, or a run that is not an update.
     for env in ({"INSTALLED": "0.1.0", "TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.0~dev1", "TEAPORT_NEWER_ONLY": "1"},
-                {"TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.1"}):
+                {"INSTALLED": "0.1.1"}, {}):
         rc, out = _debrun(tmp, script, env=env)
         assert rc == 0 and "NEW 0.1.0" in out, (env, out)
+    # An update runs from the package, so dpkg has one: a version it cannot say, or one it
+    # cannot order, stops the run rather than slipping past.
+    rc, out = _debrun(tmp, script, env={"TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "cannot read the teaport-brain version" in out, out
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1:", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "cannot compare" in out, out
 
 
 def test_without_a_package_the_manifest_names_one_or_the_run_says_how_to_give_one():

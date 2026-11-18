@@ -62,6 +62,7 @@ def _helper(state):
         return manifest
     mod.read_manifest = read_manifest
     mod.box_brain = lambda: "0.1.0"   # the brain on the box, in any state: older than the release
+    mod.box_engine = lambda: None     # no installed engine record root alone can write
     return mod
 
 
@@ -580,6 +581,58 @@ def test_an_older_release_is_refused_before_anything_of_it_is_fetched_or_run():
     mod.read_manifest = lambda channel, dest: {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}}
     mod.box_brain = lambda: "0.1.0"
     assert mod.main() == 1 and "names no brain package" in _status(mod)["message"]
+
+
+def test_the_floor_takes_no_engine_back_and_lets_nothing_unreadable_past():
+    real = _real_module()
+
+    def m(brain="0.1.1", engine="1.6"):
+        return {"channel": "stable", "engine": {"release": engine},
+                "brain": {"deb": {"url": f"https://x/teaport-brain_{brain}_arm64.deb"}}}
+    real.not_older(m(), "0.1.1", "1.6")                 # the same release
+    real.not_older(m(engine="1.7"), "0.1.1", "1.6")     # a newer engine
+    real.not_older(m(engine="TODO"), "0.1.1", "1.6")    # an engine the channel has not released
+    real.not_older(m(), "0.1.1", None)                  # no root-owned record of the engine
+    for args, why in (((m(), "0.1.1", "1.7"), "older engine (1.6)"),          # beta -> stable
+                      ((m(engine="next"), "0.1.1", "1.6"), "older engine"),   # cannot be ordered
+                      ((m(), None, "1.6"), "cannot read the brain package's version"),
+                      ((m(brain="0.1:"), "0.1.1", "1.6"), "cannot compare")):  # dpkg rc 2
+        try:
+            real.not_older(*args)
+        except RuntimeError as e:
+            assert why in str(e), (args, e)
+        else:
+            raise AssertionError(args)
+
+
+def test_the_engine_record_counts_only_when_root_alone_can_write_it():
+    real = _real_module()
+    real.ROOT_UID = os.getuid()   # "root" is whoever runs the test
+    d = pathlib.Path(tempdir("teaport-apply-record-"))
+    os.chmod(d, 0o755)
+    f = d / "manifest.json"
+    f.write_text(json.dumps({"engine": {"release": "1.7"}}))
+    os.chmod(f, 0o644)
+    assert real.box_engine(str(f)) == "1.7"
+    for mode, target in ((0o664, f), (0o775, d)):   # writable by others: says nothing
+        os.chmod(target, mode)
+        assert real.box_engine(str(f)) is None, (oct(mode), target)
+        os.chmod(target, 0o644 if target == f else 0o755)
+    link = d / "link.json"
+    link.symlink_to(f)
+    assert real.box_engine(str(link)) is None        # not through a link
+    f.write_text(json.dumps({"engine": {"release": "1.7; rm"}}))
+    assert real.box_engine(str(f)) is None           # not a version
+    real.ROOT_UID = 0
+    f.write_text(json.dumps({"engine": {"release": "1.7"}}))
+    assert real.box_engine(str(f)) is None           # not root's (the test is not root)
+
+
+def _real_module():
+    spec = importlib.util.spec_from_file_location(f"update_apply_real_{time.monotonic_ns()}", HELPER)
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    return real
 
 
 def test_root_reads_the_brain_on_the_box_in_any_state_and_the_name_as_the_brain_does():

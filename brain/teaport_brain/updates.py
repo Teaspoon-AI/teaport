@@ -65,6 +65,8 @@ STEPS = (("engine", ("engine", "models")), ("brain", ("brain",)))
 
 BRAIN_PACKAGE = "teaport-brain"
 # packaging/RELEASING.md names the file so: teaport-brain_<version>_<arch>.deb.
+# An engine release dpkg can order ("1.6", "1.7"); update_apply.VERSION is the same.
+_ENGINE_VERSION = re.compile(r"[0-9][A-Za-z0-9.+~-]*")
 _DEB_NAME = re.compile(r"^teaport-brain_([0-9][A-Za-z0-9.+~:-]*)_[a-z0-9]+\.deb$")
 
 
@@ -248,10 +250,17 @@ def compare(installed: dict, latest: dict, brain: str | None = None, floor: str 
 
     `floor` is the brain package's version on the box in any state (box_brain()). A
     channel whose brain is older than that, or that names none, offers nothing ("older"):
-    its engine and models are an older release's too, and teaport update runs nothing
-    from one (update_apply.not_older)."""
+    its engine and models are an older release's too. Nor does one whose engine release is
+    older than the installed one, or one dpkg cannot order against it: two channels can
+    name the same brain with different engines. teaport update runs nothing from either
+    (update_apply.not_older, as root)."""
     channel_brain = deb_version(latest)
     older = floor is not None and (channel_brain is None or version_cmp(channel_brain, floor) < 0)
+    engine_have, engine_new = component(installed, "engine"), component(latest, "engine")
+    if engine_have and _ENGINE_VERSION.fullmatch(engine_have) and released(engine_new) \
+            and engine_new != engine_have:
+        older = older or not _ENGINE_VERSION.fullmatch(engine_new) \
+            or version_cmp(engine_new, engine_have) < 0
     rows, changed = {}, []
     for name in COMPONENTS:
         have, new = component(installed, name), component(latest, name)
