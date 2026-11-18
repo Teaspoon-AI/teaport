@@ -216,9 +216,11 @@ def test_the_command_lists_shows_a_package_and_shows_the_notices():
 
 def _cmd(prefix, *args):
     """`teaport licenses <args>` as the CLI function runs it, against a brain at `prefix`."""
-    fn = subprocess.run(["sed", "-n", "/^cmd_licenses() {/,/^}/p", str(CLI)],
-                        capture_output=True, text=True, check=True).stdout
-    assert fn.startswith("cmd_licenses() {"), "cmd_licenses not found in cli/teaport"
+    # brain_python too: as root it runs the brain's code as the brain's user (setpriv).
+    fn = "".join(subprocess.run(["sed", "-n", f"/^{name}() {{/,/^}}/p", str(CLI)],
+                                capture_output=True, text=True, check=True).stdout
+                 for name in ("brain_python", "cmd_licenses"))
+    assert "\ncmd_licenses() {" in fn and fn.startswith("brain_python() {"), "not found in cli/teaport"
     body = ('set -euo pipefail\ndie() { echo "error: $*" >&2; exit 1; }\nPREFIX="$1"; shift\n'
             + fn + 'cmd_licenses "$@"')
     return subprocess.run(["bash", "-c", body, "teaport", prefix, *args], capture_output=True, text=True)

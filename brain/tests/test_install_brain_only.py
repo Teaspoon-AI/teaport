@@ -1166,15 +1166,24 @@ def test_postrm_takes_the_link_on_remove_and_the_sudoers_line_on_purge_and_nothi
     opt = pathlib.Path(tmp, "opt/teaport")
     opt.mkdir(parents=True)
     sudoers = pathlib.Path(tmp, "teaport-config")
+    rule = pathlib.Path(tmp, "50-teaport-update.rules")
+    dropins = pathlib.Path(tmp, "wifi-setup.d")
     script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers)),
+                                      ("/etc/polkit-1/rules.d/50-teaport-update.rules", str(rule)),
+                                      ("/etc/systemd/system/teaport-wifi-setup.service.d", str(dropins)),
                                       ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
+    # Every path the script removes is under tmp: none of the real box's (a CI runner with
+    # polkit refuses the rm, and a root one would really remove it).
+    assert not re.search(r"rm -f /etc/", script.read_text()), script.read_text()
 
     def run(action, link_to="brain"):
         if os.path.lexists(opt / "venv"):
             (opt / "venv").unlink()
         os.symlink(str(opt / link_to), opt / "venv")
         sudoers.write_text("line\n")
+        rule.write_text("rule\n")
         assert subprocess.run(["sh", str(script), action]).returncode == 0
+        assert rule.exists() == (action != "purge"), action   # the update's grant goes with the purge
         return os.path.lexists(opt / "venv"), sudoers.exists()
     assert run("upgrade") == (True, True)
     assert run("remove") == (False, True)
