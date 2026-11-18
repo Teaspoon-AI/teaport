@@ -2,7 +2,8 @@
 # postinst for teaport-brain (#60). `configure` runs after every install and upgrade,
 # and on a downgrade (a rollback is `apt install` of the kept .deb).
 #
-#  1. The sudoers line the config page needs (sudoers-sync).
+#  1. The sudoers lines the config page and Wi-Fi changes need, and the Wi-Fi setup polkit
+#     rule narrowed to a scan (sudoers-sync).
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.
@@ -20,7 +21,7 @@ set -e
 # A line that cannot be written (no visudo, a user name sudoers would reject) is the config
 # page's problem, not the brain's: it must not leave new files unpacked under a brain that
 # was never restarted, so it is said and the script goes on. install.sh says it again.
-/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the config page's sudoers line was not written (/usr/lib/teaport/sudoers-sync)" >&2
+/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the sudoers lines for the config page and Wi-Fi were not written (/usr/lib/teaport/sudoers-sync)" >&2
 
 if [ ! -e /opt/teaport/venv ] || [ -L /opt/teaport/venv ]; then
   if [ -d /opt/teaport ]; then ln -sfn /opt/teaport/brain /opt/teaport/venv; fi
@@ -57,6 +58,18 @@ if [ -f "$wifi" ] && grep -q '^ExecStartPre=+/usr/local/lib/teaport/wifi-setup-n
     "[Unit]" "Requires=teaport-wifi-setup-net.service" "After=teaport-wifi-setup-net.service" \
     "[Service]" "ExecStartPre=" "ExecStopPost=" > "$stopgap"
   echo "teaport-brain: Wi-Fi setup's root steps now run from teaport-wifi-setup-net" >&2
+  reload=1
+fi
+
+# A Wi-Fi setup unit rendered before the Wi-Fi changes moved to wifi_apply.py under sudo
+# has NoNewPrivileges=yes, under which sudo cannot run: setup could change nothing. A
+# drop-in lifts it until install.sh renders the unit again (and removes the drop-in).
+helper_dropin=/etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf
+if [ -f "$wifi" ] && grep -q '^NoNewPrivileges=yes' "$wifi"; then
+  mkdir -p "$(dirname "$helper_dropin")"
+  printf '%s\n' "# teaport-brain postinst: Wi-Fi setup changes the Wi-Fi through sudo (wifi_apply.py)," \
+    "# until install.sh renders the new teaport-wifi-setup (install.sh --only brain does)." \
+    "[Service]" "NoNewPrivileges=no" > "$helper_dropin"
   reload=1
 fi
 

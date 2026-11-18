@@ -587,9 +587,10 @@ def _tool(directory, name, script):
     ("unknown", False), (None, False)])
 def test_online_means_full_connectivity(answer, online, monkeypatch, tmp_path):
     _tool(tmp_path, "busctl", "echo 'b true'\n")
-    if answer is not None:   # None: no nmcli at all
-        # Only a fresh check counts: the cached answer can be minutes old.
-        _tool(tmp_path, "nmcli", f'[ "$*" = "networking connectivity check" ] && echo {answer}\n')
+    if answer is not None:   # None: the helper could not be run at all
+        # Only a fresh check counts (the cached answer can be minutes old), and it runs in
+        # the root Wi-Fi helper: the run user may not ask NetworkManager for one itself.
+        _tool(tmp_path, "sudo", f'[ "$*" = "-n /usr/bin/python3 /usr/lib/teaport/wifi_apply.py connectivity" ] && echo \'{{"connectivity": "{answer}"}}\'\n')
     monkeypatch.setenv("PATH", str(tmp_path))
     assert asyncio.run(wv._box_online()) is online
 
@@ -600,12 +601,12 @@ def test_without_nms_connectivity_check_full_means_nothing(busctl, monkeypatch, 
     # No check configured: NM says "full" whenever there is a default route.
     if busctl is not None:   # None: no busctl at all
         _tool(tmp_path, "busctl", busctl)
-    _tool(tmp_path, "nmcli", "echo full\n")
+    _tool(tmp_path, "sudo", "echo '{\"connectivity\": \"full\"}'\n")
     monkeypatch.setenv("PATH", str(tmp_path))
     assert asyncio.run(wv._box_online()) is False
 
 
-@pytest.mark.parametrize("slow", ["busctl", "nmcli"])
+@pytest.mark.parametrize("slow", ["busctl", "sudo"])
 def test_a_check_that_hangs_is_offline_in_time_and_killed(slow, monkeypatch, tmp_path):
     # A dead link can stall the check: the phrase must still work, and soon.
     monkeypatch.setattr(wv, "NM_PROPERTY_SECS", 0.3)
@@ -613,7 +614,7 @@ def test_a_check_that_hangs_is_offline_in_time_and_killed(slow, monkeypatch, tmp
     pid = tmp_path / "pid"
     hang = f"echo $$ > {pid}\nexec sleep 30\n"
     _tool(tmp_path, "busctl", hang if slow == "busctl" else "echo 'b true'\n")
-    _tool(tmp_path, "nmcli", hang if slow == "nmcli" else "echo full\n")
+    _tool(tmp_path, "sudo", hang if slow == "sudo" else "echo '{\"connectivity\": \"full\"}'\n")
     monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")   # the fakes find sleep
     started = time.monotonic()
     assert asyncio.run(wv._box_online()) is False
@@ -626,7 +627,7 @@ def test_a_check_cancelled_mid_way_leaves_no_child(monkeypatch, tmp_path):
     # A barge-in cancels the frame being processed, and the check with it.
     pid = tmp_path / "pid"
     _tool(tmp_path, "busctl", "echo 'b true'\n")
-    _tool(tmp_path, "nmcli", f"echo $$ > {pid}\nexec sleep 30\n")
+    _tool(tmp_path, "sudo", f"echo $$ > {pid}\nexec sleep 30\n")
     monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
 
     async def run():

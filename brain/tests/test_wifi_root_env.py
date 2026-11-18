@@ -200,6 +200,8 @@ def _postinst(tmp, systemd: bool):
         (UNITS / "teaport-wifi-setup-net.service.in").read_text())
     text = (ROOT / "packaging/deb/postinst").read_text()
     for old, new in (("/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf", str(stopgap)),
+                     ("/etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf",
+                      str(stopgap.parent / "61-teaport-wifi-helper.conf")),
                      ("/etc/systemd/system/teaport-wifi-setup.service", str(unit)),
                      ("/etc/systemd/system/$net", tmp + "/etc/$net"), ("/usr/lib/systemd/system/$net", tmp + "/usr/$net"),
                      ("/usr/lib/teaport/sudoers-sync", "true"), ("/opt/teaport", tmp + "/opt"),
@@ -302,7 +304,7 @@ def test_rendering_the_new_pair_removes_the_stopgap_and_takes_over_a_running_set
     stopgap = pathlib.Path(tmp, "stopgap.conf")
     stopgap.write_text("[Service]\n")
     stub = (f'SUDO() {{ printf "SUDO %s\\n" "$*"; [ "$1" = rm ] && command rm -f "${{@: -1}}"; return 0; }}\n'
-            f'WIFI_SETUP_STOPGAP="{stopgap}"\n')
+            f'WIFI_SETUP_STOPGAP="{stopgap}"\nWIFI_SETUP_HELPER_DROPIN="{tmp}/no-helper-dropin"\n')
     rc, out = _bash(stub + 'systemctl() { [ "$1" = is-active ]; }\n' + _fn("wifi_setup_split_done") + "wifi_setup_split_done\n")
     assert rc == 0 and not stopgap.exists() and "SUDO systemctl daemon-reload" in out, out
     assert "SUDO systemctl start teaport-wifi-setup-net.service" in out, out

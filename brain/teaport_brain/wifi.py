@@ -4,50 +4,40 @@
 # a temporary setup network and a captive page) share — the NetworkManager calls, and
 # the look of a page that has to render with no web fonts and no internet.
 #
-# Everything here shells out to nmcli as the run user; the polkit rule install.sh lays
-# down (50-teaport-wifi-setup.rules) is what lets that user change the Wi-Fi. No
-# Pipecat import: the setup unit runs this alone on a box short of memory.
+# Reads (devices, scans, profiles) are nmcli as the run user; a scan is the one thing the
+# polkit rule install.sh lays down (50-teaport-wifi-setup.rules) still grants it. Every
+# change goes through wifi_apply.py as root, behind its sudoers line, which takes only
+# Wi-Fi requests and checks them (see there): the run user is the agent's, and may not
+# change the box's other networking. No Pipecat import: the setup unit runs this alone
+# on a box short of memory.
 #
 import base64
 import functools
+import json
 import os
-import re
 import socket
 import subprocess
 
+from teaport_brain import wifi_apply
 from teaport_brain.i18n import N_
+from teaport_brain.wifi_apply import AP_ADDRESS, AP_CONNECTION, AP_PREFIX, CONNECT_WAIT_SECS  # noqa: F401
+from teaport_brain.wifi_apply import split_terse, terse_fields as _terse_fields  # noqa: F401
 
-AP_CONNECTION = "teaport-setup"
-# The setup network's address, pinned in its profile (ipv4.addresses) rather than left to
-# NetworkManager's pick: the unit's iptables DNAT (packaging/wifi-setup/wifi-setup-net)
-# and the captive DNS answer (packaging/wifi-setup/teaport-captive.conf) name it before the
-# network exists. It is NM's own shared-mode default; change all three together.
-AP_ADDRESS = "10.42.0.1"
-AP_PREFIX = 24
-CONNECT_WAIT_SECS = 45
-WIFI_TYPE = "802-11-wireless"
-# Key managements whose secret is a passphrase (802-11-wireless-security.psk): a saved
-# profile of these takes a new password, and gets its old one back if that fails.
-PSK_KINDS = ("wpa-psk", "sae")
-
-
-def split_terse(line: str) -> list[str]:
-    """One line of `nmcli -t` output: ':'-separated, with '\\:' and '\\\\' escaped."""
-    fields, cur, i = [], [], 0
-    while i < len(line):
-        c = line[i]
-        if c == "\\" and i + 1 < len(line):
-            cur.append(line[i + 1])
-            i += 2
-            continue
-        if c == ":":
-            fields.append("".join(cur))
-            cur = []
-        else:
-            cur.append(c)
-        i += 1
-    fields.append("".join(cur))
-    return fields
+# The root-owned copy the sudoers line names (packaging/deb/sudoers-sync), on the system
+# python: never the venv's interpreter, nor this tree's copy of the file.
+HELPER = "/usr/lib/teaport/wifi_apply.py"
+SYSTEM_PYTHON = "/usr/bin/python3"
+# A join can take two connection attempts and two scans; the helper's own nmcli calls
+# each have their timeout.
+HELPER_SECS = 300
+# A stop of the setup unit reaches the helper too, which then undoes a half-done join:
+# how long the caller waits for that before giving up on it.
+HELPER_STOP_SECS = 30
+# The helper's reasons, as people read them (translated where shown).
+WHY = {"": "", wifi_apply.SAVED_FAILED: N_("the saved settings for it did not work"),
+       wifi_apply.NO_CONNECT: N_("it would not connect"),
+       wifi_apply.BAD_PASSWORD: N_("the password did not work"),
+       wifi_apply.NOT_FOUND: N_("the network was not found")}
 
 
 def parse_scan(out: str) -> list[dict]:
@@ -70,17 +60,6 @@ def parse_scan(out: str) -> list[dict]:
     return sorted(best.values(), key=lambda n: -n["signal"])
 
 
-def _terse_fields(out: str) -> dict[str, str]:
-    """`nmcli -t -f a,b ... show` (one "field:value" per line) -> {field: value}, unescaped.
-    A setting the profile does not have is simply missing (nmcli leaves it out)."""
-    fields = {}
-    for line in out.splitlines():
-        f = split_terse(line)
-        if len(f) >= 2:
-            fields[f[0]] = ":".join(f[1:])
-    return fields
-
-
 def _reachable(host: str, dev: str) -> bool:
     """A TCP connect to `host`:443 that can only leave through `dev`. Unprivileged
     SO_BINDTODEVICE needs Linux 5.7+ (JetPack 7 runs 6.8); without it nothing here
@@ -100,36 +79,69 @@ def _reachable(host: str, dev: str) -> bool:
         s.close()
 
 
+def sudo_helper(verb: str, req: dict) -> dict:
+    """wifi_apply <verb> under sudo, the request on stdin: its reply, or {"ok": False,
+    "err": ...} when it could not run or refused."""
+    try:
+        p = subprocess.Popen(["sudo", "-n", SYSTEM_PYTHON, HELPER, verb], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as e:
+        return {"ok": False, "err": str(e)}
+    try:
+        out, err = p.communicate(json.dumps(req), timeout=HELPER_SECS)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        return {"ok": False, "err": "the Wi-Fi helper timed out"}
+    except BaseException:
+        # A stop (wifi_setup's Stopped): the helper had the unit's SIGTERM too and is
+        # putting back what it began. Wait for that, so the caller's own clean-up (the old
+        # network back up) does not race it.
+        try:
+            p.wait(timeout=HELPER_STOP_SECS)
+        except BaseException:
+            p.kill()
+        raise
+    try:
+        reply = json.loads(out)
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):
+        return {"ok": False, "err": (err.strip() or f"the Wi-Fi helper exited {p.returncode}")[-300:]}
+    if "refused" in reply:
+        return {"ok": False, "err": str(reply["refused"])}
+    return reply
+
+
 class NM:
-    """The nmcli calls setup needs. `run(argv) -> (rc, stdout, stderr)` is injectable.
+    """The NetworkManager calls setup and the config page need. `run(argv, timeout=) ->
+    (rc, stdout, stderr)` is injectable: given one (tests), the changes run in-process,
+    through wifi_apply.handle() and that same `run`, rather than through sudo.
 
     Profiles are named by UUID throughout: names repeat (NM names a new profile after its
     network, and `connection delete id X` deletes every profile called X)."""
 
-    def __init__(self, run=None):
-        self._run = run or self._subprocess
-        # What the join in progress has changed, for undo(): ("psk", uuid, flags, psk)
-        # or ("new", uuids before it, ssid). None when nothing is half-done.
-        self._pending: tuple | None = None
+    def __init__(self, run=None, helper=None):
+        self._run = run or wifi_apply.run_nmcli
+        self._ops = wifi_apply.Ops(self._run)   # reads; in-process, the changes too
+        if helper is None:
+            helper = self._in_process if run is not None else sudo_helper
+        self._helper = helper
+        self._created = wifi_apply.Created()
 
-    @staticmethod
-    def _subprocess(argv: list[str], timeout: float = 60) -> tuple[int, str, str]:
+    def _in_process(self, verb: str, req: dict) -> dict:
         try:
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-            return p.returncode, p.stdout, p.stderr
-        except subprocess.TimeoutExpired:
-            return 124, "", f"{argv[0]} timed out"
+            return wifi_apply.handle(self._ops, verb, req, created=self._created,
+                                     setup_running=lambda: True)
+        except wifi_apply.Refused as e:
+            return {"ok": False, "err": str(e)}
 
     def nmcli(self, *args: str, timeout: float = 60) -> tuple[int, str, str]:
         return self._run(["nmcli", *args], timeout=timeout)
 
     def wifi_device(self) -> str | None:
-        rc, out, _ = self.nmcli("-t", "-f", "DEVICE,TYPE", "device")
-        for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) >= 2 and f[1] == "wifi":
-                return f[0]
-        return None
+        devices = self._ops.wifi_devices()
+        return devices[0] if devices else None
 
     def mac(self, dev: str) -> str:
         try:
@@ -139,15 +151,10 @@ class NM:
             return ""
 
     def scan(self, dev: str) -> list[dict]:
-        _, out, _ = self.nmcli("-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
-                               "ifname", dev, "--rescan", "yes", timeout=45)
-        return parse_scan(out)
+        return parse_scan(self._ops.rescan(dev))
 
     def visible(self, dev: str, ssid: str) -> bool:
-        """`ssid` is in the radio's last scan (no new scan)."""
-        _, out, _ = self.nmcli("-t", "-f", "SSID", "device", "wifi", "list", "ifname", dev,
-                               "--rescan", "no")
-        return any(split_terse(line)[0] == ssid for line in out.splitlines())
+        return self._ops.visible(dev, ssid)
 
     def active(self, dev: str) -> dict | None:
         """The profile `dev` is on now, {"name", "uuid"} (to put back), if any."""
@@ -171,153 +178,55 @@ class NM:
         return [a for line in out.splitlines() for a in
                 (part.strip().split("/")[0] for part in line.split("|")) if a]
 
-    def fields(self, uuid: str, *names: str, secrets: bool = False) -> dict[str, str] | None:
-        """Profile `uuid`'s settings `names`, unescaped; None if nmcli fails."""
-        rc, out, _ = self.nmcli(*(["-s"] if secrets else []), "-t", "-f", ",".join(names),
-                                "connection", "show", "uuid", uuid)
-        return _terse_fields(out) if rc == 0 else None
+    def fields(self, uuid: str, *names: str) -> dict[str, str] | None:
+        return self._ops.fields(uuid, *names)
 
     def wifi_profiles(self) -> list[str]:
-        """Every saved Wi-Fi profile's UUID."""
-        _, out, _ = self.nmcli("-t", "-f", "UUID,TYPE", "connection", "show")
-        return [f[0] for f in map(split_terse, out.splitlines())
-                if len(f) >= 2 and f[1] == WIFI_TYPE]
+        return self._ops.wifi_profiles()
 
     def saved_profile(self, ssid: str) -> dict | None:
-        """A saved profile for joining `ssid` (not an access point of ours or anyone's):
-        {"uuid", "key_mgmt"}, key_mgmt "" for an open network."""
-        for uuid in self.wifi_profiles():
-            f = self.fields(uuid, "connection.id", "802-11-wireless.ssid", "802-11-wireless.mode",
-                            "802-11-wireless-security.key-mgmt") or {}
-            if f.get("connection.id") == AP_CONNECTION or f.get("802-11-wireless.mode") == "ap":
-                continue
-            if f.get("802-11-wireless.ssid") == ssid:
-                return {"uuid": uuid, "key_mgmt": f.get("802-11-wireless-security.key-mgmt", "")}
-        return None
+        return self._ops.saved_profile(ssid)
+
+    # --- changes: through the helper ------------------------------------------------
 
     def ap_up(self, dev: str, ssid: str, password: str) -> tuple[bool, str]:
-        self.nmcli("connection", "delete", "id", AP_CONNECTION)  # a leftover from a crash
-        rc, _, err = self.nmcli(
-            "connection", "add", "type", "wifi", "ifname", dev, "con-name", AP_CONNECTION,
-            "autoconnect", "no", "ssid", ssid,
-            "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
-            "ipv4.method", "shared", "ipv4.addresses", f"{AP_ADDRESS}/{AP_PREFIX}",
-            "ipv6.method", "disabled",
-            "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn",
-            "wifi-sec.pairwise", "ccmp", "wifi-sec.group", "ccmp",
-            "wifi-sec.psk", password)
-        if rc != 0:
-            return False, err.strip() or "could not create the setup network"
-        rc, _, err = self.nmcli("--wait", "30", "connection", "up", "id", AP_CONNECTION,
-                                timeout=45)
-        return rc == 0, err.strip()
+        r = self._helper("ap-up", {"dev": dev, "ssid": ssid, "password": password})
+        return bool(r.get("ok")), str(r.get("err") or "")
 
     def ap_down(self) -> None:
-        self.nmcli("--wait", "15", "connection", "down", "id", AP_CONNECTION, timeout=25)
+        self._helper("ap-down", {})
 
     def ap_delete(self) -> None:
-        self.nmcli("connection", "delete", "id", AP_CONNECTION)
+        self._helper("ap-delete", {})
 
     def up(self, uuid: str, wait: int = CONNECT_WAIT_SECS) -> bool:
-        """Activate profile `uuid`; wait=0 asks for it and returns at once."""
-        rc, _, _ = self.nmcli("--wait", str(wait), "connection", "up", "uuid", uuid,
-                              timeout=wait + 15)
-        return rc == 0
+        """Activate saved Wi-Fi profile `uuid`; wait=0 asks for it and returns at once."""
+        return bool(self._helper("up", {"uuid": uuid, "wait": wait}).get("ok"))
 
     def delete(self, uuid: str) -> None:
-        self.nmcli("connection", "delete", "uuid", uuid)
+        """Drop a profile a join created (the helper deletes no other)."""
+        self._helper("delete", {"uuid": uuid})
 
     def join(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
-        """Join `ssid`. Returns (ok, why-not, UUID of a profile created for it — the
-        caller drops it if it does not keep it).
-
-        A saved profile and no password: just bring it up. A saved WPA2/WPA3-Personal
-        profile and a password: change its password, and put the old one back if it does
-        not work. Any other saved profile (open, enterprise, WEP, OWE) is never changed —
-        a password for it makes a separate new profile instead."""
-        self._pending = None
-        if not hidden and not self.visible(dev, ssid):
-            # Just out of access-point mode the radio's scan list is empty (seen on a
-            # Jetson: 9 networks before, 0 right after), and nmcli then says "not found".
-            self.scan(dev)
-        saved = self.saved_profile(ssid)
-        if saved and not password:
-            ok = self.up(saved["uuid"])
-            return ok, "" if ok else N_("the saved settings for it did not work"), None
-        if saved and saved["key_mgmt"] in PSK_KINDS:
-            return self._new_password(saved["uuid"], password)
-        return self._create(dev, ssid, password, hidden)
-
-    def _new_password(self, uuid: str, password: str) -> tuple[bool, str, None]:
-        sec = "802-11-wireless-security"
-        old = self.fields(uuid, f"{sec}.psk", f"{sec}.psk-flags", secrets=True)
-        if old is None:  # no copy of the old password: leave the profile alone
-            return False, N_("it would not connect"), None
-        flags = (old.get(f"{sec}.psk-flags") or "0").split()[0]
-        self._pending = ("psk", uuid, flags, old.get(f"{sec}.psk", ""))
-        rc, _, _ = self.nmcli("connection", "modify", "uuid", uuid,
-                              "wifi-sec.psk-flags", "0", "wifi-sec.psk", password)
-        if rc == 0 and self.up(uuid):
-            self._pending = None
-            return True, "", None
-        self.undo()
-        return False, (N_("the password did not work") if rc == 0 else N_("it would not connect")), None
-
-    def _create(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
-        if ssid.startswith("-"):
-            # nmcli reads a leading dash here as one of its own options (--ask,
-            # --show-secrets) and has no "--" to stop that.
-            return False, N_("it would not connect"), None
-        before = set(self.wifi_profiles())
-        self._pending = ("new", before, ssid)
-        args = ["--wait", str(CONNECT_WAIT_SECS), "device", "wifi", "connect", ssid,
-                "ifname", dev, "name", ssid]
-        if password:
-            args += ["password", password]
-        if hidden:
-            args += ["hidden", "yes"]
-        rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
-        if rc != 0 and not hidden and re.search(r"No network with SSID", err):
-            for uuid in self._new_profiles(before, ssid):  # a stale list: once more, freshly
-                self.delete(uuid)
-            self.scan(dev)
-            rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
-        created = next(iter(self._new_profiles(before, ssid)), None)
-        self._pending = None
-        if rc == 0:
-            return True, "", created
-        why = N_("the password did not work") if re.search(
-            r"secrets|password|802-1x|psk", err, re.I) else (
-            N_("the network was not found") if re.search(r"not found|No network", err, re.I)
-            else N_("it would not connect"))
-        return False, why, created
-
-    def _new_profiles(self, before: set[str], ssid: str) -> list[str]:
-        """The Wi-Fi profiles for `ssid` that were not there `before`."""
-        return [uuid for uuid in self.wifi_profiles() if uuid not in before
-                and (self.fields(uuid, "802-11-wireless.ssid") or {}).get("802-11-wireless.ssid") == ssid]
+        """Join `ssid` (wifi_apply.Ops.join). Returns (ok, why-not, UUID of a profile
+        created for it — the caller drops it if it does not keep it)."""
+        r = self._helper("join", {"dev": dev, "ssid": ssid, "password": password, "hidden": hidden})
+        why = WHY.get(r.get("why", wifi_apply.NO_CONNECT), WHY[wifi_apply.NO_CONNECT])
+        if not r.get("ok") and not why:
+            why = WHY[wifi_apply.NO_CONNECT]
+        created = r.get("created")
+        return bool(r.get("ok")), "" if r.get("ok") else why, created if isinstance(created, str) else None
 
     def undo(self) -> None:
-        """Put back what the join in progress changed — after a password that did not
-        work, or when the unit is stopped in the middle of a join: the profile's old
-        password, or no profile created for it."""
-        pending, self._pending = self._pending, None
-        if not pending:
-            return
-        if pending[0] == "psk":
-            _, uuid, flags, psk = pending
-            self.nmcli("connection", "modify", "uuid", uuid,
-                       "wifi-sec.psk-flags", flags, "wifi-sec.psk", psk)
-        else:
-            _, before, ssid = pending
-            for uuid in self._new_profiles(before, ssid):
-                self.delete(uuid)
+        """Put back a join a stop cut short. Through sudo the helper does this itself as it
+        is stopped (it has the same SIGTERM); in-process (tests), here."""
+        self._ops.undo()
 
     def online(self, dev: str) -> bool:
         """Internet through `dev` — not merely somewhere: a box on Ethernet is always
         online, whatever the Wi-Fi joined. NM's per-device check first (after asking for
         a fresh one), else a TCP connect that can only leave through `dev`."""
-        self.nmcli("networking", "connectivity", "check", timeout=20)
+        self._helper("connectivity", {})
         _, out, _ = self.nmcli("-t", "-f", "GENERAL.IP4-CONNECTIVITY", "device", "show", dev)
         if "full" in _terse_fields(out).get("GENERAL.IP4-CONNECTIVITY", ""):
             return True

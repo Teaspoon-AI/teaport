@@ -73,6 +73,9 @@ UNIT = "teaport-wifi-setup"
 UNIT_FILE = f"/etc/systemd/system/{UNIT}.service"
 # The root-owned config helper the installer puts in sudoers (config_ui.py uses it too).
 APPLY_HELPER = "/usr/lib/teaport/config_apply.py"
+# The root-owned Wi-Fi helper (wifi_apply.py; wifi.HELPER), for NetworkManager's
+# connectivity check, which the run user may not ask for itself.
+WIFI_HELPER = "/usr/lib/teaport/wifi_apply.py"
 SYSTEM_PYTHON = "/usr/bin/python3"
 STATUS_PATH = "/run/teaport-wifi-setup/status.json"
 POLL_SECS = 0.5
@@ -1108,7 +1111,8 @@ async def _output(*cmd: str, timeout: float) -> str | None:
     behind."""
     try:
         p = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
     except OSError:
         return None
     try:
@@ -1141,8 +1145,15 @@ async def connectivity(timeout: float | None = None) -> str | None:
         "ConnectivityCheckEnabled", timeout=NM_PROPERTY_SECS)
     if enabled != "b true":
         return None
-    return await _output("nmcli", "networking", "connectivity", "check",
-                         timeout=ONLINE_CHECK_SECS if timeout is None else timeout) or ""
+    # The check needs NetworkManager's network-control, which the run user no longer has:
+    # it runs in the Wi-Fi helper, as root (wifi_apply.py, its sudoers line).
+    out = await _output("sudo", "-n", SYSTEM_PYTHON, WIFI_HELPER, "connectivity",
+                        timeout=ONLINE_CHECK_SECS if timeout is None else timeout)
+    try:
+        answer = json.loads(out or "").get("connectivity")
+    except (ValueError, AttributeError):
+        return ""
+    return answer if isinstance(answer, str) else ""
 
 
 async def _box_online() -> bool:

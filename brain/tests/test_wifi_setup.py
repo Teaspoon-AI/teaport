@@ -174,6 +174,8 @@ class FakeNmcli:
     def __call__(self, argv, timeout=60):
         self.calls.append(argv)
         a = argv[1:]
+        if a == ["-t", "-f", "DEVICE,TYPE", "device"]:
+            return 0, "eth0:ethernet\nwlan0:wifi\n", ""
         if a[:5] == ["-t", "-f", "UUID,TYPE", "connection", "show"]:
             return 0, "".join(f"{u}:802-11-wireless\n" for u in self.profiles), ""
         if "connection" in a and "show" in a and "uuid" in a:
@@ -275,7 +277,7 @@ def test_a_new_network_is_reported_by_uuid_and_a_namesake_survives_its_removal()
 def test_a_stale_scan_list_is_refreshed_and_the_join_tried_again():
     nm = FakeNmcli({"cafe": "cafepass1"})
     n = wifi.NM(nm)
-    n.visible = lambda dev, ssid: True     # the list looked fine, but "not found" anyway
+    n._ops.visible = lambda dev, ssid: True     # the list looked fine, but "not found" anyway
     ok, _, created = n.join("wlan0", "cafe", "cafepass1", False)
     assert ok and created and sum("connect" in c for c in nm.calls) == 2
     nm2 = FakeNmcli({})
@@ -293,13 +295,13 @@ def test_a_name_nmcli_would_take_for_an_option_is_refused():
 def test_undo_drops_what_an_interrupted_join_made():
     nm = FakeNmcli({"cafe": "cafepass1"})
     n = wifi.NM(nm)
-    n._pending = ("new", set(), "cafe")
+    n._ops._pending = ("new", set(), "cafe")
     nm._new(id="cafe", ssid="cafe", key_mgmt="wpa-psk", psk="x")
     n.undo()
-    assert nm.profiles == {} and n._pending is None
+    assert nm.profiles == {} and n._ops._pending is None
     nm = FakeNmcli({}, profiles=[{"ssid": "home", "psk": "old:pass", "uuid": "u1"}])
     n = wifi.NM(nm)
-    n._pending = ("psk", "u1", "0", "old:pass")
+    n._ops._pending = ("psk", "u1", "0", "old:pass")
     nm.profiles["u1"]["psk"] = "half-done"
     n.undo()
     assert nm.profiles["u1"]["psk"] == "old:pass"
