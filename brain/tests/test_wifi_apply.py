@@ -190,6 +190,11 @@ def test_a_stopped_request_leaves_no_profile_it_made(monkeypatch, capsys, tmp_pa
     assert json.loads(capsys.readouterr().out)["stopped"] is True
 
 
+def test_the_caller_waits_for_the_lock_and_a_whole_join():
+    # A caller that gave up first would leave a join running that it never hears of.
+    assert wifi.HELPER_SECS >= wifi_apply.LOCK_WAIT_SECS + wifi_apply.JOIN_SECS + 30
+
+
 def test_one_change_at_a_time(tmp_path):
     # Two joins at once would each take the other's half-done password for the old one.
     path = str(tmp_path / "run/lock")

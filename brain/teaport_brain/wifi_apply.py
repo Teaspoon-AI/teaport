@@ -62,8 +62,14 @@ PSK_KINDS = ("wpa-psk", "sae")
 SETUP_UNIT = "teaport-wifi-setup.service"
 CREATED_PATH = "/run/teaport-wifi-apply/created"
 LOCK_PATH = "/run/teaport-wifi-apply/lock"
-# How long a change waits for the one before it (a join takes up to about two minutes).
-LOCK_WAIT_SECS = 180
+# How long a change waits for the one before it. Setup and the config page never change
+# the Wi-Fi at the same time (the page refuses while setup runs), so a wait means someone
+# else's requests; it plus a whole join (JOIN_SECS) fits inside the caller's wifi.HELPER_SECS,
+# or the caller would give up on a join that then goes on without it.
+LOCK_WAIT_SECS = 60
+# A join's long waits on its longest path (_create's retry: two scans, two connection
+# attempts, each to its timeout); the quick reads around them fit in the caller's margin.
+JOIN_SECS = 2 * (CONNECT_WAIT_SECS + 15) + 2 * 45
 MAX_REQUEST = 4096
 # Why a join failed, as codes; wifi.py turns them into the words people see.
 SAVED_FAILED, NO_CONNECT, BAD_PASSWORD, NOT_FOUND = "saved_failed", "no_connect", "password", "not_found"
