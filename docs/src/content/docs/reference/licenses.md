@@ -24,7 +24,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:61-66,84-100#85615cdf; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:82,521,844#228177a9 -->
+<!-- source: packaging/nfpm.yaml:61-66,84-100#85615cdf; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:89,734,1057#228177a9 -->
 
 ## See the licenses on the device
 
@@ -36,9 +36,9 @@ The configuration page has an Open-source licenses link at the bottom. It opens 
 
 ## The engine's license
 
-The engine is a separate component with its own license terms. The installer shows the engine license and asks you to accept it. `--accept-eula`, or `TEAPORT_ACCEPT_EULA=1`, accepts it without the prompt. The installer records the accepted version in `eula-accepted.json` in the state directory, `/var/lib/teaport` by default, and asks again only when the version changes.
+The engine is a separate component with its own license terms. The installer shows the engine license, asks you to accept it, and asks for your email address. Teaspoon AI records the acceptance: the license version, a hash of the text, the time, your network's public IP address, the installer's version, and your email address. The engine and its models download only after that. `--accept-eula=1.0 --eula-email=you@example.com`, or `TEAPORT_ACCEPT_EULA=1.0` and `TEAPORT_EULA_EMAIL`, accepts version 1.0 without the prompt. A run that names a version other than the manifest's stops. The installer also records the acceptance in `eula-accepted.json` in the state directory, `/var/lib/teaport` by default, and asks again only when the version changes.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:84,104,217-219,225#1d85658a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:94-95,115-118,403-416,453-454,466-484#39e52083 -->
 
 ## The LGPL libraries
 

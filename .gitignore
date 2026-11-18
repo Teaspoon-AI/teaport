@@ -32,3 +32,8 @@ brain/teaport_brain/assets/
 
 # TLC model-checker scratch: check.sh writes per-run state graphs and checkpoints here.
 brain/formal/states/
+
+# get-worker local secrets and wrangler state
+get-worker/.dev.vars
+get-worker/.wrangler/
+get-worker/node_modules/

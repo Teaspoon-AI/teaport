@@ -810,8 +810,9 @@ def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
     tmp = tempdir("teaport-eng-resume-")
     dest = pathlib.Path(tmp, "f.bin")
     script = ('curl() { local o; while [ $# -gt 0 ]; do [ "$1" = -o ] && o="$2"; shift; done; echo corrupt > "$o"; }\n'
+              'LICENSE_API=https://get.teaspoon.tech\n'
               f'download https://x/f.bin "{dest}" {_sha("good" + chr(10))}')
-    rc, out = _run(tmp, script, ["download"])
+    rc, out = _run(tmp, script, ["download", "license_py", "engine_url"])
     assert rc != 0 and "sha256 mismatch" in out and not pathlib.Path(f"{dest}.part").exists(), out
 
 

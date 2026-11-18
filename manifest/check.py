@@ -11,6 +11,10 @@
 # against the public URLs:
 #   - every entry in REQUIRED is present with a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
+#   - the engine's files and models (/dl/engine/, /dl/models/, not the notices) are served
+#     only past the engine license gate (get-worker/): each must answer 403 to a plain
+#     request, and is fetched with the CI token in TEAPORT_DL_TOKEN (the Worker's CI_TOKEN;
+#     a repo secret). Without the token they cannot be checked, which is a problem;
 #   - a url with no sha256 (models.voxtral.aux) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
@@ -64,6 +68,27 @@ REQUIRED = (
 # The {repo, tag} entries install.sh clones (brain: the Discord bridge's source).
 REQUIRED_REPOS = ("brain",)
 NPM_REGISTRY = "https://registry.npmjs.org"
+# What the license gate covers: get-worker/src/index.js isGated(), and install.sh's
+# license_py gated. Keep the three in step.
+GATED_PREFIXES = ("/dl/engine/", "/dl/models/")
+PUBLIC_SUFFIXES = ("THIRD_PARTY_NOTICES.txt",)
+
+
+def gated(url):
+    path = urlparse(url).path
+    return path.startswith(GATED_PREFIXES) and not path.endswith(PUBLIC_SUFFIXES)
+
+
+def ungated_answer(url):
+    """What a plain request for a gated url gets: None if 403 (gated), else why not."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check", "Range": "bytes=0-0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return f"served without the engine license (HTTP {resp.status} to a plain request)"
+    except urllib.error.HTTPError as e:
+        return None if e.code == 403 else f"answers HTTP {e.code} to a plain request, not 403"
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        return f"plain request failed: {e}"
 
 
 def lookup(manifest, dotted):
@@ -112,13 +137,16 @@ def repos(node, path=""):
                 yield from repos(value, f"{path}.{key}" if path else key)
 
 
-def fetch(url, digest):
+def fetch(url, digest, token=None):
     """GET url, hashing the body into digest (None: just open it). Retries a failed
-    transfer from the start, as a fresh digest."""
+    transfer from the start, as a fresh digest. token: the license gate's CI token."""
+    headers = {"User-Agent": "teaport-manifest-check"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     for attempt in range(1, ATTEMPTS + 1):
         d = digest.copy() if digest is not None else None
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 while d is not None and (chunk := resp.read(CHUNK)):
                     d.update(chunk)
@@ -159,6 +187,7 @@ def check(manifest_path, placeholders_ok):
     with open(manifest_path) as f:
         manifest = json.load(f)
     problems, checked = [], 0
+    token = os.environ.get("TEAPORT_DL_TOKEN", "")
 
     def placeholder(where, value):
         if not placeholders_ok:
@@ -185,8 +214,16 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
+        if gated(url):
+            why = ungated_answer(url)
+            if why:
+                problems.append(f"{where}: {url} {why}")
+            if not token:
+                problems.append(f"{where}: {url} is behind the engine license; set TEAPORT_DL_TOKEN "
+                                "(the license Worker's CI_TOKEN) to check it")
+                continue
         try:
-            digest = fetch(url, hashlib.sha256() if sha else None)
+            digest = fetch(url, hashlib.sha256() if sha else None, token if gated(url) else None)
         except Exception as e:  # HTTPError, URLError, timeouts: all mean "not published"
             problems.append(f"{where}: {url} -> {e}")
             continue

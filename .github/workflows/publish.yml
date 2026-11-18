@@ -60,6 +60,12 @@ jobs:
         run: bash -n install-bootstrap.sh
       - name: The manifests name everything install.sh needs, published as named
         # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
+        # The engine and its models are behind the engine license (get-worker/): this
+        # reads them with the Worker's CI token, a repo secret (not r2-publish's: this job
+        # runs on pull requests too), and checks a plain request gets 403. A PR from a fork
+        # has no secrets, so its check of those entries fails; a maintainer re-runs it.
+        env:
+          TEAPORT_DL_TOKEN: ${{ secrets.TEAPORT_DL_TOKEN }}
         run: |
           python3 manifest/check.py manifest/stable.json
           python3 manifest/check.py --placeholders-ok manifest/beta.json

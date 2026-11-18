@@ -58,7 +58,14 @@
 #   TEAPORT_ETC            non-secret env dir (default /etc/teaport)
 #   TEAPORT_BRAIN_DEB      install the brain from this teaport-brain .deb (default: the manifest's)
 #   TEAPORT_PLUGIN_SRC     install the plugin from this local dir instead of npm
-#   TEAPORT_ACCEPT_EULA=1  accept the engine EULA non-interactively
+#   TEAPORT_ACCEPT_EULA=<version>  accept the engine license non-interactively: the exact
+#                          version you read (the manifest's engine.eula.version, e.g. 1.0);
+#                          another version aborts. Needs TEAPORT_EULA_EMAIL. The flag form is
+#                          --accept-eula=<version>. A bare --accept-eula or
+#                          TEAPORT_ACCEPT_EULA=1 still works in this release, with a warning.
+#   TEAPORT_EULA_EMAIL     the email address recorded with that acceptance (--eula-email=<email>);
+#                          on a TTY the prompt asks for it
+#   TEAPORT_LICENSE_API    the license server (default https://get.teaspoon.tech; dev only)
 #   TEAPORT_ALLOW_NON_JETSON=1   skip the Jetson/L4T gate (dev only; no real install)
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
@@ -84,7 +91,9 @@ ETC="${TEAPORT_ETC:-/etc/teaport}"
 STATE="${TEAPORT_STATE:-/var/lib/teaport}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
 RUN_USER="${TEAPORT_USER:-$(id -un)}"
-ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-0}"
+ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-}"   # "": ask; 1: the deprecated bare form; else a version
+EULA_EMAIL="${TEAPORT_EULA_EMAIL:-}"
+LICENSE_API="${TEAPORT_LICENSE_API:-https://get.teaspoon.tech}"
 ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_DEB_SRC="${TEAPORT_BRAIN_DEB:-}"
 PLUGIN_SRC="${TEAPORT_PLUGIN_SRC:-}"
@@ -96,12 +105,17 @@ ROLLBACK=""   # --rollback <component>
 ARGS=("$@")   # as given: installer_lock runs this script again with them
 # Where this script lives — lets a checkout install its own brain/plugin/systemd.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Which installer this is, as the license server records it (the one-liner's clone has HEAD).
+INSTALLER_VERSION="git:$(git -C "$HERE" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
 
 usage_err() { printf '%s (see --help)\n' "$*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --accept-eula) ACCEPT_EULA=1 ;;
+    --accept-eula=*) ACCEPT_EULA="${1#*=}"; [ -n "$ACCEPT_EULA" ] || usage_err "--accept-eula= needs the license version you accept (the manifest's engine.eula.version, e.g. 1.0)" ;;
+    --eula-email) [ $# -ge 2 ] && [ -n "$2" ] || usage_err "--eula-email needs an email address"; EULA_EMAIL="$2"; shift ;;
+    --eula-email=*) EULA_EMAIL="${1#*=}"; [ -n "$EULA_EMAIL" ] || usage_err "--eula-email= needs an email address" ;;
     --only|--rollback)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a component (brain or engine)"
       if [ "$1" = --only ]; then ONLY="$2"; else ROLLBACK="$2"; fi; shift ;;
@@ -116,6 +130,8 @@ done
 case "$ONLY" in ''|brain|engine) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain, engine)" ;; esac
 case "$ROLLBACK" in ''|brain|engine) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain, engine)" ;; esac
 [ -z "$ONLY" ] || [ -z "$ROLLBACK" ] || usage_err "--only and --rollback are separate runs"
+# TEAPORT_ACCEPT_EULA=0 was the documented "ask" before versions; a version has a dot.
+case "$ACCEPT_EULA" in 0) ACCEPT_EULA="" ;; ''|1) ;; *.*) ;; *) usage_err "--accept-eula / TEAPORT_ACCEPT_EULA: '$ACCEPT_EULA' is not a license version (the manifest's engine.eula.version, e.g. 1.0)" ;; esac
 
 # --- output helpers ----------------------------------------------------------
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -202,7 +218,9 @@ download() {
     log "have $(basename "$dest") (sha ok)"; return
   fi
   log "download $(basename "$dest")"
-  run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
+  # The engine and its models are served only to a signed URL (engine_url, below).
+  local get; get="$(engine_url "$url")" || exit 1
+  run curl -fL --retry 3 -C - -o "$dest.part" "$get" || die "download failed (is get.teaspoon.tech live?): $url"
   if [ "$DRY_RUN" != 1 ]; then
     # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
     # stage is kept across runs, #158), and fail the same way each time.
@@ -213,30 +231,203 @@ download() {
 
 # --- EULA --------------------------------------------------------------------
 # Manifest-driven license gate. The manifest pins the license version + text
-# (engine.eula.{version,url,sha256}); acceptance is recorded per version in
-# $STATE/eula-accepted.json, so re-runs repair silently and a changed license
-# re-gates. The full text is displayed and explicitly accepted (clickwrap) —
-# a URL pointer alone shows nobody anything on a headless box.
+# (engine.eula.{version,url,sha256}). The full text is displayed and explicitly accepted
+# (clickwrap): a URL pointer alone shows nobody anything on a headless box.
+#
+# The acceptance is recorded by Teaspoon AI's license server ($LICENSE_API, the Worker in
+# get-worker/), not only on this box: it records the license version, the SHA-256 of the
+# text accepted (which must be the published text of that version), the time, this box's
+# public address, how it was accepted (tty / flag), this installer's revision and the
+# email address given (docs/engine-license-data.md). Only then are the engine and its
+# models downloadable: the server answers with a token, kept in $STATE/eula-accepted.json
+# (mode 600) with the accepted text, and the token buys short-lived signed URLs for the
+# engine's files (engine_url) on this run and on every repair run after it. A changed
+# license re-gates; a box whose acceptance predates the server (no token) accepts again.
+EULA_RECEIPT="$STATE/eula-accepted.json"
+LICENSE_TOKEN=""
+LICENSE_URLS=""   # the signed URLs this run holds: a JSON file, renewed when it is old
+
+# license_py <command> [args] — the JSON work of the license gate (python3: always present).
+license_py() { python3 - "$@" <<'PY'
+import json, os, re, sys, time
+from urllib.parse import urlparse
+
+cmd, args = sys.argv[1], sys.argv[2:]
+
+def gated(path):
+    # The Worker's isGated() (get-worker/src/index.js): keep the two in step.
+    return (path.startswith("/dl/engine/") or path.startswith("/dl/models/")) \
+        and not path.endswith("THIRD_PARTY_NOTICES.txt")
+
+def urls_in(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, str) and (k == "url" or k.endswith(".json")):
+                yield v
+            else:
+                yield from urls_in(v)
+
+if cmd == "gated":          # gated <api> <url>: exit 0 when <url> needs a signed URL
+    api, url = args
+    u, a = urlparse(url), urlparse(api)
+    sys.exit(0 if (u.scheme, u.netloc) == (a.scheme, a.netloc) and gated(u.path) else 1)
+
+if cmd == "paths":          # paths <manifest> <api>: the manifest's gated paths, as JSON
+    mf, api = args
+    a = urlparse(api)
+    out = sorted({urlparse(x).path for x in urls_in(json.load(open(mf)))
+                  if (urlparse(x).scheme, urlparse(x).netloc) == (a.scheme, a.netloc)
+                  and gated(urlparse(x).path)})
+    print(json.dumps(out))
+
+elif cmd == "accept_body":  # accept_body <ver> <sha> <email> <method> <installer> <paths json>
+    ver, sha, email, method, inst, paths = args
+    print(json.dumps({"license_version": ver, "license_sha256": sha, "email": email,
+                      "method": method, "installer_version": inst, "paths": json.loads(paths)}))
+
+elif cmd == "urls_body":    # urls_body <token> <paths json>
+    print(json.dumps({"token": args[0], "paths": json.loads(args[1])}))
+
+elif cmd == "error":        # error <response file>: the server's message, or the body's start
+    try:
+        b = json.load(open(args[0]))
+        print(b.get("message") or b.get("error") or "")
+    except Exception:
+        print(open(args[0], errors="replace").read(200).strip())
+
+elif cmd == "receipt":      # receipt <response> <receipt> <user> <method> <email> <api>
+    resp, receipt, user, method, email, api = args
+    r = json.load(open(resp))
+    rec = {"version": r["license_version"], "sha256": r["license_sha256"],
+           "date": r["accepted_at"], "user": user, "method": method, "email": email,
+           "acceptance_id": r["acceptance_id"], "token": r["token"], "server": api}
+    fd = os.open(receipt + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(rec, f, indent=1)
+        f.write("\n")
+    os.replace(receipt + ".new", receipt)
+
+elif cmd == "read":         # read <receipt> <key>: one field of the receipt ("" if none)
+    try:
+        print(json.load(open(args[0])).get(args[1], "") or "")
+    except Exception:
+        print("")
+
+elif cmd == "fresh":        # fresh <urls file> <seconds>: exit 0 if it is younger than that
+    try:
+        t = json.load(open(args[0]))["_fetched"]
+    except Exception:
+        sys.exit(1)
+    sys.exit(0 if time.time() - t < int(args[1]) else 1)
+
+elif cmd == "stamp":        # stamp <urls file>: mark a server response as fetched now
+    r = json.load(open(args[0]))
+    r["_fetched"] = time.time()
+    json.dump(r, open(args[0], "w"))
+
+elif cmd == "lookup":       # lookup <urls file> <url>: the signed URL for <url>'s path
+    r = json.load(open(args[0]))
+    s = r.get("urls", {}).get(urlparse(args[1]).path)
+    if not s:
+        sys.exit(1)
+    print(s)
+PY
+}
+
+# license_call <accept|urls> <body> <out> — POST to the license server; prints the HTTP status
+# (000 when it could not be reached).
+license_call() {
+  curl -sS --retry 3 --max-time 60 -o "$3" -w '%{http_code}' -H 'content-type: application/json' \
+    --data-binary "@$2" "$LICENSE_API/v1/engine-license/$1" 2>/dev/null || true
+}
+
+# license_renew — fresh signed URLs for the manifest's engine files, from the token. Returns
+# 1 when the server no longer honours the token (revoked, or past its retention), and dies
+# when it cannot be asked.
+license_renew() {
+  local body out code
+  body="$(mktemp)"; out="$(mktemp)"
+  license_py urls_body "$LICENSE_TOKEN" "$(license_py paths "$MF" "$LICENSE_API")" > "$body"
+  code="$(license_call urls "$body" "$out")"
+  rm -f "$body"
+  case "$code" in
+    200) license_py stamp "$out"
+         # Over the file this run already holds: engine_url renews in download()'s subshell,
+         # and the next download should find the fresh URLs.
+         if [ -n "$LICENSE_URLS" ]; then mv -f "$out" "$LICENSE_URLS"; else LICENSE_URLS="$out"; fi ;;
+    401) rm -f "$out"; return 1 ;;
+    *) local why; why="$(license_py error "$out" 2>/dev/null || true)"; rm -f "$out"
+       die "the license server ($LICENSE_API) did not issue download URLs (HTTP ${code:-000}): $why" ;;
+  esac
+}
+
+# engine_url <url> — the URL to download <url> from: a signed one for the engine's files
+# and models on the license server, <url> itself for anything else (and under --dry-run).
+# Run in a subshell by download(), so a renewal here lasts for this download only; the
+# URLs live two hours on the server and are renewed after one.
+engine_url() {
+  if [ "$DRY_RUN" = 1 ] || ! license_py gated "$LICENSE_API" "$1"; then printf '%s\n' "$1"; return; fi
+  [ -n "$LICENSE_TOKEN" ] || die "internal: $1 needs the engine license accepted first (eula_gate)"
+  if [ -z "$LICENSE_URLS" ] || ! license_py fresh "$LICENSE_URLS" 3600; then
+    license_renew || die "the license server no longer honours this box's acceptance — run install.sh again to accept the license"
+  fi
+  license_py lookup "$LICENSE_URLS" "$1" || die "the license server issued no download URL for $1"
+}
+
 eula_gate() {
   local ver url sha
   ver="$(mget engine.eula.version 2>/dev/null || echo 1.0)"
   url="$(mget engine.eula.url 2>/dev/null || echo "")"
   sha="$(mget engine.eula.sha256 2>/dev/null || echo "")"
-  local receipt="$STATE/eula-accepted.json"
-
-  # Idempotent re-run: this license version is already accepted -> no prompt.
+  local receipt="$EULA_RECEIPT" prev="" token="" when=""
   if [ -f "$receipt" ]; then
-    local prev; prev="$(python3 -c "import json;print(json.load(open('$receipt')).get('version',''))" 2>/dev/null || true)"
-    if [ "$prev" = "$ver" ]; then log "engine license v$ver already accepted"; return; fi
-    [ -n "$prev" ] && warn "engine license changed (accepted: v$prev, current: v$ver) — re-acceptance required"
+    prev="$(license_py read "$receipt" version)"
+    token="$(license_py read "$receipt" token)"
+    when="$(license_py read "$receipt" date)"
+  fi
+
+  # Headless acceptance names the version accepted: a release that changes the license
+  # stops an automated install instead of accepting text nobody read. Checked first, so a
+  # stale version stops the run on a box that has accepted the current one, too.
+  local method=tty
+  if [ -n "$ACCEPT_EULA" ]; then
+    method=flag
+    if [ "$ACCEPT_EULA" = 1 ]; then
+      warn "--accept-eula without a version (or TEAPORT_ACCEPT_EULA=1) is deprecated and goes in the next release: pass --accept-eula=$ver (TEAPORT_ACCEPT_EULA=$ver), the version you read"
+    elif [ "$ACCEPT_EULA" != "$ver" ]; then
+      die "--accept-eula=$ACCEPT_EULA accepts engine license v$ACCEPT_EULA, but this release's is v$ver — read $url, then pass --accept-eula=$ver"
+    fi
+  fi
+
+  # Idempotent re-run: this license version is accepted already, and the server has the
+  # record -> no prompt, just fresh download URLs.
+  if [ "$prev" = "$ver" ] && [ -n "$token" ]; then
+    if [ "$DRY_RUN" = 1 ]; then log "engine license v$ver already accepted"; return; fi
+    LICENSE_TOKEN="$token"
+    if license_renew; then log "engine license v$ver already accepted"; return; fi
+    warn "the license server no longer honours this box's acceptance of v$ver — it must be accepted again"
+    LICENSE_TOKEN=""
+  elif [ "$prev" = "$ver" ]; then
+    warn "engine license v$ver was accepted on this box${when:+ ($when)}, but that acceptance was never recorded with Teaspoon AI; the engine now downloads only once it is — accept it again below"
+  elif [ -n "$prev" ]; then
+    warn "engine license changed (accepted: v$prev, current: v$ver) — re-acceptance required"
   fi
 
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] display engine license v%s and require acceptance (type "accept")\n' "$ver"
+    if [ "$method" = flag ]; then
+      printf '  [dry-run] accept engine license v%s non-interactively as %s, recorded with Teaspoon AI (%s)\n' "$ver" "${EULA_EMAIL:-<no --eula-email: a real run stops here>}" "$LICENSE_API"
+    else
+      printf '  [dry-run] display engine license v%s, ask for an email address, require acceptance (type "accept") and record it with Teaspoon AI (%s)\n' "$ver" "$LICENSE_API"
+    fi
     return
   fi
   if [[ -z "$url" || "$url" == *TODO* ]]; then
     die "the engine license text is not published yet (manifest engine.eula.url is a placeholder)"
+  fi
+  if [ "$method" = flag ] && [ -z "$EULA_EMAIL" ]; then
+    die "accepting the engine license non-interactively needs the email address it is recorded under: add --eula-email=<you@example.com> (TEAPORT_EULA_EMAIL)"
   fi
 
   # Fetch + verify the text. Fail closed: a license you cannot read cannot be accepted.
@@ -246,12 +437,11 @@ eula_gate() {
     echo "$sha  $txt" | sha256sum -c --status || die "engine license text failed sha256 verification"
   fi
 
-  local method="tty"
-  if [ "$ACCEPT_EULA" = 1 ]; then
-    log "engine license v$ver accepted non-interactively (TEAPORT_ACCEPT_EULA=1 — you confirm you have read it: $url)"
-    method="env"
+  local email="$EULA_EMAIL"
+  if [ "$method" = flag ]; then
+    log "engine license v$ver accepted non-interactively (--accept-eula — you confirm you have read it: $url)"
   else
-    [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula"
+    [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula=$ver --eula-email=<you@example.com>"
     printf '\n  Teaport Engine License v%s — summary (the full text below governs):\n' "$ver"
     printf '    - personal use by individuals: free\n'
     printf '    - any organizational or commercial use: requires a written license (stefano@teaspoon.tech)\n\n'
@@ -260,15 +450,38 @@ eula_gate() {
     printf '\n'
     read -r -p '  Type "accept" to accept the Teaport Engine License v'"$ver"' (anything else aborts): ' ans
     [ "$ans" = "accept" ] || die "license not accepted — aborting"
+    printf '\n  Teaspoon AI records your acceptance: the license version, the time, this network'"'"'s\n'
+    printf '  public IP address, this installer'"'"'s version, and the email address you give here.\n'
+    local tries=0
+    while :; do
+      if [ -n "$email" ] && [[ "$email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then break; fi
+      [ -z "$email" ] || warn "'$email' is not an email address"
+      tries=$((tries + 1)); [ "$tries" -le 3 ] || die "no email address given — the license acceptance was not recorded"
+      read -r -p '  Your email address: ' email || die "no email address given — the license acceptance was not recorded"
+      email="${email#"${email%%[![:space:]]*}"}"; email="${email%"${email##*[![:space:]]}"}"
+    done
   fi
 
-  # Record the acceptance + keep the exact accepted text (both sides get a durable record).
+  # Record it with Teaspoon AI. Nothing downloads without the server's token, so a server
+  # that cannot be reached stops the run here, before any phase has touched the system.
+  local body out code actual_sha
+  actual_sha="$(sha256sum "$txt" | cut -d' ' -f1)"
+  body="$(mktemp)"; out="$(mktemp)"
+  license_py accept_body "$ver" "$actual_sha" "$email" "$method" "$INSTALLER_VERSION" \
+    "$(license_py paths "$MF" "$LICENSE_API")" > "$body"
+  code="$(license_call accept "$body" "$out")"
+  rm -f "$body"
+  [ "$code" = 201 ] || { rm -f "$txt"; die "the license server ($LICENSE_API) did not record the acceptance (HTTP ${code:-000}): $(license_py error "$out" 2>/dev/null) — nothing was installed; run install.sh again"; }
+  license_py stamp "$out"; LICENSE_URLS="$out"
+
+  # And on this box: the receipt (with the token, so it is the run user's alone) and the
+  # exact text accepted.
   SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
-  cp "$txt" "$STATE/EULA-v$ver.txt"
-  local actual_sha; actual_sha="$(sha256sum "$txt" | cut -d' ' -f1)"
-  printf '{"version":"%s","sha256":"%s","date":"%s","user":"%s","method":"%s"}\n' \
-    "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" > "$receipt"
-  log "engine license v$ver accepted (recorded in $receipt)"
+  cp "$txt" "$STATE/EULA-v$ver.txt"; rm -f "$txt"
+  license_py receipt "$out" "$receipt" "$RUN_USER" "$method" "$email" "$LICENSE_API" \
+    || die "could not write $receipt"
+  LICENSE_TOKEN="$(license_py read "$receipt" token)"
+  log "engine license v$ver accepted (recorded by Teaspoon AI as $(license_py read "$receipt" acceptance_id), and in $receipt)"
 }
 
 # --- phases ------------------------------------------------------------------

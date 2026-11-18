@@ -277,6 +277,10 @@ jobs:
       - name: shellcheck (advisory)
         continue-on-error: true
         run: shellcheck install.sh install-bootstrap.sh cli/teaport packaging/build-deb.sh packaging/wifi-setup/wifi-setup-net brain/test/*.sh
+      - name: License Worker (get-worker) tests
+        # The Worker in front of get.teaspoon.tech that gates the engine downloads, against
+        # in-memory fakes of its R2 bucket and D1 database. No dependencies.
+        run: node --test get-worker/test/*.test.mjs
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do

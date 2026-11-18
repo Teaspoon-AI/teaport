@@ -1,0 +1,45 @@
+# get.teaspoon.tech: the download bucket's front, with the engine license gate.
+# See src/index.js for what it serves, and docs/engine-license-gate.md for operating it.
+#
+#   npx wrangler@4 d1 migrations apply teaport-engine-license --remote
+#   npx wrangler@4 secret put SIGNING_KEY   # openssl rand -base64 48
+#   npx wrangler@4 secret put CI_TOKEN      # openssl rand -hex 32; also the repo secret TEAPORT_DL_TOKEN
+#   npx wrangler@4 deploy
+name = "teaport-get"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# The Worker is the domain's origin: nothing stands behind it, so if it ever fails nothing
+# falls through to an open bucket. (A route in front of the bucket's custom domain would
+# fail open to the bucket.)
+routes = [{ pattern = "get.teaspoon.tech", custom_domain = true }]
+
+[vars]
+# "enforce": an unsigned engine/model download is 403. "open": served as before the gate,
+# for the switchover only (docs/engine-license-gate.md). Flip with a deploy.
+GATE = "enforce"
+URL_TTL_SECONDS = "7200"   # signed download URLs: checked when a request starts
+RETENTION_DAYS = "2557"    # 7 years: docs/engine-license-data.md
+PUBLIC_ORIGIN = "https://get.teaspoon.tech"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "teaport-get"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "teaport-engine-license"
+database_id = "TODO"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "ACCEPT_LIMIT"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+[triggers]
+crons = ["17 4 * * *"]
+
+[observability]
+enabled = true
