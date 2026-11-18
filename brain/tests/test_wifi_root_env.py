@@ -189,13 +189,19 @@ OLD_WIFI_UNIT = ("[Unit]\nDescription=old\n[Service]\nUser=bob\nEnvironmentFile=
 
 
 def _postinst(tmp, systemd: bool):
-    """postinst with its paths moved under tmp; under "systemd", systemctl is a stub that
-    logs its arguments to tmp/systemctl.log."""
+    """postinst with its paths moved under tmp (the package's copy of the root unit in
+    tmp/usr, /etc/systemd/system's in tmp/etc); under "systemd", systemctl is a stub that
+    logs its arguments to tmp/systemctl.log and calls setup active while tmp/active exists."""
     unit = pathlib.Path(tmp, "teaport-wifi-setup.service")
     stopgap = pathlib.Path(tmp, "d/60-teaport-no-root-steps.conf")
+    for d in ("usr", "etc"):
+        pathlib.Path(tmp, d).mkdir(exist_ok=True)
+    pathlib.Path(tmp, "usr/teaport-wifi-setup-net.service").write_text(
+        (UNITS / "teaport-wifi-setup-net.service.in").read_text())
     text = (ROOT / "packaging/deb/postinst").read_text()
     for old, new in (("/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf", str(stopgap)),
                      ("/etc/systemd/system/teaport-wifi-setup.service", str(unit)),
+                     ("/etc/systemd/system/$net", tmp + "/etc/$net"), ("/usr/lib/systemd/system/$net", tmp + "/usr/$net"),
                      ("/usr/lib/teaport/sudoers-sync", "true"), ("/opt/teaport", tmp + "/opt"),
                      ("/usr/local/bin/teaport", tmp + "/no-cli"),
                      ("/run/systemd/system", tmp if systemd else tmp + "/no-systemd")):
@@ -206,7 +212,8 @@ def _postinst(tmp, systemd: bool):
     bin_ = pathlib.Path(tmp, "bin")
     bin_.mkdir(exist_ok=True)
     stub = bin_ / "systemctl"
-    stub.write_text(f'#!/bin/sh\necho "$*" >> {tmp}/systemctl.log\n')
+    stub.write_text(f'#!/bin/sh\necho "$*" >> {tmp}/systemctl.log\n'
+                    f'[ "$1" != is-active ] || [ -e {tmp}/active ]\n')
     stub.chmod(0o755)
     return unit, stopgap, script, {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"}
 
@@ -225,6 +232,13 @@ def test_an_old_unit_left_by_a_package_only_update_runs_no_root_step():
     assert not _runs_as_root(both), both
     assert ("Unit", "Requires", "teaport-wifi-setup-net.service") in both
     assert ("Unit", "After", "teaport-wifi-setup-net.service") in both
+    # The root unit is in /etc too, so a rollback to a package without it leaves the
+    # drop-in's Requires= met; a copy already there (install.sh's) is left as it is.
+    etc_net = pathlib.Path(tmp, "etc/teaport-wifi-setup-net.service")
+    assert etc_net.read_text() == (UNITS / "teaport-wifi-setup-net.service.in").read_text()
+    etc_net.write_text("# install.sh's\n")
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0 and etc_net.read_text() == "# install.sh's\n", p.stderr
     # The new unit: nothing to turn off.
     stopgap.unlink()
     unit.write_text((UNITS / "teaport-wifi-setup.service.in").read_text())
@@ -243,7 +257,19 @@ def test_the_drop_in_is_loaded_before_a_running_setup_is_restarted():
     assert p.returncode == 0, p.stderr
     log = pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
     assert "daemon-reload" in log and "try-restart teaport-wifi-setup.service" in log, log
-    assert log.index("daemon-reload") < min(i for i, ln in enumerate(log) if ln.startswith("try-restart")), log
+    first_restart = min(i for i, ln in enumerate(log) if ln.startswith("try-restart"))
+    assert log.index("daemon-reload") < first_restart, log
+    assert "start teaport-wifi-setup-net.service" not in log, log   # no setup running
+    # A setup running: its root side comes up right after the reload, before the brain's
+    # restart, which may fail and end the script (the old clean-up step is gone by then).
+    pathlib.Path(tmp, "systemctl.log").unlink()
+    pathlib.Path(tmp, "active").touch()
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr
+    log = pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
+    first_restart = min(i for i, ln in enumerate(log) if ln.startswith("try-restart"))
+    assert log.index("daemon-reload") < log.index("start teaport-wifi-setup-net.service") < first_restart, log
+    pathlib.Path(tmp, "active").unlink()
     # Nothing written, nothing to reload.
     pathlib.Path(tmp, "systemctl.log").unlink()
     stopgap.unlink()
@@ -260,6 +286,13 @@ def test_the_package_ships_the_root_side_as_it_is():
     nfpm = (ROOT / "packaging/nfpm.yaml").read_text()
     assert ("  - src: systemd/teaport-wifi-setup-net.service.in\n"
             "    dst: /usr/lib/systemd/system/teaport-wifi-setup-net.service\n") in nfpm
+    # The build stages only SRC_PATHS (build-deb.sh) and runs nfpm there: every relative
+    # src: must sit under one of them, or the build cannot find it.
+    build = (ROOT / "packaging/build-deb.sh").read_text()
+    src_paths = re.search(r"^SRC_PATHS=\(([^)]*)\)", build, re.M).group(1).split()
+    for src in re.findall(r"^\s*- src: (\S+)", nfpm, re.M):
+        if not src.startswith("/"):
+            assert any(src == p or src.startswith(p.rstrip("/") + "/") for p in src_paths), (src, src_paths)
     postrm = (ROOT / "packaging/deb/postrm").read_text()
     assert "rm -f /etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf" in postrm
 
