@@ -9,6 +9,11 @@
 #   teaport licenses [PACKAGE | --notices] [--json]
 #                                 the licenses of the software on the device: the brain's Python packages,
 #                                 one package's license text, or the third-party notices
+#   teaport key set [--starter] [--new-key] [--json]
+#                                 check and save the AI key read on stdin (brain + OpenClaw);
+#                                 --starter marks it as the box's trial key
+#   teaport setup-card [--new-password] [--json]
+#                                 the setup network's name, password and QR text, for a printed card
 #   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; bare, this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
@@ -490,6 +495,95 @@ cmd_licenses() {
   local venv="$PREFIX/brain"
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
   "$venv/bin/python" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
+}
+
+# ---- key / setup-card ---------------------------------------------------------
+# Readying a box from a terminal (#283): its AI key, and its setup card. The work is the
+# brain's (teaport_brain.provision: the setup page's own save, and the setup network's own
+# name, password and QR text), run under the brain's venv, isolated (-I), as the box's run
+# user -- never as root: the key file, the trial marker and OpenClaw's store are that
+# user's, and the venv's python is not run as root. Only installing wifi-setup.env, which
+# is root's (systemd reads it for teaport-wifi-setup.service), goes through sudo.
+provision_python() {
+  local venv="$PREFIX/brain" user
+  [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
+  [ "$(id -u)" != 0 ] || die "run this as the box's user, not as root (it uses sudo itself where it must)"
+  user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+  if [ -n "$user" ] && [ "$user" != "$(id -un)" ]; then
+    die "run this as $user, the user the brain runs as (its key file and state are $user's)"
+  fi
+  printf '%s' "$venv/bin/python"
+}
+
+cmd_key() {
+  local sub="${1:-}" py; shift || true
+  case "$sub" in
+    set) ;;
+    ""|-h|--help|help)
+      cat <<'EOF'
+teaport key set [--starter] [--new-key] [--json]
+  Reads an AI key on stdin (or asks for it, not shown), checks it with the provider, and
+  saves it as the Settings and setup pages do: for the brain and, on a box with OpenClaw,
+  for OpenClaw too. Only a key that works is saved.
+  --starter   the box's trial key (OpenRouter): the box watches its credit and says when
+              it runs low, until the owner connects their own account
+  --new-key   the provider made the key moments ago: a refusal is asked again
+  exit 0 saved; 3 the provider refused the key; 2 not saved for another reason (no answer,
+  OpenClaw did not take it, not a key, a usage error); 1 could not run (wrong user, no brain)
+EOF
+      return 0 ;;
+    *) die "unknown key subcommand: $sub (try: teaport key set)" ;;
+  esac
+  py="$(provision_python)"
+  "$py" -I -m teaport_brain.provision key --etc "$ETC" "$@"
+}
+
+cmd_setup_card() {
+  local new=0 a py env_file="$ETC/wifi-setup.env" text="" fresh line pass=()
+  for a in "$@"; do
+    case "$a" in
+      --new-password) new=1 ;;
+      --json|-v|--verbose) pass+=("$a") ;;
+      -h|--help)
+        cat <<'EOF'
+teaport setup-card [--new-password] [--json]
+  The setup network's name, password and the text of its QR code, as the box shows them in
+  setup mode: for a printed card. Without --new-password, the password fixed in
+  /etc/teaport/wifi-setup.env (none fixed: each setup makes a fresh one, nothing to print).
+  --new-password   make a fresh password and fix it in wifi-setup.env (uses sudo)
+EOF
+        return 0 ;;
+      *) die "unknown argument: $a (try: teaport setup-card [--new-password] [--json])" ;;
+    esac
+  done
+  py="$(provision_python)"
+  if [ -r "$env_file" ]; then text="$(cat "$env_file")"
+  elif [ -e "$env_file" ]; then text="$(SUDO cat "$env_file")"
+  fi
+  if [ "$new" = 1 ]; then
+    # The new text never touches a file this user owns: root reading one would read
+    # whatever the user (whom the agent runs as) had swapped in, a link to any root-only
+    # file included. It stays in memory, holds only setup settings and comments (the
+    # file is the setup unit's: nothing else belongs in it), and goes to root on stdin.
+    fresh="$(printf '%s' "$text" | "$py" -I -m teaport_brain.provision setup-env --etc "$ETC")" \
+      || die "could not make a new setup password"
+    # A carriage return is a line end to systemd's env-file reader but not to `read`:
+    # refused, so no second line hides behind a setup setting (genuine text has none).
+    [[ "$fresh" != *$'\r'* ]] \
+      || die "$env_file's new text has a carriage return: fix the file by hand, then run this again — the password was not changed"
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+      [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?WIFI_SETUP_[A-Z0-9_]*[[:space:]]*= ]] && continue
+      die "$env_file has a line that is not a setup setting (WIFI_SETUP_...): remove it by hand, then run this again — the password was not changed"
+    done <<< "$fresh"
+    # root's, readable by the run user's group, as install.sh's env files (write_env): the
+    # setup unit (User=, EnvironmentFile=) and the configuration page both read it.
+    printf '%s\n' "$fresh" | SUDO install -D -m 0640 -o root -g "$(id -gn)" /dev/stdin "$env_file" \
+      || die "could not write $env_file: the setup password was not changed"
+    text="$fresh"; pass+=(--new)
+  fi
+  # The card is made from the text the box now has, so it shows the password it uses.
+  printf '%s' "$text" | "$py" -I -m teaport_brain.provision card --etc "$ETC" ${pass[@]+"${pass[@]}"}
 }
 
 # ---- logs ------------------------------------------------------------------
@@ -1648,8 +1742,10 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   update) cmd_update "$@" ;;
   licenses) cmd_licenses "$@" ;;
+  key)    cmd_key "$@" ;;
+  setup-card) cmd_setup_card "$@" ;;
   logs)   cmd_logs "$@" ;;
   sip)    cmd_sip "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $cmd (try: status | doctor | update | licenses | logs | sip)" ;;
+  *) die "unknown command: $cmd (try: status | doctor | update | licenses | key | setup-card | logs | sip)" ;;
 esac

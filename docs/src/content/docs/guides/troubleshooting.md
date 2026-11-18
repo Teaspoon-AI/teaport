@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:351-460#ba7ee15c -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:356-465#ba7ee15c -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -148,7 +148,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:351-460#ba7ee15c -->
+<!-- source: cli/teaport:356-465#ba7ee15c -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -398,7 +398,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:351-460#ba7ee15c -->
+<!-- source: cli/teaport:356-465#ba7ee15c -->
 
 **Fix**
 
@@ -554,15 +554,15 @@ Wi-Fi setup still works. Anything else you say gets one fixed line, at most once
    `teaport doctor` reports the same line as a failure.
 2. If only the key is missing, say "open my settings" and paste the key on your
    phone, as [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)
-   shows, or type it on the setup page in setup mode. Otherwise enter the endpoint
-   and the key on the configuration page, or follow
+   shows, type it on the setup page in setup mode, or run `teaport key set` on the
+   device. Otherwise enter the endpoint and the key on the configuration page, or follow
    [The first sentence fails](#the-first-sentence-fails).
 3. Talk to teaport again. teaport reads the key for each conversation. A
    conversation that was already open says that teaport is ready, and ends: on the
    room microphone the next conversation starts at once and listens, so ask again; in
    a Talk client, start a new conversation.
 
-<!-- source: cli/teaport:89-96#b8312c4d -->
+<!-- source: cli/teaport:94-101#b8312c4d -->
 
 ## teaport says the account it uses for answers needs attention
 
@@ -590,11 +590,11 @@ failures usually pass.
 2. Check the account on the provider's site: its credit, and the limit of the
    key.
 3. If the key changed, enter the new key in `LLM_API_KEY` on the configuration
-   page, or write it to `~/.config/teaport/llm_key`.
+   page, or run `teaport key set` on the device.
 4. Ask teaport something. The `answers (brain)` line reads `working` after the
    provider accepts a request.
 
-<!-- source: cli/teaport:62-115#1ca6dd03 -->
+<!-- source: cli/teaport:67-120#1ca6dd03 -->
 
 ## teaport says its AI account has run out of credit
 
@@ -625,7 +625,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:97-100#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
+<!-- source: cli/teaport:102-105#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
 
 ## teaport does not remember anything
 
