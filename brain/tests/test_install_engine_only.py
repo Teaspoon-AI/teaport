@@ -96,10 +96,11 @@ def _line(prefix: str) -> str:
 LAYOUT = "".join(_line(p) for p in ("ENGINE_STAGE=", "ENGINE_ROLLBACKS=", "ENGINE_SWAP_MARK=", "ENGINE_KEEP=",
                                     "ENGINE_FILES=", "ENGINE_MODELS="))
 LAYOUT += 'ENGINE_UNIT="$T/etc/systemd/teaport-engine.service" ENGINE_CHANGED="" ENGINE_KEPT=""\n'
+LAYOUT += 'ENGINE_RECORD="$T/state/engine.release"\n'
 ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe", "engine_copies",
               "engine_swap_abort", "engine_swap_recover",
               "engine_keep_live", "engine_swap_in", "engine_restore", "engine_rollback_target",
-              "engine_prune", "manifest_take_py", "manifest_take"]
+              "engine_prune", "manifest_take_py", "manifest_take", "engine_record"]
 
 
 def _run(tmp, script, fns=(), env=None):
@@ -482,8 +483,13 @@ def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
         _write(old / rel, f"old {rel.rsplit('/', 1)[-1]}\n")
     _write(old / "engine.json", json.dumps({"engine": {
         "release": "1.5", "assets": {"l4t38-cu13": {"sha256": _sha("old voxtral\n")}}}}))
+    _write(old / "engine.release", "1.5\n")             # the record install.sh kept with it
+    record = pathlib.Path(tmp, "state/engine.release")
+    _write(record, "1.6\n")
     rc, out = _rollback(tmp)
     assert rc == 0 and "done — engine rolled back to 000001-20261001T000000Z-1.5" in out and "RESTART" in out, out
+    # teaport update's engine floor (update_apply.box_engine) follows the rollback.
+    assert record.read_text() == "1.5\n", record.read_text()
     assert set(_live(tmp).values()) == {"old"}, _live(tmp)
     unit = pathlib.Path(tmp, "etc/systemd/teaport-engine.service")
     assert unit.read_text() == "unit old\n", unit.read_text()
@@ -496,7 +502,23 @@ def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
     rc, out = _rollback(tmp)
     assert rc == 0 and set(_live(tmp).values()) == {"new"} and unit.read_text() == "unit new\n", out
     assert json.loads(pathlib.Path(tmp, "opt/manifest.json").read_text())["engine"]["release"] == "1.6"
+    assert record.read_text() == "1.6\n", record.read_text()   # kept with the copy, put back with it
     assert [c.rsplit("-", 1)[-1] for c in _copies(tmp)] == ["1.5"], _copies(tmp)
+    # A copy kept before there was a record: no floor until the next engine install.
+    (copy,) = _copies(tmp)
+    pathlib.Path(tmp, "opt/engine.rollback", copy, "engine.release").unlink()
+    rc, out = _rollback(tmp)
+    assert rc == 0 and not record.exists(), out
+
+
+def test_every_engine_install_writes_roots_record_of_its_release():
+    # teaport update's engine floor reads it (update_apply.box_engine): a full run writes it
+    # beside the manifest, --only engine once the engine has come up (main_engine_only).
+    full = _fn("phase_engine")
+    assert ('SUDO install -m 0644 "$MF" "$PREFIX/manifest.json"\n    engine_record "$(mget engine.release)"'
+            in full), full
+    only = _fn("main_engine_only")
+    assert 'manifest_take "$MF" engine models\n  engine_record "$(mget engine.release)"' in only, only
 
 
 def test_rollback_with_nothing_kept_refuses():
@@ -603,7 +625,7 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
     stubs = ''.join(f'{f}() {{ echo "STEP {f}"; }}\n' for f in
                     ("check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "engine_libs_check",
                      "phase_engine", "detect_agent", "env_add_missing", "wait_for_idle", "engine_swap",
-                     "manifest_take"))
+                     "manifest_take", "engine_record"))
     stubs += 'mget() { echo 1.6; }\nengine_env_lines() { ENGINE_ENV=(A=1); }\nMANIFEST_URL=mf MF="$T/mf.json" HERE="$T/src"\n'
     for installed, dry in ((False, 0), (False, 1), (True, 0)):
         tmp = tempdir("teaport-eng-main-")
@@ -618,7 +640,7 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
             continue
         assert rc == 0, out
         want = ["check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "phase_engine",
-                "detect_agent", "wait_for_idle", "env_add_missing", "engine_swap", "manifest_take"]
+                "detect_agent", "wait_for_idle", "env_add_missing", "engine_swap", "manifest_take", "engine_record"]
         if not dry:
             want.insert(4, "engine_libs_check")   # a dry run only says it would check
         assert steps == want, (installed, dry, out)

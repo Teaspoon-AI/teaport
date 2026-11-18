@@ -201,16 +201,18 @@ def box_brain(runner=subprocess.run) -> str | None:
     return version if p.returncode == 0 and status not in GONE and version else None
 
 
-# What install.sh last installed (/opt/teaport/manifest.json): its engine.release is the
-# engine's floor. Root's since the rebuild (root_layout.py); before that the run user could
-# write it, and a file that is not root's alone says nothing.
-INSTALLED_MANIFEST = "/opt/teaport/manifest.json"
+# The engine release install.sh itself last put live (its engine_record): the engine's
+# floor. Root writes it from the release manifest it fetched and checked, never from
+# $PREFIX/manifest.json, which an older installer let the run user write and the rebuild
+# (root_layout.py) carried over as it was; the rebuild does not carry this file. None
+# (no floor) until install.sh first installs an engine on the box.
+ENGINE_RECORD = "/var/lib/teaport/engine.release"
 # A version dpkg can order (engine releases are "1.6", "1.7").
 VERSION = re.compile(r"[0-9][A-Za-z0-9.+~-]*")
 
 
-def box_engine(path: str = INSTALLED_MANIFEST) -> str | None:
-    """The installed engine release, from a manifest root alone can write; else None."""
+def box_engine(path: str = ENGINE_RECORD) -> str | None:
+    """The installed engine release, from the record root alone can write; else None."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:
@@ -220,11 +222,10 @@ def box_engine(path: str = INSTALLED_MANIFEST) -> str | None:
             st, parent = os.fstat(f.fileno()), os.stat(os.path.dirname(path))
             if any(s.st_uid != ROOT_UID or s.st_mode & 0o022 for s in (st, parent)):
                 return None
-            data = json.load(f)
+            release = f.read(256).strip()
     except (OSError, ValueError):
         return None
-    release = (data.get("engine") or {}).get("release") if isinstance(data, dict) else None
-    return release if isinstance(release, str) and VERSION.fullmatch(release) else None
+    return release if VERSION.fullmatch(release) else None
 
 
 def _older(new: str, have: str, runner) -> bool:

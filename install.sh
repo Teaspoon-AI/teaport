@@ -693,6 +693,9 @@ engine_keep_live() {
     SUDO tee "$snap.partial/teaport-engine.service" < "$ENGINE_UNIT" >/dev/null || { SUDO rm -rf "$snap.partial"; die "$fail"; }
   fi
   printf '%s\n' "$ENGINE_ENTRY" | SUDO tee "$snap.partial/engine.json" >/dev/null || { SUDO rm -rf "$snap.partial"; die "$fail"; }
+  if SUDO test -f "$ENGINE_RECORD"; then
+    SUDO cp "$ENGINE_RECORD" "$snap.partial/engine.release" || { SUDO rm -rf "$snap.partial"; die "$fail"; }
+  fi
   SUDO mv "$snap.partial" "$snap"
   ENGINE_KEPT="$snap"
 }
@@ -784,6 +787,7 @@ engine_restore() {
   done
   if [ -f "$snap/teaport-engine.service" ]; then write_root "$ENGINE_UNIT" "$(cat "$snap/teaport-engine.service")"; fi
   if [ -f "$snap/engine.json" ]; then manifest_take "$snap/engine.json" engine; fi
+  engine_record "$(SUDO head -n 1 "$snap/engine.release" 2>/dev/null || true)"
   SUDO rm -rf "$snap"
   log "engine files back from ${snap##*/}${models:+, with the model(s)$models}"
 }
@@ -814,6 +818,19 @@ engine_prune() {
     log "removing old engine rollback copy $d"
     SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
   done < <(engine_copies)
+}
+
+# engine_record <release> — what teaport update's engine floor reads (update_apply.py
+# box_engine): the release this installer itself put live, written by root from the release
+# manifest it fetched and checked (phase_engine), or put back with a rollback copy
+# (engine_restore; "" when the copy had none: no floor until the next engine install). Not
+# $PREFIX/manifest.json: an older installer let the run user write that, and the rebuild
+# (root_layout.py) carries it over as it was; this file it does not carry.
+ENGINE_RECORD="$STATE/engine.release"
+engine_record() {
+  if [ -n "$1" ]; then write_root "$ENGINE_RECORD" "$1"
+  elif [ "$DRY_RUN" != 1 ]; then SUDO rm -f "$ENGINE_RECORD"
+  fi
 }
 
 # manifest_take <from.json> <key...> — set those top-level keys of the installed manifest
@@ -943,6 +960,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   # --only engine records what it installed once the engine has come up on it (main_engine_only).
   if [ "$ONLY" != engine ]; then
     SUDO install -m 0644 "$MF" "$PREFIX/manifest.json"
+    engine_record "$(mget engine.release)"
   fi
 }
 
@@ -3639,6 +3657,7 @@ main_engine_only() {
   env_add_missing "$ETC/engine.env" "${ENGINE_ENV[@]}"
   engine_swap
   manifest_take "$MF" engine models
+  engine_record "$(mget engine.release)"
   log "done — engine $(mget engine.release 2>/dev/null || echo '?') from $MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
   if [ -n "$ENGINE_KEPT" ] || [ "$DRY_RUN" = 1 ]; then printf '  undo:    install.sh --rollback engine\n'; fi
   printf '  check:   teaport doctor\n'

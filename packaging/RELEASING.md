@@ -116,6 +116,16 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
       manifest without one fails the check. The beta channel's `TODO` passes only under
       `--placeholders-ok`.
+- [ ] A channel never names an older brain or engine than a box on it may have:
+      `teaport update` refuses such a release outright (`update_apply.not_older`), so a
+      box that took a beta and is moved to stable gets nothing until stable catches up.
+      Engine releases are ordered as `dpkg --compare-versions` orders them: a dev or
+      test engine is named with `~` (`1.7~dev1` sorts before `1.7`), never `-` or `+`
+      (`1.7-dev` sorts after `1.7`, and would hold a box back from the release).
+- [ ] A model change ships with a new `engine.release`. Model sha256s have no order, so
+      the engine release is the only thing that tells a newer set of models from an older
+      one; a channel that changes `models` under the same engine can take a box's models
+      back.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

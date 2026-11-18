@@ -607,24 +607,30 @@ def test_the_floor_takes_no_engine_back_and_lets_nothing_unreadable_past():
 
 def test_the_engine_record_counts_only_when_root_alone_can_write_it():
     real = _real_module()
+    assert real.ENGINE_RECORD == "/var/lib/teaport/engine.release"   # install.sh's ENGINE_RECORD
+    assert 'ENGINE_RECORD="$STATE/engine.release"' in INSTALL.read_text()
+    # The rebuild never carries one over from the run user's old tree.
+    layout = _layout()
+    assert "engine.release" not in layout.STATE_KEPT_TEXT + layout.STATE_KEPT_JSON
     real.ROOT_UID = os.getuid()   # "root" is whoever runs the test
     d = pathlib.Path(tempdir("teaport-apply-record-"))
     os.chmod(d, 0o755)
-    f = d / "manifest.json"
-    f.write_text(json.dumps({"engine": {"release": "1.7"}}))
+    f = d / "engine.release"
+    f.write_text("1.7\n")
     os.chmod(f, 0o644)
     assert real.box_engine(str(f)) == "1.7"
     for mode, target in ((0o664, f), (0o775, d)):   # writable by others: says nothing
         os.chmod(target, mode)
         assert real.box_engine(str(f)) is None, (oct(mode), target)
         os.chmod(target, 0o644 if target == f else 0o755)
-    link = d / "link.json"
+    link = d / "link"
     link.symlink_to(f)
     assert real.box_engine(str(link)) is None        # not through a link
-    f.write_text(json.dumps({"engine": {"release": "1.7; rm"}}))
+    f.write_text("1.7; rm\n")
     assert real.box_engine(str(f)) is None           # not a version
+    assert real.box_engine(str(d / "absent")) is None
     real.ROOT_UID = 0
-    f.write_text(json.dumps({"engine": {"release": "1.7"}}))
+    f.write_text("1.7\n")
     assert real.box_engine(str(f)) is None           # not root's (the test is not root)
 
 
