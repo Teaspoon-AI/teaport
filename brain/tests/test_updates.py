@@ -108,6 +108,7 @@ def test_a_release_older_than_the_brain_on_the_box_offers_nothing():
     # Said as such, not as "up to date".
     text = updates.render({"channel": "beta", "url": "u", **got})
     assert "names an older release than this box has" in text and "up to date" not in text, text
+    assert "  brain     0.1.0  !=  0.0.9" in text, text   # different, not "==", and not offered
     # No brain package on the box at all: no brain floor.
     assert not updates.compare(_manifest(), _manifest(brain="0.0.9"), None, floor=None)["older"]
 

@@ -12,7 +12,7 @@ The `teaport update --check` command compares the device with the release manife
 - An SSH connection to the device: every command on this page runs on it.
 - A device with teaport installed. `teaport update --check` reads `/opt/teaport/manifest.json`, the manifest the installer wrote, and exits with an error if the file is missing.
 
-<!-- source: brain/teaport_brain/updates.py:75-86,509-510#c715a888; install.sh:962,3659#cb7eb1ce -->
+<!-- source: brain/teaport_brain/updates.py:75-86,512-513#c715a888; install.sh:962,3659#cb7eb1ce -->
 
 ## Check for updates
 
@@ -25,9 +25,9 @@ To see which parts of the installation differ from the release manifest:
    teaport update --check
    ```
 
-   The command fetches a fresh copy of the release manifest, compares it with the stored one, and prints a line for the version and for each tracked part: the engine release, the brain package, the plugin version, the OpenClaw version, and the model files. `->` marks a part that differs; `==` marks one that matches. The brain counts only when the release's package is newer than the installed one. The check ends with `up to date.` when nothing differs. Otherwise it ends with a `changed:` list, then `teaport update installs:` with the parts the next section installs, and `needs a full install.sh run:` with the rest. It changes nothing on the device.
+   The command fetches a fresh copy of the release manifest, compares it with the stored one, and prints a line for the version and for each tracked part: the engine release, the brain package, the plugin version, the OpenClaw version, and the model files. `->` marks a part that `teaport update` installs; `==` marks one that matches; `!=` marks one that differs but isn't offered, such as an older release, or a part only a full `install.sh` run installs. The brain counts only when the release's package is newer than the installed one. The check ends with `up to date.` when nothing differs, or says when the channel names an older release than the device has. Otherwise it ends with a `changed:` list, then `teaport update installs:` with the parts the next section installs, and `needs a full install.sh run:` with the rest. It changes nothing on the device.
 
-<!-- source: brain/teaport_brain/updates.py:57,243-299,450-476#c1cedbfd -->
+<!-- source: brain/teaport_brain/updates.py:57,243-299,450-479#7a492199 -->
 
 ## Apply an update
 

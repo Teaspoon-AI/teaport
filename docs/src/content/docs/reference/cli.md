@@ -126,7 +126,7 @@ device has, or no brain package at all, offers nothing: the check says so, and
 | `--yes` | Installs without asking. Without it, the command asks first, and when it isn't run in a terminal it stops and names this option. |
 | `--status` | Prints how the last update went. It changes nothing. |
 
-<!-- source: cli/teaport:575-628#cdc96203; brain/teaport_brain/updates.py:481-520#8078c9b0 -->
+<!-- source: cli/teaport:575-628#cdc96203; brain/teaport_brain/updates.py:484-523#8078c9b0 -->
 
 Without `--channel`, the command uses the `TEAPORT_UPDATE_CHANNEL` setting in
 `/etc/teaport/brain.env`. When that is empty, it uses the channel the installed manifest
@@ -136,7 +136,7 @@ prints `changed:` and the names of the parts, then `teaport update installs:` wi
 parts the command installs by itself, and `needs a full install.sh run:` with the rest. It
 exits 1 when the installed manifest is missing or the channel's manifest can't be read.
 
-<!-- source: brain/teaport_brain/updates.py:94-107,337-347,450-476,508-518#59b5acda -->
+<!-- source: brain/teaport_brain/updates.py:94-107,337-347,450-479,511-521#64a2bb43 -->
 
 Without `--check`, the command installs the update. It prints the same comparison and,
 when the engine, the models, or the brain changed, asks `Install it now?`. Then it starts

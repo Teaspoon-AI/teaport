@@ -457,7 +457,10 @@ def render(status: dict) -> str:
             have, new = have[:12] or "-", (row["latest"] or "-")[:12]
         else:
             new = row["latest"] or "not released"
-        lines.append(f"  {name:9} {have}  {'->' if row['changed'] else '=='}  {new}")
+        # -> what teaport update would install; == the same; != different, but not offered
+        # (an older release, or one a full install.sh run installs).
+        mark = "->" if row["changed"] else "==" if (row["installed"] or None) == (row["latest"] or None) else "!="
+        lines.append(f"  {name:9} {have}  {mark}  {new}")
     if status.get("older"):
         lines.append(f"the {status['channel']} channel names an older release than this box has: "
                      "teaport update does not go back (install.sh --rollback does, by hand).")
