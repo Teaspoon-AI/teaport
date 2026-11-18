@@ -66,8 +66,10 @@ polkit.addRule(function(action, subject) {
     }
 });
 EOF
+  # Not fatal: the sudoers lines and the Wi-Fi rule's narrowing below must not hang on it.
   if ! { [ -f "$update_rules" ] && cmp -s "$tmp" "$update_rules"; }; then
-    install -m 0644 -o root -g root "$tmp" "$update_rules"
+    install -m 0644 -o root -g root "$tmp" "$update_rules" \
+      || echo "sudoers-sync: the update's polkit rule was not written ($update_rules): teaport update will ask for an administrator's password" >&2
   fi
 else
   echo "sudoers-sync: no polkit here ($(dirname "$update_rules")): teaport update will ask for an administrator's password" >&2

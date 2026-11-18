@@ -84,7 +84,9 @@ fi
 # the old clean-up step, so the root unit is started for it at once (its `up` leaves a rule
 # that is already there as it is), not left to setup's restart below, which a brain that
 # fails to come up first would skip: the root unit's stop cleans up when setup ends.
-systemctl daemon-reload || true
+# A reload that fails after a drop-in was written fails this script: nothing may restart
+# under the old definition.
+if [ -n "$reload" ]; then systemctl daemon-reload; else systemctl daemon-reload || true; fi
 if [ -n "$reload" ] && systemctl is-active --quiet teaport-wifi-setup.service; then
   systemctl start "$net" || echo "teaport-brain: $net did not start: the port-80 rule of the Wi-Fi setup running now stays until it is next run or the box restarts" >&2
 fi

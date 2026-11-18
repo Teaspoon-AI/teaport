@@ -215,6 +215,7 @@ def _postinst(tmp, systemd: bool):
     bin_.mkdir(exist_ok=True)
     stub = bin_ / "systemctl"
     stub.write_text(f'#!/bin/sh\necho "$*" >> {tmp}/systemctl.log\n'
+                    f'if [ "$1" = daemon-reload ] && [ -e {tmp}/reload-fails ]; then exit 1; fi\n'
                     f'[ "$1" != is-active ] || [ -e {tmp}/active ]\n')
     stub.chmod(0o755)
     return unit, stopgap, script, {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"}
@@ -282,6 +283,20 @@ def test_the_drop_in_is_loaded_before_a_running_setup_is_restarted():
     log = pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
     assert "daemon-reload" in log and "start teaport-wifi-setup-net.service" not in log, log
     pathlib.Path(tmp, "active").unlink()
+    # A reload that fails: after a drop-in was written it fails the script before anything
+    # restarts (a restart under the old definition runs its root steps with brain.env);
+    # with nothing written it is only the package's own units, and the script goes on.
+    pathlib.Path(tmp, "reload-fails").touch()
+    pathlib.Path(tmp, "systemctl.log").unlink()
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0 and any(ln.startswith("try-restart") for ln in
+                                     pathlib.Path(tmp, "systemctl.log").read_text().splitlines()), p.stderr
+    pathlib.Path(tmp, "systemctl.log").unlink()
+    unit.write_text(OLD_WIFI_UNIT)
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    log = pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
+    assert p.returncode != 0 and not any(ln.startswith("try-restart") for ln in log), (p.returncode, log)
+    pathlib.Path(tmp, "reload-fails").unlink()
 
 
 def test_the_package_ships_the_root_side_as_it_is():

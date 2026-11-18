@@ -229,9 +229,9 @@ The secrets directory, created with mode 700. The installer seeds `persona.md` w
 
 **`/var/lib/teaport/`**
 
-Download space: release archives and the brain package the manifest names. The installer creates it, owned by root. The first run on a device that an older installer set up keeps only the record and text of the engine license you accepted, and the notes on the journal and network settings; downloads are fetched again.
+Download space: release archives and the brain package the manifest names. It also holds `engine.release`, the engine release the installer last put live, which `teaport update` reads so that it never installs an older engine. The installer creates it, owned by root. The first run on a device that an older installer set up keeps only the record and text of the engine license you accepted, and the notes on the journal and network settings; downloads are fetched again.
 
-<!-- source: install.sh:96,1377#40b78c24; packaging/install/root_layout.py:27-28,61-62#78e4ef3b -->
+<!-- source: install.sh:96,1377#40b78c24; install.sh:829#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:27-28,61-62#78e4ef3b -->
 
 The lock that keeps a second run of the installer from starting while one is running is `/run/teaport-install.lock`.
 
@@ -251,9 +251,9 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 **`/usr/bin/teaport` and `/usr/lib/teaport/`**
 
-The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the two `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
+The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the two `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:72-145#b185d90a; packaging/deb/sudoers-sync:1-29#3cec0b6e -->
+<!-- source: packaging/nfpm.yaml:72-145#b185d90a; packaging/deb/sudoers-sync:1-29#3cec0b6e; packaging/deb/sudoers-sync:90-93#835838b5 -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 
