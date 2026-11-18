@@ -2306,6 +2306,17 @@ frontdoor_name_taken() {
   return 1
 }
 
+# host_name_ok <name> -- a DNS host name: dot-separated labels of ASCII letters, digits and
+# inner hyphens. The name goes into root's files (avahi-daemon.conf through sed, the
+# Caddyfile, run by caddy, which holds the local CA's key); a saved one comes from
+# brain.env, which the config page writes on the run user's behalf, so anything else in it
+# could be a sed command or a Caddyfile line. LC_ALL=C: under a UTF-8 locale bash's [a-z]
+# follows its collation and takes ø, é, ² and over a thousand more.
+host_name_ok() {
+  local LC_ALL=C
+  [ "${#1}" -le 253 ] && [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
 # resolve_frontdoor — settle the front door's name, its local CA's name, and the operator's
 # certificate if one is given, before phase_agent hands the name to OpenClaw (publicUrl)
 # and phase_services writes them into brain.env (#251, #249).
@@ -2319,13 +2330,6 @@ frontdoor_name_taken() {
 # The CA name: the existing root's, read back from it (Caddy never renames a root), or
 # "Teaport <id> Local Authority" for a root Caddy has yet to make. Devices list the root as
 # "<name> - <year> ECC Root"; the pages tell people to look for <name>.
-# host_name_ok <name> -- a DNS host name: dot-separated labels of letters, digits and inner
-# hyphens. The name goes into root's files (avahi-daemon.conf through sed, the Caddyfile
-# caddy runs as root); a saved one comes from brain.env, which the config page writes on the
-# run user's behalf, so anything else in it could be a sed command or a Caddyfile line.
-host_name_ok() {
-  [ "${#1}" -le 253 ] && [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
-}
 resolve_frontdoor() {
   local id; id="$(box_id)"
   # Host names are case-insensitive; avahi and the QR link get one spelling.
@@ -3208,8 +3212,9 @@ phase_sip() {
 # random one, twelve characters in three groups of four like that example
 # (wifi_setup.setup_password).
 # wifi_setup_split_done -- after the two units are rendered (and systemd reloaded): the
-# package's stopgap drop-in, which turned the old unit's root steps off (postinst), has
-# nothing left to do; and a setup run going on now was started by the old unit, whose root
+# package's stopgap drop-in, which pointed the old unit at teaport-wifi-setup-net in place
+# of its own root steps (postinst), has nothing left to do; and a setup run going on now
+# may have been started by the old unit, whose root
 # steps went with it, so its root side is brought up to take the rule and the captive DNS
 # file down when it ends (up first clears what the old run put in, then puts it back).
 WIFI_SETUP_STOPGAP=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf

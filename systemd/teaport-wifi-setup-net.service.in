@@ -2,7 +2,9 @@
 # DNS file (/usr/local/lib/teaport/wifi-setup-net up), and their clean-up (down), for as
 # long as teaport-wifi-setup runs. That unit Requires= this one; StopWhenUnneeded= takes
 # this one down after it, and its ExecStopPost runs after a stop and after a start that
-# failed alike. Rendered by install.sh (no substitutions: it names no user or directory).
+# failed alike. No substitutions (it names no user or directory): the teaport-brain
+# package ships it as is to /usr/lib/systemd/system, and install.sh renders it into
+# /etc/systemd/system.
 #
 # Its own unit, so that no command running as root ever has /etc/teaport's environment:
 # teaport-wifi-setup runs as the run user and loads brain.env, which the config page

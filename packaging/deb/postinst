@@ -36,23 +36,34 @@ if [ -e /usr/local/bin/teaport ]; then
 fi
 
 # A Wi-Fi setup unit rendered before its root steps moved to their own unit
-# (teaport-wifi-setup-net) still runs them as root with brain.env's environment, which the
-# config page writes on the run user's behalf. Until install.sh renders the new pair (every
-# --only brain does), a drop-in turns those root steps off: setup still runs, without the
-# port-80 redirect (phones open the page at 10.42.0.1:7869 themselves). install.sh removes
-# the drop-in once the new unit is in.
+# (teaport-wifi-setup-net, which this package ships) still runs them as root with
+# brain.env's environment, which the config page writes on the run user's behalf. A
+# drop-in turns those steps off and Requires= the root unit instead, which runs the same
+# steps with no environment: setup works as it does with the new unit, port-80 redirect
+# and clean-up included. install.sh removes the drop-in once it renders the new pair
+# (every --only brain does).
 wifi=/etc/systemd/system/teaport-wifi-setup.service
 stopgap=/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+reload=
 if [ -f "$wifi" ] && grep -q '^ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net' "$wifi"; then
   mkdir -p "$(dirname "$stopgap")"
-  printf '%s\n' "# teaport-brain postinst: the old unit's root steps are off until install.sh renders" \
-    "# teaport-wifi-setup and teaport-wifi-setup-net (install.sh --only brain does)." \
+  printf '%s\n' "# teaport-brain postinst: the old unit's root steps run from teaport-wifi-setup-net," \
+    "# until install.sh renders the new teaport-wifi-setup (install.sh --only brain does)." \
+    "[Unit]" "Requires=teaport-wifi-setup-net.service" "After=teaport-wifi-setup-net.service" \
     "[Service]" "ExecStartPre=" "ExecStopPost=" > "$stopgap"
-  echo "teaport-brain: Wi-Fi setup's root steps are off until install.sh --only brain renders its new units" >&2
+  echo "teaport-brain: Wi-Fi setup's root steps now run from teaport-wifi-setup-net" >&2
+  reload=1
 fi
 
-# Not under systemd (a container, a chroot, an image build): nothing to restart.
+# Not under systemd (a container, a chroot, an image build): nothing to reload or restart.
 [ -d /run/systemd/system ] || exit 0
+# The drop-in is loaded before anything restarts: a running unit keeps the definition it
+# started with until a reload, and a restart under the old one would run its root steps
+# with brain.env again. After the reload, a setup that is running is restarted below; its
+# stop no longer runs the old clean-up, its start brings teaport-wifi-setup-net up (whose
+# `up` leaves a rule that is already there as it is), and that unit's stop cleans up when
+# setup ends.
+if [ -n "$reload" ]; then systemctl daemon-reload; fi
 for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup.service; do
   # try-restart: only a unit that is running. The wifi unit is on demand and the audio
   # bridge is optional; a brain that is enabled but stopped is the operator's to start.

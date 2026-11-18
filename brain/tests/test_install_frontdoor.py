@@ -187,6 +187,23 @@ def test_the_name_an_earlier_run_settled_on_stays_unless_taken_and_teaport_host_
     assert _resolved(_run(t, RESOLVE)[1])["HOST"] == "box.example.com"
 
 
+def test_a_saved_name_that_is_not_a_host_name_is_ignored_and_teaport_host_refused():
+    # brain.env is the config page's to write, on the run user's behalf; the name goes into
+    # root's sed (avahi) and the Caddyfile. Whatever the locale sudo passes on.
+    t = tempdir()
+    _box(t)
+    pathlib.Path(t, "etc").mkdir()
+    for loc in ("en_US.UTF-8", "C.UTF-8"):
+        for bad in ("x;id>/tmp/p|e;s|a|b.local", "bøx.local", "a b.local", "x}.local"):
+            pathlib.Path(t, "etc", "brain.env").write_text(f"TEAPORT_FRONTDOOR_HOST={bad}\n")
+            rc, out = _run(t, RESOLVE, {"LC_ALL": loc})
+            assert rc == 0 and _resolved(out)["HOST"] == "teaport.local", (loc, bad, out)
+            assert "ignoring TEAPORT_FRONTDOOR_HOST" in out, (loc, bad, out)
+        pathlib.Path(t, "etc", "brain.env").write_text("")
+        rc, out = _run(t, RESOLVE, {"LC_ALL": loc, "TEAPORT_HOST": "bøx.local"})
+        assert rc != 0 and "HOST=" not in out, (loc, out)
+
+
 def test_an_existing_ca_keeps_its_name_unless_it_is_regenerated():
     # Caddy names a root only when it makes one: the pages must name the root the box
     # has, and a regenerate makes a new one under this box's name.

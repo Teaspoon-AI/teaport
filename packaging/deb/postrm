@@ -8,6 +8,8 @@ case "$1" in
     if [ -L /opt/teaport/venv ] && [ "$(readlink /opt/teaport/venv)" = /opt/teaport/brain ]; then
       rm -f /opt/teaport/venv
     fi
+    # postinst's Wi-Fi drop-in Requires= a unit this package carried.
+    rm -f /etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
     ;;
 esac
 if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config; fi

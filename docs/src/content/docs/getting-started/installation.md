@@ -159,8 +159,8 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:82,327,1455,1896,1909,3307,3570,3576,2040,2585#61f62288; manifest/stable.json:5-21#db7e6194 -->
-<!-- source: install.sh:2288-2299,2326-2383#b959413d -->
+<!-- source: install.sh:82,327,1455,1896,1909,3312,3575,3581,2040,2589#61f62288; manifest/stable.json:5-21#db7e6194 -->
+<!-- source: install.sh:2288-2299,2315-2318,2333-2387#160490d8 -->
 
 ## Optional components
 
@@ -176,7 +176,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:63,66,3280#2f2e05c5; cli/teaport:410#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:63,66,3285#2f2e05c5; cli/teaport:410#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -222,7 +222,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:3357-3358#561957fe -->
+<!-- source: install.sh:3362-3363#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -239,7 +239,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:3361-3363,1869-1877#8d3dea6b -->
+<!-- source: install.sh:3366-3368,1869-1877#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
@@ -285,8 +285,8 @@ installer was given your own certificate (see
 [Use your own certificate](/reference/installer/#use-your-own-certificate)), there is
 nothing to trust, and the page leaves the step out.
 
-<!-- source: install.sh:2551-2555#3c1e6011 -->
-<!-- source: install.sh:2326-2383#9aeb8a3e; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2 -->
+<!-- source: install.sh:2555-2559#3c1e6011 -->
+<!-- source: install.sh:2315-2318,2333-2387#49197cea; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2 -->
 
 ## What's next
 

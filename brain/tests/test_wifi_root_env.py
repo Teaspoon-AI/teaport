@@ -11,8 +11,12 @@
 #     teaport-wifi-setup-net (up when it starts, down after it stops, however it ended);
 #   - install.sh renders that root side wherever it renders teaport-wifi-setup, so a
 #     --only brain re-render never leaves the unit requiring a unit that is not there;
+#   - a box upgraded by the package alone (apt, the updater), whose unit predates the
+#     split, gets the same: the package ships the root side, and postinst points the old
+#     unit at it with its own root steps off, reloaded before anything restarts;
 #   - config_apply.py refuses to write a key that changes how programs load code, and
 #     still writes every other line.
+# Units this repo does not hold (teaport-appliance's, oled-avatar's) are not checked here.
 #
 # Run: python test_wifi_root_env.py   (or via pytest test_suite.py)
 #
@@ -45,11 +49,23 @@ def _directives(text: str) -> list[tuple[str, str, str]]:
 
 
 def _runs_as_root(directives) -> bool:
-    users = [v for s, k, v in directives if s == "Service" and k == "User"]
-    if not users or users[-1] in ("root", "0"):
+    """Whether any command of the unit (with its drop-ins appended, in order) runs as root:
+    no User= or an empty one, User=root, PermissionsStartOnly= (every step but ExecStart
+    as root), or an Exec line prefixed "+" or "!". An empty Exec...= resets that list, as
+    a drop-in's does."""
+    svc = [(k, v) for s, k, v in directives if s == "Service"]
+    users = [v for k, v in svc if k == "User"]
+    if not users or users[-1] in ("", "root", "0"):
         return True
-    for s, k, v in directives:
-        if s == "Service" and k.startswith("Exec"):
+    starts_only = [v for k, v in svc if k == "PermissionsStartOnly"]
+    if starts_only and starts_only[-1].lower() in ("yes", "true", "on", "1"):
+        return True
+    execs: dict[str, list[str]] = {}
+    for k, v in svc:
+        if k.startswith("Exec"):
+            execs[k] = execs.get(k, []) + [v] if v else []
+    for lines in execs.values():
+        for v in lines:
             prefix = re.match(r"^[-@:+!]*", v).group(0)
             if "+" in prefix or "!" in prefix:
                 return True
@@ -87,7 +103,12 @@ def test_the_root_check_itself():
     assert _runs_as_root(_directives("[Service]\nUser=root\nExecStart=/bin/x\n"))
     assert _runs_as_root(_directives("[Service]\nUser=bob\nExecStartPre=-+/bin/x\n"))
     assert _runs_as_root(_directives("[Service]\nUser=bob\nExecStart=\\\n  !/bin/x\n"))
+    assert _runs_as_root(_directives("[Service]\nUser=\nExecStart=/bin/x\n"))
+    assert _runs_as_root(_directives("[Service]\nUser=bob\nPermissionsStartOnly=yes\nExecStart=/bin/x\n"))
     assert not _runs_as_root(_directives("[Service]\nUser=bob\nExecStart=-/bin/x\n"))
+    # A drop-in's empty ExecStartPre= drops the "+" line before it.
+    assert not _runs_as_root(_directives("[Service]\nUser=bob\nExecStartPre=+/bin/x\nExecStart=/bin/y\n"
+                                         "[Service]\nExecStartPre=\n"))
 
 
 def test_install_renders_the_root_side_wherever_it_renders_wifi_setup():
@@ -113,7 +134,8 @@ def test_config_apply_refuses_keys_that_load_code():
     try:
         for line in ("LD_PRELOAD=/home/u/x.so", "export LD_LIBRARY_PATH=/tmp", "PYTHONPATH=/tmp",
                      "  PATH = /tmp:/usr/bin", "BASH_ENV=/tmp/x", "NODE_OPTIONS=--require /tmp/x.js",
-                     "GCONV_PATH=/tmp", "PERL5OPT=-Mx", "XTABLES_LIBDIR=/home/u/xt", "OPENSSL_CONF=/tmp/c"):
+                     "GCONV_PATH=/tmp", "PERL5OPT=-Mx", "XTABLES_LIBDIR=/home/u/xt", "OPENSSL_CONF=/tmp/c",
+                     "IPTABLES_LIB_DIR=/home/u/xt", "IP6TABLES_LIB_DIR=/home/u/xt"):
             try:
                 config_apply.write("brain.env", f"LLM_MODEL=b\n{line}\n")
             except SystemExit as e:
@@ -151,34 +173,95 @@ def test_a_host_name_from_brain_env_is_a_host_name_or_nothing():
     for name in ("x;id>/tmp/p|e;s|a|b.local", "a b.local", "-x.local", "x-.local", "a..local", "",
                  "a\nb.local", "x{.local", "A.local", "a" * 64 + ".local", "x|y.local"):
         assert _bash(fn + 'host_name_ok "$N"', {"N": name})[0] != 0, name
+    # ASCII only, whatever the locale sudo passes on: under en_US.UTF-8 bash's [a-z] alone
+    # takes these (where that locale is installed; C.UTF-8 never did).
+    for loc in ("en_US.UTF-8", "C.UTF-8"):
+        for name in ("bøx.local", "é.local", "a²", "teaport.lоcal"):   # the last o is Cyrillic
+            assert _bash(fn + 'host_name_ok "$N"', {"N": name, "LC_ALL": loc})[0] != 0, (loc, name)
+        assert _bash(fn + "host_name_ok teaport.local", {"LC_ALL": loc})[0] == 0, loc
     text = INSTALL.read_text()
     assert 'host_name_ok "$FRONTDOOR_HOST" || die' in text and 'if [ -n "$had" ] && ! host_name_ok "$had"; then' in text
 
 
-def test_an_old_unit_left_by_a_package_only_update_runs_no_root_step():
-    import subprocess
-    tmp = tempdir("teaport-postinst-wifi-")
+OLD_WIFI_UNIT = ("[Unit]\nDescription=old\n[Service]\nUser=bob\nEnvironmentFile=-/etc/teaport/brain.env\n"
+                 "ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net up\nExecStart=/opt/teaport/brain/bin/python -m x\n"
+                 "ExecStopPost=+/usr/local/lib/teaport/wifi-setup-net down\n")
+
+
+def _postinst(tmp, systemd: bool):
+    """postinst with its paths moved under tmp; under "systemd", systemctl is a stub that
+    logs its arguments to tmp/systemctl.log."""
     unit = pathlib.Path(tmp, "teaport-wifi-setup.service")
     stopgap = pathlib.Path(tmp, "d/60-teaport-no-root-steps.conf")
     text = (ROOT / "packaging/deb/postinst").read_text()
     for old, new in (("/etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf", str(stopgap)),
                      ("/etc/systemd/system/teaport-wifi-setup.service", str(unit)),
                      ("/usr/lib/teaport/sudoers-sync", "true"), ("/opt/teaport", tmp + "/opt"),
-                     ("/usr/local/bin/teaport", tmp + "/no-cli"), ("/run/systemd/system", tmp + "/no-systemd")):
+                     ("/usr/local/bin/teaport", tmp + "/no-cli"),
+                     ("/run/systemd/system", tmp if systemd else tmp + "/no-systemd")):
         assert old in text, old
         text = text.replace(old, new)
     script = pathlib.Path(tmp, "postinst")
     script.write_text(text)
-    unit.write_text("[Service]\nUser=bob\nEnvironmentFile=-/etc/teaport/brain.env\n"
-                    "ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net up\n")
-    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
-    assert p.returncode == 0 and "root steps are off" in p.stderr, p.stderr
-    assert "[Service]\nExecStartPre=\nExecStopPost=\n" in stopgap.read_text()
+    bin_ = pathlib.Path(tmp, "bin")
+    bin_.mkdir(exist_ok=True)
+    stub = bin_ / "systemctl"
+    stub.write_text(f'#!/bin/sh\necho "$*" >> {tmp}/systemctl.log\n')
+    stub.chmod(0o755)
+    return unit, stopgap, script, {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"}
+
+
+def test_an_old_unit_left_by_a_package_only_update_runs_no_root_step():
+    import subprocess
+    tmp = tempdir("teaport-postinst-wifi-")
+    unit, stopgap, script, env = _postinst(tmp, systemd=False)
+    unit.write_text(OLD_WIFI_UNIT)
+    assert _runs_as_root(_directives(OLD_WIFI_UNIT))
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0 and "now run from teaport-wifi-setup-net" in p.stderr, p.stderr
+    # The old unit with the drop-in: nothing as root, and the root side comes from the unit
+    # the package ships (which loads no environment: test above).
+    both = _directives(OLD_WIFI_UNIT + stopgap.read_text())
+    assert not _runs_as_root(both), both
+    assert ("Unit", "Requires", "teaport-wifi-setup-net.service") in both
+    assert ("Unit", "After", "teaport-wifi-setup-net.service") in both
     # The new unit: nothing to turn off.
     stopgap.unlink()
     unit.write_text((UNITS / "teaport-wifi-setup.service.in").read_text())
-    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
     assert p.returncode == 0 and not stopgap.exists(), p.stderr
+
+
+def test_the_drop_in_is_loaded_before_a_running_setup_is_restarted():
+    # A running unit keeps its old definition until a reload; restarted under it, its root
+    # steps would run with brain.env again.
+    import subprocess
+    tmp = tempdir("teaport-postinst-reload-")
+    unit, stopgap, script, env = _postinst(tmp, systemd=True)
+    unit.write_text(OLD_WIFI_UNIT)
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr
+    log = pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
+    assert "daemon-reload" in log and "try-restart teaport-wifi-setup.service" in log, log
+    assert log.index("daemon-reload") < min(i for i, ln in enumerate(log) if ln.startswith("try-restart")), log
+    # Nothing written, nothing to reload.
+    pathlib.Path(tmp, "systemctl.log").unlink()
+    stopgap.unlink()
+    unit.write_text((UNITS / "teaport-wifi-setup.service.in").read_text())
+    p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr
+    assert "daemon-reload" not in pathlib.Path(tmp, "systemctl.log").read_text().splitlines()
+
+
+def test_the_package_ships_the_root_side_as_it_is():
+    # nfpm copies the template verbatim, so it must have nothing to substitute.
+    net = (UNITS / "teaport-wifi-setup-net.service.in").read_text()
+    assert "@" not in net, net
+    nfpm = (ROOT / "packaging/nfpm.yaml").read_text()
+    assert ("  - src: systemd/teaport-wifi-setup-net.service.in\n"
+            "    dst: /usr/lib/systemd/system/teaport-wifi-setup-net.service\n") in nfpm
+    postrm = (ROOT / "packaging/deb/postrm").read_text()
+    assert "rm -f /etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf" in postrm
 
 
 def test_rendering_the_new_pair_removes_the_stopgap_and_takes_over_a_running_setup():
