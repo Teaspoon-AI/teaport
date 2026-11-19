@@ -669,12 +669,18 @@ class Setup:
             def _cross_site(self) -> bool:
                 """A post from another site's page: a phone on the setup network often keeps
                 its mobile data, and a tab there could post the form. The page's own posts
-                carry no Origin, "null" (some captive browsers), or one of its own names."""
-                if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+                carry no Origin, one of its own names, or "null" (some captive browsers) --
+                which a sandboxed frame on any site sends too (old iOS), so "null" only with
+                a Sec-Fetch-Site that says the post is the page's own (same-origin, or none:
+                typed or followed by the user)."""
+                fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+                if fetch_site == "cross-site":
                     return True
                 origin = (self.headers.get("Origin") or "").strip()
-                if not origin or origin == "null":
+                if not origin:
                     return False
+                if origin == "null":
+                    return fetch_site not in ("same-origin", "none")
                 return (urllib.parse.urlsplit(origin).hostname or "").lower() not in setup.names()
 
             def do_POST(self):
@@ -710,9 +716,14 @@ class Setup:
                         setup.key = parse_key(body) if setup.account is not None else ""
                         setup.lang = t  # the screens from here on (_text)
                         setup.request = (ssid, password, hidden)
-                    self._send(200, setup.outcome(t), extra=remember)
-                    if join:
-                        setup.wake.set()
+                    try:
+                        self._send(200, setup.outcome(t), extra=remember)
+                    finally:
+                        # Whether or not the answer reached the phone (it can have left
+                        # while the login was made): the join is asked for, so it begins,
+                        # or every later tap would hear "joining" and nothing would.
+                        if join:
+                            setup.wake.set()
                 finally:
                     setup.posting.release()
 

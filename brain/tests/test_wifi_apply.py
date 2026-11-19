@@ -322,10 +322,22 @@ def test_sudoers_sync_writes_the_helpers_lines_and_narrows_a_wider_rule(tmp_path
     lines = [ln for ln in sudoers.read_text().splitlines() if not ln.startswith("#")]
     assert lines == [f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/config_apply.py *",
                      f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/wifi_apply.py *",
-                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/login_apply.py *"], lines
+                     f"alice ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 {tmp_path}/lib/login_apply.py *"], lines
     narrowed = rules.read_text()
     assert "settings.modify.system" not in narrowed.split("polkit.addRule")[1]
     assert 'subject.user == "alice"' in narrowed and "wifi.scan" in narrowed
+
+
+def test_the_generated_lines_pass_the_real_visudo(tmp_path):
+    # The stub above passes anything: the lines themselves, NOLOG_INPUT included, must be
+    # what sudo takes, or sudoers-sync installs none of them.
+    visudo = next((p for p in ("/usr/sbin/visudo", "/sbin/visudo") if os.path.exists(p)), None)
+    if visudo is None:
+        pytest.skip("visudo is not installed here")
+    p, sudoers, _ = _sudoers_sync(tmp_path)
+    assert p.returncode == 0, p.stderr
+    check = subprocess.run([visudo, "-cf", str(sudoers)], capture_output=True, text=True)
+    assert check.returncode == 0, check.stdout + check.stderr
 
 
 def test_sudoers_sync_leaves_the_rule_while_the_lines_cannot_go_in_and_makes_none(tmp_path):

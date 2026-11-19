@@ -44,6 +44,8 @@ for h in "$helper" "$wifi" "$login"; do
 done
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+# The login helper's line has NOLOG_INPUT: its stdin is the owner's new password, which
+# sudo's I/O logging (log_input), where a box has it on, would otherwise keep.
 printf '%s\n' \
   "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
   "# through this one root-owned script and nothing else. See config_apply.py." \
@@ -53,7 +55,7 @@ printf '%s\n' \
   "$user ALL=(root) NOPASSWD: /usr/bin/python3 $wifi *" \
   "# teaport: the setup page and Settings create the owner's login through this one, once," \
   "# on a box provisioning marked for it. See login_apply.py." \
-  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $login *" > "$tmp"
+  "$user ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 $login *" > "$tmp"
 if ! { [ -f "$f" ] && cmp -s "$tmp" "$f"; }; then
   visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated lines do not pass visudo; $f left as it was" >&2; exit 1; }
   install -m 0440 -o root -g root "$tmp" "$f"

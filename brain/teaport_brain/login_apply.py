@@ -52,8 +52,12 @@
 # seconds later (use_pty, Ubuntu's default). So a create runs detached (_detached): a
 # child in a session and process group of its own does the whole of it, the lock
 # included, and the process sudo started only relays its answer. sudo can kill that one;
-# the child finishes regardless, its marker removal included. A power cut still can stop
-# it; the next create finishes what it left, if that is plainly a leftover (above).
+# the child finishes regardless, its marker removal included. The child is still in the
+# caller's cgroup, though: stopping the caller's unit (SIGKILL once its TimeoutStopSec
+# runs out), the OOM killer, a reboot or a power cut can stop it part-way. A create takes
+# about a second; the next one usually finishes what such a stop left -- when that is
+# plainly a leftover (above). A cut inside useradd or userdel can also leave what reads
+# as someone's login (EXISTS) or a lone `teaport` group (GROUP): a reset is the way out.
 #
 # Run as the sudoers line (packaging/deb/sudoers-sync) names it:
 #   /usr/bin/python3 /usr/lib/teaport/login_apply.py <verb>

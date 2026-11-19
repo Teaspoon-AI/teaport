@@ -283,6 +283,25 @@ def test_a_second_tap_that_waits_too_long_hears_the_login_is_still_being_made(tm
         page.close()
 
 
+def test_a_join_begins_even_when_its_answer_never_reaches_the_phone(tmp_path, monkeypatch):
+    # The phone left while the login was made (the sheet closed, the screen locked): the
+    # answer fails to go out, and the join must begin all the same, or every later tap
+    # would hear "joining" while nothing joins.
+    tools, marker, login = _login(tmp_path)
+    page = _Page(login)
+
+    def gone(*a, **kw):
+        raise BrokenPipeError("the phone left")
+    monkeypatch.setattr(ws, "render_joining", gone)
+    try:
+        with pytest.raises((urllib.error.URLError, ConnectionError, http.client.HTTPException)):
+            page.post(login_password=GOOD, login_again=GOOD)
+        assert page.setup.request == ("home", "homepass1", False) and page.setup.wake.is_set()
+        assert tools.users["teaport"] == GOOD
+    finally:
+        page.close()
+
+
 def _raw(page, method, host, headers=(), body=b""):
     conn = http.client.HTTPConnection("127.0.0.1", page.setup.port, timeout=5)
     try:
@@ -328,7 +347,13 @@ def test_the_page_answers_only_under_its_own_names(tmp_path, host, own):
     # A captive probe's name is not the page's: the sheet was sent to 10.42.0.1 first.
     ("captive.apple.com", {"Origin": "http://captive.apple.com"}, True),
     ("10.42.0.1", {}, False),                                    # no Origin at all
-    ("10.42.0.1", {"Origin": "null"}, False),                    # some captive browsers
+    # "null": some captive browsers -- and a sandboxed frame on any site (old iOS), so only
+    # with a Sec-Fetch-Site that says the post is the page's own.
+    ("10.42.0.1", {"Origin": "null"}, True),
+    ("10.42.0.1", {"Origin": "null", "Sec-Fetch-Site": "same-site"}, True),
+    ("10.42.0.1", {"Origin": "null", "Sec-Fetch-Site": "cross-site"}, True),
+    ("10.42.0.1", {"Origin": "null", "Sec-Fetch-Site": "same-origin"}, False),
+    ("10.42.0.1", {"Origin": "null", "Sec-Fetch-Site": "none"}, False),
     ("10.42.0.1", {"Origin": "http://10.42.0.1"}, False),
     ("10.42.0.1:80", {"Origin": "http://10.42.0.1:80"}, False),
     ("teaport-9e35.local", {"Origin": "http://Teaport-9E35.local"}, False),
