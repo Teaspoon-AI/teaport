@@ -802,3 +802,53 @@ msgstr "\\btranslat\\w*|\\bin english\\b|\\bword for\\b|\\bsynonym\\w*|\\bopposi
 msgctxt "pattern"
 msgid "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
 msgstr "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
+
+# The owner's login (#421): the setup page's step and the Settings card (owner_login.py).
+msgid "Create your login"
+msgstr "创建你的登录账户"
+
+msgid "You'll use this to sign in to Teaport from a computer. Your username is {username}."
+msgstr "你将用它从电脑登录 Teaport。你的用户名是 {username}。"
+
+msgid "Choose a password"
+msgstr "设置一个密码"
+
+msgid "Type it again"
+msgstr "再输入一次"
+
+msgid "Use at least {count} characters."
+msgstr "至少使用 {count} 个字符。"
+
+msgid "You can leave this empty and create your login later in Settings."
+msgstr "你可以先留空，以后再到设置中创建登录账户。"
+
+msgid "Create login"
+msgstr "创建登录账户"
+
+msgid "Creating your login…"
+msgstr "正在创建登录账户…"
+
+msgid "Your login is ready. Sign in as {username} with the password you chose."
+msgstr "你的登录账户已就绪。请用 {username} 和你设置的密码登录。"
+
+msgid "The two passwords don't match."
+msgstr "两次输入的密码不一致。"
+
+msgid "Your password needs at least {count} characters."
+msgstr "密码至少需要 {count} 个字符。"
+
+msgid "That password is too long."
+msgstr "这个密码太长了。"
+
+msgid "Your password can't contain invisible or control characters."
+msgstr "密码不能包含不可见字符或控制字符。"
+
+msgid "This Teaport already has a login."
+msgstr "这台 Teaport 已经有登录账户了。"
+
+msgid "Creating a login isn't available on this Teaport."
+msgstr "这台 Teaport 无法创建登录账户。"
+
+msgid "Teaport couldn't create your login. Try again."
+msgstr "Teaport 没能创建你的登录账户。请再试一次。"
+

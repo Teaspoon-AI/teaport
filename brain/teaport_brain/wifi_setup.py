@@ -28,6 +28,12 @@
 #      key (ai_account.adopt): saved only if the provider accepts it. How that went rides
 #      in the "connected" status, and the voice says it (wifi_voice.py); a key never
 #      leaves this process but to the provider and the brain's key file.
+#      On a box provisioning marked for it, the page also has a "Create your login" step
+#      (#421): a password, typed twice, for the box's admin account (owner_login.py). It
+#      needs no internet, so the login is made as the form arrives, through the root
+#      helper, before the join begins; a password the helper does not take, or a create
+#      that fails, brings the page back with the reason and nothing else changed. Left
+#      empty, the step waits: Settings offers it until a login exists.
 #   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
@@ -69,7 +75,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import ai_account, conversation_log, display, i18n
+from teaport_brain import ai_account, conversation_log, display, i18n, owner_login
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting, state_dir
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
@@ -265,6 +271,7 @@ PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="ut
 <label class="f" for="pw">{password}</label>
 <input type="password" id="pw" name="password" autocomplete="off" autocapitalize="none" spellcheck="false">
 <label class="show"><input type="checkbox" onclick="pw.type=this.checked?'text':'password'"> {show}</label>
+{login}
 {account}
 <button type="submit">{connect}</button>
 </form></main></body></html>"""
@@ -274,7 +281,7 @@ JOINING = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset=
 <style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
 <h1>{heading}</h1>
-<p>{body}</p></main></body></html>"""
+<p>{body}</p>{login}</main></body></html>"""
 
 
 def _lang_attr(t: i18n.T) -> str:
@@ -333,10 +340,26 @@ def render_account(t: i18n.T) -> str:
             '</details>')
 
 
+def render_login(t: i18n.T) -> str:
+    """The "Create your login" step (#421): the password for the box's admin account,
+    typed twice. Optional here: left empty, Settings offers it later."""
+    def say(key):
+        return html.escape(owner_login.say(t, owner_login.TEXT[key]))
+    field = ('<input type="password" id="{id}" name="{id}" autocomplete="new-password" '
+             'autocapitalize="none" spellcheck="false">')
+    return (f'<div class="login"><h2>{say("title")}</h2><p>{say("intro")}</p>'
+            f'<label class="f" for="login_password">{say("password")}</label>'
+            + field.format(id="login_password")
+            + f'<label class="f" for="login_again">{say("again")}</label>'
+            + field.format(id="login_again")
+            + f'<p class="hint">{say("rule")} {say("later")}</p></div>')
+
+
 def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
-                account: bool = False) -> str:
+                account: bool = False, login: bool = False) -> str:
     """The page, in t's language. `error` is already in that language. `account`: the AI
-    account step is offered (the box's endpoint is OpenRouter's: main)."""
+    account step is offered (the box's endpoint is OpenRouter's: main). `login`: the
+    "Create your login" step is (a login is pending here: Setup.login_offered)."""
     t = t or i18n.get(i18n.SOURCE_LANG)
     rows = []
     for i, n in enumerate(networks):
@@ -361,6 +384,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
         password=html.escape(t._("Password")),
         show=html.escape(t._("Show password")),
         connect=html.escape(t._("Connect")),
+        login=render_login(t) if login else "",
         account=render_account(t) if account else "")
 
 
@@ -386,10 +410,13 @@ def _isolate(text: str, names: list[str]) -> str:
     return "".join(out) + html.escape(text[pos:])
 
 
-def render_joining(ssid: str, t: i18n.T) -> str:
+def render_joining(ssid: str, t: i18n.T, login: bool = False) -> str:
+    """`login`: the owner's login was just created with this form; the page says so."""
     strong = f"<strong><bdi>{html.escape(ssid)}</bdi></strong>"
+    ready = (f'<p>{html.escape(owner_login.say(t, owner_login.TEXT["created"]))}</p>'
+             if login else "")
     return JOINING.format(
-        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
+        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(), login=ready,
         title=html.escape(t._("Teaport is joining")),
         heading=html.escape(t._("Joining {network}…")).format(network=f"<bdi>{html.escape(ssid)}</bdi>"),
         body=html.escape(t._("Teaport is leaving this setup network now. Switch your phone "
@@ -402,6 +429,12 @@ def parse_key(body: bytes) -> str:
     """The AI account key from the posted form, stripped; "" for none."""
     form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
     return (form.get("ai_key") or [""])[0].strip()
+
+
+def parse_login(body: bytes) -> tuple[str, str]:
+    """The login step's two passwords from the posted form, as typed ("" for none)."""
+    form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+    return (form.get("login_password") or [""])[0], (form.get("login_again") or [""])[0]
 
 
 def parse_form(body: bytes) -> tuple[str, str, bool, str]:
@@ -516,7 +549,8 @@ class Setup:
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
                  bind: str | None = None, screen: display.Screen | None = None,
-                 account: str | None = None, lang: i18n.T | None = None):
+                 account: str | None = None, lang: i18n.T | None = None,
+                 login: owner_login.Login | None = None):
         self.nm, self.status, self.port = nm, status, port
         self.screen = screen
         # The language of whoever reads the screen (_text): the voice's to begin with
@@ -528,6 +562,12 @@ class Setup:
         # offered (an OpenRouter endpoint: main); None, and the page has no such step.
         self.account = account
         self.key = ""  # the key posted with the last Wi-Fi choice (never logged)
+        # The owner's login (#421): asked once, as the run begins (_run), whether one is
+        # pending here; the page offers the step while it is. Only a create from this
+        # page changes that (and a login made elsewhere meanwhile is the helper's
+        # refusal, which takes the step away).
+        self.login = login
+        self.login_offered = False
         # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
         # its profile), never 0.0.0.0 — the box's other networks must not reach a page
         # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -588,8 +628,7 @@ class Setup:
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 t, remember = self._t()
-                self._send(200, render_page(setup.networks, setup.error_text(t), t,
-                                            account=setup.account is not None), extra=remember)
+                self._send(200, setup.page(setup.error_text(t), t), extra=remember)
 
             def do_POST(self):
                 raw = (self.headers.get("Content-Length") or "0").strip()
@@ -604,16 +643,38 @@ class Setup:
                 ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
                 if error:
-                    return self._send(200, render_page(setup.networks, t._(error), t,
-                                                       account=setup.account is not None),
-                                      extra=remember)
-                self._send(200, render_joining(ssid, t), extra=remember)
+                    return self._send(200, setup.page(t._(error), t), extra=remember)
+                made = False
+                if setup.login_offered:
+                    login_password, login_again = parse_login(body)
+                    if login_password or login_again:
+                        why = setup.create_login(login_password, login_again)
+                        if why:
+                            return self._send(200, setup.page(owner_login.say(t, owner_login.WHY[why]), t),
+                                              extra=remember)
+                        made = True
+                self._send(200, render_joining(ssid, t, login=made), extra=remember)
                 setup.key = parse_key(body) if setup.account is not None else ""
                 setup.lang = t  # the screens from here on (_text)
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 
         return Handler
+
+    def page(self, error: str, t: i18n.T) -> str:
+        """The setup page as this run offers it, `error` (in t's language) on top."""
+        return render_page(self.networks, error, t, account=self.account is not None,
+                           login=self.login_offered)
+
+    def create_login(self, password: str, again: str) -> str:
+        """The owner's login from the page's two passwords: "" once it exists, else the
+        WHY code. A login that already exists, or that is no longer pending, takes the step
+        off the page. Logged by outcome only: the password stays in this call."""
+        ok, why = self.login.create(password, again)
+        if ok or why in (owner_login.EXISTS, owner_login.NOT_OFFERED):
+            self.login_offered = False
+        log("the owner's login: " + ("created" if ok else f"not created ({why})"))
+        return why
 
     def serve(self) -> None:
         self.server = _Server((self.bind or self.address, self.port), self.handler())
@@ -761,6 +822,7 @@ class Setup:
 
     def _run(self, dev: str, ssid: str, password: str) -> int:
         self.status.set("scanning")
+        self.login_offered = self.login is not None and self.login.pending()
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
@@ -886,7 +948,7 @@ def main(argv=None) -> int:
     setup = Setup(nm, status, port=args.port, minutes=args.minutes,
                   screen=display.Screen("wifi-setup"),
                   account=base_url if ai_account.is_openrouter(base_url) else None,
-                  lang=lang)
+                  lang=lang, login=owner_login.Login())
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 

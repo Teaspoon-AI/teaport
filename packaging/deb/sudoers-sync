@@ -4,11 +4,14 @@
 #
 # The config page writes /etc/teaport/*.env and restarts teaport-* units, as root, through
 # one script and nothing else: /usr/lib/teaport/config_apply.py. Wi-Fi setup and the config
-# page change the box's Wi-Fi through another, /usr/lib/teaport/wifi_apply.py. Both are
-# root-owned and run by the SYSTEM python, never the venv's interpreter. The lines name the
-# run user, who the package does not know: it is the User= of the rendered teaport-brain
-# unit, or the argument (install.sh passes it right after it renders the unit, on a first
-# install where the unit did not exist yet when the package was configured).
+# page change the box's Wi-Fi through another, /usr/lib/teaport/wifi_apply.py. The setup
+# page and Settings create the owner's login through a third, /usr/lib/teaport/
+# login_apply.py, which does that once and only on a box provisioning marked for it
+# (#421). All are root-owned and run by the SYSTEM python, never the venv's interpreter.
+# The lines name the run user, who the package does not know: it is the User= of the
+# rendered teaport-brain unit, or the argument (install.sh passes it right after it renders
+# the unit, on a first install where the unit did not exist yet when the package was
+# configured).
 #
 # The polkit rule (/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules, rendered by install.sh
 # where the box has Wi-Fi setup) once gave that user NetworkManager's network-control and
@@ -17,13 +20,14 @@
 # before: without them the Wi-Fi could not be changed at all.
 #
 # Run by postinst and by install.sh; one writer, so the helper paths in the lines, in
-# config_ui.APPLY_HELPER and in wifi.HELPER change together with the package. Lines that
-# do not pass visudo are not installed: a malformed sudoers.d entry locks sudo for
-# everyone, which on a headless box is a reinstall.
+# config_ui.APPLY_HELPER, wifi.HELPER and owner_login.HELPER change together with the
+# package. Lines that do not pass visudo are not installed: a malformed sudoers.d entry
+# locks sudo for everyone, which on a headless box is a reinstall.
 set -eu
 f=/etc/sudoers.d/teaport-config
 helper=/usr/lib/teaport/config_apply.py
 wifi=/usr/lib/teaport/wifi_apply.py
+login=/usr/lib/teaport/login_apply.py
 rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules
 rules_tpl=/usr/lib/teaport/50-teaport-wifi-setup.rules.in
 user="${1:-}"
@@ -35,7 +39,7 @@ if [ -z "$user" ] || [ "$user" = root ]; then exit 0; fi
 case "$user" in
   *[!A-Za-z0-9._-]*|-*) echo "sudoers-sync: refusing the user name '$user'" >&2; exit 1 ;;
 esac
-for h in "$helper" "$wifi"; do
+for h in "$helper" "$wifi" "$login"; do
   [ -f "$h" ] || { echo "sudoers-sync: $h is missing" >&2; exit 1; }
 done
 tmp="$(mktemp)"
@@ -46,7 +50,10 @@ printf '%s\n' \
   "$user ALL=(root) NOPASSWD: /usr/bin/python3 $helper *" \
   "# teaport: Wi-Fi setup and the config page change the Wi-Fi through this one, which" \
   "# takes Wi-Fi requests only. See wifi_apply.py." \
-  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $wifi *" > "$tmp"
+  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $wifi *" \
+  "# teaport: the setup page and Settings create the owner's login through this one, once," \
+  "# on a box provisioning marked for it. See login_apply.py." \
+  "$user ALL=(root) NOPASSWD: /usr/bin/python3 $login *" > "$tmp"
 if ! { [ -f "$f" ] && cmp -s "$tmp" "$f"; }; then
   visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated lines do not pass visudo; $f left as it was" >&2; exit 1; }
   install -m 0440 -o root -g root "$tmp" "$f"

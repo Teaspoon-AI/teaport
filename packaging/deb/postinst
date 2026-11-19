@@ -2,8 +2,8 @@
 # postinst for teaport-brain (#60). `configure` runs after every install and upgrade,
 # and on a downgrade (a rollback is `apt install` of the kept .deb).
 #
-#  1. The sudoers lines the config page and Wi-Fi changes need, and the Wi-Fi setup polkit
-#     rule narrowed to a scan (sudoers-sync).
+#  1. The sudoers lines the config page, Wi-Fi changes and the owner's login need, and the
+#     Wi-Fi setup polkit rule narrowed to a scan (sudoers-sync).
 #  2. /opt/teaport/venv, the path units rendered before this package name, becomes a link
 #     to /opt/teaport/brain, so such a unit keeps working until install.sh re-renders it.
 #     A real directory there (the pre-uv venv) is left alone.
@@ -21,7 +21,7 @@ set -e
 # A line that cannot be written (no visudo, a user name sudoers would reject) is the config
 # page's problem, not the brain's: it must not leave new files unpacked under a brain that
 # was never restarted, so it is said and the script goes on. install.sh says it again.
-/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the sudoers lines for the config page and Wi-Fi were not written (/usr/lib/teaport/sudoers-sync)" >&2
+/usr/lib/teaport/sudoers-sync || echo "teaport-brain: the sudoers lines for the config page, Wi-Fi and the owner's login were not written (/usr/lib/teaport/sudoers-sync)" >&2
 
 if [ ! -e /opt/teaport/venv ] || [ -L /opt/teaport/venv ]; then
   if [ -d /opt/teaport ]; then ln -sfn /opt/teaport/brain /opt/teaport/venv; fi

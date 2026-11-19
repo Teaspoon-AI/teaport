@@ -11,6 +11,8 @@ runs, this is a static file and a few file reads.
                              written through config_apply under sudo (env files) or
                              directly (secret files, which the run user owns)
     POST /api/restart        {unit} — deferred restart through config_apply
+    GET  /api/login          whether the owner's login is pending (#421), and its words
+    POST /api/login          {password, again} — creates it, through owner_login
     GET  /licenses           the open-source licenses page (static/licenses.html); its data is
                              GET /api/licenses and GET /api/licenses/{package} (licenses.py)
 
@@ -836,6 +838,53 @@ async def account(request: Request):
             "trusted_cert": settings_access.pairing.TRUSTED_CERT,
             "lang": t.lang.replace("_", "-"), "dir": t.dir,
             "text": {k: t._(v) for k, v in ACCOUNT_TEXT.items()}}
+
+
+# ------------------------------------------------------------------ the owner's login
+# The "Create your login" card (#421): offered while a login is pending on this box, for
+# an owner whose box got online without the setup page (Ethernet, voice-only Wi-Fi setup).
+# The creating is owner_login's, through login_apply as root; the password goes there and
+# nowhere else (no log line, no answer).
+
+
+def _owner_login():
+    """Replaced in tests."""
+    from teaport_brain import owner_login
+    return owner_login.Login()
+
+
+@router.get("/api/login")
+async def login_state(request: Request):
+    """Whether the card is offered, and its words in the reader's language."""
+    from teaport_brain import owner_login
+    _authorize(request)
+    t = _reader(request)
+    pending = await asyncio.to_thread(_owner_login().pending)
+    return {"offered": pending, "username": owner_login.USERNAME,
+            "lang": t.lang.replace("_", "-"), "dir": t.dir,
+            "text": {k: owner_login.say(t, v) for k, v in owner_login.TEXT.items()}}
+
+
+@router.post("/api/login")
+async def login_create(request: Request):
+    """{password, again}: the login, made once. {ok, message}: the message in the reader's
+    language; a refusal is a 200 with ok false, as the card shows it in place."""
+    from teaport_brain import owner_login
+    _authorize(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="the request is not JSON") from None
+    password = body.get("password") if isinstance(body, dict) else None
+    again = body.get("again") if isinstance(body, dict) else None
+    if not isinstance(password, str) or not isinstance(again, str):
+        raise HTTPException(status_code=400, detail="password and again must be text")
+    ok, why = await asyncio.to_thread(_owner_login().create, password, again)
+    logger.info("config: the owner's login " + ("created" if ok else f"not created ({why})")
+                + " from Settings")
+    t = _reader(request)
+    msgid = owner_login.TEXT["created"] if ok else owner_login.WHY[why]
+    return {"ok": ok, "why": why or None, "message": owner_login.say(t, msgid)}
 
 
 @router.post("/api/restart")

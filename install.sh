@@ -1160,12 +1160,13 @@ brain_restart() {
 # --- the brain: the teaport-brain .deb (#60) -----------------------------------------
 # The brain is a package, built in CI from brain/uv.lock against the system python3.12
 # (packaging/build-deb.sh) and installed here with apt: /opt/teaport/brain (the venv),
-# /usr/bin/teaport, /usr/lib/teaport/{config_apply.py,sudoers-sync}. Nothing is built on
+# /usr/bin/teaport, /usr/lib/teaport/{config_apply.py,wifi_apply.py,login_apply.py,sudoers-sync}
+# (the root helpers and the one writer of their sudoers lines). Nothing is built on
 # the box. Where the .deb comes from:
 #   TEAPORT_BRAIN_DEB=<file>   a package you have (CI's brain-deb artifact, or one built
 #                              with packaging/build-deb.sh on a build host)
 #   the manifest's brain.deb   {url, sha256}: downloaded and verified
-# Installing it is the whole update: its postinst writes the config page's sudoers line,
+# Installing it is the whole update: its postinst writes the root helpers' sudoers lines,
 # links the old /opt/teaport/venv path, and restarts the brain's units; teaport-brain is
 # Type=notify, so a brain that never becomes ready fails the install.
 #
@@ -1183,7 +1184,7 @@ BRAIN_DEB_CACHED=""   # its copy in $BRAIN_DEBS (brain_deb_keep)
 BRAIN_DEB_SHA=""      # its sha256 when the manifest names it (the root copy is checked against it)
 BRAIN_DEB_DOWNLOADED=0  # 1 when BRAIN_DEB is a download of ours: removed once kept
 BRAIN_DEB_ADDED=0     # 1 when this run put BRAIN_DEB_CACHED in the cache (it was not there before)
-SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the config page's line (packaging/deb/sudoers-sync)
+SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the root helpers' lines (packaging/deb/sudoers-sync)
 # Where the pre-package installer put the CLI and the config helper (retired once the
 # package's are in place: /usr/local/bin precedes /usr/bin on PATH).
 OLD_TOOLS_DIR=/usr/local/lib/teaport
@@ -1285,12 +1286,12 @@ brain_deb_prune() {
   done < <(ls -1t "$BRAIN_DEBS/${BRAIN_PKG}"_*.deb 2>/dev/null || true)
 }
 
-# brain_sudoers -- the config page's sudoers line, for $RUN_USER. The package's postinst
+# brain_sudoers -- the root helpers' sudoers lines, for $RUN_USER. The package's postinst
 # writes it too, from the brain unit's User=; this is for a first install, where the unit
 # did not exist yet when the package was configured. One writer: the package's own script.
 brain_sudoers() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] /usr/lib/teaport/sudoers-sync %s\n' "$RUN_USER"; return 0; fi
-  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page and Wi-Fi were not written (/usr/lib/teaport/sudoers-sync failed)"
+  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page, Wi-Fi and the owner's login were not written (/usr/lib/teaport/sudoers-sync failed)"
 }
 
 # brain_retire_old_tools -- the pre-package installer's CLI and config helper, once the

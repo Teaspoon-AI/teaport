@@ -287,7 +287,7 @@ def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True):
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     lib = tmp_path / "lib"
     lib.mkdir(exist_ok=True)
-    for name in ("config_apply.py", "wifi_apply.py"):
+    for name in ("config_apply.py", "wifi_apply.py", "login_apply.py"):
         (lib / name).write_text("#\n")
     (lib / "50-teaport-wifi-setup.rules.in").write_text(
         (ROOT / "packaging/wifi-setup/50-teaport-wifi-setup.rules.in").read_text())
@@ -321,7 +321,8 @@ def test_sudoers_sync_writes_the_helpers_lines_and_narrows_a_wider_rule(tmp_path
     assert p.returncode == 0, p.stderr
     lines = [ln for ln in sudoers.read_text().splitlines() if not ln.startswith("#")]
     assert lines == [f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/config_apply.py *",
-                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/wifi_apply.py *"], lines
+                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/wifi_apply.py *",
+                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/login_apply.py *"], lines
     narrowed = rules.read_text()
     assert "settings.modify.system" not in narrowed.split("polkit.addRule")[1]
     assert 'subject.user == "alice"' in narrowed and "wifi.scan" in narrowed

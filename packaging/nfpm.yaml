@@ -90,6 +90,15 @@ contents:
       owner: root
       group: root
 
+  # The owner's login helper, the same way (see login_apply.py, #421): makes the box's
+  # admin account once, on a box provisioning marked for it, and nothing else.
+  - src: brain/teaport_brain/login_apply.py
+    dst: /usr/lib/teaport/login_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
   # The Wi-Fi setup polkit rule's template: sudoers-sync rewrites a rule an earlier
   # install rendered (which granted more) from it, with no install.sh run needed.
   - src: packaging/wifi-setup/50-teaport-wifi-setup.rules.in

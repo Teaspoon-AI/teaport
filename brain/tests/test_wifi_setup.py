@@ -451,14 +451,16 @@ class FakeAvahi:
 
 
 def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None,
-               lang=None, page_lang=None):
+               lang=None, page_lang=None, login=None, pages=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one. `lang`: the language the brain handed
-    over (an i18n.T); `page_lang`: the page's, posted as its form does (?lang=)."""
+    over (an i18n.T); `page_lang`: the page's, posted as its form does (?lang=). `login`:
+    the owner's login (an owner_login.Login); `pages`: a list the pages served (the setup
+    page before each post, then its answer) are appended to."""
     status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1",
-                     lang=lang)
+                     lang=lang, login=login)
     _no_avahi(setup, avahi)
     result = {}
 
@@ -481,6 +483,8 @@ def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", ava
             query = f"?lang={page_lang}" if page_lang else ""
             reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect{query}",
                                            body).read().decode()
+            if pages is not None:
+                pages += [page, reply]
             assert i18n.get(page_lang or "en")._("Teaport is joining") in reply
             posted += 1
     t.join(5)
