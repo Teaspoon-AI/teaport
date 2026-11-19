@@ -24,7 +24,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:61-66,102-118#85615cdf; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:82,521,844#228177a9 -->
+<!-- source: packaging/nfpm.yaml:65-70,106-120#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:94,602,947#228177a9; packaging/nfpm.yaml:65-70,106-121#873f7aec -->
 
 ## See the licenses on the device
 
@@ -38,7 +38,7 @@ The configuration page has an Open-source licenses link at the bottom. It opens 
 
 The engine is a separate component with its own license terms. The installer shows the engine license and asks you to accept it. `--accept-eula`, or `TEAPORT_ACCEPT_EULA=1`, accepts it without the prompt. The installer records the accepted version in `eula-accepted.json` in the state directory, `/var/lib/teaport` by default, and asks again only when the version changes.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:84,104,217-219,225#1d85658a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:96,121,298-300,306#1d85658a -->
 
 ## The LGPL libraries
 

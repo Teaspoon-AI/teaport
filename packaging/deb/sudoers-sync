@@ -1,20 +1,28 @@
 #!/bin/sh
-# sudoers-sync [RUN_USER] -- the run user's root helpers: the sudoers lines that name them,
-# and the Wi-Fi setup polkit rule narrowed to what is left to it (#60).
+# sudoers-sync [RUN_USER] -- the run user's grants (#60), each for one root-owned thing the
+# package ships and nothing else:
 #
-# The config page writes /etc/teaport/*.env and restarts teaport-* units, as root, through
-# one script and nothing else: /usr/lib/teaport/config_apply.py. Wi-Fi setup and the config
-# page change the box's Wi-Fi through another, /usr/lib/teaport/wifi_apply.py. Both are
-# root-owned and run by the SYSTEM python, never the venv's interpreter. The lines name the
-# run user, who the package does not know: it is the User= of the rendered teaport-brain
-# unit, or the argument (install.sh passes it right after it renders the unit, on a first
-# install where the unit did not exist yet when the package was configured).
+#  - Sudoers lines: the config page writes /etc/teaport/*.env and restarts teaport-* units,
+#    as root, through one script, /usr/lib/teaport/config_apply.py; Wi-Fi setup and the
+#    config page change the box's Wi-Fi through another, /usr/lib/teaport/wifi_apply.py.
+#    Both are root-owned and run by the SYSTEM python, never the venv's interpreter.
+#  - A polkit rule: `teaport update` (and the brain, when the owner says yes) may start
+#    teaport-update.service, and do nothing else with systemd. systemd asks polkit with the
+#    unit and the verb, so the rule names both. The unit takes no arguments and decides what
+#    it installs (update_apply.py): this grants when, never what. polkit, not sudo: the
+#    standard way a system service is started on an unprivileged client's request
+#    (PackageKit, fwupd), and the brain needs no sudo for it.
+#  - The Wi-Fi setup polkit rule (/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules,
+#    rendered by install.sh where the box has Wi-Fi setup) once gave that user
+#    NetworkManager's network-control and settings.modify.system; wifi_apply.py does that
+#    work now. A rule that is there is rewritten from the package's template (wifi.scan
+#    only) once the sudoers lines are in, never before: without them the Wi-Fi could not be
+#    changed at all.
 #
-# The polkit rule (/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules, rendered by install.sh
-# where the box has Wi-Fi setup) once gave that user NetworkManager's network-control and
-# settings.modify.system; wifi_apply.py does that work now. A rule that is there is
-# rewritten from the package's template (wifi.scan only) once the lines are in, never
-# before: without them the Wi-Fi could not be changed at all.
+# All name the run user, who the package does not know: it is the User= of the rendered
+# teaport-brain unit, or the argument (install.sh passes it right after it renders the
+# unit, on a first install where the unit did not exist yet when the package was
+# configured).
 #
 # Run by postinst and by install.sh; one writer, so the helper paths in the lines, in
 # config_ui.APPLY_HELPER and in wifi.HELPER change together with the package. Lines that
@@ -24,13 +32,14 @@ set -eu
 f=/etc/sudoers.d/teaport-config
 helper=/usr/lib/teaport/config_apply.py
 wifi=/usr/lib/teaport/wifi_apply.py
-rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules
-rules_tpl=/usr/lib/teaport/50-teaport-wifi-setup.rules.in
+update_rules=/etc/polkit-1/rules.d/50-teaport-update.rules
+wifi_rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules
+wifi_rules_tpl=/usr/lib/teaport/50-teaport-wifi-setup.rules.in
 user="${1:-}"
 if [ -z "$user" ]; then
   user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
 fi
-# No unit yet, or a root brain: nothing to grant (root needs no line).
+# No unit yet, or a root brain: nothing to grant (root needs none of it).
 if [ -z "$user" ] || [ "$user" = root ]; then exit 0; fi
 case "$user" in
   *[!A-Za-z0-9._-]*|-*) echo "sudoers-sync: refusing the user name '$user'" >&2; exit 1 ;;
@@ -40,6 +49,32 @@ for h in "$helper" "$wifi"; do
 done
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
+
+# The update's polkit rule. polkitd reads rules.d as it changes; a box without polkit gets
+# none, and `teaport update` then asks for an administrator's password instead.
+if [ -d "$(dirname "$update_rules")" ]; then
+  cat > "$tmp" <<EOF
+// teaport update (written by the teaport-brain package: /usr/lib/teaport/sudoers-sync).
+// Lets the brain's user start teaport-update.service, and nothing else of systemd's.
+// The unit takes no arguments and reads what to install itself (update_apply.py).
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "teaport-update.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "$user") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+  # Not fatal: the sudoers lines and the Wi-Fi rule's narrowing below must not hang on it.
+  if ! { [ -f "$update_rules" ] && cmp -s "$tmp" "$update_rules"; }; then
+    install -m 0644 -o root -g root "$tmp" "$update_rules" \
+      || echo "sudoers-sync: the update's polkit rule was not written ($update_rules): teaport update will ask for an administrator's password" >&2
+  fi
+else
+  echo "sudoers-sync: no polkit here ($(dirname "$update_rules")): teaport update will ask for an administrator's password" >&2
+fi
+
 printf '%s\n' \
   "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
   "# through this one root-owned script and nothing else. See config_apply.py." \
@@ -51,7 +86,8 @@ if ! { [ -f "$f" ] && cmp -s "$tmp" "$f"; }; then
   visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated lines do not pass visudo; $f left as it was" >&2; exit 1; }
   install -m 0440 -o root -g root "$tmp" "$f"
 fi
-if [ -f "$rules" ] && [ -f "$rules_tpl" ]; then
-  sed -e "s#@USER@#$user#g" "$rules_tpl" > "$tmp"
-  cmp -s "$tmp" "$rules" || install -m 0644 -o root -g root "$tmp" "$rules"
+
+if [ -f "$wifi_rules" ] && [ -f "$wifi_rules_tpl" ]; then
+  sed -e "s#@USER@#$user#g" "$wifi_rules_tpl" > "$tmp"
+  cmp -s "$tmp" "$wifi_rules" || install -m 0644 -o root -g root "$tmp" "$wifi_rules"
 fi
