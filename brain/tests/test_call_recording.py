@@ -411,13 +411,17 @@ async def test_the_notice_plays_whole_before_the_greeting_outside_the_context():
         for f in s.task.queued), "a call that cannot be heard is neither told nor recorded"
 
 
-async def test_with_the_notice_off_the_greeting_starts_the_recording():
+async def test_with_the_notice_off_the_ai_disclosure_starts_the_recording():
+    # sip_server passes the AI disclosure alone as the call's notice when the recording
+    # notice is off (ai_disclosure.call_notice): the caller has been told it is an AI,
+    # and the recording starts with that line, not the greeting.
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("c5", mode="audio", directory=d)
         s = _session(recording=rec)
-        await s.greet(prepared="Hello.")
-        assert rec.armed == "any"
-        assert [type(f).__name__ for f in _spoken(s)] == ["TTSSpeakFrame"], _spoken(s)
+        await s.greet(prepared="Hello.", notice=DISCLOSURE)
+        assert rec.armed == "notice"
+        assert [getattr(f, "text", type(f).__name__) for f in _spoken(s)] == [
+            DISCLOSURE, "AudioBufferStartRecordingFrame", "Hello."], _spoken(s)
 
 
 async def test_a_notice_that_never_plays_out_ends_the_call_unrecorded():
@@ -432,6 +436,26 @@ async def test_a_notice_that_never_plays_out_ends_the_call_unrecorded():
         assert s.should_end and s.end_reason == "disclosure"
         assert not s.context.messages, "no greeting cue"
         assert rec.armed is None and not rec.started, "not told, so not recorded"
+        assert s.input_mute.muted, "unheard until the hangup: no turn can start"
+
+
+async def test_a_notice_cut_part_way_deletes_what_it_recorded():
+    # A stalled voice: the notice's first words played (the recording started), the
+    # rest never did. The caller was not told it is an AI: nothing of the call is kept.
+    with tempfile.TemporaryDirectory() as d:
+        rec = call_recording.CallRecording("c8", mode="both", directory=d)
+        rec.begin()                                   # its first word reached the recorder
+        rec._on_audio(None, b"\0\0" * 160, 16000, 2)
+        assert sorted(os.listdir(d)) == sorted(os.path.basename(p)
+                                               for p in (rec.wav_path, rec.txt_path))
+        s = _session(plays=False, recording=rec)
+        s.NOTICE_MAX_SECS = 0.05
+        await s.greet(prepared="Hello.", notice=NOTICE)
+        assert s.should_end and s.end_reason == "disclosure"
+        assert os.listdir(d) == [], os.listdir(d)
+        rec._on_audio(None, b"\0\0" * 160, 16000, 2)  # audio still in flight: not reopened
+        rec.line(1.0, "Caller", "hello?")
+        assert os.listdir(d) == [], os.listdir(d)
 
 
 def test_the_notice_is_in_the_calls_language():

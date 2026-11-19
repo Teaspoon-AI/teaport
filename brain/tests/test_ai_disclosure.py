@@ -9,6 +9,7 @@
 #   - a call whose disclosure does not play out is hung up, not greeted
 #   - no setting in the schema reads like a disclosure switch except the room greeting,
 #     which can only turn one ON, and ai_disclosure reads no other setting
+#   - a call turned away (it cannot be heard) is told first; the room and Talk are not
 #   - the room greeting: off by default, on only for the room, joined with the trial
 #     credit's line when both are due
 #   - every session's starting context carries the "you are an AI" line, right after the
@@ -28,6 +29,7 @@ import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong p
 from teaport_brain import ai_disclosure, call_recording, credit  # noqa: E402
 from teaport_brain.agent_session import StartNotice, _build_initial_messages  # noqa: E402
 
+import test_call_recording as rec_tests  # noqa: E402
 import test_sip_call_lifecycle as lifecycle  # noqa: E402
 
 LINE = "You're speaking with an AI assistant."
@@ -107,8 +109,22 @@ async def test_a_call_not_told_is_hung_up():
             "the caller was not told they are talking to an AI, and the call went on")
         assert await lifecycle.wait_until(lambda: len(h.reclaims) == 1), (
             "the untold call was never torn down")
+        assert lifecycle._FakeGate.waits == [], (
+            "hung up through the can't-hear branch, not the disclosure's")
     finally:
         await h.stop()
+
+
+async def test_a_call_that_cannot_be_heard_is_told_before_it_is_turned_away():
+    # The "I can't hear you" line ends the call without a greeting: the AI disclosure
+    # goes ahead of it on a call (a greet() with a notice), never on the room or Talk.
+    for notice, first in ((ai_disclosure.call_notice("en-us"), LINE), (None, "Sorry")):
+        s = rec_tests._session()
+        s.stt = type("S", (), {"stt_available": False, "slot_busy": False})()
+        await s.greet(notice=notice)
+        said = [f.text for f in rec_tests._spoken(s) if hasattr(f, "text")]
+        assert len(said) == 1 and said[0].startswith(first), said
+        assert s.should_end and s.end_reason == "unavailable"
 
 
 # ---------------------------------------------------------------- the room greeting
@@ -139,7 +155,9 @@ def _start_notice(ai_greeting, msgid=None):
 
 
 def test_the_room_greeting_is_off_by_default():
-    assert ai_disclosure.ROOM_GREETING is False
+    schema = tomllib.loads(SCHEMA.read_text(encoding="utf-8"))
+    row, = (r for r in schema["settings"] if r["name"] == "TEAPORT_ROOM_AI_GREETING")
+    assert row["default"] is False
 
 
 def test_the_room_greeting_and_the_credit_line():
@@ -153,8 +171,9 @@ def test_the_room_greeting_and_the_credit_line():
 
 
 def test_the_room_greeting_is_the_rooms_only():
-    src = pathlib.Path(sys.modules[StartNotice.__module__].__file__).read_text(encoding="utf-8")
-    assert 'ai_greeting=ai_disclosure.ROOM_GREETING and front_end == "room"' in src
+    for front_end in ("room", "talk", "sip", "bridge"):
+        assert ai_disclosure.room_greeting(front_end, enabled=True) == (front_end == "room")
+        assert ai_disclosure.room_greeting(front_end, enabled=False) is False
 
 
 # ---------------------------------------------------------------- truthful answers

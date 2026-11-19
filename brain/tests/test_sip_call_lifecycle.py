@@ -153,7 +153,10 @@ class _FakeTask:
 
 
 class _FakeGate:
+    waits = []           # call ids whose last line sip_server waited out (the can't-hear branch)
+
     async def wait_until_delivered(self, start_timeout: float = 10.0):
+        _FakeGate.waits.append(getattr(self, "call_id", None))
         return
 
 
@@ -180,6 +183,7 @@ class _FakeSession:
         _FakeSession.by_id[call_id] = self
         self.task = _FakeTask()
         self.followup_gate = _FakeGate()
+        self.followup_gate.call_id = call_id
         self.should_end = False
         self.end_reason = None
 
@@ -225,6 +229,7 @@ class _Harness:
         _FakeSession.prepared = {}
         _FakeSession.cannot_hear = set()
         _FakeSession.untold = set()
+        _FakeGate.waits = []
         _FakeSession.notices = {}
         _FakeSession.build_kw = {}
         self.reclaims = []

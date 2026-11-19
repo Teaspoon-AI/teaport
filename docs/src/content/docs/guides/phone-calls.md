@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:17,593-597#0ac45871; brain/teaport_brain/sip_server.py:495#f51c16f8 -->
+<!-- source: cli/teaport:17,593-597#0ac45871; brain/teaport_brain/sip_server.py:496#f51c16f8 -->
 
 ## Keep the line running
 
@@ -241,13 +241,13 @@ applies. The waiting time still counts from the ring, so with the question
 asked twice and nobody answering, the call is picked up about 16 to 18 seconds
 after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1974-1996#1d703178 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,601-675#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1974-1996#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1766-1773#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,554-557#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1766-1773#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,560-563#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
@@ -287,7 +287,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1482-1484#d7433986; brain/teaport_brain/sip_server.py:876,896#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1495-1497#d7433986; brain/teaport_brain/sip_server.py:877,897#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the
@@ -307,20 +307,21 @@ typing's click.
 ## Callers are told they're talking to an AI
 
 Every call starts with *"You're speaking with an AI assistant."* in the call's
-language, before the greeting. The agent doesn't listen while the line plays, so
-the caller can't talk over it. If the brain restarts during a call, the caller
-hears the line again.
+language, before the greeting. The agent doesn't listen until the line has
+played, so the caller can't talk over it. If the brain restarts during a call,
+the caller hears the line again. A call the device answers only to turn away,
+because it's busy or can't answer, hears the line before the reason.
 
 No setting turns this line off. A caller can't see what they're talking to, and
 the EU AI Act (Article 50) requires that they be told. Teaspoon AI ships the line
 built in. If you change the code to remove it, you are responsible for your
 modified version. If the line can't be played to the end, the call is hung up
-instead of greeted.
+instead of greeted, and nothing of it is recorded.
 
 If a caller asks whether they're talking to a person, the agent says it's an AI.
 This holds in Talk and in the room too, whatever persona you give the agent.
 
-<!-- source: brain/teaport_brain/ai_disclosure.py:9-21#70621e63; brain/teaport_brain/ai_disclosure.py:22-30#94f0ce3b; brain/teaport_brain/config_schema.toml:186#ad48651e -->
+<!-- source: brain/teaport_brain/ai_disclosure.py:9-26#1e6f88ac; brain/teaport_brain/ai_disclosure.py:27-35#94f0ce3b; brain/teaport_brain/config_schema.toml:186#ad48651e -->
 
 ## Record calls
 
@@ -351,7 +352,7 @@ before the greeting; a call the brain can't hear isn't recorded. If the brain
 restarts during a call, the rest of the call goes to files beside the first ones
 (`.r1.wav`, `.r1.txt`), and the caller hears the notice again.
 
-<!-- source: brain/teaport_brain/call_recording.py:11-32,34-50#c8659672 -->
+<!-- source: brain/teaport_brain/call_recording.py:11-34,36-52#3d63b1ae -->
 
 With recording on, the AI disclosure is followed by *"This call is being
 recorded."* in the call's language, before the greeting. The agent doesn't listen while the notice
@@ -364,7 +365,7 @@ deleted, and then the oldest until the directory fits in
 `TEAPORT_CALL_RECORDING_MAX_MB` (2048 by default). The check runs as each call
 starts. See [the settings reference](/reference/settings/#call-recording).
 
-<!-- source: brain/teaport_brain/call_recording.py:52-62#2a0f95c0 -->
+<!-- source: brain/teaport_brain/call_recording.py:54-64#2a0f95c0 -->
 
 ## Test the phone path without a line
 
@@ -447,7 +448,7 @@ To test the phone path, follow these steps:
    The front-end logs `SIP front-end: connected to the gateway at ...` when it
    connects.
 
-   <!-- source: brain/teaport_brain/sip_server.py:495#f51c16f8 -->
+   <!-- source: brain/teaport_brain/sip_server.py:496#f51c16f8 -->
 
 6. End the fake; it removes the socket when it exits. Then clean up:
 

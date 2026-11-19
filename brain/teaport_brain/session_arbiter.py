@@ -530,13 +530,19 @@ BUSY_SYNTH_SECS = 6.0
 
 
 async def busy_line_audio(holder_kind: str, voice: str | None = None,
-                          language: str | None = None) -> tuple[str, bytes]:
+                          language: str | None = None, *,
+                          disclose: bool = False) -> tuple[str, bytes]:
     """The busy line for a newcomer refused because `holder_kind` has the box, in its
     voice's language, and its audio: PCM16 mono at 24 kHz (b"" when the engine cannot say
     it). Cached in-process; a failed synth is not cached. For any front-end that refuses
-    without building a session (a /talk client, a phone call)."""
+    without building a session (a /talk client, a phone call). `disclose`: the AI
+    disclosure ahead of it (ai_disclosure.before) -- a phone call's."""
     tts = tts_for(voice, language)
-    line = busy_line(holder_kind, getattr(tts, "espeak_language", None))
+    lang = getattr(tts, "espeak_language", None)
+    line = busy_line(holder_kind, lang)
+    if disclose:
+        from teaport_brain import ai_disclosure  # here, not at the top: this module stays cheap
+        line = ai_disclosure.before(lang, line)
     key = (getattr(tts, "_voice", voice), getattr(tts, "espeak_language", None), line)
     pcm = _BUSY_PCM.get(key)
     if pcm is None:

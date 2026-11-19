@@ -330,7 +330,8 @@ async def answer_busy(connection, holder_kind: str, call_id) -> None:
     import numpy as np
     import soxr
 
-    line, pcm = await arb.busy_line_audio(holder_kind)
+    # Answered, so told it is an AI first (ai_disclosure.py), as every call is.
+    line, pcm = await arb.busy_line_audio(holder_kind, disclose=True)
     logger.info(f"call {call_id} refused ({holder_kind} conversation has the box) — "
                 "saying it is busy, then hanging up")
     if pcm:
@@ -956,17 +957,20 @@ async def run_connection(sock, on_ready=None):
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
         if session.llm is None:
-            # No model to answer with (#277): the caller hears the short line, heard in
-            # full -- their own "hello?" at pickup does not cut it (say_last_line, the
-            # same heard-in-full path as the recording notice: _say_whole) -- and the
-            # call ends. Before the notice: there is no conversation to record (the
-            # recording is armed only by greet(), so this call records nothing). A key
+            # No model to answer with (#277): the caller hears the short line, the AI
+            # disclosure ahead of it, heard in full -- their own "hello?" at pickup does
+            # not cut it (say_last_line, the same heard-in-full path as the call's notice:
+            # _say_whole) -- and the call ends. Not through greet(): there is no
+            # conversation to record (the recording is armed only by greet(), so this
+            # call records nothing). A key
             # written while it rang counts from the next call: this one was built
             # without it.
             logger.warning(f"call {call_id}: no model to answer with — saying so, then "
                            "hanging up")
             t = i18n.for_espeak(getattr(session.tts, "espeak_language", None))
-            await session.say_last_line(t._(NO_MODEL_CALL_TEXT), NO_MODEL_LINE_MAX_SECS)
+            lang = getattr(session.tts, "espeak_language", None)
+            await session.say_last_line(ai_disclosure.before(lang, t._(NO_MODEL_CALL_TEXT)),
+                                        NO_MODEL_LINE_MAX_SECS)
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
             await asyncio.shield(end_call_from_inside("no model to answer", call_id))
             return
@@ -985,7 +989,13 @@ async def run_connection(sock, on_ready=None):
         if session.should_end:
             if session.end_reason == "disclosure":
                 # The AI disclosure did not play to its end: no conversation without it.
-                # greet() queued nothing after it; hang up and tear down.
+                # greet() queued nothing after it; hang up and tear down -- unless the
+                # call is already going (its pipeline ended under it, or a newer call
+                # has the slot): that teardown has hung up already.
+                call = active["call"]
+                if (call is None or call[0] != call_id
+                        or getattr(session.followup_gate, "ended", False)):
+                    return
                 logger.warning(f"call {call_id}: the AI disclosure was not heard in full "
                                "— hanging up")
                 await transport.send_control({"type": "call.hangup", "call_id": call_id})

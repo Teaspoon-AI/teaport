@@ -11,7 +11,12 @@
 #                cannot talk over it), outside the model's context, before the greeting
 #                -- a resumed call too (the brain that was cut off may not have finished
 #                saying it). A call where it cannot be played to its end is hung up
-#                (AgentSession.greet: should_end, end_reason "disclosure").
+#                (AgentSession.greet: should_end, end_reason "disclosure") and what it
+#                recorded deleted. A call answered only to be turned away hears it too,
+#                ahead of its line (before(): the busy line, the no-model line, the
+#                "I can't hear you" line). The caller is unheard from the moment the
+#                call's pipeline is built until the disclosure has played (InputMute,
+#                muted at build for SIP), so no reply can start ahead of it.
 #                There is deliberately NO setting that turns this off: a setting would
 #                mean the shipped product does not ensure people are told. Removing it
 #                takes a code change, and whoever ships that modified brain is the
@@ -35,6 +40,12 @@ from teaport_brain.settings import setting
 # The optional room greeting's switch (ROOM above). There is no phone switch, by design.
 ROOM_GREETING = setting("TEAPORT_ROOM_AI_GREETING")
 
+
+def room_greeting(front_end: str, enabled: bool | None = None) -> bool:
+    """Whether a session on `front_end` starts its conversations with ROOM_LINE: the room
+    only (the box's own mic), and only with TEAPORT_ROOM_AI_GREETING on."""
+    return front_end == "room" and (ROOM_GREETING if enabled is None else enabled)
+
 # Spoken on every phone call, before anything else. Translated in locale/*/teaport.po.
 LINE = i18n.N_("You're speaking with an AI assistant.")
 # The optional room greeting (TEAPORT_ROOM_AI_GREETING).
@@ -46,6 +57,18 @@ PROMPT_LINE = (
     "You are an AI assistant, not a person. Never claim or imply that you are human. "
     "If anyone asks whether they are talking to a person, a human or a machine, say "
     "plainly that you are an AI assistant.")
+
+
+def line(espeak_language: str | None) -> str:
+    """The AI disclosure alone, in the language the voice speaks: ahead of any line a
+    phone call hears without a greeting (the busy line, the no-model line, the "I can't
+    hear you" line), so no answered call goes untold."""
+    return i18n.for_espeak(espeak_language)._(LINE)
+
+
+def before(espeak_language: str | None, text: str) -> str:
+    """`text` (already in that language) with the AI disclosure ahead of it."""
+    return line(espeak_language) + " " + text
 
 
 def call_notice(espeak_language: str | None, recorded: bool = False) -> str:

@@ -407,7 +407,7 @@ msgstr "يتم تسجيل هذه المكالمة."
 # The AI disclosure every phone call starts with (ai_disclosure.py); no setting
 # turns it off.
 msgid "You're speaking with an AI assistant."
-msgstr "أنت تتحدث مع مساعد ذكاء اصطناعي."
+msgstr "تتحدث الآن مع مساعد ذكاء اصطناعي."
 
 # The optional room greeting (ai_disclosure.py, TEAPORT_ROOM_AI_GREETING).
 msgid "I'm an AI assistant."
