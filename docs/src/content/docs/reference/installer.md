@@ -233,7 +233,7 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; and `sudoers-sync`, which writes the `sudo` rules for all three, for the user that runs the brain. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:64-134#0650032a -->
+<!-- source: packaging/nfpm.yaml:68-138#0650032a -->
 
 `sudoers-sync` writes one rule per helper into `/etc/sudoers.d/teaport-config`. Each rule lets the user that runs the brain run that one script as root, with the system Python, and nothing else:
 
@@ -309,7 +309,7 @@ The Wi-Fi setup flow: a temporary setup network and a page where a phone enters 
 
 The root side of Wi-Fi setup: the rule that sends port 80 on the setup network to the page, and the captive DNS file. It starts before `teaport-wifi-setup.service` and stops after it, however that ends. It loads no settings file: the settings in `/etc/teaport` are written on the run user's behalf, so no command that runs as root takes its environment from them. The brain package installs it in `/usr/lib/systemd/system`, and the installer also renders it into `/etc/systemd/system`.
 
-<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3243-3244#4a54cd32; packaging/nfpm.yaml:142-143#7b0f03ce -->
+<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3243-3244#4a54cd32; packaging/nfpm.yaml:146-147#7b0f03ce -->
 
 Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 

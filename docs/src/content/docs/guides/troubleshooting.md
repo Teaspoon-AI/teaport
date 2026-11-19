@@ -703,7 +703,7 @@ Teaspoon AI device, the service account, the user the brain runs as, has no pass
 and no SSH key, so nobody can sign in before then. A device that you installed yourself
 has the login of the user you installed it as, and never offers this step.
 
-<!-- source: brain/teaport_brain/login_apply.py:202-206#fe7cef10; brain/teaport_brain/static/config.html:820#106e56e9 -->
+<!-- source: brain/teaport_brain/login_apply.py:251-255#fe7cef10; brain/teaport_brain/static/config.html:820#106e56e9 -->
 
 **Fix**
 
@@ -725,7 +725,7 @@ If neither the settings nor the setup page shows the step, one of these is true:
   rule; see [Update teaport](/guides/updating/). On a Teaspoon AI device without a login,
   ask the seller of the device.
 
-<!-- source: brain/teaport_brain/owner_login.py:84-88#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:56#73f92b02 -->
+<!-- source: brain/teaport_brain/owner_login.py:90-94#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:56#73f92b02 -->
 
 ### The device already has a login
 
@@ -735,7 +735,7 @@ until it is set up, software running on the device, such as a compromised agent,
 create it first. The setup page and the settings run as that same service account, so
 software that was compromised before you typed your password could also have read it.
 
-<!-- source: brain/teaport_brain/login_apply.py:27-34#01fb9b96; brain/teaport_brain/login_apply.py:213-216#9f02f9ef -->
+<!-- source: brain/teaport_brain/login_apply.py:27-34#01fb9b96; brain/teaport_brain/login_apply.py:262-265#9f02f9ef -->
 
 **Fix**
 
@@ -760,7 +760,7 @@ it from a computer.
 3. Run `teaport status` to see what is wrong. Administrator commands, such as
    `sudo systemctl restart teaport-brain`, ask for the same password.
 
-<!-- source: brain/teaport_brain/login_apply.py:68-71#d31172cc; brain/teaport_brain/login_apply.py:152-156#15abae22 -->
+<!-- source: brain/teaport_brain/login_apply.py:68-71#d31172cc; brain/teaport_brain/login_apply.py:201-205#15abae22 -->
 
 ## Where the logs are
 

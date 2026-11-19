@@ -17,7 +17,7 @@ root, in `/usr/lib/teaport/`. It runs on the system Python, never the brain's ow
 environment. The `teaport-brain` package installs the helpers, and
 `/usr/lib/teaport/sudoers-sync` writes their rules into `/etc/sudoers.d/teaport-config`.
 
-<!-- source: packaging/deb/sudoers-sync:5-10#cfea6970; packaging/deb/sudoers-sync:47-56#56986163; packaging/nfpm.yaml:78,87,96#54fe789f -->
+<!-- source: packaging/deb/sudoers-sync:5-10#cfea6970; packaging/deb/sudoers-sync:47-56#56986163; packaging/nfpm.yaml:82,91,100#54fe789f -->
 
 | Helper | What the run user can ask it to do |
 | --- | --- |
@@ -47,7 +47,7 @@ ships ready to set up has no login at all, and the owner creates it during setup
 account named `teaport` with a home folder, a Bash shell, and `sudo` rights. It is
 never the run user's own account.
 
-<!-- source: brain/teaport_brain/login_apply.py:76-77#1c1c90ab; brain/teaport_brain/login_apply.py:211-212#5f08f622; brain/teaport_brain/login_apply.py:152-156#15abae22 -->
+<!-- source: brain/teaport_brain/login_apply.py:76-77#1c1c90ab; brain/teaport_brain/login_apply.py:260-261#5f08f622; brain/teaport_brain/login_apply.py:201-205#15abae22 -->
 
 `login_apply.py` creates it one time only, and only on a device that asked for it:
 
@@ -65,18 +65,18 @@ never the run user's own account.
 - If a step fails, the helper undoes the steps before it. While the marker is there, a
   `teaport` account counts as one that a create started and didn't finish, for example
   after a power cut between its steps: the device still offers the step, and the next
-  create sets the password, gives the account its `sudo` rights, and removes the marker.
+  create makes its home folder if it has none (as a new account gets one, from `/etc/skel`, with the mode that `/etc/login.defs` sets), sets the password, gives the account its `sudo` rights, and removes the marker. A home path that isn't the account's own folder is refused, never taken over.
   The step that prepares a device for shipping refuses a device that already has a
   `teaport` account, so no other account can be taken over this way.
 
-<!-- source: brain/teaport_brain/login_apply.py:6-25#19999030; brain/teaport_brain/login_apply.py:72-74#2cb3dff3; brain/teaport_brain/login_apply.py:178-247#5169fbc0 -->
+<!-- source: brain/teaport_brain/login_apply.py:6-26#6bac39f9; brain/teaport_brain/login_apply.py:72-74#2cb3dff3; brain/teaport_brain/login_apply.py:138-159#84310eeb; brain/teaport_brain/login_apply.py:178-200#fe3c2aed; brain/teaport_brain/login_apply.py:227-292#30e324f4 -->
 
 The helper finishes what it starts. It blocks every signal that the run user could send
 it through `sudo`, so it can't be stopped between its steps, except by `SIGKILL` or a
 power cut, which the next create recovers from. It leaves no core dump that could hold
 the password.
 
-<!-- source: brain/teaport_brain/login_apply.py:41-49#928cedc8; brain/teaport_brain/login_apply.py:269-274#e61abdcf; brain/teaport_brain/login_apply.py:291-294#701bd93e -->
+<!-- source: brain/teaport_brain/login_apply.py:41-49#928cedc8; brain/teaport_brain/login_apply.py:318-323#e61abdcf; brain/teaport_brain/login_apply.py:340-343#701bd93e -->
 
 The password goes from the setup page or the settings to the helper, and from the
 helper to `chpasswd` on standard input. It is never written to a log, the journal,
@@ -89,7 +89,7 @@ The setup page's form can create the administrator account, so the page accepts 
 only from its own pages: it refuses a post that a page from another site sends, for
 example from a tab that the phone loaded over its mobile data.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:641-658#88dc47e7 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:647-664#88dc47e7 -->
 
 On a Teaspoon AI device, the step that prepares it for shipping also writes the marker,
 removes the run user from the `sudo` group and sets aside its other `sudo` rules (only
@@ -108,12 +108,14 @@ as the run user, software that was compromised before the owner typed the passwo
 could also read the password as it is typed.
 
 The setup page makes the step required, so on a device set up through that page the
-window ends at setup. A device that went online another way offers the step in the
+window ends at setup. The exception is a create that fails because of the device, not
+the password: the owner can then connect without a login, and the window stays open
+until they create it in the settings. A device that went online another way offers the step in the
 settings until the owner creates the login. The marker limits the window to a device
 whose owner has no login yet; it doesn't prevent it. See
 [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login).
 
-<!-- source: brain/teaport_brain/login_apply.py:27-34#01fb9b96; brain/teaport_brain/wifi_setup.py:31-41#f51e8da8 -->
+<!-- source: brain/teaport_brain/login_apply.py:27-34#01fb9b96; brain/teaport_brain/wifi_setup.py:31-43#ec1cda1f -->
 
 ## Related
 

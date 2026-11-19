@@ -80,7 +80,7 @@ To create your login in the settings, follow these steps:
 
 The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, try again: a try that stopped partway is finished by the next one. If it says that it is creating your login, another try is already under way; open the settings again in a moment.
 
-<!-- source: brain/teaport_brain/login_apply.py:16-21#bf2c110b; brain/teaport_brain/login_apply.py:202-243#80db7929; brain/teaport_brain/owner_login.py:43-55#6e13b577 -->
+<!-- source: brain/teaport_brain/login_apply.py:16-21#d9769d06; brain/teaport_brain/login_apply.py:251-292#3cd0b3a7; brain/teaport_brain/owner_login.py:49-61#6e13b577 -->
 
 ## Connect your OpenRouter account
 
