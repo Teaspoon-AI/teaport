@@ -282,7 +282,7 @@ def test_the_package_ships_the_helper_and_the_setup_unit_can_reach_it():
     assert imports <= {"fcntl", "json", "os", "re", "signal", "subprocess", "sys", "time"}, imports
 
 
-def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True):
+def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True, update_rules_writable=True):
     """sudoers-sync with its paths under tmp_path; visudo is a stub."""
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     lib = tmp_path / "lib"
@@ -296,9 +296,14 @@ def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True):
         rules.write_text(rules_text)
     for old, new in (("/etc/sudoers.d/teaport-config", str(tmp_path / "sudoers")),
                      ("/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules", str(rules)),
+                     ("/etc/polkit-1/rules.d/50-teaport-update.rules", str(tmp_path / "update-rules.d/50-teaport-update.rules")),
                      ("/usr/lib/teaport/", str(lib) + "/")):
         assert old in text, old
         text = text.replace(old, new)
+    assert "/etc/polkit-1" not in text.split("set -eu", 1)[1], "a path left pointing at the real box"
+    if not update_rules_writable:   # polkit's directory is there, but the rule cannot go in
+        (tmp_path / "update-rules.d").mkdir()
+        (tmp_path / "update-rules.d").chmod(0o500)
     script = tmp_path / "sudoers-sync"
     script.write_text(text)
     bin_ = tmp_path / "bin"
@@ -311,6 +316,14 @@ def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True):
     p = subprocess.run(["sh", str(script), "alice"], capture_output=True, text=True,
                        env={**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"})
     return p, tmp_path / "sudoers", rules
+
+
+def test_an_update_rule_that_cannot_be_written_does_not_stop_the_wifi_narrowing(tmp_path):
+    # The old broad NetworkManager rule must not stay because the update's rule failed.
+    p, sudoers, rules = _sudoers_sync(tmp_path, WIDE_RULE, update_rules_writable=False)
+    (tmp_path / "update-rules.d").chmod(0o700)
+    assert p.returncode == 0 and "the update's polkit rule was not written" in p.stderr, p.stderr
+    assert sudoers.exists() and "settings.modify.system" not in rules.read_text().split("polkit.addRule")[1]
 
 
 WIDE_RULE = 'polkit.addRule(function(action, subject) { if (subject.user == "alice" && (action.id == "org.freedesktop.NetworkManager.settings.modify.system")) return polkit.Result.YES; });\n'

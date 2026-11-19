@@ -15,7 +15,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2612#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2802#31d4462b -->
 
 ## Change a setting in the configuration page
 
@@ -94,7 +94,7 @@ The [Settings reference](/reference/settings/) names the file that holds each se
 
 The env files are root-owned, so edit them with sudo. Keep one `KEY=value` line per setting; comments and blank lines are fine. A boolean reads `0`, `false`, `no`, or `off` as off, and `1`, `true`, `yes`, or `on` as on. An empty value means the setting is unset, and the default applies; space around the value is not part of it. A flag that is off says so in the journal at startup. A few settings treat an empty value as a value in its own right, off for example; the Settings reference marks them.
 
-<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2178#f2ca1efb -->
+<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2368#f2ca1efb -->
 
 To change a setting this way:
 
@@ -122,11 +122,11 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:2649,2806#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:1874-1876,1980-1981,2025-2027#d7455a4b -->
+<!-- source: install.sh:2839,2996#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:2050-2052,2156-2157,2201-2203#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 
-<!-- source: install.sh:2659-2672#7403c329 -->
+<!-- source: install.sh:2849-2862#7403c329 -->
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 
@@ -148,11 +148,11 @@ Restart the service that reads the file you changed. The table lists each config
 | `/etc/teaport/bridge.env` | `sudo systemctl restart teaport-discord-bridge` | Restarts the bridge. |
 | `/etc/teaport/local-audio.env` | `sudo systemctl restart teaport-local-audio` | Ends the local audio session, and the bridge dials the brain again at once. |
 
-<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1149#38ebb95b -->
+<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1300#38ebb95b -->
 
 A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request. To fix a new setup password in it and print it for a card, run `teaport setup-card --new-password`; see [teaport setup-card](/reference/cli/#teaport-setup-card).
 
-<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84; cli/teaport:541-587#ca104852 -->
+<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84; cli/teaport:685-731#8760cc59 -->
 
 On the configuration page, the restart runs the same command two seconds later. The delay gives the brain time to answer the page before it replaces itself, and the timer survives the brain exiting.
 
@@ -198,7 +198,7 @@ teaport key set
 
 In a terminal on the device, the command asks for the key without showing it. It also reads the key from standard input, for example `teaport key set < key.txt`; over SSH, use that form, because without a terminal there is no prompt, and your own terminal shows the key as you type it. The next conversation uses the new key; the brain needs no restart. The [teaport key set](/reference/cli/#teaport-key-set) reference lists its options and exit statuses.
 
-<!-- source: brain/teaport_brain/provision.py:138-142,145-194#4d4c2267; cli/teaport:518-539#7ceed65b -->
+<!-- source: brain/teaport_brain/provision.py:138-142,145-194#4d4c2267; cli/teaport:663-683#591dde97 -->
 
 ### In the configuration files
 
@@ -223,7 +223,7 @@ In a terminal on the device, the command asks for the key without showing it. It
 
    The mode keeps the file readable only by you, as the installer writes it. A key written this way is not checked, and OpenClaw doesn't get it; [teaport key set](/reference/cli/#teaport-key-set) checks it and, where OpenClaw shares the brain's key, gives it to OpenClaw too.
 
-   <!-- source: install.sh:2025-2027#37da8b7d -->
+   <!-- source: install.sh:2201-2203#37da8b7d -->
 
 4. If `brain.env` also sets `LLM_API_KEY`, remove that line or empty its value; the environment wins over the file.
 5. Restart the brain as [Apply the change](/guides/configuration/#apply-the-change) describes.
@@ -264,7 +264,7 @@ Both take the key, or neither does, and one save runs at a time, even when the s
 
 When OpenClaw needs a restart to use a new key, the brain restarts it with `openclaw gateway restart --safe`, but only after no conversation has been live for 30 seconds after the last one ended: not in the room, in Talk, or on a phone call. The gateway then restarts after its own running work finishes. A key that you write to the key file by hand, or that the installer writes, is not copied. If both already have the same key, the brain finds that out one time, while nobody is talking, from what `openclaw models status --json` shows of OpenClaw's saved key; until then, or when that shows nothing it can compare, `teaport status` says `unknown, not yet synced`, and the next key that you save settles it. `teaport status` shows where it stands as `model key (OpenClaw)`. To keep a separate key for OpenClaw, set `TEAPORT_AGENT_SHARES_KEY=false`.
 
-<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:174-204#a609a6f5 -->
+<!-- source: brain/teaport_brain/agent_key.py:55-65#78e2d9ae; brain/teaport_brain/agent_key.py:41-53#3259fff3; cli/teaport:179-209#c1ed6fab -->
 
 ## What's next
 
