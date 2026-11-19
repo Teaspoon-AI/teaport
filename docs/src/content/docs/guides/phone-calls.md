@@ -21,7 +21,7 @@ You need:
   repository, and the service runs `~/teaport-sip/build/teaport-sip`.
 - Access to the device as the user the teaport services run as.
 
-<!-- source: install.sh:3163-3164#439739d4; cli/teaport:35-37#8d57683f -->
+<!-- source: install.sh:3164-3165#439739d4; cli/teaport:35-37#8d57683f -->
 
 ## Turn on telephony
 

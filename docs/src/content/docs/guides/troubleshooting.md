@@ -186,7 +186,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2035#2ca3ef5a; install.sh:2466-2535#d970b544 -->
+<!-- source: install.sh:2036#2ca3ef5a; install.sh:2467-2536#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +211,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:1864-1877#c562c839 -->
+<!-- source: install.sh:1865-1878#c562c839 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +242,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:1883-1887#bf1269bd -->
+<!-- source: install.sh:1884-1888#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +273,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1715-1727#a65c0a82 -->
+<!-- source: install.sh:1716-1728#a65c0a82 -->
 
 **Fix**
 
@@ -344,7 +344,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2466-2535#d970b544; install.sh:2315-2318,2333-2387#49197cea -->
+<!-- source: install.sh:2467-2536#d970b544; install.sh:2316-2319,2334-2388#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +389,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2555-2559#3c1e6011; install.sh:2639-2642#b1e28ef5 -->
+<!-- source: install.sh:2556-2560#3c1e6011; install.sh:2640-2643#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -517,7 +517,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:1970-1978,2005-2011#4287c4a8; install.sh:2025-2028#cefd034b -->
+<!-- source: install.sh:1971-1979,2006-2012#4287c4a8; install.sh:2026-2029#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -525,7 +525,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2015-2023#b3851890 -->
+<!-- source: install.sh:2016-2024#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -625,7 +625,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:102-105#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
+<!-- source: cli/teaport:102-105#5e2e8c16; brain/teaport_brain/config_ui.py:820-826#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -633,7 +633,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1864-1877#c562c839 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:1865-1878#c562c839 -->
 
 **Fix**
 
@@ -693,6 +693,63 @@ device.
 
 Tests confirm it: 16% of a standard test set peaks below −30 dBFS, and
 24 of 2600 files returned an empty result.
+
+## You can't sign in to the device
+
+### There is no login yet
+
+**Cause** A device that ships ready to set up has no login until you create one. Its
+service account, the user the brain runs as, has no password and no SSH key, so nobody
+can sign in before then. A device that you installed yourself has the login of the user
+you installed it as, and never offers this step.
+
+<!-- source: brain/teaport_brain/login_apply.py:175-178#147da5e1; brain/teaport_brain/static/config.html:820#106e56e9 -->
+
+**Fix**
+
+1. Say "open my settings" at the device, and open the settings on your phone. While no
+   login exists, a **Create your login** card is at the top.
+2. Create the login there, as
+   [Create your login in the settings](/guides/configuration/#create-your-login-in-the-settings)
+   shows. In setup mode, the setup page offers the same step, as
+   [Create your login](/guides/wifi-setup/#create-your-login) shows.
+3. Sign in as `teaport`, with SSH or at the device itself.
+
+If neither the settings nor the setup page shows the step, a login already exists:
+sign in as `teaport`, or see [The device already has a login](#the-device-already-has-a-login).
+
+### The device already has a login
+
+**Cause** The device creates its login one time only. Someone created it before you,
+on the setup page or in the settings. Until the owner creates the login, software
+running on the device, such as a compromised agent, could also create it first.
+
+<!-- source: brain/teaport_brain/login_apply.py:22-25#74f3c370; brain/teaport_brain/login_apply.py:185-186#8f96889d -->
+
+**Fix**
+
+- If you created the login, sign in as `teaport` with the password you chose.
+- If you didn't create it, you can't know who did or what they changed. Don't keep
+  private data on the device. Reflash it and install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
+
+### Sign in at the device itself
+
+**Cause** The device is not on your network, or SSH does not answer, so you can't reach
+it from a computer.
+
+**Fix**
+
+1. Connect a USB keyboard and a display to the device. The device starts to a text
+   console, with a sign-in prompt.
+2. Sign in as `teaport` with your login's password. On a device you installed yourself,
+   sign in as the user you installed teaport as.
+3. Run `teaport status` to see what is wrong. Administrator commands, such as
+   `sudo systemctl restart teaport-brain`, ask for the same password.
+
+<!-- source: brain/teaport_brain/login_apply.py:56-59#d31172cc; brain/teaport_brain/login_apply.py:133-136#51b98c62 -->
 
 ## Where the logs are
 
