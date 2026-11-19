@@ -106,7 +106,7 @@ from teaport_brain.settings import setting
 from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import credit
-from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
+from teaport_brain import agent_backend, ai_disclosure, audio_dump, call_recording, display, sdnotify
 from teaport_brain import thinking_sound
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.tasks import cancel_and_wait, wait_ended
@@ -195,8 +195,9 @@ ANSWER_AFTER_SECS = setting("SIP_ANSWER_AFTER_SECS")
 # Past ANSWER_AFTER_SECS, how much longer the call may ring for the greeting to be ready;
 # then it is answered anyway and the greeting asked for the usual way.
 _ANSWER_GRACE_SECS = 3.0
-# How long the no-model line (#277) may take to play before the call is hung up anyway.
-NO_MODEL_LINE_MAX_SECS = 6.0
+# How long the no-model line (#277), the AI disclosure ahead of it, may take to play
+# before the call is hung up anyway: ~9 s of speech in the longer languages.
+NO_MODEL_LINE_MAX_SECS = 15.0
 # From call.answer to `confirmed`: a gateway that has not confirmed by then never will.
 _CONFIRM_SECS = 10.0
 
@@ -330,7 +331,8 @@ async def answer_busy(connection, holder_kind: str, call_id) -> None:
     import numpy as np
     import soxr
 
-    line, pcm = await arb.busy_line_audio(holder_kind)
+    # Answered, so told it is an AI first (ai_disclosure.py), as every call is.
+    line, pcm = await arb.busy_line_audio(holder_kind, disclose=True)
     logger.info(f"call {call_id} refused ({holder_kind} conversation has the box) — "
                 "saying it is busy, then hanging up")
     if pcm:
@@ -956,32 +958,51 @@ async def run_connection(sock, on_ready=None):
             # Answered: on the face, the box is on the phone (it rang until now).
             CALL_FACE.active(call_id)
         if session.llm is None:
-            # No model to answer with (#277): the caller hears the short line, heard in
-            # full -- their own "hello?" at pickup does not cut it (say_last_line, the
-            # same heard-in-full path as the recording notice: _say_whole) -- and the
-            # call ends. Before the notice: there is no conversation to record (the
-            # recording is armed only by greet(), so this call records nothing). A key
+            # No model to answer with (#277): the caller hears the short line, the AI
+            # disclosure ahead of it, heard in full -- their own "hello?" at pickup does
+            # not cut it (say_last_line, the same heard-in-full path as the call's notice:
+            # _say_whole) -- and the call ends. Not through greet(): there is no
+            # conversation to record (the recording is armed only by greet(), so this
+            # call records nothing). A key
             # written while it rang counts from the next call: this one was built
             # without it.
             logger.warning(f"call {call_id}: no model to answer with — saying so, then "
                            "hanging up")
             t = i18n.for_espeak(getattr(session.tts, "espeak_language", None))
-            await session.say_last_line(t._(NO_MODEL_CALL_TEXT), NO_MODEL_LINE_MAX_SECS)
+            lang = getattr(session.tts, "espeak_language", None)
+            await session.say_last_line(ai_disclosure.before(lang, t._(NO_MODEL_CALL_TEXT)),
+                                        NO_MODEL_LINE_MAX_SECS)
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
             await asyncio.shield(end_call_from_inside("no model to answer", call_id))
             return
-        # A recorded call starts with the notice, in the call's language, before the
-        # greeting -- a resumed one too: the brain that was cut off may not have
-        # finished saying it.
-        notice = None
-        if recording is not None and recording.active and call_recording.NOTICE:
-            notice = call_recording.notice_line(
-                getattr(getattr(session, "tts", None), "espeak_language", None))
+        # Every call starts with the AI disclosure (ai_disclosure.py: no setting turns
+        # it off), and a recorded one with the recording notice after it, in the call's
+        # language, before the greeting -- a resumed one too: the brain that was cut off
+        # may not have finished saying it. One that cannot be played to its end ends the
+        # call (greet: should_end, "disclosure").
+        notice = ai_disclosure.call_notice(
+            getattr(getattr(session, "tts", None), "espeak_language", None),
+            recorded=(recording is not None and recording.active and call_recording.NOTICE))
         if prepared:
             await session.greet(resumed=resumed, prepared=prepared, notice=notice)
         else:
             await session.greet(resumed=resumed, notice=notice)
         if session.should_end:
+            if session.end_reason == "disclosure":
+                # The AI disclosure did not play to its end: no conversation without it.
+                # greet() queued nothing after it; hang up and tear down -- unless the
+                # call is already going (its pipeline ended under it, or a newer call
+                # has the slot): that teardown has hung up already.
+                call = active["call"]
+                if (call is None or call[0] != call_id
+                        or getattr(session.followup_gate, "ended", False)):
+                    return
+                logger.warning(f"call {call_id}: the AI disclosure was not heard in full "
+                               "— hanging up")
+                await transport.send_control({"type": "call.hangup", "call_id": call_id})
+                await asyncio.shield(end_call_from_inside("AI disclosure not heard",
+                                                          call_id))
+                return
             # STT is unavailable — the engine's single slot is held by another process
             # (a standalone rig) or the engine is unreachable. greet() spoke the
             # matching line instead of greeting; let it play out, then

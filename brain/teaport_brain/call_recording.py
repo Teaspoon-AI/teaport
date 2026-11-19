@@ -20,16 +20,18 @@
 # that retention keeps or deletes whole (recordings.py).
 #
 # NOTHING IS RECORDED UNTIL THE CALLER IS TOLD. AgentSession.greet arms the recording
-# (arm), and it starts when the notice's first word PLAYS -- with the notice off, the
-# greeting's: _PlayedLines, below the output transport, sees the word as it is played
+# (arm), and it starts when the call's notice's first word PLAYS -- the AI disclosure's
+# (ai_disclosure.call_notice), which every call starts with, the recording notice after
+# it when that is on: _PlayedLines, below the output transport, sees the word as it is played
 # and pushes pipecat's own AudioBufferStartRecordingFrame straight into the recorder.
 # Started there and not queued from the top, no interruption can delete the start on its
 # way, and a notice that never plays starts nothing (greet says so in the log). A call
 # that cannot be heard is never armed (greet speaks the "I can't hear you" line instead).
 # Before the start no file exists: a call that never connects leaves none. Once the
 # notice has started playing, the recording runs on: the caller is unheard while it
-# plays and the brain does not cut it, so a notice cut after its first word is not a
-# case greet() has.
+# plays and the brain does not cut it. A notice that still does not play to its end (a
+# stalled voice, NOTICE_MAX_SECS on) ends the call, and what it recorded is deleted
+# (discard): the caller was not told.
 #
 # AUDIO is pipecat's AudioBufferProcessor, below the output transport, where it sees
 # the caller's audio on its way down and the bot's as it is played: what the caller
@@ -50,11 +52,12 @@
 # reply's words only while it plays: its stop or its cut is the ledger's to chart.
 #
 # The NOTICE (TEAPORT_CALL_RECORDING_NOTICE, on by default): a recorded call starts with
-# "This call is being recorded." in the call's language (i18n.py), before the greeting,
-# outside the conversation's context, with the caller unheard while it plays so they
-# cannot talk it away (AgentSession.greet). A resumed call hears it again: the brain that
-# was cut off may not have finished saying it. The model is also told the call is
-# recorded, so a caller who asks gets a straight answer.
+# "This call is being recorded." in the call's language (i18n.py), right after the AI
+# disclosure every call starts with (ai_disclosure.call_notice: the two as one line),
+# before the greeting, outside the conversation's context, with the caller unheard while
+# it plays so they cannot talk it away (AgentSession.greet). A resumed call hears it
+# again: the brain that was cut off may not have finished saying it. The model is also
+# told the call is recorded, so a caller who asks gets a straight answer.
 #
 # RETENTION: recordings older than TEAPORT_CALL_RECORDING_KEEP_DAYS go, then the oldest
 # until the directory is under TEAPORT_CALL_RECORDING_MAX_MB (recordings.prune), checked
@@ -268,7 +271,8 @@ class CallRecording:
 
     def arm(self, on: str | None) -> None:
         """Start at the first word that plays of the notice ("notice") or of anything
-        ("any": the notice is off, so the greeting's); None disarms."""
+        ("any": a greet() with no notice -- never a phone call's, which always has the AI
+        disclosure); None disarms."""
         self.armed = on if self.active else None
 
     def attach(self, ledger) -> None:
@@ -366,6 +370,22 @@ class CallRecording:
             self._wav = None
 
     # ---------------------------------------------------------------- end
+
+    def discard(self) -> None:
+        """Keep nothing of this call: the caller was not told it is an AI (greet hangs up
+        a call whose notice did not play to its end), and a notice cut part-way may have
+        started the recording. Stops every write, then deletes this part's files."""
+        self.audio = self.transcript = False
+        self._close_txt()
+        self._close_wav()
+        for path in (self.wav_path, self.txt_path):
+            try:
+                os.remove(path)
+                logger.warning(f"call recording: {path} deleted -- the caller was not told")
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning(f"call recording: could not delete {path} ({e})")
 
     def close(self) -> None:
         """The call is over. The wav closes with the pipeline (its EndFrame or CancelFrame

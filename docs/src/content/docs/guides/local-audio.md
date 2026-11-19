@@ -31,7 +31,7 @@ The bridge connects when it starts, and the agent greets you; from then on it be
 
 The brain runs one conversation at a time. A dashboard Talk session can take the device only while the bridge sleeps; while any conversation is live the brain refuses the bridge, and the bridge waits the conversation out (`LOCAL_AUDIO_BACKOFF_SECS`) before it listens for a voice again.
 
-<!-- source: brain/teaport_brain/local_audio.py:14-27#01d06bc5; brain/teaport_brain/config_schema.toml:220#2ef76416 -->
+<!-- source: brain/teaport_brain/local_audio.py:14-27#01d06bc5; brain/teaport_brain/config_schema.toml:226#2ef76416 -->
 
 ## Wake words
 
@@ -47,19 +47,34 @@ You can also say "that's all"; the agent says a short goodbye and the microphone
 
 All of this works only while wake words are set, and only on the device's own microphone: a Talk session has no sleep, and a phone call ends when you hang up.
 
-<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1757#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-81#4363c977; brain/teaport_brain/goodbye.py:87-107#afe96c7b; brain/teaport_brain/goodbye.py:565#ffd4f075; brain/teaport_brain/agent_session.py:1011-1016#0a35e83a -->
+<!-- source: brain/teaport_brain/wake_gate.py:3-12#609ddef1; brain/teaport_brain/wake_words.py:5-11#7bc70717; brain/teaport_brain/config_schema.toml:1763#a4e8fb74; brain/teaport_brain/goodbye.py:13-19#bace4f09; brain/teaport_brain/goodbye.py:43-50#8ab45d2d; brain/teaport_brain/goodbye.py:53-58#76a042d2; brain/teaport_brain/goodbye.py:63-81#4363c977; brain/teaport_brain/goodbye.py:87-107#afe96c7b; brain/teaport_brain/goodbye.py:565#ffd4f075; brain/teaport_brain/agent_session.py:1068-1073#0a35e83a -->
+
+## Tell visitors it's an AI
+
+Talking to a device in the room, it's plain that you're talking to a machine, so
+the device doesn't announce that it's an AI. Where people who didn't set the
+device up talk to it, such as at a front desk or in a shop, turn on
+`TEAPORT_ROOM_AI_GREETING`. Each new conversation then starts with *"I'm an AI
+assistant."* in the voice's language, before the greeting. The line plays when a
+conversation starts with the wake word alone; words straight after the wake word
+are answered right away.
+
+Whether or not the greeting is on, if someone asks whether they're talking to a
+person, the agent says it's an AI.
+
+<!-- source: brain/teaport_brain/ai_disclosure.py:27-35#94f0ce3b; brain/teaport_brain/config_schema.toml:2020#9a082601 -->
 
 ## The ring during a phone call
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1634-1645#d37a478f; brain/teaport_brain/config_schema.toml:1894-1906#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1634-1645#d37a478f; brain/teaport_brain/config_schema.toml:1900-1912#44d773d1 -->
 
 ## Echo
 
 The XVF3800 cancels echo in hardware. The bridge replaces the chip's automatic gain with a fixed gain, and sets the chip's echo suppression to remove the device's own voice from the microphone while still letting your voice through when you talk over it. `LOCAL_AUDIO_ECHO_CONTROL` and `LOCAL_AUDIO_MIC_GAIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2650-2657,2670-2680#208b84d6 -->
+<!-- source: brain/teaport_brain/xvf_echo.py:2-3,73-77#37dc7dcc; brain/teaport_brain/config_schema.toml:2666-2673,2686-2696#208b84d6 -->
 
 ## What's next
 

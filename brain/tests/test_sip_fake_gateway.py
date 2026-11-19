@@ -256,6 +256,7 @@ async def test_a_brain_killed_mid_call_is_replayed_the_call_and_resumes_it():
         assert await wait_until(lambda: rig.gw.brain_gone.is_set()), "EOF never seen"
         assert not call.ended.is_set(), "the gateway dropped the call with the brain"
         heard_before = len(call.bot_onsets)
+        texts_before = len(user_texts(rig.engine))
 
         rig.start_brain()
         assert await rig.gw.wait_brain(60), "the restarted teaport-brain never reconnected"
@@ -266,9 +267,12 @@ async def test_a_brain_killed_mid_call_is_replayed_the_call_and_resumes_it():
         assert second[1]["call_id"] == call.call_id and second[1]["from"] == call.from_uri
         assert second[2]["state"] == "confirmed", second[2]
 
-        # Resumed: the apology, not a hello from scratch.
+        # Resumed: the AI disclosure first (ai_disclosure.py: every call, resumed too),
+        # then the apology, not a hello from scratch.
         assert await call.wait_bot_speech(call.t, 30) is not None, (
             "the restarted brain never spoke to the replayed call")
+        assert await wait_until(lambda: len(user_texts(rig.engine)) > texts_before, 30), (
+            "the restarted brain never asked for its greeting")
         assert "lost" in user_texts(rig.engine)[-1], (
             f"the resumed call was greeted from scratch: {user_texts(rig.engine)[-1]!r}")
         assert len(call.bot_onsets) > heard_before

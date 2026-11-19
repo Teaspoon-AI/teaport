@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files.
 
-<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2228-2237#38d9c1ca; install.sh:2802#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2802#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, so the token never crosses the network unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:100-116#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,34-40#a24a491a; brain/teaport_brain/config_schema.toml:2203-2213#39346419; brain/teaport_brain/static/config.html:382-392#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:100-116#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,34-40#a24a491a; brain/teaport_brain/config_schema.toml:2219-2229#39346419; brain/teaport_brain/static/config.html:382-392#2b63b6f7 -->
 
 To change a setting there:
 
@@ -40,7 +40,7 @@ Each save also writes a timestamped copy of the previous file next to the origin
 
 On a device with a front door, the owner can reach the same page from a phone without the token. Say "open my settings" at the device, or in a Talk conversation. You can also ask it as a question, such as "Can you open my settings?". A sentence that only mentions the settings, such as "How do I open my settings?", or one that goes on after the request, goes to the assistant as usual, which, with a model set up, answers it in words. Said while the assistant is talking, the phrase stops the answer, and the device shows the code and tells you so straight away, at the device and in Talk. The phrase works without the agent and without a model, so it also works before an AI account is set up. A phone call never hears it.
 
-<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/wifi_voice.py:454-472#9d2a2a28; brain/teaport_brain/agent_session.py:1006-1010#abcad8a7; brain/teaport_brain/wifi_voice.py:271-280#58fd5ac9 -->
+<!-- source: brain/teaport_brain/settings_access.py:16-20#8a2ca8e8; brain/teaport_brain/wifi_voice.py:454-472#9d2a2a28; brain/teaport_brain/agent_session.py:1063-1067#abcad8a7; brain/teaport_brain/wifi_voice.py:271-280#58fd5ac9 -->
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
@@ -162,7 +162,7 @@ On the configuration page, the restart runs the same command two seconds later. 
 
 Three settings point the brain at its LLM: `LLM_BASE_URL`, the address of an OpenAI-compatible endpoint, which is required; `LLM_API_KEY`, the key for that endpoint; and `LLM_MODEL`, the name of the served model. The installer writes the name the endpoint takes: `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. Endpoints include `https://api.groq.com/openai/v1`, `https://api.cerebras.ai/v1`, and `https://openrouter.ai/api/v1`.
 
-<!-- source: brain/teaport_brain/config_schema.toml:226-257#c8ffd4ac -->
+<!-- source: brain/teaport_brain/config_schema.toml:232-263#c8ffd4ac -->
 
 :::caution[gpt-oss-120b: pick who serves it]
 On Groq and on Cerebras, `gpt-oss-120b` sometimes breaks down in the middle of a reply, most often right after it used a tool (looked something up, checked the time), and the device says it lost its train of thought. BaseTen serves the same model without that. Use OpenRouter as the endpoint, `openai/gpt-oss-120b` as the model, and send OpenRouter to BaseTen first with `LLM_EXTRA_BODY`:
@@ -176,7 +176,7 @@ LLM_EXTRA_BODY={"provider":{"order":["BaseTen","Groq"],"allow_fallbacks":false}}
 Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `brain.env` exactly as shown, on one line.
 :::
 
-<!-- source: brain/teaport_brain/config_schema.toml:296-303#bd725c65 -->
+<!-- source: brain/teaport_brain/config_schema.toml:302-309#bd725c65 -->
 
 ### With the configuration page
 
@@ -186,7 +186,7 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:238-257#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
+<!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:244-263#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 ### From the command line
 
@@ -242,7 +242,7 @@ While the device runs on the starter key, the brain reads the key's limit and wh
 
 When OpenRouter's answer also has an `effective_budget` with a limit and what is left, the brain judges by whichever has less left, the key's own limit or that budget. Saving a key reads it the same way: a key whose budget is used up is not saved, as with a key that has no credit left.
 
-<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:253-259#1b6deadd; brain/teaport_brain/config_schema.toml:1813-1849#3b64f06d -->
+<!-- source: brain/teaport_brain/credit.py:16-32#673997c1; brain/teaport_brain/ai_account.py:253-259#1b6deadd; brain/teaport_brain/config_schema.toml:1819-1855#3b64f06d -->
 
 The first two are said one time, at the start of a conversation in the room or in Talk, and again at most once a day while they last. They tell you to say "open my settings" and connect your own account. The device does not listen while one plays, and a line that you interrupt anyway is said again at the next conversation. A phone call or the Discord bridge never hears about the trial credit. The configuration page shows the same state as a line in the **AI account** step, and `teaport status` shows it as `trial credit (brain)`.
 
