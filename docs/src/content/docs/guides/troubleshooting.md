@@ -698,12 +698,12 @@ Tests confirm it: 16% of a standard test set peaks below −30 dBFS, and
 
 ### There is no login yet
 
-**Cause** A device that ships ready to set up has no login until you create one. Its
-service account, the user the brain runs as, has no password and no SSH key, so nobody
-can sign in before then. A device that you installed yourself has the login of the user
-you installed it as, and never offers this step.
+**Cause** A device that ships ready to set up has no login until you create one. On a
+Teaspoon AI device, the service account, the user the brain runs as, has no password
+and no SSH key, so nobody can sign in before then. A device that you installed yourself
+has the login of the user you installed it as, and never offers this step.
 
-<!-- source: brain/teaport_brain/login_apply.py:175-178#147da5e1; brain/teaport_brain/static/config.html:820#106e56e9 -->
+<!-- source: brain/teaport_brain/login_apply.py:202-206#fe7cef10; brain/teaport_brain/static/config.html:820#106e56e9 -->
 
 **Fix**
 
@@ -715,16 +715,27 @@ you installed it as, and never offers this step.
    [Create your login](/guides/wifi-setup/#create-your-login) shows.
 3. Sign in as `teaport`, with SSH or at the device itself.
 
-If neither the settings nor the setup page shows the step, a login already exists:
-sign in as `teaport`, or see [The device already has a login](#the-device-already-has-a-login).
+If neither the settings nor the setup page shows the step, one of these is true:
+
+- A login already exists. Sign in as `teaport`, or see
+  [The device already has a login](#the-device-already-has-a-login).
+- The helper that creates the login isn't installed or can't run, for example because
+  its `sudo` rule is missing from `/etc/sudoers.d/teaport-config`. The pages then show no
+  step rather than one that can't work. Installing the brain package again writes the
+  rule; see [Update teaport](/guides/updating/). On a Teaspoon AI device without a login,
+  ask the seller of the device.
+
+<!-- source: brain/teaport_brain/owner_login.py:84-88#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:56#73f92b02 -->
 
 ### The device already has a login
 
 **Cause** The device creates its login one time only. Someone created it before you,
-on the setup page or in the settings. Until the owner creates the login, software
-running on the device, such as a compromised agent, could also create it first.
+on the setup page or in the settings. For as long as the device has no login, not only
+until it is set up, software running on the device, such as a compromised agent, could
+create it first. The setup page and the settings run as that same service account, so
+software that was compromised before you typed your password could also have read it.
 
-<!-- source: brain/teaport_brain/login_apply.py:22-25#74f3c370; brain/teaport_brain/login_apply.py:185-186#8f96889d -->
+<!-- source: brain/teaport_brain/login_apply.py:27-34#01fb9b96; brain/teaport_brain/login_apply.py:213-216#9f02f9ef -->
 
 **Fix**
 
@@ -749,7 +760,7 @@ it from a computer.
 3. Run `teaport status` to see what is wrong. Administrator commands, such as
    `sudo systemctl restart teaport-brain`, ask for the same password.
 
-<!-- source: brain/teaport_brain/login_apply.py:56-59#d31172cc; brain/teaport_brain/login_apply.py:133-136#51b98c62 -->
+<!-- source: brain/teaport_brain/login_apply.py:68-71#d31172cc; brain/teaport_brain/login_apply.py:152-156#15abae22 -->
 
 ## Where the logs are
 

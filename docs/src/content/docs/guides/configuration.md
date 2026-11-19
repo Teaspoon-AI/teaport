@@ -28,7 +28,7 @@ To change a setting there:
 1. Open `https://DEVICE_NAME.local:8443/settings/config#token` and enter `GATEWAY_TOKEN`. The browser remembers it. Over the SSH tunnel, open `http://127.0.0.1:7861/config`, which asks for the same token. If you did not set a token, the tunnelled address opens without one, and the brain warns about that at startup; the settings site never opens without a token or a phone session.
 2. Find the setting: type its name or words from its description in the search field, or open the group that covers it. At first the page shows the settings most devices need. Turn on **Show tuning & diagnostics** to list the rest, along with the groups for parts the device has not set up. The page shows each value as the services read it, which is not always the way the file spells it.
 
-   <!-- source: brain/teaport_brain/static/config.html:326,328,927,931#316e5355 -->
+   <!-- source: brain/teaport_brain/static/config.html:326,328,928,932#316e5355 -->
 3. Enter the new value and save. The page checks the value against the schema, its type and its bounds, before it writes anything.
 4. The page then lists every service that still runs the old values: a service whose configuration file changed after the unit started. Restart each one from the page, or apply the restarts yourself as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
@@ -66,21 +66,21 @@ If the device is on no network at all and spoken Wi-Fi setup is on, the device a
 
 ## Create your login in the settings
 
-On a device that ships ready to set up, you create the device's login yourself: an administrator account named `teaport` that signs in with SSH and runs commands with `sudo`. The Wi-Fi setup page offers this step (see [Create your login](/guides/wifi-setup/#create-your-login)). A device that went online another way, over Ethernet or with Wi-Fi setup by voice, never shows that page, so the settings offer the same step instead: a **Create your login** card at the top, until a login exists. A device that you installed yourself never shows the card.
+On a device that ships ready to set up, such as a Teaspoon AI device, you create the device's login yourself: an administrator account named `teaport` that signs in with SSH and runs commands with `sudo`. The Wi-Fi setup page offers this step (see [Create your login](/guides/wifi-setup/#create-your-login)). A device that went online another way, over Ethernet or with Wi-Fi setup by voice, never shows that page, so the settings offer the same step instead: a **Create your login** card at the top, until a login exists. A device that you installed yourself never shows the card.
 
-<!-- source: brain/teaport_brain/config_ui.py:850-890#6c0a1dad; brain/teaport_brain/static/config.html:316#aad8baf1; brain/teaport_brain/static/config.html:813-843#7949ab15 -->
+<!-- source: brain/teaport_brain/config_ui.py:850-890#6c0a1dad; brain/teaport_brain/static/config.html:316#aad8baf1; brain/teaport_brain/static/config.html:813-843#26d9b68e -->
 
 To create your login in the settings, follow these steps:
 
 1. Say "open my settings", and open the settings on your phone, as [Open the settings from your phone](#open-the-settings-from-your-phone) shows.
-2. In the **Create your login** card, type a password of at least 12 characters, and type it again in the second field. Spaces and letters from any language are fine; invisible or control characters are not.
+2. In the **Create your login** card, type a password of at least 12 characters, and type it again in the second field. Spaces and letters from any language are fine; invisible or control characters are not. The longest password is 256 bytes: 256 Latin letters, for example, or 85 Chinese, Japanese, or Korean characters.
 3. Tap **Create login**. The card says that your login is ready, and the next time you open the settings the card is gone.
 
-<!-- source: brain/teaport_brain/login_apply.py:56-59,66-67#b0ba5ddc; brain/teaport_brain/login_apply.py:96-104#3c9dbc30 -->
+<!-- source: brain/teaport_brain/login_apply.py:68,80-81#e21145c0; brain/teaport_brain/login_apply.py:112-123#020cf4bc -->
 
-The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, nothing was created, and you can try again.
+The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, try again: a try that stopped partway is finished by the next one. If it says that it is creating your login, another try is already under way; open the settings again in a moment.
 
-<!-- source: brain/teaport_brain/login_apply.py:175-202#2cfc267c -->
+<!-- source: brain/teaport_brain/login_apply.py:16-21#bf2c110b; brain/teaport_brain/login_apply.py:202-243#80db7929; brain/teaport_brain/owner_login.py:43-55#6e13b577 -->
 
 ## Connect your OpenRouter account
 
