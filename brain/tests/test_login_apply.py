@@ -248,14 +248,23 @@ def test_the_login_is_never_the_run_users_account(tmp_path):
     assert not tools.changes() and marker.present()
 
 
-def test_a_home_directory_already_there_is_not_taken_over(tmp_path):
-    # The undo removes the home directory: one that was there first is not the helper's.
+@pytest.mark.parametrize("make", [
+    lambda home: (os.makedirs(home), pathlib.Path(home, "notes.txt").write_text("someone's file")),
+    lambda home: pathlib.Path(home).write_text("a file"),
+    lambda home: os.symlink("/etc", home),
+])
+def test_a_home_left_without_its_account_is_refused_by_status_and_create(tmp_path, make):
+    # A plain userdel, or an undo cut short, leaves it; the undo removes a home directory,
+    # so one that was there first is not the helper's. Refused by status too, with its own
+    # code: no page offers a step that every create would refuse.
     tools, ops, marker = _box(tmp_path)
-    os.makedirs(tools.home)
-    (pathlib.Path(tools.home) / "notes.txt").write_text("someone's file")
-    with pytest.raises(login_apply.Refused, match="already there"):
-        login_apply.handle(ops, marker, "create", {"password": GOOD})
-    assert not tools.changes() and (pathlib.Path(tools.home) / "notes.txt").exists()
+    make(tools.home)
+    for verb, req in (("status", {}), ("create", {"password": GOOD})):
+        with pytest.raises(login_apply.Refused, match="already there") as e:
+            login_apply.handle(ops, marker, verb, req)
+        assert e.value.why == login_apply.HOME
+    assert not tools.changes() and os.path.lexists(tools.home) and marker.present()
+    assert owner_login.Login(ops=ops, marker=marker).state() == owner_login.NOT_OFFERED
 
 
 @pytest.mark.parametrize("fail", ["useradd", "useradd-half", "chpasswd"])
@@ -704,7 +713,7 @@ def test_a_typo_costs_no_sudo(tmp_path, monkeypatch):
 def test_every_reason_has_words():
     codes = {login_apply.SHORT, login_apply.LONG, login_apply.CHARACTER, login_apply.EXISTS,
              login_apply.FAILED, login_apply.REFUSED, login_apply.NOT_OFFERED, login_apply.BUSY,
-             login_apply.GROUP, owner_login.MISMATCH}
+             login_apply.GROUP, login_apply.HOME, owner_login.MISMATCH}
     assert set(owner_login.WHY) == codes
 
 

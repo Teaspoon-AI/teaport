@@ -20,9 +20,12 @@
 # leftover counts (Ops.unfinished: no password ever set, our GECOS, and a home that is
 # missing or its own with no .ssh); any other `teaport` account is EXISTS, marker or not,
 # so an account someone prepared -- a password set, keys planted -- is never handed to the
-# owner as theirs: they see "already has a login". Provisioning refuses a box that already
-# has a `teaport` account, or a `teaport` group (which useradd --user-group cannot take),
-# before it writes the marker; the helper refuses the group too (GROUP).
+# owner as theirs: they see "already has a login". Two leftovers with no account behind
+# them block a new one for good, and status refuses them (so no page offers a step that
+# cannot work): a `teaport` group (GROUP: useradd --user-group cannot take it) and a home
+# directory (HOME: a plain userdel, or an undo cut short, leaves it; it is not this run's
+# to take over). Provisioning refuses a box with any of the three before it writes the
+# marker.
 # The marker is root's: provisioning writes it at seal (Teaspoon-AI/teaport-appliance#3),
 # in a root-only directory outside every path the run user can write (/etc/teaport is the
 # run user's through config_apply; the state directory is its own). Nothing in this
@@ -102,8 +105,8 @@ PENDING, CREATED, NOT_OFFERED = "pending", "created", "not_offered"
 # see. FAILED: a step failed (a retry finishes or redoes it); NOT_OFFERED (status's word
 # too): no pending marker; BUSY: another create holds the lock (it is not a failure: that
 # one is under way).
-SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED, BUSY, GROUP = (
-    "short", "long", "character", "exists", "failed", "refused", "busy", "group")
+SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED, BUSY, GROUP, HOME = (
+    "short", "long", "character", "exists", "failed", "refused", "busy", "group", "home")
 # The most account-tool calls a create makes (each up to TOOL_SECS): systemctl, getent
 # passwd, then getent group, useradd, chpasswd and an undo's userdel for a new account,
 # or getent shadow, mkhomedir_helper, chpasswd and usermod to finish one. The caller's
@@ -288,8 +291,7 @@ def status(ops: Ops, marker: Marker) -> dict:
         return {"state": CREATED if entry else NOT_OFFERED}
     if entry:
         return {"state": PENDING if ops.unfinished(entry) else CREATED}
-    if ops.group_exists():
-        raise Refused("a teaport group already exists", GROUP)
+    _no_leftovers(ops)
     return {"state": PENDING}
 
 
@@ -306,11 +308,7 @@ def create(ops: Ops, marker: Marker, req: dict) -> dict:
         if not ops.unfinished(entry):
             raise Refused("this box already has a login", EXISTS)
         return _finish(ops, marker, password)
-    if ops.group_exists():
-        raise Refused("a teaport group already exists", GROUP)
-    if os.path.lexists(ops.home):
-        # An undo removes the home directory: one that was there first is not this run's.
-        raise Refused(f"{ops.home} is already there")
+    _no_leftovers(ops)
     done = False
     try:
         if ops.useradd() and ops.chpasswd(password):
@@ -322,6 +320,15 @@ def create(ops: Ops, marker: Marker, req: dict) -> dict:
         if not done:
             ops.undo()
     return {"ok": True, "username": USERNAME} if done else {"ok": False, "why": FAILED}
+
+
+def _no_leftovers(ops: Ops) -> None:
+    """No account, and nothing of one in the way of a new one (the module comment)."""
+    if ops.group_exists():
+        raise Refused("a teaport group already exists", GROUP)
+    if os.path.lexists(ops.home):
+        # An undo removes the home directory: one that was there first is not this run's.
+        raise Refused(f"{ops.home} is already there", HOME)
 
 
 def _finish(ops: Ops, marker: Marker, password: str) -> dict:

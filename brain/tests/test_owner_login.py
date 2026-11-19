@@ -302,6 +302,51 @@ def test_a_join_begins_even_when_its_answer_never_reaches_the_phone(tmp_path, mo
         page.close()
 
 
+def _from(page, source, method):
+    """A request from `source` (an address of this machine) to the page: its status, or
+    None when the connection was dropped unanswered."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(5)
+        s.bind((source, 0))
+        s.connect(("127.0.0.1", page.setup.port))
+        form = urllib.parse.urlencode({"ssid": "home", "password": "homepass1",
+                                       "login_password": GOOD, "login_again": GOOD}).encode()
+        s.sendall((f"{method} /connect HTTP/1.1\r\nHost: 10.42.0.1\r\n"
+                   "Content-Type: application/x-www-form-urlencoded\r\n"
+                   f"Content-Length: {len(form) if method == 'POST' else 0}\r\n\r\n").encode()
+                  + (form if method == "POST" else b""))
+        try:
+            reply = s.recv(64)
+        except ConnectionResetError:
+            return None
+        return int(reply.split()[1]) if reply else None
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_only_a_client_on_the_setup_network_is_answered(tmp_path, method):
+    # Linux takes a packet for any of its addresses on any interface: a host on the box's
+    # LAN can route 10.42.0.1 to it. The page answers only its own subnet (on the box the
+    # setup network's, 10.42.0.0/24; here, bound to 127.0.0.1, 127.0.0.0/24).
+    tools, marker, login = _login(tmp_path)
+    page = _Page(login)
+    try:
+        assert _from(page, "127.0.1.7", method) is None          # another subnet: dropped
+        assert not tools.changes() and page.setup.request is None
+        assert _from(page, "127.0.0.9", method) == 200           # on the setup network
+    finally:
+        page.close()
+
+
+def test_the_page_answers_the_setup_networks_subnet_on_the_box():
+    server = ws._Server.__new__(ws._Server)   # its subnet, without binding 10.42.0.1 here
+    server._clients = ws.ipaddress.ip_network(f"{ws.AP_ADDRESS}/{ws.AP_PREFIX}", strict=False)
+    assert str(server._clients) == "10.42.0.0/24"
+    assert server.verify_request(None, ("10.42.0.57", 51000))
+    for outside in ("192.168.1.20", "10.42.1.5", "127.0.0.1", "not-an-address"):
+        assert not server.verify_request(None, (outside, 51000))
+
+
 def _raw(page, method, host, headers=(), body=b""):
     conn = http.client.HTTPConnection("127.0.0.1", page.setup.port, timeout=5)
     try:

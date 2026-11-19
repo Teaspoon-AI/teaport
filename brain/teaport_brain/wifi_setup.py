@@ -11,9 +11,15 @@
 #      time: twelve characters in three groups of four, "k7mq-x4tn-p9wr"
 #      (setup_password), the hyphens part of it -- what the screen shows is what is typed
 #   3. serve the setup page at 10.42.0.1 (wifi.AP_ADDRESS, pinned in the setup profile),
-#      and only there — never on the box's other networks: on PAGE_PORT, which the
-#      unit's iptables rule makes port 80 for that address (port 80 itself is the front
-#      door's — Caddy's http->https redirect). NM's dnsmasq answers every name with that
+#      on PAGE_PORT, which the unit's iptables rule makes port 80 for that address (port
+#      80 itself is the front door's — Caddy's http->https redirect). Only to the setup
+#      network: binding that address is not enough (Linux takes a packet for any of its
+#      addresses on any interface, so a host on the box's other networks can route
+#      10.42.0.1 to it), so the server answers only clients whose address is in the
+#      setup network's subnet (_Server.verify_request; a LAN host cannot complete a TCP
+#      handshake from a spoofed 10.42.0.x address). The DNAT rule has no -i: the setup
+#      network's interface is the code's choice at run time (NM.wifi_device), unknown to
+#      the root unit that adds the rule. NM's dnsmasq answers every name with that
 #      address (/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf, put there by
 #      the unit for as long as it runs), so a
 #      phone's captive-portal probe lands here and the OS opens the page by itself;
@@ -82,12 +88,13 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from teaport_brain import ai_account, conversation_log, display, i18n, owner_login
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting, state_dir
-from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
+from teaport_brain.wifi import AP_ADDRESS, AP_PREFIX, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
 # iptables DNAT rule while it runs (packaging/wifi-setup/wifi-setup-net names this port too).
@@ -531,13 +538,23 @@ def _on_sigterm(signum, frame):
 
 class _Server(ThreadingHTTPServer):
     """The page's server: bound to one address that comes and goes (the setup network is
-    down while the box tries a join), with a cap on connections served at once."""
+    down while the box tries a join), answering only clients in that address's subnet
+    (the setup network's: AP_PREFIX), with a cap on connections served at once."""
 
     daemon_threads = True
 
     def __init__(self, address, handler):
         self._slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self._clients = ipaddress.ip_network(f"{address[0]}/{AP_PREFIX}", strict=False)
         super().__init__(address, handler)
+
+    def verify_request(self, request, client_address):
+        """Only a client on the setup network: another is dropped before a byte is read
+        (the module comment says why binding the address is not enough)."""
+        try:
+            return ipaddress.ip_address(client_address[0]) in self._clients
+        except ValueError:
+            return False
 
     def server_bind(self):
         # IP_FREEBIND (15 on Linux; not in the socket module): bind even while the

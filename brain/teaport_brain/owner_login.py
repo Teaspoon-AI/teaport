@@ -27,11 +27,11 @@ HELPER_STOP_SECS = 30
 USERNAME = login_apply.USERNAME
 MIN_PASSWORD = login_apply.MIN_PASSWORD
 PENDING, CREATED, NOT_OFFERED = login_apply.PENDING, login_apply.CREATED, login_apply.NOT_OFFERED
-EXISTS, BUSY, GROUP = login_apply.EXISTS, login_apply.BUSY, login_apply.GROUP
+EXISTS, BUSY, GROUP, HOME = login_apply.EXISTS, login_apply.BUSY, login_apply.GROUP, login_apply.HOME
 # Why a create did not happen, beyond the helper's codes: the two passwords differ.
 MISMATCH = "mismatch"
 # The reasons that are the system's, not the password's: retyping cannot fix them.
-SYSTEM = (login_apply.FAILED, login_apply.REFUSED, login_apply.GROUP)
+SYSTEM = (login_apply.FAILED, login_apply.REFUSED, login_apply.GROUP, login_apply.HOME)
 
 # What the owner reads, in their language (say()). {username} and {count} are filled in.
 TEXT = {
@@ -64,6 +64,8 @@ WHY = {
     # A `teaport` group already there (useradd cannot make the login's own): nothing the
     # owner can fix; the helper's refusal says which, for the log.
     GROUP: N_("Teaport couldn't create your login. Try again."),
+    # A /home/teaport with no account behind it: the same (status hides the step).
+    HOME: N_("Teaport couldn't create your login. Try again."),
 }
 
 
