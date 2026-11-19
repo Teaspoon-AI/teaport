@@ -849,3 +849,6 @@ msgstr "Op deze Teaport kun je geen login aanmaken."
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport kon je login niet aanmaken. Probeer het opnieuw."
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport kon je login niet aanmaken. Je kunt nu verbinding maken en je login later aanmaken in Instellingen."
+

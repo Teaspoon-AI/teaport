@@ -860,3 +860,6 @@ msgstr "إنشاء حساب تسجيل الدخول غير متاح على جه�
 msgid "Teaport couldn't create your login. Try again."
 msgstr "تعذّر على Teaport إنشاء حساب تسجيل الدخول. حاول مرة أخرى."
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "تعذّر على Teaport إنشاء حساب تسجيل الدخول. يمكنك الاتصال الآن وإنشاؤه لاحقًا من الإعدادات."
+

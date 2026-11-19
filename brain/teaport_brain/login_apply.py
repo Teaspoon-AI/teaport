@@ -15,8 +15,8 @@
 #           failed step undoes the ones before it.
 # The marker means "no owner login yet". While it is there, a `teaport` account is one a
 # create began and did not finish (a power cut, or a SIGKILL, between useradd and
-# chpasswd): status says PENDING, and the next create finishes it -- its password, the
-# sudo group -- and removes the marker. Provisioning refuses a box that already has a
+# chpasswd): status says PENDING, and the next create finishes it -- its home directory
+# if useradd did not get that far, its password, the sudo group -- and removes the marker. Provisioning refuses a box that already has a
 # `teaport` account before it writes the marker, so no other account is taken over this
 # way. Without the marker, an existing `teaport` account is the owner's: EXISTS.
 # The marker is root's: provisioning writes it at seal (Teaspoon-AI/teaport-appliance#3),
@@ -130,20 +130,69 @@ def run_tool(argv: list[str], stdin: bytes | None = None) -> tuple[int, str, str
         return p.returncode, p.stdout.decode(errors="replace"), p.stderr.decode(errors="replace")
     except subprocess.TimeoutExpired:
         return 124, "", f"{argv[0]} timed out"
+    except FileNotFoundError:   # a tool the system lacks: a failed step, said as one
+        return 127, "", f"{argv[0]} is not installed"
+
+
+# Where useradd reads the mode of a new home directory (HOME_MODE, else 0777 less UMASK).
+LOGIN_DEFS = "/etc/login.defs"
+HOME_MODE = 0o750   # neither set there (Ubuntu's own login.defs says HOME_MODE 0750)
+
+
+def home_mode(path: str = LOGIN_DEFS) -> int:
+    """The mode useradd gives a new home directory, as login.defs says."""
+    values = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] in ("HOME_MODE", "UMASK"):
+                    try:
+                        values[parts[0]] = int(parts[1], 8) & 0o777
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+    if "HOME_MODE" in values:
+        return values["HOME_MODE"]
+    return 0o777 & ~values["UMASK"] if "UMASK" in values else HOME_MODE
 
 
 class Ops:
     """The account tools. `run(argv, stdin=None) -> (rc, stdout, stderr)`; `home` is the
     new account's home directory (a test's temporary one)."""
 
-    def __init__(self, run=run_tool, home: str = HOME_DIR):
-        self._run, self.home = run, home
+    def __init__(self, run=run_tool, home: str = HOME_DIR, login_defs: str = LOGIN_DEFS):
+        self._run, self.home, self.login_defs = run, home, login_defs
 
-    def exists(self) -> bool:
-        rc, _, _ = self._run(["getent", "passwd", USERNAME])
+    def _passwd(self) -> list[str] | None:
+        """The account's passwd entry, split; None when there is none."""
+        rc, out, _ = self._run(["getent", "passwd", USERNAME])
         if rc not in (0, 2):   # 2: no such user; anything else is not an answer
             raise Refused("could not tell whether a login exists")
-        return rc == 0
+        return out.strip().split(":") if rc == 0 else None
+
+    def exists(self) -> bool:
+        return self._passwd() is not None
+
+    def home_ready(self) -> bool:
+        """An unfinished account's home directory, there or made as useradd would make it:
+        mkhomedir_helper (libpam-modules-bin, which the package depends on) creates it
+        owned by the account, from /etc/skel, at the mode login.defs gives a new home.
+        One already there must be a real directory of the account's own; anything else
+        (a file, a link, someone else's directory) is refused, never taken over."""
+        entry = self._passwd()
+        if entry is None or len(entry) < 3 or not entry[2].isdigit():
+            raise Refused("could not read the login's account")
+        try:
+            st = os.lstat(self.home)
+        except FileNotFoundError:
+            umask = 0o777 & ~home_mode(self.login_defs)
+            rc, _, _ = self._run(["mkhomedir_helper", USERNAME, f"{umask:04o}"])
+            return rc == 0
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != int(entry[2]):
+            raise Refused(f"{self.home} is there and is not the login's own directory")
+        return True
 
     def run_user(self) -> str:
         _, out, _ = self._run(["systemctl", "show", "-p", "User", "--value", BRAIN_UNIT])
@@ -233,10 +282,10 @@ def create(ops: Ops, marker: Marker, req: dict) -> dict:
 
 
 def _finish(ops: Ops, marker: Marker, password: str) -> dict:
-    """The account an earlier create left unfinished: its password and group, then the
-    marker gone. Nothing is undone on a failure: the account stays unfinished, and the
-    next create tries again."""
-    if ops.chpasswd(password) and ops.admin():
+    """The account an earlier create left unfinished: its home directory, password and
+    group, then the marker gone. Nothing is undone on a failure: the account stays
+    unfinished, and the next create tries again."""
+    if ops.home_ready() and ops.chpasswd(password) and ops.admin():
         marker.remove()
         return {"ok": True, "username": USERNAME}
     return {"ok": False, "why": FAILED}

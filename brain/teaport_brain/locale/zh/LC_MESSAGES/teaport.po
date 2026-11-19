@@ -849,3 +849,6 @@ msgstr "这台 Teaport 无法创建登录账户。"
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport 没能创建你的登录账户。请再试一次。"
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport 没能创建你的登录账户。你可以先连接，以后再到设置中创建。"
+

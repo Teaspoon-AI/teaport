@@ -27,6 +27,8 @@ PENDING, CREATED, NOT_OFFERED = login_apply.PENDING, login_apply.CREATED, login_
 EXISTS, BUSY = login_apply.EXISTS, login_apply.BUSY
 # Why a create did not happen, beyond the helper's codes: the two passwords differ.
 MISMATCH = "mismatch"
+# The reasons that are the system's, not the password's: retyping cannot fix them.
+SYSTEM = (login_apply.FAILED, login_apply.REFUSED)
 
 # What the owner reads, in their language (say()). {username} and {count} are filled in.
 TEXT = {
@@ -39,6 +41,10 @@ TEXT = {
     "create": N_("Create login"),
     "creating": N_("Creating your login…"),
     "created": N_("Your login is ready. Sign in as {username} with the password you chose."),
+    # The setup page, after a create failed for a reason the owner cannot fix (SYSTEM):
+    # the step may be skipped for the rest of that run, so nobody is kept offline by it.
+    "skip": N_("Teaport couldn't create your login. You can connect now and create it "
+               "later in Settings."),
 }
 WHY = {
     MISMATCH: N_("The two passwords don't match."),

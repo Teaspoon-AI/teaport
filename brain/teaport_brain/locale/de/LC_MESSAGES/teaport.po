@@ -849,3 +849,6 @@ msgstr "Auf diesem Teaport kann keine Anmeldung erstellt werden."
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport konnte deine Anmeldung nicht erstellen. Versuch es noch einmal."
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport konnte deine Anmeldung nicht erstellen. Du kannst dich jetzt verbinden und die Anmeldung später in den Einstellungen erstellen."
+

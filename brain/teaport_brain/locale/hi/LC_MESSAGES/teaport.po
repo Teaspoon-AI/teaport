@@ -954,3 +954,6 @@ msgstr "इस Teaport पर लॉगिन बनाना उपलब्ध
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport आपका लॉगिन नहीं बना सका। फिर से कोशिश करें।"
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport आपका लॉगिन नहीं बना सका। आप अभी कनेक्ट कर सकते हैं और बाद में सेटिंग्स में अपना लॉगिन बना सकते हैं।"
+

@@ -33,7 +33,9 @@
 #      Required while a login is pending (as on the DGX Spark): a step that could be
 #      skipped would leave the box's login to whoever makes it first, for as long as the
 #      owner has none (login_apply.py's known window). A box whose helper cannot answer
-#      shows no step, and still gets online. It needs no internet, so the login is made as
+#      shows no step, and still gets online, as does one whose create failed for the
+#      system's reason, not the password's (owner_login.SYSTEM): from then on in that run
+#      the step may be left empty. It needs no internet, so the login is made as
 #      the form arrives, through the root helper, before the join begins; a password the
 #      helper does not take, or a create that fails, brings the page back with the reason
 #      and no join. The form can now make the box's admin account, so a post must come
@@ -345,13 +347,15 @@ def render_account(t: i18n.T) -> str:
             '</details>')
 
 
-def render_login(t: i18n.T) -> str:
+def render_login(t: i18n.T, required: bool = True) -> str:
     """The "Create your login" step (#421): the password for the box's admin account,
-    typed twice. Required (the module comment says why)."""
+    typed twice. Required (the module comment says why) unless a create failed for the
+    system's reason in this run (`required` False: it can be left empty)."""
     def say(key):
         return html.escape(owner_login.say(t, owner_login.TEXT[key]))
     field = ('<input type="password" id="{id}" name="{id}" autocomplete="new-password" '
-             f'autocapitalize="none" spellcheck="false" required minlength="{owner_login.MIN_PASSWORD}">')
+             'autocapitalize="none" spellcheck="false"'
+             + (f' required minlength="{owner_login.MIN_PASSWORD}">' if required else '>'))
     return (f'<div class="login"><h2>{say("title")}</h2><p>{say("intro")}</p>'
             f'<label class="f" for="login_password">{say("password")}</label>'
             + field.format(id="login_password")
@@ -361,7 +365,7 @@ def render_login(t: i18n.T) -> str:
 
 
 def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
-                account: bool = False, login: bool = False) -> str:
+                account: bool = False, login: bool = False, login_required: bool = True) -> str:
     """The page, in t's language. `error` is already in that language. `account`: the AI
     account step is offered (the box's endpoint is OpenRouter's: main). `login`: the
     "Create your login" step is (a login is pending here: Setup.login_offered)."""
@@ -389,7 +393,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
         password=html.escape(t._("Password")),
         show=html.escape(t._("Show password")),
         connect=html.escape(t._("Connect")),
-        login=render_login(t) if login else "",
+        login=render_login(t, login_required) if login else "",
         account=render_account(t) if account else "")
 
 
@@ -573,6 +577,8 @@ class Setup:
         # refusal, which takes the step away).
         self.login = login
         self.login_offered = False
+        # A create failed for the system's reason in this run: the step may be left empty.
+        self.login_skippable = False
         # Held by the post that is creating the login or asking for the join: a second
         # one (a second tap) meanwhile is answered as the first will be, never as an error.
         self.posting = threading.Lock()
@@ -678,10 +684,14 @@ class Setup:
                     if error:
                         return self._send(200, setup.page(t._(error), t), extra=remember)
                     made = False
-                    if setup.login_offered:   # required: empty is "too short"
-                        why = setup.create_login(*parse_login(body))
+                    login_password, login_again = parse_login(body)
+                    skipped = setup.login_skippable and not (login_password or login_again)
+                    if setup.login_offered and not skipped:   # required: empty is "too short"
+                        why = setup.create_login(login_password, login_again)
                         if why:
-                            return self._send(200, setup.page(owner_login.say(t, owner_login.WHY[why]), t),
+                            said = (owner_login.TEXT["skip"] if why in owner_login.SYSTEM
+                                    else owner_login.WHY[why])
+                            return self._send(200, setup.page(owner_login.say(t, said), t),
                                               extra=remember)
                         made = True
                     self._send(200, render_joining(ssid, t, login=made), extra=remember)
@@ -697,7 +707,7 @@ class Setup:
     def page(self, error: str, t: i18n.T) -> str:
         """The setup page as this run offers it, `error` (in t's language) on top."""
         return render_page(self.networks, error, t, account=self.account is not None,
-                           login=self.login_offered)
+                           login=self.login_offered, login_required=not self.login_skippable)
 
     def create_login(self, password: str, again: str) -> str:
         """The owner's login from the page's two passwords: "" once it exists, else the
@@ -706,6 +716,8 @@ class Setup:
         ok, why = self.login.create(password, again)
         if ok or why in (owner_login.EXISTS, owner_login.NOT_OFFERED):
             self.login_offered = False
+        if why in owner_login.SYSTEM:
+            self.login_skippable = True
         log("the owner's login: " + ("created" if ok else f"not created ({why})"))
         return why
 

@@ -151,7 +151,7 @@ def test_a_create_that_fails_keeps_the_step_and_one_that_exists_drops_it(tmp_pat
     page = _Page(login)
     try:
         reply = page.post(login_password=GOOD, login_again=GOOD)
-        assert "Teaport couldn't create your login. Try again." in reply
+        assert "Teaport couldn't create your login. You can connect now" in reply
         assert 'name="login_password"' in reply and page.setup.request is None
         assert "teaport" not in tools.users and marker.present()
         # Someone else made it meanwhile (the known window; the marker went with it): said,
@@ -163,6 +163,40 @@ def test_a_create_that_fails_keeps_the_step_and_one_that_exists_drops_it(tmp_pat
         assert "This Teaport already has a login." in reply and 'name="login_password"' not in reply
         assert tools.users["teaport"] == "someone-elses" and page.setup.request is None
         assert "Teaport is joining" in page.post()   # the Wi-Fi alone now
+    finally:
+        page.close()
+
+
+def test_after_a_system_failure_the_step_can_be_skipped_for_this_run(tmp_path):
+    tools, marker, login = _login(tmp_path, fail=["chpasswd"])
+    page = _Page(login)
+    try:
+        # A password the owner can fix keeps the step required.
+        reply = page.post(login_password="short-one", login_again="short-one")
+        assert "Your password needs at least 12 characters." in reply and 'required minlength' in reply
+        # A failure that is the system's: said, and the fields are no longer required.
+        reply = page.post(login_password=GOOD, login_again=GOOD)
+        assert ("Teaport couldn't create your login. You can connect now and create it later "
+                "in Settings.") in reply
+        assert 'name="login_password"' in reply and "required" not in reply
+        # Empty now connects; the login waits for the settings (still pending).
+        reply = page.post()
+        assert "Teaport is joining" in reply and "Your login is ready" not in reply
+        assert page.setup.request == ("home", "homepass1", False) and marker.present()
+    finally:
+        page.close()
+
+
+def test_after_a_system_failure_a_typed_password_is_still_checked_and_tried(tmp_path):
+    tools, marker, login = _login(tmp_path, fail=["chpasswd"])
+    page = _Page(login)
+    try:
+        page.post(login_password=GOOD, login_again=GOOD)                 # the failure
+        reply = page.post(login_password=GOOD, login_again=GOOD + "x")   # a typo: said
+        assert "The two passwords don't match." in reply and page.setup.request is None
+        tools.fail.clear()
+        reply = page.post(login_password=GOOD, login_again=GOOD)         # works this time
+        assert "Your login is ready" in reply and tools.users["teaport"] == GOOD
     finally:
         page.close()
 

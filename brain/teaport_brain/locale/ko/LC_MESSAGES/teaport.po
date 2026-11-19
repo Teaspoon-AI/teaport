@@ -958,3 +958,6 @@ msgstr "이 Teaport에서는 로그인을 만들 수 없어요."
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport가 로그인을 만들지 못했어요. 다시 시도해 주세요."
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport가 로그인을 만들지 못했어요. 지금 연결하고 나중에 설정에서 로그인을 만들 수 있어요."
+

@@ -857,3 +857,6 @@ msgstr "На этом Teaport нельзя создать учётную зап�
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport не удалось создать учётную запись. Попробуйте ещё раз."
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport не удалось создать учётную запись. Можно подключиться сейчас и создать её позже в Настройках."
+

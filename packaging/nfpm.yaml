@@ -35,12 +35,16 @@ description: |-
 # Ubuntu install lacks. Then the interpreter the venv was built on (pyvenv.cfg home =
 # /usr/bin), the system python3 that runs the root-owned config helper, and curl for
 # the CLI, and sudo (visudo checks the config page's sudoers line before it is installed).
+# libpam-modules-bin for mkhomedir_helper, which the owner's login helper (login_apply.py)
+# runs to finish an account a create left without its home directory; Ubuntu installs it
+# everywhere (priority required), the line says the package needs it.
 # No python3.12-venv: the venv is built in CI by uv, and nothing on the box
 # creates one or runs ensurepip.
 depends:
   - python3.12 (>= 3.12.3)
   - python3
   - sudo
+  - libpam-modules-bin
   - curl
   - libc6
   - libgcc-s1

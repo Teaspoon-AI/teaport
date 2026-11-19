@@ -954,3 +954,6 @@ msgstr "この Teaport ではログインを作成できません。"
 msgid "Teaport couldn't create your login. Try again."
 msgstr "Teaport はログインを作成できませんでした。もう一度お試しください。"
 
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport はログインを作成できませんでした。今は接続だけ行い、あとで設定からログインを作成することもできます。"
+

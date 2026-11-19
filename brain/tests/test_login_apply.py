@@ -57,7 +57,8 @@ class FakeTools:
         if tool == self.killed:
             raise Killed(tool)
         if tool == "getent":
-            return (0, f"{argv[2]}:x:1001:1001::/home/{argv[2]}:/bin/bash\n", "") if argv[2] in self.users else (2, "", "")
+            uid = os.getuid()   # the test's own: the home directory it makes is "the account's"
+            return (0, f"{argv[2]}:x:{uid}:{uid}::/home/{argv[2]}:/bin/bash\n", "") if argv[2] in self.users else (2, "", "")
         if tool == "systemctl":
             return 0, self.run_user + "\n", ""
         if tool == "useradd":
@@ -75,6 +76,14 @@ class FakeTools:
                 # A chatty tool that echoes what it was given: none of it may be passed on.
                 return 1, "", f"chpasswd: line 1: {pw if self.noisy else ''} refused"
             self.users[user] = pw
+            return 0, "", ""
+        if tool == "mkhomedir_helper":
+            if "mkhomedir_helper" in self.fail:
+                return 127, "", "mkhomedir_helper is not installed"
+            # As the real one: the account's directory, /etc/skel's files, 0777 less umask.
+            os.mkdir(self.home, 0o777 & ~int(argv[2], 8))
+            os.chmod(self.home, 0o777 & ~int(argv[2], 8))
+            (pathlib.Path(self.home) / ".profile").write_text("# skel\n")
             return 0, "", ""
         if tool == "usermod":
             if "usermod" in self.fail:
@@ -263,6 +272,74 @@ def _no_undo(tools):
             return 0, "", ""
         return tools(argv, stdin)
     return run
+
+
+@pytest.mark.parametrize("defs, mode", [
+    ("UMASK\t\t022\nHOME_MODE\t0750\n", 0o750),     # Ubuntu's own
+    ("UMASK 027\n", 0o750),
+    ("UMASK 077\n", 0o700),
+    ("# nothing set\n", 0o750),
+    (None, 0o750),                                     # no login.defs at all
+])
+def test_an_unfinished_account_without_its_home_gets_one_as_useradd_makes_it(tmp_path, defs, mode):
+    tools, _, marker = _box(tmp_path, users=["teaport"])  # a create killed inside useradd
+    login_defs = tmp_path / "login.defs"
+    if defs is not None:
+        login_defs.write_text(defs)
+    ops = login_apply.Ops(tools, home=tools.home, login_defs=str(login_defs))
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD})["ok"] is True
+    helper = next(c for c in tools.calls if c[0] == "mkhomedir_helper")
+    assert helper == ["mkhomedir_helper", "teaport", f"{0o777 & ~mode:04o}"]
+    st = os.stat(tools.home)
+    assert oct(st.st_mode & 0o777) == oct(mode) and st.st_uid == os.getuid()
+    assert (pathlib.Path(tools.home) / ".profile").exists() and not marker.present()
+
+
+def test_an_unfinished_account_keeps_a_home_it_already_has(tmp_path):
+    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    os.makedirs(tools.home)
+    (pathlib.Path(tools.home) / "notes.txt").write_text("kept")
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD})["ok"] is True
+    assert not any(c[0] == "mkhomedir_helper" for c in tools.calls)
+    assert (pathlib.Path(tools.home) / "notes.txt").read_text() == "kept"
+
+
+@pytest.mark.parametrize("make", [
+    lambda home: pathlib.Path(home).write_text("a file"),
+    lambda home: os.symlink("/etc", home),
+])
+def test_a_home_path_that_is_not_the_accounts_directory_is_refused(tmp_path, make):
+    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    make(tools.home)
+    with pytest.raises(login_apply.Refused, match="not the login's own directory"):
+        login_apply.handle(ops, marker, "create", {"password": GOOD})
+    assert not tools.changes() and marker.present()
+
+
+def test_a_home_directory_owned_by_someone_else_is_refused(tmp_path):
+    tools, _, marker = _box(tmp_path, users=["teaport"])
+    os.makedirs(tools.home)
+    real = tools.__call__
+
+    def other_uid(argv, stdin=None):   # the account's uid is not the directory's owner
+        rc, out, err = real(argv, stdin)
+        return (rc, out.replace(f":{os.getuid()}:", f":{os.getuid() + 1}:", 1), err) if argv[0] == "getent" else (rc, out, err)
+    ops = login_apply.Ops(other_uid, home=tools.home)
+    with pytest.raises(login_apply.Refused, match="not the login's own directory"):
+        login_apply.handle(ops, marker, "create", {"password": GOOD})
+    assert not tools.changes() and marker.present()
+
+
+def test_without_mkhomedir_helper_the_finish_fails_and_stays_pending(tmp_path):
+    tools, ops, marker = _box(tmp_path, users=["teaport"], fail=["mkhomedir_helper"])
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD}) == {"ok": False, "why": login_apply.FAILED}
+    assert tools.users["teaport"] == "" and marker.present()
+    # And a tool that is not there at all is a failed step, not an error.
+    assert login_apply.run_tool(["/nonexistent/mkhomedir_helper"])[0] == 127
+
+
+def test_the_package_needs_mkhomedir_helper():
+    assert "  - libpam-modules-bin\n" in (ROOT / "packaging/nfpm.yaml").read_text()
 
 
 def test_an_unfinished_account_that_cannot_be_finished_stays_pending(tmp_path):
