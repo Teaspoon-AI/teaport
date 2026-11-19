@@ -251,7 +251,7 @@ The login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's ne
 
 The owner's login marker, `pending`, in a folder only root can open. Neither the installer nor the package creates it: the step that prepares a device for shipping writes it, and `login_apply.py` removes it when it creates the owner's login. A device that you install yourself never has it.
 
-<!-- source: brain/teaport_brain/login_apply.py:26-29#71da1c1e; brain/teaport_brain/login_apply.py:85-87#2cb3dff3 -->
+<!-- source: brain/teaport_brain/login_apply.py:29-32#71da1c1e; brain/teaport_brain/login_apply.py:88-90#2cb3dff3 -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 

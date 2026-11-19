@@ -28,7 +28,7 @@ environment. The `teaport-brain` package installs the helpers, and
 Each helper refuses any request outside that list. A helper that takes a password reads
 it on standard input, never on a command line, where any user could read it.
 
-<!-- source: brain/teaport_brain/login_apply.py:40-42#5955915f; brain/teaport_brain/wifi_apply.py:28-30#b0c60a6e -->
+<!-- source: brain/teaport_brain/login_apply.py:43-45#5955915f; brain/teaport_brain/wifi_apply.py:28-30#b0c60a6e -->
 
 The settings in `/etc/teaport/` are written on the run user's behalf, so no command
 that runs as root takes its environment from them.
@@ -47,7 +47,7 @@ ships ready to set up has no login at all, and the owner creates it during setup
 account named `teaport` with a home folder, a Bash shell, and `sudo` rights. It is
 never the run user's own account.
 
-<!-- source: brain/teaport_brain/login_apply.py:89-90#1c1c90ab; brain/teaport_brain/login_apply.py:298-299#5f08f622; brain/teaport_brain/login_apply.py:235-239#57a7a7ce -->
+<!-- source: brain/teaport_brain/login_apply.py:92-93#1c1c90ab; brain/teaport_brain/login_apply.py:300-301#5f08f622; brain/teaport_brain/login_apply.py:238-242#57a7a7ce -->
 
 `login_apply.py` creates it one time only, and only on a device that asked for it:
 
@@ -72,10 +72,11 @@ never the run user's own account.
 - Any other `teaport` account, marker or not, is someone's login: the helper refuses,
   and the owner sees that the device already has a login. An account that someone
   prepared, with a password or SSH keys of their own, is never handed to the owner.
-- The helper also refuses when a group named `teaport` exists without the account,
-  because the new account can't get a group of its own name.
+- The helper also refuses when a group named `teaport`, or a `/home/teaport` folder,
+  exists without the account: the new account can't get a group of its own name, and a
+  folder it didn't make isn't its to take over. The device then doesn't offer the step.
 
-<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:160-181#84310eeb; brain/teaport_brain/login_apply.py:203-230#5edb85ef; brain/teaport_brain/login_apply.py:285-336#d8d4e8b2 -->
+<!-- source: brain/teaport_brain/login_apply.py:16-28#47ab3ecd; brain/teaport_brain/login_apply.py:163-184#84310eeb; brain/teaport_brain/login_apply.py:206-233#5edb85ef; brain/teaport_brain/login_apply.py:288-343#f0dd833c -->
 
 The helper finishes what it starts. It blocks every signal it can, and it runs the
 create in a process of its own session, apart from the one that `sudo` started. `sudo`
@@ -88,7 +89,7 @@ stop it partway. The next create usually finishes what it left, when that is pla
 leftover; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login)
 for when it doesn't. The helper leaves no core dump that could hold the password.
 
-<!-- source: brain/teaport_brain/login_apply.py:48-60#e5e125ca; brain/teaport_brain/login_apply.py:388-423#57ad4d30; brain/teaport_brain/login_apply.py:362-367#e61abdcf; brain/teaport_brain/login_apply.py:434-437#701bd93e -->
+<!-- source: brain/teaport_brain/login_apply.py:51-63#e5e125ca; brain/teaport_brain/login_apply.py:395-430#57ad4d30; brain/teaport_brain/login_apply.py:369-374#e61abdcf; brain/teaport_brain/login_apply.py:441-444#701bd93e -->
 
 The password goes from the setup page or the settings to the helper, and from the
 helper to `chpasswd` on standard input. It is never written to a log, the journal,
@@ -98,7 +99,7 @@ keep the password. On its way it is held in a wrapper that hides it from an erro
 that prints variables. A password is at
 least 12 characters and at most 256 bytes, without control or invisible characters.
 
-<!-- source: brain/teaport_brain/login_apply.py:40-46#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:47-48,58#739424b7; brain/teaport_brain/login_apply.py:90-94#831554ec; brain/teaport_brain/login_apply.py:134-145#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:43-49#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:47-48,58#739424b7; brain/teaport_brain/login_apply.py:93-97#831554ec; brain/teaport_brain/login_apply.py:137-148#020cf4bc -->
 
 The setup page's form can create the administrator account, so the page answers only
 under its own names: the setup network's address and its `.local` name. A request for
@@ -111,11 +112,21 @@ origin is accepted. One whose origin is `null`, which some captive browsers send
 does a sandboxed frame on any site, is accepted only when the browser also says the post
 comes from the page itself.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:669-684#362b2378; brain/teaport_brain/wifi_setup.py:751-764#74bd2512 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:686-701#362b2378; brain/teaport_brain/wifi_setup.py:768-781#74bd2512 -->
+
+The setup page answers only devices on the setup network itself, whose addresses are in
+its subnet (`10.42.0.0/24`). Listening on the setup address alone isn't enough: a device
+on your home network could route that address to the device and reach the page
+over the home network, for example while the device is online over Ethernet and in setup
+mode. The page drops any connection from outside the subnet before it reads anything.
+The rule that sends port 80 to the page doesn't name the setup network's interface,
+because the code picks the Wi-Fi device when setup runs.
+
+<!-- source: brain/teaport_brain/wifi_setup.py:13-21#1be8f012; brain/teaport_brain/wifi_setup.py:539-558#30298a1c -->
 
 Teaspoon AI's provisioning, which runs outside this repository when it prepares a
 Teaspoon AI device for shipping, writes the marker, refuses a device that already has a
-`teaport` account or group, removes the run user from the `sudo` group and sets aside
+`teaport` account, group, or home folder, removes the run user from the `sudo` group and sets aside
 its other `sudo` rules (only the helpers' rules in `/etc/sudoers.d/teaport-config`
 stay), locks the run user's password, removes its SSH keys, and makes sure that SSH
 accepts passwords. The paper insert carries no login. So on such a device, until the
@@ -143,7 +154,7 @@ Anyone who can reach the setup page or the settings can create the login first, 
   device itself, `http://127.0.0.1:7861/config`, needs no token, so any user or program
   on the device can create the login there.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-13#5369985c; brain/teaport_brain/wifi_setup.py:669-684#362b2378; brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/config_ui.py:138-140#7c7d40df -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-13#5369985c; brain/teaport_brain/wifi_setup.py:686-701#362b2378; brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/config_ui.py:138-140#7c7d40df -->
 
 The setup page makes the step required, so on a device set up through that page the
 window ends at setup. The exception is a create that fails because of the device, not
@@ -153,7 +164,7 @@ settings until the owner creates the login. The marker limits the window to a de
 whose owner has no login yet; it doesn't prevent it. See
 [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login).
 
-<!-- source: brain/teaport_brain/login_apply.py:31-38#01fb9b96; brain/teaport_brain/wifi_setup.py:31-45#de9e3f82 -->
+<!-- source: brain/teaport_brain/login_apply.py:34-41#01fb9b96; brain/teaport_brain/wifi_setup.py:37-51#de9e3f82 -->
 
 ## Related
 

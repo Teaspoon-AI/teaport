@@ -703,7 +703,7 @@ Teaspoon AI device, the service account, the user the brain runs as, has no pass
 and no SSH key, so nobody can sign in before then. A device that you installed yourself
 has the login of the user you installed it as, and never offers this step.
 
-<!-- source: brain/teaport_brain/login_apply.py:285-294#5f298187; brain/teaport_brain/static/config.html:820#106e56e9 -->
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f; brain/teaport_brain/static/config.html:820#106e56e9 -->
 
 **Fix**
 
@@ -724,12 +724,16 @@ If neither the settings nor the setup page shows the step, one of these is true:
   step rather than one that can't work. Installing the brain package again writes the
   rule; see [Update teaport](/guides/updating/). On a Teaspoon AI device without a login,
   ask the seller of the device.
-- A group named `teaport` exists without the account, so the login's account can't be
-  made. The helper refuses it, and the pages show no step.
+- A group named `teaport`, or a home folder `/home/teaport`, exists without the
+  account, for example after the account was removed by hand. The login's account can't
+  be made over it, so the helper refuses, and the pages show no step. The device then
+  needs a reflash, as
+  [The device already has a login](#the-device-already-has-a-login) describes, or the
+  seller of the device can do it.
 
-<!-- source: brain/teaport_brain/login_apply.py:285-294#5f298187 -->
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f -->
 
-<!-- source: brain/teaport_brain/owner_login.py:97-101#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:58#b62acd37 -->
+<!-- source: brain/teaport_brain/owner_login.py:99-103#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:58#b62acd37 -->
 
 ### The device already has a login
 
@@ -741,7 +745,7 @@ until it is set up, software running on the device, such as a compromised agent,
 create it first. The setup page and the settings run as that same service account, so
 software that was compromised before you typed your password could also have read it.
 
-<!-- source: brain/teaport_brain/login_apply.py:31-38#01fb9b96; brain/teaport_brain/login_apply.py:301-308#c7e4a1ad -->
+<!-- source: brain/teaport_brain/login_apply.py:34-41#01fb9b96; brain/teaport_brain/login_apply.py:303-310#c7e4a1ad -->
 
 **Fix**
 
@@ -773,7 +777,7 @@ it from a computer.
 3. Run `teaport status` to see what is wrong. Administrator commands, such as
    `sudo systemctl restart teaport-brain`, ask for the same password.
 
-<!-- source: brain/teaport_brain/login_apply.py:81-84#d31172cc; brain/teaport_brain/login_apply.py:235-239#57a7a7ce -->
+<!-- source: brain/teaport_brain/login_apply.py:84-87#d31172cc; brain/teaport_brain/login_apply.py:238-242#57a7a7ce -->
 
 ## Where the logs are
 
