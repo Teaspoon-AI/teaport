@@ -819,9 +819,6 @@ msgstr "Typ het nog een keer"
 msgid "Use at least {count} characters."
 msgstr "Gebruik minstens {count} tekens."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Je kunt dit leeg laten en je login later aanmaken in Instellingen."
-
 msgid "Create login"
 msgstr "Login aanmaken"
 

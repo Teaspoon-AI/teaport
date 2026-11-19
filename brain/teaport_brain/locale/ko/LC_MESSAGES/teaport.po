@@ -928,9 +928,6 @@ msgstr "한 번 더 입력해 주세요"
 msgid "Use at least {count} characters."
 msgstr "{count}자 이상으로 해 주세요."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "비워 두고 나중에 설정에서 로그인을 만들 수도 있어요."
-
 msgid "Create login"
 msgstr "로그인 만들기"
 

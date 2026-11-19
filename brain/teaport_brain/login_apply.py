@@ -11,42 +11,54 @@
 #           install, where this helper does nothing at all);
 #   create  the `teaport` user, with a home directory, /bin/bash and the sudo group, its
 #           password set through chpasswd on stdin. Only while the pending marker
-#           (PENDING_PATH) is there and no `teaport` user (nor its home directory) exists;
-#           success removes the marker, so it works once. A failed step undoes the ones
-#           before it: all or nothing.
+#           (PENDING_PATH) is there; success removes the marker, so it works once. A
+#           failed step undoes the ones before it.
+# The marker means "no owner login yet". While it is there, a `teaport` account is one a
+# create began and did not finish (a power cut, or a SIGKILL, between useradd and
+# chpasswd): status says PENDING, and the next create finishes it -- its password, the
+# sudo group -- and removes the marker. Provisioning refuses a box that already has a
+# `teaport` account before it writes the marker, so no other account is taken over this
+# way. Without the marker, an existing `teaport` account is the owner's: EXISTS.
 # The marker is root's: provisioning writes it at seal (Teaspoon-AI/teaport-appliance#3),
 # in a root-only directory outside every path the run user can write (/etc/teaport is the
 # run user's through config_apply; the state directory is its own). Nothing in this
 # package writes it, and no verb here does.
 #
-# Known window, not closed here: on a sealed box nobody has set up yet, a compromised
-# agent could create the login before the owner does. The owner then sees "this Teaport
-# already has a login" where the step would be. The marker limits this to a box that
-# has not been set up; it does not prevent it.
+# Known window, not closed here: until the owner creates the login -- not merely until
+# the box is set up: Settings offers the step for as long as the marker is there -- a
+# compromised run user (the agent) could create it first, and the owner then sees "this
+# Teaport already has a login" in place of the step. A run user compromised before the
+# owner types the password could also capture it, since the setup page and Settings run
+# as that user. The setup page makes the step required, which ends the window at setup
+# for a box that goes through it; the marker limits it to a box whose owner has no login
+# yet. Neither prevents it.
 #
 # The verb is the only argument; the rest is a JSON object on stdin, so the password never
 # goes on a command line, where any user's ps can read it. The reply is a JSON object on
 # stdout; a request this does not do gets {"refused": why, "why": code} and exit 2. The
 # password reaches nothing but chpasswd's stdin: no reply, no log line, no error carries
 # it -- chpasswd's own output is not passed on, and an error nobody expected is reported
-# by its type alone (main), since an exception's text can quote its input.
+# by its type alone (main), since an exception's text can quote its input. The process
+# can leave no core dump (RLIMIT_CORE 0, and not dumpable), which would hold it.
 #
-# A create is never cut short by a stop: SIGTERM, SIGINT and SIGHUP are blocked for the
-# whole run (the run user can signal its own sudo, and systemd stopping setup signals
-# every process of the unit). One left half-done would be a `teaport` user with no
-# password and the marker still there, which no later create could finish. Only SIGKILL
-# can, which nothing here can answer.
+# Nothing the run user can send stops a create part-way: every signal that can be blocked
+# is, for the whole run (sudo passes the run user's signals on -- TERM, INT, HUP, but also
+# USR1, USR2, ALRM and QUIT, which it can send from another process group -- and systemd
+# stopping setup signals every process of the unit). SIGKILL and a power cut still can;
+# the next create finishes what they left (above).
 #
 # Run as the sudoers line (packaging/deb/sudoers-sync) names it:
 #   /usr/bin/python3 /usr/lib/teaport/login_apply.py <verb>
 # the root-owned copy the teaport-brain package ships, on the SYSTEM python, never the
 # venv's (like config_apply.py and wifi_apply.py). Standard library only. In the brain's
 # tree owner_login.py reads its constants and password rule, and tests run it in-process
-# (handle()) against a pretend useradd, chpasswd, getent and userdel.
+# (handle()) against a pretend useradd, chpasswd, getent, usermod and userdel.
 #
+import ctypes
 import fcntl
 import json
 import os
+import resource
 import signal
 import stat
 import subprocess
@@ -63,8 +75,10 @@ PENDING_PATH = "/var/lib/teaport-owner/pending"
 LOCK_PATH = "/run/teaport-login-apply/lock"
 # The brain's unit, whose User= is the run user: the login must not be that account.
 BRAIN_UNIT = "teaport-brain.service"
+# The minimum in characters, as the owner counts; the maximum in UTF-8 bytes, as PAM does
+# (pam_unix takes at most 512).
 MIN_PASSWORD = 12
-MAX_PASSWORD = 256
+MAX_PASSWORD_BYTES = 256
 MAX_REQUEST = 4096
 TOOL_SECS = 30
 # The account tools' PATH, our own (sudo's secure_path sets one too), and English output.
@@ -72,15 +86,19 @@ TOOL_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
 # status's answers.
 PENDING, CREATED, NOT_OFFERED = "pending", "created", "not_offered"
 # Why a create did not happen, as codes; owner_login.py turns them into the words people
-# see. FAILED: a step failed and what came before it was undone; NOT_OFFERED (status's
-# word too): no pending marker.
-SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED = (
-    "short", "long", "character", "exists", "failed", "refused")
+# see. FAILED: a step failed (a retry finishes or redoes it); NOT_OFFERED (status's word
+# too): no pending marker; BUSY: another create holds the lock (it is not a failure: that
+# one is under way).
+SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED, BUSY = (
+    "short", "long", "character", "exists", "failed", "refused", "busy")
+# userdel's exit status for "no such user".
+_USERDEL_NO_USER = 6
+# prctl(2)'s PR_SET_DUMPABLE.
+_PR_SET_DUMPABLE = 4
 # Characters no password should have: control characters (a newline would end
 # chpasswd's line), invisible formatting (zero-width, direction marks), lone surrogates
 # (not text at all), and line or paragraph separators.
 _BAD_CATEGORIES = ("Cc", "Cf", "Cs", "Zl", "Zp")
-_STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
 class Refused(Exception):
@@ -97,10 +115,11 @@ def check_password(password) -> str:
         raise Refused("the password must be a string")
     if len(password) < MIN_PASSWORD:
         raise Refused(f"a password has at least {MIN_PASSWORD} characters", SHORT)
-    if len(password) > MAX_PASSWORD:
-        raise Refused(f"a password has at most {MAX_PASSWORD} characters", LONG)
+    # Before the length in bytes: a lone surrogate has no UTF-8 at all.
     if any(unicodedata.category(c) in _BAD_CATEGORIES for c in password):
         raise Refused("a password has no control or invisible characters", CHARACTER)
+    if len(password.encode()) > MAX_PASSWORD_BYTES:
+        raise Refused(f"a password has at most {MAX_PASSWORD_BYTES} bytes", LONG)
     return password
 
 
@@ -141,11 +160,19 @@ class Ops:
         rc, _, _ = self._run(["chpasswd"], stdin=f"{USERNAME}:{password}\n".encode())
         return rc == 0
 
+    def admin(self) -> bool:
+        """An unfinished account gets what useradd gives a new one: the sudo group (kept
+        with any others) and the shell."""
+        rc, _, _ = self._run(["usermod", "--append", "--groups", ADMIN_GROUP,
+                              "--shell", SHELL, USERNAME])
+        return rc == 0
+
     def undo(self) -> None:
         """No `teaport` user: take away the one this create made. Under the lock, after
-        create found none and no home directory, so any there is now is this run's."""
-        if self.exists():
-            self._run(["userdel", "--remove", USERNAME])
+        create found none and no home directory, so any there now is this run's. No lookup
+        first (one that fails would hide the result): "no such user" is as good. One that
+        stays (userdel failed) is an unfinished account the next create finishes."""
+        self._run(["userdel", "--remove", USERNAME])
 
 
 class Marker:
@@ -173,33 +200,46 @@ class Marker:
 
 
 def status(ops: Ops, marker: Marker) -> dict:
-    if ops.exists():
-        return {"state": CREATED}
-    return {"state": PENDING if marker.present() else NOT_OFFERED}
+    # The marker first: with it, an existing account is an unfinished create (above).
+    if marker.present():
+        return {"state": PENDING}
+    return {"state": CREATED if ops.exists() else NOT_OFFERED}
 
 
 def create(ops: Ops, marker: Marker, req: dict) -> dict:
     password = check_password(req.get("password"))
     if ops.run_user() == USERNAME:
         raise Refused(f"the brain runs as {USERNAME}: the login must be another account")
+    if not marker.present():
+        if ops.exists():
+            raise Refused("this box already has a login", EXISTS)
+        raise Refused("no login is pending on this box", NOT_OFFERED)
     if ops.exists():
-        raise Refused("this box already has a login", EXISTS)
+        return _finish(ops, marker, password)
     if os.path.lexists(ops.home):
         # An undo removes the home directory: one that was there first is not this run's.
         raise Refused(f"{ops.home} is already there")
-    if not marker.present():
-        raise Refused("no login is pending on this box", NOT_OFFERED)
     done = False
     try:
         if ops.useradd() and ops.chpasswd(password):
-            # Gone with the success, or the whole create is undone: a marker left behind
-            # would open the gate again for whoever later removes the account.
+            # Gone with the success, or the create is undone: a marker left behind would
+            # make the account an unfinished one, its password anyone's to set.
             marker.remove()
             done = True
     finally:
         if not done:
             ops.undo()
     return {"ok": True, "username": USERNAME} if done else {"ok": False, "why": FAILED}
+
+
+def _finish(ops: Ops, marker: Marker, password: str) -> dict:
+    """The account an earlier create left unfinished: its password and group, then the
+    marker gone. Nothing is undone on a failure: the account stays unfinished, and the
+    next create tries again."""
+    if ops.chpasswd(password) and ops.admin():
+        marker.remove()
+        return {"ok": True, "username": USERNAME}
+    return {"ok": False, "why": FAILED}
 
 
 def handle(ops: Ops, marker: Marker, verb: str, req) -> dict:
@@ -222,8 +262,16 @@ def _lock(path: str = LOCK_PATH) -> int:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         os.close(fd)
-        raise Refused("another login is being created") from None
+        raise Refused("another login is being created", BUSY) from None
     return fd
+
+
+def _harden() -> None:
+    """No core dump of this process, which would hold the password: none at all
+    (RLIMIT_CORE), and not dumpable (which also keeps other processes of the same uid
+    from reading its memory)."""
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0)
 
 
 def _reply(obj: dict) -> None:
@@ -240,9 +288,10 @@ def main(argv: list[str] | None = None) -> int:
         _reply({"refused": "usage: login_apply.py <verb> (the request as JSON on stdin)",
                 "why": REFUSED})
         return 2
-    # Blocked for good: the process ends after its reply, and a stop that came meanwhile
-    # is never delivered (the module comment says why).
-    signal.pthread_sigmask(signal.SIG_BLOCK, _STOP_SIGNALS)
+    # Blocked for good: the process ends after its reply, and a signal that came meanwhile
+    # is never delivered (the module comment says why). SIGKILL and SIGSTOP cannot be.
+    signal.pthread_sigmask(signal.SIG_BLOCK, signal.valid_signals())
+    _harden()
     try:
         data = sys.stdin.read(MAX_REQUEST + 1)
         if len(data) > MAX_REQUEST:

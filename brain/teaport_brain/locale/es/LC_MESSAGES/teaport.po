@@ -821,9 +821,6 @@ msgstr "Escríbela otra vez"
 msgid "Use at least {count} characters."
 msgstr "Usa al menos {count} caracteres."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Puedes dejarlo vacío y crear tu inicio de sesión más tarde en Ajustes."
-
 msgid "Create login"
 msgstr "Crear inicio de sesión"
 

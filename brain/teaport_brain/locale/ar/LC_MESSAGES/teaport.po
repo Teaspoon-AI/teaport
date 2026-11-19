@@ -830,9 +830,6 @@ msgstr "اكتبها مرة أخرى"
 msgid "Use at least {count} characters."
 msgstr "استخدم {count} حرفًا على الأقل."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "يمكنك ترك هذا الحقل فارغًا وإنشاء حساب تسجيل الدخول لاحقًا من الإعدادات."
-
 msgid "Create login"
 msgstr "إنشاء حساب الدخول"
 

@@ -15,15 +15,16 @@ from teaport_brain.i18n import N_
 
 # The root-owned copy the sudoers line names (packaging/deb/sudoers-sync).
 HELPER = "/usr/lib/teaport/login_apply.py"
-# A create's longest path is six account-tool calls (systemctl, getent, useradd,
-# chpasswd, and an undo's getent and userdel), each to the helper's own limit.
-HELPER_SECS = 6 * login_apply.TOOL_SECS + 30
+# A create's longest path is five account-tool calls (systemctl, getent, useradd,
+# chpasswd, and an undo's userdel), each to the helper's own limit.
+HELPER_SECS = 5 * login_apply.TOOL_SECS + 30
 # The helper never stops part-way (it blocks the stop signals): how long a stopped caller
 # waits for it to finish before it gives up on it (the create goes on regardless).
 HELPER_STOP_SECS = 30
 USERNAME = login_apply.USERNAME
+MIN_PASSWORD = login_apply.MIN_PASSWORD
 PENDING, CREATED, NOT_OFFERED = login_apply.PENDING, login_apply.CREATED, login_apply.NOT_OFFERED
-EXISTS = login_apply.EXISTS
+EXISTS, BUSY = login_apply.EXISTS, login_apply.BUSY
 # Why a create did not happen, beyond the helper's codes: the two passwords differ.
 MISMATCH = "mismatch"
 
@@ -35,8 +36,6 @@ TEXT = {
     "password": N_("Choose a password"),
     "again": N_("Type it again"),
     "rule": N_("Use at least {count} characters."),
-    # The setup page only: the step can wait (Settings offers it until a login exists).
-    "later": N_("You can leave this empty and create your login later in Settings."),
     "create": N_("Create login"),
     "creating": N_("Creating your login…"),
     "created": N_("Your login is ready. Sign in as {username} with the password you chose."),
@@ -49,6 +48,9 @@ WHY = {
     login_apply.EXISTS: N_("This Teaport already has a login."),
     login_apply.NOT_OFFERED: N_("Creating a login isn't available on this Teaport."),
     login_apply.FAILED: N_("Teaport couldn't create your login. Try again."),
+    # Another create is under way (a second tap, Settings and the setup page at once): not
+    # a failure, so said as the progress it is.
+    BUSY: TEXT["creating"],
     login_apply.REFUSED: N_("Teaport couldn't create your login. Try again."),
 }
 

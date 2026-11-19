@@ -29,11 +29,16 @@
 #      in the "connected" status, and the voice says it (wifi_voice.py); a key never
 #      leaves this process but to the provider and the brain's key file.
 #      On a box provisioning marked for it, the page also has a "Create your login" step
-#      (#421): a password, typed twice, for the box's admin account (owner_login.py). It
-#      needs no internet, so the login is made as the form arrives, through the root
-#      helper, before the join begins; a password the helper does not take, or a create
-#      that fails, brings the page back with the reason and nothing else changed. Left
-#      empty, the step waits: Settings offers it until a login exists.
+#      (#421): a password, typed twice, for the box's admin account (owner_login.py).
+#      Required while a login is pending (as on the DGX Spark): a step that could be
+#      skipped would leave the box's login to whoever makes it first, for as long as the
+#      owner has none (login_apply.py's known window). A box whose helper cannot answer
+#      shows no step, and still gets online. It needs no internet, so the login is made as
+#      the form arrives, through the root helper, before the join begins; a password the
+#      helper does not take, or a create that fails, brings the page back with the reason
+#      and no join. The form can now make the box's admin account, so a post must come
+#      from the page itself (Handler._cross_site), and a second tap while the first is
+#      under way gets the "joining" page, not an error.
 #   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
@@ -263,7 +268,7 @@ PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="ut
 <h1>{heading}</h1>
 <p>{intro}</p>
 {error}
-<form method="post" action="/connect?lang={lang_q}">
+<form method="post" action="/connect?lang={lang_q}" onsubmit="this.querySelector('button[type=submit]').disabled=true">
 {networks}
 <label class="net"><input type="radio" name="ssid" value="" {other_checked}>
 <span>{other}</span></label>
@@ -342,17 +347,17 @@ def render_account(t: i18n.T) -> str:
 
 def render_login(t: i18n.T) -> str:
     """The "Create your login" step (#421): the password for the box's admin account,
-    typed twice. Optional here: left empty, Settings offers it later."""
+    typed twice. Required (the module comment says why)."""
     def say(key):
         return html.escape(owner_login.say(t, owner_login.TEXT[key]))
     field = ('<input type="password" id="{id}" name="{id}" autocomplete="new-password" '
-             'autocapitalize="none" spellcheck="false">')
+             f'autocapitalize="none" spellcheck="false" required minlength="{owner_login.MIN_PASSWORD}">')
     return (f'<div class="login"><h2>{say("title")}</h2><p>{say("intro")}</p>'
             f'<label class="f" for="login_password">{say("password")}</label>'
             + field.format(id="login_password")
             + f'<label class="f" for="login_again">{say("again")}</label>'
             + field.format(id="login_again")
-            + f'<p class="hint">{say("rule")} {say("later")}</p></div>')
+            + f'<p class="hint">{say("rule")}</p></div>')
 
 
 def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
@@ -568,6 +573,9 @@ class Setup:
         # refusal, which takes the step away).
         self.login = login
         self.login_offered = False
+        # Held by the post that is creating the login or asking for the join: a second
+        # one (a second tap) meanwhile is answered as the first will be, never as an error.
+        self.posting = threading.Lock()
         # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
         # its profile), never 0.0.0.0 — the box's other networks must not reach a page
         # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -630,6 +638,24 @@ class Setup:
                 t, remember = self._t()
                 self._send(200, setup.page(setup.error_text(t), t), extra=remember)
 
+            def _cross_site(self) -> bool:
+                """A post from another site's page: a phone on the setup network often keeps
+                its mobile data, and a tab there could post the form. The page's own posts
+                carry no Origin, "null" (some captive browsers), or the page's host: the
+                setup address, its .local name, or the name the phone asked for (a captive
+                probe, captive.apple.com, gets the page under its own name), on any port."""
+                if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
+                    return True
+                origin = (self.headers.get("Origin") or "").strip()
+                if not origin or origin == "null":
+                    return False
+                host = (urllib.parse.urlsplit(origin).hostname or "").lower()
+                asked = (urllib.parse.urlsplit("//" + (self.headers.get("Host") or "")).hostname or "").lower()
+                own = {setup.address.lower(), asked}
+                if setup.avahi_name:
+                    own.add(f"{setup.avahi_name}.local".lower())
+                return not host or host not in own
+
             def do_POST(self):
                 raw = (self.headers.get("Content-Length") or "0").strip()
                 if not (raw.isascii() and raw.isdigit()):
@@ -640,24 +666,31 @@ class Setup:
                     body = self.rfile.read(int(raw))
                 except OSError:  # the timeout, or the phone left
                     return
+                if self._cross_site():
+                    return self.send_error(403)
                 ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
-                if error:
-                    return self._send(200, setup.page(t._(error), t), extra=remember)
-                made = False
-                if setup.login_offered:
-                    login_password, login_again = parse_login(body)
-                    if login_password or login_again:
-                        why = setup.create_login(login_password, login_again)
+                if not setup.posting.acquire(blocking=False):
+                    return self._send(200, render_joining((setup.request or (ssid,))[0], t), extra=remember)
+                try:
+                    if setup.request is not None:   # the join is already asked for
+                        return self._send(200, render_joining(setup.request[0], t), extra=remember)
+                    if error:
+                        return self._send(200, setup.page(t._(error), t), extra=remember)
+                    made = False
+                    if setup.login_offered:   # required: empty is "too short"
+                        why = setup.create_login(*parse_login(body))
                         if why:
                             return self._send(200, setup.page(owner_login.say(t, owner_login.WHY[why]), t),
                                               extra=remember)
                         made = True
-                self._send(200, render_joining(ssid, t, login=made), extra=remember)
-                setup.key = parse_key(body) if setup.account is not None else ""
-                setup.lang = t  # the screens from here on (_text)
-                setup.request = (ssid, password, hidden)
-                setup.wake.set()
+                    self._send(200, render_joining(ssid, t, login=made), extra=remember)
+                    setup.key = parse_key(body) if setup.account is not None else ""
+                    setup.lang = t  # the screens from here on (_text)
+                    setup.request = (ssid, password, hidden)
+                    setup.wake.set()
+                finally:
+                    setup.posting.release()
 
         return Handler
 

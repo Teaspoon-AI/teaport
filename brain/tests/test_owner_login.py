@@ -4,9 +4,10 @@
 # here running the root helper in-process against pretend account tools. What has to hold:
 #   - the step and the card are there only while a login is pending, in the reader's
 #     language, and go away once it exists;
-#   - on the setup page the login is made as the form arrives, before the join; a
-#     password it does not take, or a create that fails, brings the page back with the
-#     reason and no join; left empty, the step is skipped and the join goes on;
+#   - on the setup page the step is required while a login is pending; the login is made
+#     as the form arrives, before the join; a password it does not take, or a create that
+#     fails, brings the page back with the reason and no join; a second tap while the
+#     first is under way gets the "joining" page; a post from another site is refused;
 #   - the password reaches no log line, no status file, no page and no answer.
 # All passwords here are made up for the test.
 #
@@ -16,6 +17,7 @@ import html
 import json
 import os
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -46,7 +48,10 @@ def test_the_step_is_on_the_page_only_while_a_login_is_pending():
     assert 'name="login_password"' in page and 'name="login_again"' in page
     assert page.count('autocomplete="new-password"') == 2
     assert "Create your login" in page and "Your username is teaport." in page
-    assert "Use at least 12 characters." in page
+    assert "Use at least 12 characters." in page and "later" not in page
+    assert page.count('required minlength="12"') == 2
+    # The form's button goes grey on the first tap: a second one posts nothing.
+    assert "onsubmit=\"this.querySelector('button[type=submit]').disabled=true\"" in page
     assert 'name="login_password"' not in ws.render_page([], "", EN)
     ja = ws.render_page([], "", i18n.get("ja"), login=True)
     assert owner_login.say(i18n.get("ja"), owner_login.TEXT["title"]) in ja
@@ -74,12 +79,22 @@ def test_a_login_made_with_the_wifi_choice_comes_before_the_join(tmp_path, capsy
     assert "the owner's login: created" in out.out
 
 
-def test_an_empty_step_is_skipped_and_offered_later(tmp_path):
+def test_while_a_login_is_pending_the_step_is_required(tmp_path):
     tools, marker, login = _login(tmp_path)
+    page = _Page(login)
+    try:
+        reply = page.post()
+        assert "Your password needs at least 12 characters." in reply and page.setup.request is None
+        assert not tools.changes() and marker.present()
+    finally:
+        page.close()
+
+
+def test_a_helper_that_cannot_answer_shows_no_step_and_the_box_gets_online():
+    login = owner_login.Login(helper=lambda verb, req: {"ok": False, "err": "sudo: a password is required"})
     nm, pages = FakeNM([(True, "", "home")]), []
-    rc, seen = _run_setup(nm, login=login, pages=pages, post=[{"ssid": "home", "password": "homepass1"}])
-    assert rc == 0 and "Your login is ready" not in pages[1]
-    assert "teaport" not in tools.users and marker.present() and login.pending()
+    rc, _ = _run_setup(nm, login=login, pages=pages, post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 0 and 'name="login_password"' not in pages[0]
 
 
 def test_without_a_pending_login_the_page_has_no_step(tmp_path):
@@ -101,10 +116,10 @@ class _Page:
         self.setup.login_offered = login.pending()
         self.setup.serve()
 
-    def post(self, **form):
+    def post(self, headers=None, **form):
         body = urllib.parse.urlencode({"ssid": "home", "password": "homepass1", **form}).encode()
-        return html.unescape(urllib.request.urlopen(f"http://127.0.0.1:{self.setup.port}/connect",
-                                                    body).read().decode())
+        req = urllib.request.Request(f"http://127.0.0.1:{self.setup.port}/connect", body, headers=headers or {})
+        return html.unescape(urllib.request.urlopen(req).read().decode())
 
     def close(self):
         self.setup.server.shutdown()
@@ -139,13 +154,66 @@ def test_a_create_that_fails_keeps_the_step_and_one_that_exists_drops_it(tmp_pat
         assert "Teaport couldn't create your login. Try again." in reply
         assert 'name="login_password"' in reply and page.setup.request is None
         assert "teaport" not in tools.users and marker.present()
-        # Someone else made it meanwhile (the known window): said, and the step goes.
+        # Someone else made it meanwhile (the known window; the marker went with it): said,
+        # and the step goes.
         tools.fail.clear()
         tools.users["teaport"] = "someone-elses"
+        marker.remove()
         reply = page.post(login_password=GOOD, login_again=GOOD)
         assert "This Teaport already has a login." in reply and 'name="login_password"' not in reply
         assert tools.users["teaport"] == "someone-elses" and page.setup.request is None
         assert "Teaport is joining" in page.post()   # the Wi-Fi alone now
+    finally:
+        page.close()
+
+
+def test_a_second_tap_while_the_first_is_under_way_gets_the_joining_page(tmp_path):
+    tools, marker, login = _login(tmp_path)
+    page = _Page(login)
+    try:
+        page.setup.posting.acquire()          # the first tap, still creating the login
+        try:
+            reply = page.post(login_password=GOOD, login_again=GOOD)
+        finally:
+            page.setup.posting.release()
+        assert "Teaport is joining" in reply and not tools.changes()
+        reply = page.post(login_password=GOOD, login_again=GOOD)   # the first, done
+        assert "Your login is ready" in reply and page.setup.request == ("home", "homepass1", False)
+        n = len(tools.calls)
+        reply = page.post(login_password=GOOD, login_again=GOOD)   # a second tap after it
+        assert "Teaport is joining" in reply and "couldn't" not in reply and len(tools.calls) == n
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("headers, refused", [
+    ({"Origin": "http://evil.example"}, True),
+    ({"Origin": "https://evil.example:8443"}, True),
+    ({"Origin": "http://10.42.0.1.evil.example"}, True),
+    ({"Sec-Fetch-Site": "cross-site"}, True),
+    ({"Origin": "http://10.42.0.1", "Sec-Fetch-Site": "cross-site"}, True),
+    ({}, False),                                                  # no Origin at all
+    ({"Origin": "null"}, False),                                  # some captive browsers
+    ({"Origin": "http://10.42.0.1"}, False),
+    ({"Origin": "http://10.42.0.1:80"}, False),
+    ({"Origin": "http://Teaport-9E35.local"}, False),
+    # A captive probe's name: the page was served as captive.apple.com, and posts there.
+    ({"Origin": "http://captive.apple.com", "Host": "captive.apple.com"}, False),
+    ({"Origin": "http://evil.example", "Host": "captive.apple.com"}, True),
+    ({"Origin": "http://10.42.0.1", "Sec-Fetch-Site": "same-origin"}, False),
+])
+def test_a_post_from_another_site_is_refused(tmp_path, headers, refused):
+    tools, marker, login = _login(tmp_path)
+    page = _Page(login)
+    page.setup.avahi_name = "teaport-9e35"
+    try:
+        if refused:
+            with pytest.raises(urllib.error.HTTPError) as e:
+                page.post(headers=headers, login_password=GOOD, login_again=GOOD)
+            assert e.value.code == 403
+            assert not tools.changes() and page.setup.request is None
+        else:   # through to the form's own checks: a missing network is said, nothing made
+            assert "Pick a network" in page.post(headers=headers, ssid="", login_password=GOOD, login_again=GOOD)
     finally:
         page.close()
 
@@ -200,6 +268,14 @@ def test_a_request_that_is_not_two_passwords_is_a_400_that_does_not_quote_it(set
     r = client.post("/api/login", headers={**H, "content-type": "application/json"}, content=body)
     assert r.status_code == 400 and "only-one-of-them" not in r.text
     assert not tools.changes() and "only-one-of-them" not in "\n".join(lines)
+
+
+def test_a_create_already_under_way_is_said_as_progress(settings, monkeypatch):
+    client = settings[0]
+    busy = owner_login.Login(helper=lambda verb, req: {"ok": False, "err": "another", "why": "busy"})
+    monkeypatch.setattr(config_ui, "_owner_login", lambda: busy)
+    r = client.post("/api/login", headers=H, json={"password": GOOD, "again": GOOD}).json()
+    assert r == {"ok": False, "why": "busy", "message": "Creating your login…"}
 
 
 def test_the_page_draws_the_card_from_the_routes():

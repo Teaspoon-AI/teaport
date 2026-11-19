@@ -819,9 +819,6 @@ msgstr "Gib es noch einmal ein"
 msgid "Use at least {count} characters."
 msgstr "Verwende mindestens {count} Zeichen."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Du kannst das Feld leer lassen und deine Anmeldung später in den Einstellungen erstellen."
-
 msgid "Create login"
 msgstr "Anmeldung erstellen"
 

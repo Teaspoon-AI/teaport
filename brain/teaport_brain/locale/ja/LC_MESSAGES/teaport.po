@@ -924,9 +924,6 @@ msgstr "もう一度入力してください"
 msgid "Use at least {count} characters."
 msgstr "{count} 文字以上にしてください。"
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "空欄のままにして、あとで設定からログインを作成することもできます。"
-
 msgid "Create login"
 msgstr "ログインを作成"
 

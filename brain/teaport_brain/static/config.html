@@ -829,7 +829,8 @@
       btn.disabled = true; out.className = 'acct-msg'; out.textContent = T.creating;
       try {
         const res = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: pw.value, again: again.value }) });
-        out.className = 'acct-msg ' + (res.body.ok ? 'ok' : 'err'); out.textContent = res.body.message || res.body.detail || '';
+        // busy: another create of this login is under way (a second tap elsewhere), not a failure.
+        out.className = 'acct-msg ' + (res.body.ok ? 'ok' : res.body.why === 'busy' ? '' : 'err'); out.textContent = res.body.message || res.body.detail || '';
         // Done, or another login got there first: the form goes, the message stays.
         if (res.body.ok || res.body.why === 'exists' || res.body.why === 'not_offered') form.remove();
       } catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }

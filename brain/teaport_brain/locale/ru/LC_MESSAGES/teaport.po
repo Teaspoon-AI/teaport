@@ -827,9 +827,6 @@ msgstr "Введите его ещё раз"
 msgid "Use at least {count} characters."
 msgstr "Используйте не меньше {count} символов."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Можно оставить поле пустым и создать учётную запись позже в Настройках."
-
 msgid "Create login"
 msgstr "Создать учётную запись"
 

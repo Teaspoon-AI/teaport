@@ -924,9 +924,6 @@ msgstr "इसे दोबारा टाइप करें"
 msgid "Use at least {count} characters."
 msgstr "कम से कम {count} अक्षर इस्तेमाल करें।"
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "आप इसे खाली छोड़कर बाद में सेटिंग्स में अपना लॉगिन बना सकते हैं।"
-
 msgid "Create login"
 msgstr "लॉगिन बनाएँ"
 

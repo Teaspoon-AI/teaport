@@ -824,9 +824,6 @@ msgstr "Saisissez-le à nouveau"
 msgid "Use at least {count} characters."
 msgstr "Utilisez au moins {count} caractères."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Vous pouvez laisser ce champ vide et créer votre identifiant plus tard dans les Réglages."
-
 msgid "Create login"
 msgstr "Créer l'identifiant"
 

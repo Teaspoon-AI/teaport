@@ -819,9 +819,6 @@ msgstr "Digite de novo"
 msgid "Use at least {count} characters."
 msgstr "Use pelo menos {count} caracteres."
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "Você pode deixar em branco e criar seu login depois, em Configurações."
-
 msgid "Create login"
 msgstr "Criar login"
 

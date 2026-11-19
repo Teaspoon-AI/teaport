@@ -8,11 +8,14 @@
 #     too short, too long, not text, or with control or invisible characters;
 #   - a create makes the user with a home, /bin/bash and the sudo group, sets the password
 #     through chpasswd's stdin, and removes the marker: it works once;
-#   - a step that fails undoes the ones before it (all or nothing), and the marker stays;
+#   - a step that fails undoes the ones before it, and the marker stays; an account a
+#     create left unfinished (killed between useradd and chpasswd, or an undo that could
+#     not run) is pending while the marker is there, and the next create finishes it;
 #   - the password reaches chpasswd's stdin and nothing else: no command line, no reply,
 #     no stdout or stderr, even when a tool or the helper itself fails;
-#   - main refuses without root, takes its request on stdin, holds the stop signals off
-#     for a create, and lets one create run at a time;
+#   - main refuses without root, takes its request on stdin, blocks every signal it can
+#     (a real process, sent the ones sudo passes on, still finishes), leaves no core dump,
+#     and lets one create run at a time (a second is BUSY, not a failure);
 #   - the run user's side (owner_login.py) calls it through sudo with the password on
 #     stdin, and the package ships it with its sudoers line.
 # All passwords here are made up for the test.
@@ -27,20 +30,23 @@ import re
 
 import pytest
 
-from teaport_brain import login_apply, owner_login
+from teaport_brain import i18n, login_apply, owner_login
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GOOD = "correct-horse-battery"   # a made-up password
 
 
 class FakeTools:
-    """getent, systemctl, useradd, chpasswd and userdel as a state: the users there are,
-    what each call was. `fail`: a tool that exits 1 (useradd's "half" makes the user and
-    then fails, as a useradd that could not finish the home directory does)."""
+    """getent, systemctl, useradd, chpasswd, usermod and userdel as a state: the users
+    there are, their groups, what each call was. `fail`: a tool that exits 1 (useradd's
+    "half" makes the user and then fails, as a useradd that could not finish the home
+    directory does). `killed`: the process dies in that tool (a SIGKILL or a power cut:
+    nothing after it runs)."""
 
-    def __init__(self, home, users=(), run_user="teaspoon", fail=(), noisy=False):
+    def __init__(self, home, users=(), run_user="teaspoon", fail=(), noisy=False, killed=None):
         self.home, self.users, self.run_user = home, dict.fromkeys(users, ""), run_user
-        self.fail, self.noisy = set(fail), noisy
+        self.fail, self.noisy, self.killed = set(fail), noisy, killed
+        self.groups = {u: set() for u in users}
         self.calls, self.stdins = [], []
 
     def __call__(self, argv, stdin=None):
@@ -48,6 +54,8 @@ class FakeTools:
         if stdin is not None:
             self.stdins.append(stdin)
         tool = argv[0]
+        if tool == self.killed:
+            raise Killed(tool)
         if tool == "getent":
             return (0, f"{argv[2]}:x:1001:1001::/home/{argv[2]}:/bin/bash\n", "") if argv[2] in self.users else (2, "", "")
         if tool == "systemctl":
@@ -56,6 +64,7 @@ class FakeTools:
             if "useradd" in self.fail:
                 return 1, "", "useradd: cannot lock /etc/passwd"
             self.users[argv[-1]] = ""
+            self.groups[argv[-1]] = {argv[argv.index("--groups") + 1]}
             os.makedirs(self.home)
             if "useradd-half" in self.fail:
                 return 12, "", "useradd: cannot create directory"
@@ -67,15 +76,28 @@ class FakeTools:
                 return 1, "", f"chpasswd: line 1: {pw if self.noisy else ''} refused"
             self.users[user] = pw
             return 0, "", ""
+        if tool == "usermod":
+            if "usermod" in self.fail:
+                return 1, "", "usermod: cannot lock /etc/group"
+            self.groups[argv[-1]].add(argv[argv.index("--groups") + 1])
+            return 0, "", ""
         if tool == "userdel":
-            self.users.pop(argv[-1], None)
+            if "userdel" in self.fail:
+                return 1, "", "userdel: cannot lock /etc/passwd"
+            if argv[-1] not in self.users:
+                return 6, "", "userdel: user 'teaport' does not exist"
+            self.users.pop(argv[-1])
             if os.path.isdir(self.home):
                 os.rmdir(self.home)
             return 0, "", ""
         raise AssertionError(argv)
 
     def changes(self):
-        return [c for c in self.calls if c[0] in ("useradd", "chpasswd", "userdel")]
+        return [c for c in self.calls if c[0] in ("useradd", "chpasswd", "usermod", "userdel")]
+
+
+class Killed(BaseException):
+    """The helper's process dying in a tool: no finally of it runs on the box."""
 
 
 def _box(tmp_path, marker=True, **kw):
@@ -94,6 +116,8 @@ def _box(tmp_path, marker=True, **kw):
 @pytest.mark.parametrize("req, why", [
     ({"password": "short-one"}, login_apply.SHORT),
     ({"password": "x" * 257}, login_apply.LONG),
+    ({"password": "パスワード" * 18}, login_apply.LONG),        # 90 characters, 270 bytes
+    ({"password": "\U0001F511" * 65}, login_apply.LONG),       # 65 characters, 260 bytes
     ({"password": 123456789012}, login_apply.REFUSED),
     ({}, login_apply.REFUSED),
     ({"password": "line-one-password\nroot:x"}, login_apply.CHARACTER),
@@ -113,7 +137,10 @@ def test_a_password_the_helper_does_not_set_is_refused_before_any_account_change
 def test_a_long_password_with_spaces_and_any_script_is_fine():
     assert login_apply.check_password("ein langes Passwort für mich") == "ein langes Passwort für mich"
     assert login_apply.check_password("パスワードはこれです、長い") == "パスワードはこれです、長い"
+    # The maximum is in UTF-8 bytes, as PAM counts.
     assert login_apply.check_password("x" * 256)
+    assert login_apply.check_password("パスワード" * 17)               # 255 bytes
+    assert login_apply.check_password("\U0001F511" * 64)               # 256 bytes
 
 
 def test_without_the_marker_nothing_is_offered_and_nothing_is_made(tmp_path):
@@ -176,8 +203,9 @@ def test_a_create_makes_the_admin_account_once(tmp_path):
 
 
 def test_a_login_made_first_by_someone_else_is_reported_as_existing(tmp_path):
-    # The known window: whoever creates first gets it; the owner is told it exists.
-    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    # The known window: whoever creates first gets it (the marker goes with it); the
+    # owner is told it exists.
+    tools, ops, marker = _box(tmp_path, marker=False, users=["teaport"])
     assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.CREATED}
     with pytest.raises(login_apply.Refused) as e:
         login_apply.handle(ops, marker, "create", {"password": GOOD})
@@ -212,6 +240,64 @@ def test_a_step_that_fails_undoes_the_ones_before_it(tmp_path, fail):
         assert ["userdel", "--remove", "teaport"] in tools.calls
 
 
+def test_an_account_a_killed_create_left_is_pending_and_the_next_create_finishes_it(tmp_path):
+    # Killed between useradd and chpasswd (SIGKILL, a power cut): no undo ran, so the
+    # account is there with no password, and the marker too.
+    tools, ops, marker = _box(tmp_path, killed="chpasswd")
+    with pytest.raises(Killed):
+        login_apply.handle(login_apply.Ops(_no_undo(tools), home=tools.home), marker, "create", {"password": GOOD})
+    assert tools.users["teaport"] == "" and marker.present()
+    assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.PENDING}
+    tools.killed = None
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD}) == {"ok": True, "username": "teaport"}
+    assert tools.users["teaport"] == GOOD and "sudo" in tools.groups["teaport"] and not marker.present()
+    usermod = next(c for c in tools.calls if c[0] == "usermod")
+    assert usermod == ["usermod", "--append", "--groups", "sudo", "--shell", "/bin/bash", "teaport"]
+    assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.CREATED}
+
+
+def _no_undo(tools):
+    """The tools as a killed process sees them: its finally, the undo, never runs."""
+    def run(argv, stdin=None):
+        if argv[0] == "userdel":   # the in-process finally's undo: on the box it never ran
+            return 0, "", ""
+        return tools(argv, stdin)
+    return run
+
+
+def test_an_unfinished_account_that_cannot_be_finished_stays_pending(tmp_path):
+    tools, ops, marker = _box(tmp_path, users=["teaport"], fail=["usermod"])
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD}) == {"ok": False, "why": login_apply.FAILED}
+    assert "teaport" in tools.users and marker.present()        # not undone: not this run's
+    assert not any(c[0] == "userdel" for c in tools.calls)
+    tools.fail.clear()
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD})["ok"] is True
+
+
+def test_an_undo_that_fails_never_hides_the_result_and_a_retry_finishes(tmp_path):
+    tools, ops, marker = _box(tmp_path, fail=["chpasswd", "userdel"])
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD}) == {"ok": False, "why": login_apply.FAILED}
+    assert tools.users["teaport"] == "" and marker.present()    # left unfinished, pending
+    assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.PENDING}
+    tools.fail.clear()
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD})["ok"] is True
+    assert tools.users["teaport"] == GOOD
+
+
+def test_the_undo_needs_no_lookup(tmp_path):
+    # A getent that stops answering after useradd must not turn the result into an error.
+    tools, ops, marker = _box(tmp_path, fail=["chpasswd"])
+    real = tools.__call__
+
+    def flaky(argv, stdin=None):
+        if argv[0] == "getent" and "teaport" in tools.users:
+            return 1, "", "getent: nss down"
+        return real(argv, stdin)
+    ops = login_apply.Ops(flaky, home=tools.home)
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD}) == {"ok": False, "why": login_apply.FAILED}
+    assert "teaport" not in tools.users
+
+
 def test_a_marker_that_cannot_be_removed_undoes_the_login(tmp_path, monkeypatch):
     # Left behind, it would open the gate again for whoever later removes the account.
     tools, ops, marker = _box(tmp_path)
@@ -241,6 +327,7 @@ def _main(monkeypatch, capsys, verb, stdin, ops=None, marker=None, euid=0):
     monkeypatch.setattr(login_apply.os, "geteuid", lambda: euid)
     monkeypatch.setattr(login_apply.sys, "stdin", io.StringIO(stdin))
     monkeypatch.setattr(login_apply.signal, "pthread_sigmask", lambda how, sigs: masks.append((how, set(sigs))))
+    monkeypatch.setattr(login_apply, "_harden", lambda: masks.append("hardened"))
     monkeypatch.setattr(login_apply, "_lock", lambda: 0)
     if ops is not None:
         monkeypatch.setattr(login_apply, "Ops", lambda: ops)
@@ -260,12 +347,15 @@ def test_main_refuses_without_root_and_reads_its_request_from_stdin(monkeypatch,
     assert rc == 2 and "usage" in reply["refused"]
 
 
-def test_main_creates_with_the_stop_signals_held_off(monkeypatch, capsys, tmp_path):
+def test_main_creates_with_every_signal_held_off_and_no_core(monkeypatch, capsys, tmp_path):
     tools, ops, marker = _box(tmp_path)
     rc, reply, err, masks = _main(monkeypatch, capsys, "create", json.dumps({"password": GOOD}), ops, marker)
     assert rc == 0 and reply == {"ok": True, "username": "teaport"} and err == ""
     sig = login_apply.signal
-    assert masks == [(sig.SIG_BLOCK, {sig.SIGTERM, sig.SIGINT, sig.SIGHUP})]
+    assert masks == [(sig.SIG_BLOCK, set(sig.valid_signals())), "hardened"]
+    # What sudo passes on, which the run user can send from another process group.
+    assert {sig.SIGTERM, sig.SIGINT, sig.SIGHUP, sig.SIGUSR1, sig.SIGUSR2, sig.SIGALRM,
+            sig.SIGQUIT} <= masks[0][1]
     rc, reply, _, _ = _main(monkeypatch, capsys, "create", json.dumps({"password": GOOD}), ops, marker)
     assert rc == 2 and reply["why"] == login_apply.EXISTS
 
@@ -295,8 +385,9 @@ def test_one_create_at_a_time(tmp_path):
     path = str(tmp_path / "run/lock")
     held = login_apply._lock(path)
     try:
-        with pytest.raises(login_apply.Refused, match="another login"):
+        with pytest.raises(login_apply.Refused, match="another login") as e:
             login_apply._lock(path)
+        assert e.value.why == login_apply.BUSY     # under way, not failed
     finally:
         os.close(held)
     os.close(login_apply._lock(path))
@@ -319,6 +410,54 @@ def test_the_real_tools_get_a_path_of_their_own_and_the_password_as_bytes(monkey
     assert seen["env"] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
 
 
+# A real helper process, sent what the run user can send through sudo while it is between
+# useradd and chpasswd, and checked for a core limit and dumpability.
+_SIGNALLED = """
+import json, os, resource, signal, sys
+from teaport_brain import login_apply
+import test_login_apply as t
+Ops, Marker = login_apply.Ops, login_apply.Marker
+tools = t.FakeTools(sys.argv[1])
+real = tools.__call__
+def run(argv, stdin=None):
+    if argv[0] == "chpasswd":   # between the steps: everything sudo passes on
+        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGUSR1,
+                  signal.SIGUSR2, signal.SIGALRM, signal.SIGQUIT):
+            os.kill(os.getpid(), s)
+    return real(argv, stdin)
+os.makedirs(os.path.dirname(sys.argv[2]), mode=0o700)
+open(sys.argv[2], "w").close()
+os.chmod(os.path.dirname(sys.argv[2]), 0o700)   # root's alone (the umask may say otherwise)
+os.chmod(sys.argv[2], 0o600)
+os.geteuid = lambda: 0
+login_apply.Ops = lambda: Ops(run, home=sys.argv[1])
+login_apply.Marker = lambda: Marker(sys.argv[2], owner=os.getuid())
+login_apply._lock = lambda: 0
+rc = login_apply.main(["create"])
+dumpable = __import__("ctypes").CDLL(None).prctl(3, 0, 0, 0, 0)   # PR_GET_DUMPABLE
+print(json.dumps({"rc": rc, "users": tools.users, "core": resource.getrlimit(resource.RLIMIT_CORE),
+                  "dumpable": dumpable}))
+"""
+
+
+def test_a_real_helper_signalled_between_the_steps_finishes_and_dumps_no_core(tmp_path):
+    import subprocess
+    import sys
+    script = tmp_path / "signalled.py"
+    script.write_text(_SIGNALLED)
+    (tmp_path / "home").mkdir()
+    pending = tmp_path / "owner" / "pending"
+    p = subprocess.run([sys.executable, str(script), str(tmp_path / "home/teaport"), str(pending)],
+                       input=json.dumps({"password": GOOD}), capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "PYTHONPATH": f"{ROOT / 'brain'}:{ROOT / 'brain/tests'}"})
+    assert p.returncode == 0, p.stderr
+    lines = p.stdout.strip().splitlines()
+    assert json.loads(lines[0]) == {"ok": True, "username": "teaport"}      # the reply
+    state = json.loads(lines[-1])
+    assert state["rc"] == 0 and state["users"] == {"teaport": GOOD} and not pending.exists()
+    assert state["core"] == [0, 0] and state["dumpable"] == 0
+
+
 # ------------------------------------------------------------------ the run user's side
 
 
@@ -339,6 +478,9 @@ def test_through_sudo_the_password_goes_on_stdin_never_on_the_command_line(tmp_p
     # A refusal keeps its code; a helper that could not run, or said nothing, is a failure.
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"refused": "this box already has a login", "why": "exists"}', rc=2))
     assert owner_login.Login().create(GOOD, GOOD) == (False, owner_login.EXISTS)
+    monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"refused": "another login is being created", "why": "busy"}', rc=2))
+    assert owner_login.Login().create(GOOD, GOOD) == (False, owner_login.BUSY)
+    assert owner_login.say(i18n.get("en"), owner_login.WHY[owner_login.BUSY]) == "Creating your login…"
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, "sudo: a password is required", rc=1))
     assert owner_login.Login().create(GOOD, GOOD) == (False, login_apply.FAILED)
     assert owner_login.Login().state() == owner_login.NOT_OFFERED     # no line: nothing offered
@@ -358,7 +500,8 @@ def test_a_typo_costs_no_sudo(tmp_path, monkeypatch):
 
 def test_every_reason_has_words():
     codes = {login_apply.SHORT, login_apply.LONG, login_apply.CHARACTER, login_apply.EXISTS,
-             login_apply.FAILED, login_apply.REFUSED, login_apply.NOT_OFFERED, owner_login.MISMATCH}
+             login_apply.FAILED, login_apply.REFUSED, login_apply.NOT_OFFERED, login_apply.BUSY,
+             owner_login.MISMATCH}
     assert set(owner_login.WHY) == codes
 
 
@@ -371,15 +514,16 @@ def test_the_package_ships_the_helper_on_the_system_python():
     assert owner_login.HELPER == "/usr/lib/teaport/login_apply.py"
     # Standard library only: it runs on the system python, outside the venv.
     imports = set(re.findall(r"^(?:import|from) (\w+)", (ROOT / "brain/teaport_brain/login_apply.py").read_text(), re.M))
-    assert imports <= {"fcntl", "json", "os", "signal", "stat", "subprocess", "sys", "unicodedata"}, imports
+    assert imports <= {"ctypes", "fcntl", "json", "os", "resource", "signal", "stat", "subprocess",
+                       "sys", "unicodedata"}, imports
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "/usr/lib/teaport/login_apply.py" in ci   # compiled on the installed package
 
 
 def test_the_caller_waits_for_a_whole_create():
-    # systemctl, getent, useradd, chpasswd, and the undo's getent and userdel, each to
-    # the helper's limit: a caller that gave up first would not hear how it ended.
-    assert owner_login.HELPER_SECS > 6 * login_apply.TOOL_SECS
+    # systemctl, getent, useradd, chpasswd, and the undo's userdel, each to the helper's
+    # limit: a caller that gave up first would not hear how it ended.
+    assert owner_login.HELPER_SECS > 5 * login_apply.TOOL_SECS
 
 
 if __name__ == "__main__":

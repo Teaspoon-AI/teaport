@@ -819,9 +819,6 @@ msgstr "再输入一次"
 msgid "Use at least {count} characters."
 msgstr "至少使用 {count} 个字符。"
 
-msgid "You can leave this empty and create your login later in Settings."
-msgstr "你可以先留空，以后再到设置中创建登录账户。"
-
 msgid "Create login"
 msgstr "创建登录账户"
 
