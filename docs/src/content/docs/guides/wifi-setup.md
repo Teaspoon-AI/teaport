@@ -63,7 +63,7 @@ On a device that ships ready to set up, such as a Teaspoon AI device, the setup 
 
 <!-- source: brain/teaport_brain/wifi_setup.py:37-51#de9e3f82; brain/teaport_brain/wifi_setup.py:362-378#a9c80e12; brain/teaport_brain/wifi_setup.py:941#ad104058 -->
 
-The step is required while the device has no login: the page doesn't connect to your Wi-Fi network until the login is created. If the device can't reach the helper that creates the login, the page shows no step, and the device still connects. If the helper fails because of a problem on the device, not with your password, the page says that you can connect now: from then on, until setup mode ends, you can leave the login fields empty and tap **Connect**. In both cases the settings offer the step later, as [Create your login in the settings](/guides/configuration/#create-your-login-in-the-settings) shows.
+The step is required while the device has no login: the page doesn't connect to your Wi-Fi network until the login is created. If the device can't reach the helper that creates the login, the page shows no step, and the device still connects. If the helper fails because of a problem on the device, not with your password, the page says that you can connect now: from then on, until setup mode ends, you can leave the login fields empty and tap **Connect**. After a failure like that, the settings offer the step later, as [Create your login in the settings](/guides/configuration/#create-your-login-in-the-settings) shows. If the step appears in neither place, see [You can't sign in to the device](/guides/troubleshooting/#you-cant-sign-in-to-the-device).
 
 <!-- source: brain/teaport_brain/wifi_setup.py:747-766#018b3b92; brain/teaport_brain/owner_login.py:99-103#3acb30a5 -->
 

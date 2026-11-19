@@ -159,8 +159,9 @@ Anyone who can reach the setup page or the settings can create the login first, 
 The setup page makes the step required, so on a device set up through that page the
 window ends at setup. The exception is a create that fails because of the device, not
 the password: the owner can then connect without a login, and the window stays open
-until they create it in the settings. A device that went online another way offers the step in the
-settings until the owner creates the login. The marker limits the window to a device
+until they create it in the settings. The same holds when the page can't ask the helper
+at the start of setup and shows no step. A device that went online another way offers the
+step in the settings until the owner creates the login. The marker limits the window to a device
 whose owner has no login yet; it doesn't prevent it. See
 [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login).
 
