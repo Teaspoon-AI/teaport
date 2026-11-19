@@ -195,8 +195,9 @@ ANSWER_AFTER_SECS = setting("SIP_ANSWER_AFTER_SECS")
 # Past ANSWER_AFTER_SECS, how much longer the call may ring for the greeting to be ready;
 # then it is answered anyway and the greeting asked for the usual way.
 _ANSWER_GRACE_SECS = 3.0
-# How long the no-model line (#277) may take to play before the call is hung up anyway.
-NO_MODEL_LINE_MAX_SECS = 6.0
+# How long the no-model line (#277), the AI disclosure ahead of it, may take to play
+# before the call is hung up anyway: ~9 s of speech in the longer languages.
+NO_MODEL_LINE_MAX_SECS = 15.0
 # From call.answer to `confirmed`: a gateway that has not confirmed by then never will.
 _CONFIRM_SECS = 10.0
 

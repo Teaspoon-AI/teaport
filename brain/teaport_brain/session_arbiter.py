@@ -525,8 +525,10 @@ def tts_for(voice: str | None, language: str | None):
 # client asks for is its own string.
 _BUSY_PCM: dict = {}
 _BUSY_PCM_MAX = 16
-# How long a busy line may take to synthesize; past it the client goes without it.
+# How long a busy line may take to synthesize; past it the client goes without it. A
+# phone call's carries the AI disclosure ahead of it (disclose): about twice the words.
 BUSY_SYNTH_SECS = 6.0
+BUSY_SYNTH_DISCLOSED_SECS = 10.0
 
 
 async def busy_line_audio(holder_kind: str, voice: str | None = None,
@@ -547,7 +549,9 @@ async def busy_line_audio(holder_kind: str, voice: str | None = None,
     pcm = _BUSY_PCM.get(key)
     if pcm is None:
         try:
-            pcm = await asyncio.wait_for(tts.synthesize(line), BUSY_SYNTH_SECS)
+            pcm = await asyncio.wait_for(
+                tts.synthesize(line),
+                BUSY_SYNTH_DISCLOSED_SECS if disclose else BUSY_SYNTH_SECS)
             while len(_BUSY_PCM) >= _BUSY_PCM_MAX:
                 _BUSY_PCM.pop(next(iter(_BUSY_PCM)))
             _BUSY_PCM[key] = pcm

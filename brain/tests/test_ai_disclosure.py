@@ -46,9 +46,9 @@ def test_the_call_notice_is_the_disclosure_then_the_recording_notice():
 
 
 def test_the_call_notice_is_in_the_calls_language():
-    assert ai_disclosure.call_notice("es") == "Está hablando con un asistente de IA."
+    assert ai_disclosure.call_notice("es") == "Estás hablando con un asistente de IA."
     assert ai_disclosure.call_notice("es", recorded=True) == (
-        "Está hablando con un asistente de IA. Esta llamada está siendo grabada.")
+        "Estás hablando con un asistente de IA. Esta llamada está siendo grabada.")
     assert ai_disclosure.call_notice("cmn") == "您正在与AI助手通话。"
     assert ai_disclosure.room_line("fr-fr") == "Je suis un assistant IA."
 

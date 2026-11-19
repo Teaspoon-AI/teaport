@@ -396,7 +396,7 @@ msgstr "Dit gesprek wordt opgenomen."
 # The AI disclosure every phone call starts with (ai_disclosure.py); no setting
 # turns it off.
 msgid "You're speaking with an AI assistant."
-msgstr "U spreekt met een AI-assistent."
+msgstr "Je spreekt met een AI-assistent."
 
 # The optional room greeting (ai_disclosure.py, TEAPORT_ROOM_AI_GREETING).
 msgid "I'm an AI assistant."
