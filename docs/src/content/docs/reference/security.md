@@ -103,7 +103,7 @@ usual captive-portal redirect. The page accepts the form only under those names,
 only from its own pages: it refuses a post that a page from another site sends, for
 example from a tab that the phone loaded over its mobile data.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:648-678#444b8672; brain/teaport_brain/wifi_setup.py:739-752#74bd2512 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:648-678#444b8672; brain/teaport_brain/wifi_setup.py:740-753#74bd2512 -->
 
 Teaspoon AI's provisioning, which runs outside this repository when it prepares a
 Teaspoon AI device for shipping, writes the marker, refuses a device that already has a
