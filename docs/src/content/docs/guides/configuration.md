@@ -68,7 +68,7 @@ If the device is on no network at all and spoken Wi-Fi setup is on, the device a
 
 On a device that ships ready to set up, such as a Teaspoon AI device, you create the device's login yourself: an administrator account named `teaport` that signs in with SSH and runs commands with `sudo`. The Wi-Fi setup page offers this step (see [Create your login](/guides/wifi-setup/#create-your-login)). A device that went online another way, over Ethernet or with Wi-Fi setup by voice, never shows that page, so the settings offer the same step instead: a **Create your login** card at the top, until a login exists. A device that you installed yourself never shows the card.
 
-<!-- source: brain/teaport_brain/config_ui.py:850-890#6c0a1dad; brain/teaport_brain/static/config.html:316#aad8baf1; brain/teaport_brain/static/config.html:813-843#26d9b68e -->
+<!-- source: brain/teaport_brain/config_ui.py:850-894#fcb536fc; brain/teaport_brain/static/config.html:316#aad8baf1; brain/teaport_brain/static/config.html:813-843#26d9b68e -->
 
 To create your login in the settings, follow these steps:
 
@@ -76,11 +76,11 @@ To create your login in the settings, follow these steps:
 2. In the **Create your login** card, type a password of at least 12 characters, and type it again in the second field. Spaces and letters from any language are fine; invisible or control characters are not. The longest password is 256 bytes: 256 Latin letters, for example, or 85 Chinese, Japanese, or Korean characters.
 3. Tap **Create login**. The card says that your login is ready, and the next time you open the settings the card is gone.
 
-<!-- source: brain/teaport_brain/login_apply.py:68,80-81#e21145c0; brain/teaport_brain/login_apply.py:112-123#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:77,89-90#e21145c0; brain/teaport_brain/login_apply.py:130-141#020cf4bc -->
 
 The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, try again: a try that stopped partway is finished by the next one. If it says that it is creating your login, another try is already under way; open the settings again in a moment.
 
-<!-- source: brain/teaport_brain/login_apply.py:16-21#d9769d06; brain/teaport_brain/login_apply.py:251-292#3cd0b3a7; brain/teaport_brain/owner_login.py:49-61#6e13b577 -->
+<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:281-332#d8d4e8b2; brain/teaport_brain/owner_login.py:52-67#d92ff90c -->
 
 ## Connect your OpenRouter account
 

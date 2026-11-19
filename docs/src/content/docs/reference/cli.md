@@ -245,20 +245,20 @@ card, and with 1 when it prints none: no password is fixed, setup mode doesn't a
 fixed one, the device has no Wi-Fi, or `--new-password` couldn't install the new
 file. Stopped by a signal, it prints no card and exits with another nonzero status.
 
-<!-- source: cli/teaport:541-587#ca104852; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:190-205#73a41f3c -->
+<!-- source: cli/teaport:541-587#ca104852; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:195-210#73a41f3c -->
 
 The card has no login for the device. On a device that ships ready to set up, the owner
 creates the login during setup, on the Wi-Fi setup page or in the settings, as
 [Create your login](/guides/wifi-setup/#create-your-login) describes.
 
-<!-- source: brain/teaport_brain/provision.py:24-26#b71000d2; brain/teaport_brain/login_apply.py:22-25#71da1c1e -->
+<!-- source: brain/teaport_brain/provision.py:24-26#b71000d2; brain/teaport_brain/login_apply.py:26-29#71da1c1e -->
 
 | Option | Description |
 | --- | --- |
 | `--new-password` | Makes a new password, in the same format as the ones setup mode makes, and fixes it in `wifi-setup.env`. The command keeps the file's other setup settings and comments, installs the file owned by root and readable by the group of the user who runs the command (mode 640, like the installer's other settings files), and prints the card only after the file is in place. It uses `sudo`. If the file holds a line that isn't a setup setting (`WIFI_SETUP_...`) or a comment, or a carriage return, the command changes nothing and exits 1; fix the file by hand. |
 | `--json` | Prints the name, the password, and the QR code text as one JSON object. |
 
-<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:214-226#67817dfa; cli/teaport:541-587#ca104852 -->
+<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:219-231#67817dfa; cli/teaport:541-587#ca104852 -->
 
 Example:
 
