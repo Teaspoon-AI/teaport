@@ -5,7 +5,7 @@ description: Check a device against its release manifest, install the update wit
 
 The `teaport update --check` command compares the device with the release manifest and names the parts that differ; it changes nothing. `teaport update` installs a new brain, engine, or model by itself, through the installer's narrower paths: `install.sh --only brain` installs the brain package alone, and `install.sh --only engine` updates the engine alone. You can run those yourself too. A change to anything else takes a full installer run. `install.sh --rollback brain` and `install.sh --rollback engine` put the previous one back.
 
-<!-- source: cli/teaport:480-490#1d13aff3; install.sh:9-13#3bf0e543 -->
+<!-- source: cli/teaport:485-495#1d13aff3; install.sh:9-13#3bf0e543 -->
 
 ## Before you begin
 
@@ -63,7 +63,7 @@ teaport update --status
 
 The command prints `running`, `done`, `failed`, or `interrupted`, for a run that a power cut stopped, with the step and the reason. The full output is in `/var/lib/teaport-update/log` and in `journalctl -u teaport-update`.
 
-<!-- source: cli/teaport:491-492,554-573#8393ae64; packaging/deb/update_apply.py:38-43#22b253f7 -->
+<!-- source: cli/teaport:496-497,559-578#8393ae64; packaging/deb/update_apply.py:38-43#22b253f7 -->
 
 ### Update only the brain
 
