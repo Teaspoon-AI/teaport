@@ -706,11 +706,12 @@ class Setup:
                     if setup.request is not None:   # the join is already asked for
                         return self._send(200, render_joining(setup.request[0], t), extra=remember)
                     setup.outcome, join = self._answer(body, ssid, error)
-                    self._send(200, setup.outcome(t), extra=remember)
-                    if join:
+                    if join:   # asked for before the answer goes out; begun (wake) after it
                         setup.key = parse_key(body) if setup.account is not None else ""
                         setup.lang = t  # the screens from here on (_text)
                         setup.request = (ssid, password, hidden)
+                    self._send(200, setup.outcome(t), extra=remember)
+                    if join:
                         setup.wake.set()
                 finally:
                     setup.posting.release()
