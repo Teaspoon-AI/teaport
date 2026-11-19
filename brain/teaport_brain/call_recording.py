@@ -50,11 +50,12 @@
 # reply's words only while it plays: its stop or its cut is the ledger's to chart.
 #
 # The NOTICE (TEAPORT_CALL_RECORDING_NOTICE, on by default): a recorded call starts with
-# "This call is being recorded." in the call's language (i18n.py), before the greeting,
-# outside the conversation's context, with the caller unheard while it plays so they
-# cannot talk it away (AgentSession.greet). A resumed call hears it again: the brain that
-# was cut off may not have finished saying it. The model is also told the call is
-# recorded, so a caller who asks gets a straight answer.
+# "This call is being recorded." in the call's language (i18n.py), right after the AI
+# disclosure every call starts with (ai_disclosure.call_notice: the two as one line),
+# before the greeting, outside the conversation's context, with the caller unheard while
+# it plays so they cannot talk it away (AgentSession.greet). A resumed call hears it
+# again: the brain that was cut off may not have finished saying it. The model is also
+# told the call is recorded, so a caller who asks gets a straight answer.
 #
 # RETENTION: recordings older than TEAPORT_CALL_RECORDING_KEEP_DAYS go, then the oldest
 # until the directory is under TEAPORT_CALL_RECORDING_MAX_MB (recordings.prune), checked

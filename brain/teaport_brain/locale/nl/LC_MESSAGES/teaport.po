@@ -393,6 +393,15 @@ msgstr "Sorry, ik kreeg net geen antwoord."
 msgid "This call is being recorded."
 msgstr "Dit gesprek wordt opgenomen."
 
+# The AI disclosure every phone call starts with (ai_disclosure.py); no setting
+# turns it off.
+msgid "You're speaking with an AI assistant."
+msgstr "U spreekt met een AI-assistent."
+
+# The optional room greeting (ai_disclosure.py, TEAPORT_ROOM_AI_GREETING).
+msgid "I'm an AI assistant."
+msgstr "Ik ben een AI-assistent."
+
 # No model at all (llm_error_speaker.py, #277).
 msgid "I can't answer questions yet, because the account I use for my answers isn't set up."
 msgstr "Ik kan nog geen vragen beantwoorden, want het account dat ik voor mijn antwoorden gebruik is nog niet ingesteld."

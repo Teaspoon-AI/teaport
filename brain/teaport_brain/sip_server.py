@@ -106,7 +106,7 @@ from teaport_brain.settings import setting
 from teaport_brain import i18n
 from teaport_brain.llm_error_speaker import NO_MODEL_CALL_TEXT
 from teaport_brain import credit
-from teaport_brain import agent_backend, audio_dump, call_recording, display, sdnotify
+from teaport_brain import agent_backend, ai_disclosure, audio_dump, call_recording, display, sdnotify
 from teaport_brain import thinking_sound
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.tasks import cancel_and_wait, wait_ended
@@ -970,18 +970,28 @@ async def run_connection(sock, on_ready=None):
             await transport.send_control({"type": "call.hangup", "call_id": call_id})
             await asyncio.shield(end_call_from_inside("no model to answer", call_id))
             return
-        # A recorded call starts with the notice, in the call's language, before the
-        # greeting -- a resumed one too: the brain that was cut off may not have
-        # finished saying it.
-        notice = None
-        if recording is not None and recording.active and call_recording.NOTICE:
-            notice = call_recording.notice_line(
-                getattr(getattr(session, "tts", None), "espeak_language", None))
+        # Every call starts with the AI disclosure (ai_disclosure.py: no setting turns
+        # it off), and a recorded one with the recording notice after it, in the call's
+        # language, before the greeting -- a resumed one too: the brain that was cut off
+        # may not have finished saying it. One that cannot be played to its end ends the
+        # call (greet: should_end, "disclosure").
+        notice = ai_disclosure.call_notice(
+            getattr(getattr(session, "tts", None), "espeak_language", None),
+            recorded=(recording is not None and recording.active and call_recording.NOTICE))
         if prepared:
             await session.greet(resumed=resumed, prepared=prepared, notice=notice)
         else:
             await session.greet(resumed=resumed, notice=notice)
         if session.should_end:
+            if session.end_reason == "disclosure":
+                # The AI disclosure did not play to its end: no conversation without it.
+                # greet() queued nothing after it; hang up and tear down.
+                logger.warning(f"call {call_id}: the AI disclosure was not heard in full "
+                               "— hanging up")
+                await transport.send_control({"type": "call.hangup", "call_id": call_id})
+                await asyncio.shield(end_call_from_inside("AI disclosure not heard",
+                                                          call_id))
+                return
             # STT is unavailable — the engine's single slot is held by another process
             # (a standalone rig) or the engine is unreachable. greet() spoke the
             # matching line instead of greeting; let it play out, then

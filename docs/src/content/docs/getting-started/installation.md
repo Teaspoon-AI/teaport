@@ -132,7 +132,7 @@ default, or type the full name.
 
 For `gpt-oss-120b`, OpenRouter routed to BaseTen is the steadier choice; on Groq and Cerebras the model sometimes breaks down in the middle of a reply, most often after it uses a tool. [Set up the language model](/guides/configuration/#set-up-the-language-model) shows the setting.
 
-<!-- source: brain/teaport_brain/config_schema.toml:296-303#bd725c65 -->
+<!-- source: brain/teaport_brain/config_schema.toml:302-309#bd725c65 -->
 
 Every question has an environment variable, so you can also run the installer unattended:
 `TEAPORT_ACCEPT_EULA=1` accepts the license, and `TEAPORT_LLM_BASE_URL`, `TEAPORT_LLM_MODEL`,

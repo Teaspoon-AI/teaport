@@ -52,6 +52,7 @@ import test_sip_call_lifecycle as lifecycle  # noqa: E402
 
 SR = 16000
 NOTICE = "This call is being recorded."
+DISCLOSURE = "You're speaking with an AI assistant."   # ai_disclosure.LINE, always first
 
 
 # ---------------------------------------------------------------- retention
@@ -419,14 +420,17 @@ async def test_with_the_notice_off_the_greeting_starts_the_recording():
         assert [type(f).__name__ for f in _spoken(s)] == ["TTSSpeakFrame"], _spoken(s)
 
 
-async def test_a_notice_that_never_plays_out_still_lets_the_greeting_and_the_caller_in():
+async def test_a_notice_that_never_plays_out_ends_the_call_unrecorded():
+    # The call's notice carries the AI disclosure (ai_disclosure.py): a caller who was not
+    # told they are talking to an AI gets no conversation (sip_server hangs up).
     with tempfile.TemporaryDirectory() as d:
         rec = call_recording.CallRecording("c7", mode="both", directory=d)
         s = _session(plays=False, recording=rec)
         s.NOTICE_MAX_SECS = 0.05
         await s.greet(prepared="Hello.", notice=NOTICE)
-        assert [getattr(f, "text", None) for f in _spoken(s)] == [NOTICE, "Hello."], s.task.queued
-        assert not s.input_mute.muted, "the caller must not stay unheard"
+        assert [getattr(f, "text", None) for f in _spoken(s)] == [NOTICE], s.task.queued
+        assert s.should_end and s.end_reason == "disclosure"
+        assert not s.context.messages, "no greeting cue"
         assert rec.armed is None and not rec.started, "not told, so not recorded"
 
 
@@ -462,7 +466,7 @@ async def test_off_by_default_a_call_records_nothing():
         await h.call_state("A", "confirmed")
         assert await lifecycle.wait_until(lambda: "A" in lifecycle._FakeSession.greeted)
         assert lifecycle._FakeSession.build_kw["A"].get("recording") is None
-        assert lifecycle._FakeSession.notices["A"] is None
+        assert lifecycle._FakeSession.notices["A"] == DISCLOSURE, "told it is an AI, only"
     finally:
         await h.stop()
 
@@ -478,7 +482,7 @@ async def test_a_recorded_call_is_built_with_its_recording_and_told_resumed_too(
             rec = lifecycle._FakeSession.build_kw["A"]["recording"]
             assert rec.active and rec.audio and rec.transcript
             assert len(rec.processors) == 2, "the tap and the audio recorder join the pipeline"
-            assert lifecycle._FakeSession.notices["A"] == NOTICE
+            assert lifecycle._FakeSession.notices["A"] == DISCLOSURE + " " + NOTICE
             assert os.path.basename(rec.stem).endswith("-A"), rec.stem
             assert os.listdir(d) == [], "files only once greet() starts the recording"
 
@@ -490,7 +494,7 @@ async def test_a_recorded_call_is_built_with_its_recording_and_told_resumed_too(
             await h.call_state("B", "confirmed", replay=True)
             assert await lifecycle.wait_until(lambda: "B" in lifecycle._FakeSession.greeted)
             assert lifecycle._FakeSession.build_kw["B"]["recording"].active
-            assert lifecycle._FakeSession.notices["B"] == NOTICE
+            assert lifecycle._FakeSession.notices["B"] == DISCLOSURE + " " + NOTICE
         finally:
             await h.stop()
     with tempfile.TemporaryDirectory() as d, \
@@ -500,7 +504,8 @@ async def test_a_recorded_call_is_built_with_its_recording_and_told_resumed_too(
             await h.start()
             await h.call_state("C", "confirmed")
             assert await lifecycle.wait_until(lambda: "C" in lifecycle._FakeSession.greeted)
-            assert lifecycle._FakeSession.notices["C"] is None, "the notice was turned off"
+            assert lifecycle._FakeSession.notices["C"] == DISCLOSURE, \
+                "the recording notice was turned off; the AI disclosure cannot be"
             assert len(lifecycle._FakeSession.build_kw["C"]["recording"].processors) == 1
         finally:
             await h.stop()

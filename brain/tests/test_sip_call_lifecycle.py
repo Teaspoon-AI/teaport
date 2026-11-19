@@ -168,6 +168,7 @@ class _FakeSession:
     resumed = {}        # call id -> the `resumed` greet() was called with
     prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
     cannot_hear = set()  # call ids whose greet() finds the STT unavailable (should_end)
+    untold = set()       # call ids whose notice (the AI disclosure) does not play out
     notices = {}        # call id -> the notice greet() was asked to say first, if any
     build_kw = {}       # call id -> what build_agent_session was given (recording=, ...)
     PREPARED = "Hello there."
@@ -180,6 +181,7 @@ class _FakeSession:
         self.task = _FakeTask()
         self.followup_gate = _FakeGate()
         self.should_end = False
+        self.end_reason = None
 
     async def prepare_greeting(self):
         """The ring head start's out-of-band greeting (a call the brain answers)."""
@@ -190,7 +192,9 @@ class _FakeSession:
         _FakeSession.prepared[self.call_id] = prepared
         _FakeSession.notices[self.call_id] = notice
         await asyncio.sleep(self.greet_delay)
-        self.should_end = self.call_id in _FakeSession.cannot_hear
+        self.should_end = self.call_id in _FakeSession.cannot_hear | _FakeSession.untold
+        self.end_reason = ("disclosure" if self.call_id in _FakeSession.untold
+                           else "unavailable" if self.should_end else None)
         _FakeSession.greeted.append(self.call_id)
 
 
@@ -220,6 +224,7 @@ class _Harness:
         _FakeSession.resumed = {}
         _FakeSession.prepared = {}
         _FakeSession.cannot_hear = set()
+        _FakeSession.untold = set()
         _FakeSession.notices = {}
         _FakeSession.build_kw = {}
         self.reclaims = []

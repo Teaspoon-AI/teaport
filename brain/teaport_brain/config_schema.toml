@@ -180,6 +180,12 @@ summary = "These settings time the answer, shape the caller's audio, and decide 
 blurb = "Read by teaport-brain's SIP front-end (phone calls): how a call is answered, and how it asks a live conversation (a Talk session, the room mic awake) to make way for it."
 
 [[groups]]
+id = "ai_disclosure"
+title = "AI disclosure"
+summary = "This setting decides whether the device tells people in the room it is an AI. Phone callers are always told."
+blurb = "Every phone call starts with \"You're speaking with an AI assistant.\" in the call's language, before the greeting. No setting turns that off: a caller cannot see what they are talking to, and the EU AI Act (Article 50) requires that they be told. A call where the line cannot be played is hung up. In the room and in Talk it is plain that you are talking to a device or an app, so nothing is said unless you turn on the room greeting, TEAPORT_ROOM_AI_GREETING. On every path, if someone asks whether they are talking to a person, the assistant says it is an AI. Read by teaport-brain."
+
+[[groups]]
 id = "call_recording"
 title = "Call recording"
 summary = "These settings decide whether phone calls are recorded, whether callers are told, and how long recordings are kept."
@@ -2004,6 +2010,16 @@ help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and c
 # ---- call recording (#114)
 
 [[settings]]
+name = "TEAPORT_ROOM_AI_GREETING"
+store = "brain_env"
+group = "ai_disclosure"
+type = "flag"
+default = false
+read = "startup"
+tier = "setup"
+help = "Start each new conversation at the device with \"I'm an AI assistant.\" in the voice's language, before the greeting. Turn it on where people who did not set the box up talk to it, such as a front desk or a shop: a visitor might not realize it is an AI. It is said when a conversation starts with the wake word alone; words straight after the wake word are answered right away."
+
+[[settings]]
 name = "TEAPORT_CALL_RECORDING"
 store = "brain_env"
 group = "call_recording"
@@ -2023,7 +2039,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "setup"
-help = "Start each recorded call with \"This call is being recorded.\" in the call's language, before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks."
+help = "Start each recorded call with \"This call is being recorded.\" in the call's language, right after the AI disclosure and before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks."
 
 [[settings]]
 name = "TEAPORT_CALL_RECORDING_DIR"
