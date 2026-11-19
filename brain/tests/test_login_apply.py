@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 
 import pytest
 
@@ -34,19 +35,24 @@ from teaport_brain import i18n, login_apply, owner_login
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GOOD = "correct-horse-battery"   # a made-up password
+S = owner_login.Secret
 
 
 class FakeTools:
-    """getent, systemctl, useradd, chpasswd, usermod and userdel as a state: the users
-    there are, their groups, what each call was. `fail`: a tool that exits 1 (useradd's
-    "half" makes the user and then fails, as a useradd that could not finish the home
-    directory does). `killed`: the process dies in that tool (a SIGKILL or a power cut:
-    nothing after it runs)."""
+    """getent (passwd, shadow, group), systemctl, useradd, chpasswd, usermod,
+    mkhomedir_helper and userdel as a state: the users there are (their password, ""
+    for none ever set, and their GECOS), their groups, the system's groups, what each call
+    was. `fail`: a tool that exits 1 (useradd's "half" makes the user and then fails, as a
+    useradd that could not finish the home directory does). `killed`: the process dies in
+    that tool (a power cut: nothing after it runs). A user given at the start is a
+    leftover of ours: no password, our GECOS."""
 
     def __init__(self, home, users=(), run_user="teaspoon", fail=(), noisy=False, killed=None):
         self.home, self.users, self.run_user = home, dict.fromkeys(users, ""), run_user
         self.fail, self.noisy, self.killed = set(fail), noisy, killed
+        self.gecos = dict.fromkeys(users, login_apply.GECOS)
         self.groups = {u: set() for u in users}
+        self.system_groups = set(users)
         self.calls, self.stdins = [], []
 
     def __call__(self, argv, stdin=None):
@@ -57,15 +63,28 @@ class FakeTools:
         if tool == self.killed:
             raise Killed(tool)
         if tool == "getent":
+            db, name = argv[1], argv[2]
+            if db == "group":
+                return (0, f"{name}:x:1001:\n", "") if name in self.system_groups else (2, "", "")
+            if name not in self.users:
+                return 2, "", ""
+            if db == "shadow":
+                field = "$y$j9T$fakehash" if self.users[name] else "!"
+                return 0, f"{name}:{field}:20000:0:99999:7:::\n", ""
             uid = os.getuid()   # the test's own: the home directory it makes is "the account's"
-            return (0, f"{argv[2]}:x:{uid}:{uid}::/home/{argv[2]}:/bin/bash\n", "") if argv[2] in self.users else (2, "", "")
+            return 0, f"{name}:x:{uid}:{uid}:{self.gecos[name]}:/home/{name}:/bin/bash\n", ""
         if tool == "systemctl":
             return 0, self.run_user + "\n", ""
         if tool == "useradd":
             if "useradd" in self.fail:
                 return 1, "", "useradd: cannot lock /etc/passwd"
-            self.users[argv[-1]] = ""
-            self.groups[argv[-1]] = {argv[argv.index("--groups") + 1]}
+            name = argv[-1]
+            if name in self.system_groups:
+                return 9, "", f"useradd: group {name} exists"
+            self.users[name] = ""
+            self.gecos[name] = argv[argv.index("--comment") + 1]
+            self.groups[name] = {argv[argv.index("--groups") + 1]}
+            self.system_groups.add(name)
             os.makedirs(self.home)
             if "useradd-half" in self.fail:
                 return 12, "", "useradd: cannot create directory"
@@ -96,13 +115,14 @@ class FakeTools:
             if argv[-1] not in self.users:
                 return 6, "", "userdel: user 'teaport' does not exist"
             self.users.pop(argv[-1])
-            if os.path.isdir(self.home):
-                os.rmdir(self.home)
+            self.system_groups.discard(argv[-1])
+            shutil.rmtree(self.home, ignore_errors=True)
             return 0, "", ""
         raise AssertionError(argv)
 
     def changes(self):
-        return [c for c in self.calls if c[0] in ("useradd", "chpasswd", "usermod", "userdel")]
+        return [c for c in self.calls if c[0] in ("useradd", "chpasswd", "usermod", "userdel",
+                                                   "mkhomedir_helper")]
 
 
 class Killed(BaseException):
@@ -304,30 +324,108 @@ def test_an_unfinished_account_keeps_a_home_it_already_has(tmp_path):
     assert (pathlib.Path(tools.home) / "notes.txt").read_text() == "kept"
 
 
-@pytest.mark.parametrize("make", [
-    lambda home: pathlib.Path(home).write_text("a file"),
-    lambda home: os.symlink("/etc", home),
-])
-def test_a_home_path_that_is_not_the_accounts_directory_is_refused(tmp_path, make):
-    tools, ops, marker = _box(tmp_path, users=["teaport"])
-    make(tools.home)
-    with pytest.raises(login_apply.Refused, match="not the login's own directory"):
+def _taken(tools, ops, marker):
+    """With the marker there, an account that is not plainly our leftover is a login: the
+    owner is told so, and nothing about it changes."""
+    assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.CREATED}
+    with pytest.raises(login_apply.Refused, match="already has a login") as e:
         login_apply.handle(ops, marker, "create", {"password": GOOD})
+    assert e.value.why == login_apply.EXISTS
     assert not tools.changes() and marker.present()
 
 
-def test_a_home_directory_owned_by_someone_else_is_refused(tmp_path):
+def test_a_leftover_is_one_only_while_no_password_was_ever_set(tmp_path):
+    # A create cut short after chpasswd (the attacker's own password in it) is a login.
+    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    tools.users["teaport"] = "an-attackers-password"
+    _taken(tools, ops, marker)
+
+
+@pytest.mark.parametrize("field", ["", "!", "!!", "*", "!*"])
+def test_every_never_set_password_field_is_a_leftover(tmp_path, field):
+    tools, _, marker = _box(tmp_path, users=["teaport"])
+    real = tools.__call__
+
+    def shadow(argv, stdin=None):
+        if argv[:2] == ["getent", "shadow"]:
+            return 0, f"teaport:{field}:20000:0:99999:7:::\n", ""
+        return real(argv, stdin)
+    ops = login_apply.Ops(shadow, home=tools.home)
+    assert login_apply.handle(ops, marker, "status", {}) == {"state": login_apply.PENDING}
+
+
+@pytest.mark.parametrize("field", ["!$y$j9T$fakehash", "$y$j9T$fakehash", "!$6$salt$hash"])
+def test_a_locked_password_with_a_hash_behind_it_is_a_login(tmp_path, field):
+    tools, _, marker = _box(tmp_path, users=["teaport"])
+    real = tools.__call__
+
+    def shadow(argv, stdin=None):
+        if argv[:2] == ["getent", "shadow"]:
+            return 0, f"teaport:{field}:20000:0:99999:7:::\n", ""
+        return real(argv, stdin)
+    _taken(tools, login_apply.Ops(shadow, home=tools.home), marker)
+
+
+def test_a_shadow_that_cannot_be_read_is_not_a_leftover(tmp_path):
+    tools, _, marker = _box(tmp_path, users=["teaport"])
+    real = tools.__call__
+
+    def no_shadow(argv, stdin=None):
+        return (2, "", "") if argv[:2] == ["getent", "shadow"] else real(argv, stdin)
+    _taken(tools, login_apply.Ops(no_shadow, home=tools.home), marker)
+
+
+def test_an_account_with_another_gecos_is_a_login(tmp_path):
+    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    tools.gecos["teaport"] = "Someone else"
+    _taken(tools, ops, marker)
+
+
+@pytest.mark.parametrize("make", [
+    lambda home: pathlib.Path(home).write_text("a file"),
+    lambda home: os.symlink("/etc", home),
+    lambda home: (os.makedirs(os.path.join(home, ".ssh")),
+                  pathlib.Path(home, ".ssh/authorized_keys").write_text("ssh-ed25519 AAAA planted")),
+    lambda home: (os.makedirs(home), os.symlink("/tmp", os.path.join(home, ".ssh"))),
+])
+def test_an_account_whose_home_is_not_a_clean_one_of_its_own_is_a_login(tmp_path, make):
+    tools, ops, marker = _box(tmp_path, users=["teaport"])
+    make(tools.home)
+    _taken(tools, ops, marker)
+
+
+def test_a_home_directory_owned_by_someone_else_is_a_login(tmp_path):
     tools, _, marker = _box(tmp_path, users=["teaport"])
     os.makedirs(tools.home)
     real = tools.__call__
 
     def other_uid(argv, stdin=None):   # the account's uid is not the directory's owner
         rc, out, err = real(argv, stdin)
-        return (rc, out.replace(f":{os.getuid()}:", f":{os.getuid() + 1}:", 1), err) if argv[0] == "getent" else (rc, out, err)
-    ops = login_apply.Ops(other_uid, home=tools.home)
-    with pytest.raises(login_apply.Refused, match="not the login's own directory"):
-        login_apply.handle(ops, marker, "create", {"password": GOOD})
+        return (rc, out.replace(f":{os.getuid()}:", f":{os.getuid() + 1}:", 1), err) if argv[:2] == ["getent", "passwd"] else (rc, out, err)
+    _taken(tools, login_apply.Ops(other_uid, home=tools.home), marker)
+
+
+def test_a_teaport_group_without_the_account_is_refused_with_its_reason(tmp_path):
+    # useradd --user-group cannot make the login's own group: it would fail forever.
+    tools, ops, marker = _box(tmp_path)
+    tools.system_groups.add("teaport")
+    for verb, req in (("status", {}), ("create", {"password": GOOD})):
+        with pytest.raises(login_apply.Refused, match="a teaport group already exists") as e:
+            login_apply.handle(ops, marker, verb, req)
+        assert e.value.why == login_apply.GROUP
     assert not tools.changes() and marker.present()
+    assert owner_login.Login(ops=ops, marker=marker).state() == owner_login.NOT_OFFERED
+
+
+def test_the_longest_paths_make_the_counted_tool_calls(tmp_path):
+    # A new account whose chpasswd fails (then undone), and a leftover with no home.
+    tools, ops, marker = _box(tmp_path, fail=["chpasswd"])
+    login_apply.handle(ops, marker, "create", {"password": GOOD})
+    assert len(tools.calls) == login_apply.MAX_TOOL_CALLS, tools.calls
+    (tmp_path / "b").mkdir()
+    tools, ops, marker = _box(tmp_path / "b", users=["teaport"])
+    assert login_apply.handle(ops, marker, "create", {"password": GOOD})["ok"] is True
+    assert len(tools.calls) == login_apply.MAX_TOOL_CALLS, tools.calls
 
 
 def test_without_mkhomedir_helper_the_finish_fails_and_stays_pending(tmp_path):
@@ -406,6 +504,7 @@ def _main(monkeypatch, capsys, verb, stdin, ops=None, marker=None, euid=0):
     monkeypatch.setattr(login_apply.signal, "pthread_sigmask", lambda how, sigs: masks.append((how, set(sigs))))
     monkeypatch.setattr(login_apply, "_harden", lambda: masks.append("hardened"))
     monkeypatch.setattr(login_apply, "_lock", lambda: 0)
+    monkeypatch.setattr(login_apply, "_detached", lambda work: work())   # no fork in pytest
     if ops is not None:
         monkeypatch.setattr(login_apply, "Ops", lambda: ops)
         monkeypatch.setattr(login_apply, "Marker", lambda: marker)
@@ -487,52 +586,79 @@ def test_the_real_tools_get_a_path_of_their_own_and_the_password_as_bytes(monkey
     assert seen["env"] == {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
 
 
-# A real helper process, sent what the run user can send through sudo while it is between
-# useradd and chpasswd, and checked for a core limit and dumpability.
-_SIGNALLED = """
-import json, os, resource, signal, sys
+# A real helper process, as sudo runs it, and what the run user can do to it while it is
+# between useradd and chpasswd: send it what sudo passes on, or have sudo end it (SIGALRM
+# to sudo: HUP, TERM, then SIGKILL to its process group). The tools keep their state in a
+# file: the work happens in a child of the process that started.
+_REAL = """
+import json, os, resource, signal, sys, time
 from teaport_brain import login_apply
 import test_login_apply as t
+home, pending, state, mode = sys.argv[1:5]
 Ops, Marker = login_apply.Ops, login_apply.Marker
-tools = t.FakeTools(sys.argv[1])
+tools = t.FakeTools(home)
 real = tools.__call__
 def run(argv, stdin=None):
-    if argv[0] == "chpasswd":   # between the steps: everything sudo passes on
-        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGUSR1,
-                  signal.SIGUSR2, signal.SIGALRM, signal.SIGQUIT):
-            os.kill(os.getpid(), s)
-    return real(argv, stdin)
-os.makedirs(os.path.dirname(sys.argv[2]), mode=0o700)
-open(sys.argv[2], "w").close()
-os.chmod(os.path.dirname(sys.argv[2]), 0o700)   # root's alone (the umask may say otherwise)
-os.chmod(sys.argv[2], 0o600)
+    if argv[0] == "chpasswd":
+        if mode == "signals":   # everything sudo passes on, to whoever does the work
+            for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGUSR1,
+                      signal.SIGUSR2, signal.SIGALRM, signal.SIGQUIT):
+                os.kill(os.getpid(), s)
+        else:                   # sudo ends its command: its whole process group, killed
+            os.killpg(os.getpgid(os.getppid()), signal.SIGKILL)
+            time.sleep(0.5)
+    out = real(argv, stdin)
+    with open(state, "w") as f:
+        json.dump({"users": tools.users, "pgid_differs": os.getpgid(0) != os.getpgid(os.getppid())
+                   if mode == "signals" else True}, f)
+    return out
+os.makedirs(os.path.dirname(pending), mode=0o700)
+open(pending, "w").close()
+os.chmod(os.path.dirname(pending), 0o700)   # root's alone (the umask may say otherwise)
+os.chmod(pending, 0o600)
 os.geteuid = lambda: 0
-login_apply.Ops = lambda: Ops(run, home=sys.argv[1])
-login_apply.Marker = lambda: Marker(sys.argv[2], owner=os.getuid())
+login_apply.Ops = lambda: Ops(run, home=home)
+login_apply.Marker = lambda: Marker(pending, owner=os.getuid())
 login_apply._lock = lambda: 0
 rc = login_apply.main(["create"])
 dumpable = __import__("ctypes").CDLL(None).prctl(3, 0, 0, 0, 0)   # PR_GET_DUMPABLE
-print(json.dumps({"rc": rc, "users": tools.users, "core": resource.getrlimit(resource.RLIMIT_CORE),
-                  "dumpable": dumpable}))
+print(json.dumps({"rc": rc, "core": resource.getrlimit(resource.RLIMIT_CORE), "dumpable": dumpable}))
 """
 
 
-def test_a_real_helper_signalled_between_the_steps_finishes_and_dumps_no_core(tmp_path):
+def _real_helper(tmp_path, mode):
     import subprocess
     import sys
-    script = tmp_path / "signalled.py"
-    script.write_text(_SIGNALLED)
+    script = tmp_path / "real.py"
+    script.write_text(_REAL)
     (tmp_path / "home").mkdir()
-    pending = tmp_path / "owner" / "pending"
-    p = subprocess.run([sys.executable, str(script), str(tmp_path / "home/teaport"), str(pending)],
+    pending, state = tmp_path / "owner" / "pending", tmp_path / "state.json"
+    p = subprocess.run([sys.executable, str(script), str(tmp_path / "home/teaport"), str(pending), str(state), mode],
                        input=json.dumps({"password": GOOD}), capture_output=True, text=True, timeout=60,
+                       start_new_session=True,   # its process group is not pytest's
                        env={**os.environ, "PYTHONPATH": f"{ROOT / 'brain'}:{ROOT / 'brain/tests'}"})
+    return p, pending, state
+
+
+def test_a_real_helper_signalled_between_the_steps_finishes_and_dumps_no_core(tmp_path):
+    p, pending, state = _real_helper(tmp_path, "signals")
     assert p.returncode == 0, p.stderr
     lines = p.stdout.strip().splitlines()
-    assert json.loads(lines[0]) == {"ok": True, "username": "teaport"}      # the reply
-    state = json.loads(lines[-1])
-    assert state["rc"] == 0 and state["users"] == {"teaport": GOOD} and not pending.exists()
-    assert state["core"] == [0, 0] and state["dumpable"] == 0
+    assert json.loads(lines[0]) == {"ok": True, "username": "teaport"}      # the reply, relayed
+    assert json.loads(lines[-1]) == {"rc": 0, "core": [0, 0], "dumpable": 0}
+    done = json.loads(state.read_text())
+    assert done["users"] == {"teaport": GOOD} and done["pgid_differs"] and not pending.exists()
+
+
+def test_a_helper_that_sudo_kills_still_finishes_its_create(tmp_path):
+    import time
+    p, pending, state = _real_helper(tmp_path, "killed")
+    assert p.returncode == -9 and p.stdout == ""          # the process sudo started: gone
+    deadline = time.monotonic() + 15
+    while pending.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    # The detached child went on: the password is set and the marker gone, all of it.
+    assert not pending.exists() and json.loads(state.read_text())["users"] == {"teaport": GOOD}
 
 
 # ------------------------------------------------------------------ the run user's side
@@ -548,18 +674,18 @@ def _fake_sudo(tmp_path, reply, rc=0):
 
 def test_through_sudo_the_password_goes_on_stdin_never_on_the_command_line(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"ok": true, "username": "teaport"}'))
-    assert owner_login.Login().create(GOOD, GOOD) == (True, "")
+    assert owner_login.Login().create(S(GOOD), S(GOOD)) == (True, "")
     argv = (tmp_path / "argv").read_text().split()
     assert argv == ["-n", "/usr/bin/python3", "/usr/lib/teaport/login_apply.py", "create"], argv
     assert json.loads((tmp_path / "stdin").read_text()) == {"password": GOOD}
     # A refusal keeps its code; a helper that could not run, or said nothing, is a failure.
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"refused": "this box already has a login", "why": "exists"}', rc=2))
-    assert owner_login.Login().create(GOOD, GOOD) == (False, owner_login.EXISTS)
+    assert owner_login.Login().create(S(GOOD), S(GOOD)) == (False, owner_login.EXISTS)
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"refused": "another login is being created", "why": "busy"}', rc=2))
-    assert owner_login.Login().create(GOOD, GOOD) == (False, owner_login.BUSY)
+    assert owner_login.Login().create(S(GOOD), S(GOOD)) == (False, owner_login.BUSY)
     assert owner_login.say(i18n.get("en"), owner_login.WHY[owner_login.BUSY]) == "Creating your login…"
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, "sudo: a password is required", rc=1))
-    assert owner_login.Login().create(GOOD, GOOD) == (False, login_apply.FAILED)
+    assert owner_login.Login().create(S(GOOD), S(GOOD)) == (False, login_apply.FAILED)
     assert owner_login.Login().state() == owner_login.NOT_OFFERED     # no line: nothing offered
     monkeypatch.setenv("PATH", _fake_sudo(tmp_path, '{"state": "pending"}'))
     assert owner_login.Login().pending() is True
@@ -569,16 +695,16 @@ def test_through_sudo_the_password_goes_on_stdin_never_on_the_command_line(tmp_p
 def test_a_typo_costs_no_sudo(tmp_path, monkeypatch):
     asked = []
     login = owner_login.Login(helper=lambda verb, req: asked.append(verb) or {"ok": True})
-    assert login.create(GOOD, GOOD + "x") == (False, owner_login.MISMATCH)
-    assert login.create("short-one", "short-one") == (False, login_apply.SHORT)
-    assert login.create("tab\tin-the-password", "tab\tin-the-password") == (False, login_apply.CHARACTER)
+    assert login.create(S(GOOD), S(GOOD + "x")) == (False, owner_login.MISMATCH)
+    assert login.create(S("short-one"), S("short-one")) == (False, login_apply.SHORT)
+    assert login.create(S("tab\tin-the-password"), S("tab\tin-the-password")) == (False, login_apply.CHARACTER)
     assert asked == []
 
 
 def test_every_reason_has_words():
     codes = {login_apply.SHORT, login_apply.LONG, login_apply.CHARACTER, login_apply.EXISTS,
              login_apply.FAILED, login_apply.REFUSED, login_apply.NOT_OFFERED, login_apply.BUSY,
-             owner_login.MISMATCH}
+             login_apply.GROUP, owner_login.MISMATCH}
     assert set(owner_login.WHY) == codes
 
 
@@ -598,9 +724,10 @@ def test_the_package_ships_the_helper_on_the_system_python():
 
 
 def test_the_caller_waits_for_a_whole_create():
-    # systemctl, getent, useradd, chpasswd, and the undo's userdel, each to the helper's
-    # limit: a caller that gave up first would not hear how it ended.
-    assert owner_login.HELPER_SECS > 5 * login_apply.TOOL_SECS
+    # Every account-tool call of the longest path (counted in the helper, and held to its
+    # real paths by test_the_longest_paths_make_the_counted_tool_calls), each to its limit:
+    # a caller that gave up first would not hear how it ended.
+    assert owner_login.HELPER_SECS > login_apply.MAX_TOOL_CALLS * login_apply.TOOL_SECS
 
 
 if __name__ == "__main__":

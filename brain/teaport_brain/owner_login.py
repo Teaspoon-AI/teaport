@@ -7,28 +7,31 @@
 # box that provisioning marked (see there, and its known window). The run user is the
 # agent's: it may ask, never decide. The password goes to the helper on stdin and nowhere
 # else -- not into a log line, the status file, an error or an answer -- so this module
-# logs nothing and its results carry codes, never the request. No Pipecat import: the
-# setup unit runs this alone on a box short of memory.
+# logs nothing and its results carry codes, never the request. From the form or the API
+# body to the helper's stdin it travels as a root_helper.Secret, whose repr hides it from
+# a traceback that prints variables. No Pipecat import: the setup unit runs this alone on
+# a box short of memory.
 #
 from teaport_brain import login_apply, root_helper
 from teaport_brain.i18n import N_
+from teaport_brain.root_helper import Secret  # noqa: F401 -- the callers' wrapper
 
 # The root-owned copy the sudoers line names (packaging/deb/sudoers-sync).
 HELPER = "/usr/lib/teaport/login_apply.py"
-# A create's longest path is five account-tool calls (systemctl, getent, useradd,
-# chpasswd, and an undo's userdel), each to the helper's own limit.
-HELPER_SECS = 5 * login_apply.TOOL_SECS + 30
+# A create's longest path: login_apply.MAX_TOOL_CALLS account-tool calls, each to the
+# helper's own limit, and a margin for the rest (python's start, the lock, the fork).
+HELPER_SECS = login_apply.MAX_TOOL_CALLS * login_apply.TOOL_SECS + 30
 # The helper never stops part-way (it blocks the stop signals): how long a stopped caller
 # waits for it to finish before it gives up on it (the create goes on regardless).
 HELPER_STOP_SECS = 30
 USERNAME = login_apply.USERNAME
 MIN_PASSWORD = login_apply.MIN_PASSWORD
 PENDING, CREATED, NOT_OFFERED = login_apply.PENDING, login_apply.CREATED, login_apply.NOT_OFFERED
-EXISTS, BUSY = login_apply.EXISTS, login_apply.BUSY
+EXISTS, BUSY, GROUP = login_apply.EXISTS, login_apply.BUSY, login_apply.GROUP
 # Why a create did not happen, beyond the helper's codes: the two passwords differ.
 MISMATCH = "mismatch"
 # The reasons that are the system's, not the password's: retyping cannot fix them.
-SYSTEM = (login_apply.FAILED, login_apply.REFUSED)
+SYSTEM = (login_apply.FAILED, login_apply.REFUSED, login_apply.GROUP)
 
 # What the owner reads, in their language (say()). {username} and {count} are filled in.
 TEXT = {
@@ -58,6 +61,9 @@ WHY = {
     # a failure, so said as the progress it is.
     BUSY: TEXT["creating"],
     login_apply.REFUSED: N_("Teaport couldn't create your login. Try again."),
+    # A `teaport` group already there (useradd cannot make the login's own): nothing the
+    # owner can fix; the helper's refusal says which, for the log.
+    GROUP: N_("Teaport couldn't create your login. Try again."),
 }
 
 
@@ -82,6 +88,7 @@ class Login:
         self._helper, self._ops, self._marker = helper, ops, marker
 
     def _in_process(self, verb: str, req: dict) -> dict:
+        req = {k: v.reveal() if isinstance(v, Secret) else v for k, v in req.items()}
         try:
             return login_apply.handle(self._ops, self._marker, verb, req)
         except login_apply.Refused as e:
@@ -96,14 +103,14 @@ class Login:
     def pending(self) -> bool:
         return self.state() == PENDING
 
-    def create(self, password: str, again: str) -> tuple[bool, str]:
+    def create(self, password: Secret, again: Secret) -> tuple[bool, str]:
         """(True, "") once the login exists, else (False, a WHY code). The password rule
         is checked here first (the helper's own, so the two never disagree), so a typo
         costs no sudo; the helper checks it again."""
         if password != again:
             return False, MISMATCH
         try:
-            login_apply.check_password(password)
+            login_apply.check_password(password.reveal())
         except login_apply.Refused as e:
             return False, e.why
         r = self._helper("create", {"password": password})

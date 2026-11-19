@@ -13,18 +13,51 @@ import subprocess
 SYSTEM_PYTHON = "/usr/bin/python3"
 
 
+class Secret:
+    """A password on its way to a helper. Its repr and str hide it, so a traceback that
+    prints its frames' variables (loguru's diagnose, on with TEAPORT_LOG_CONVERSATIONS=1)
+    shows "Secret(***)" where it is held; reveal() is the value, which call() alone asks
+    for, as it writes the request to the helper's stdin."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str):
+        self._value = value
+
+    def reveal(self) -> str:
+        return self._value
+
+    def __repr__(self) -> str:
+        return "Secret(***)"
+
+    __str__ = __repr__
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, Secret) and other._value == self._value
+
+    __hash__ = None
+
+
+def revealed(obj):
+    """json.dumps' default: a Secret is written as its value."""
+    if isinstance(obj, Secret):
+        return obj.reveal()
+    raise TypeError(f"{type(obj).__name__} is not JSON serializable")
+
+
 def call(helper: str, verb: str, req: dict, *, timeout: float, stop_secs: float,
          name: str) -> dict:
     """`helper` <verb> under sudo, the request on stdin: its reply; or {"ok": False,
     "err": ...} when it could not run, and the same with the reply's other fields when it
-    refused (its "refused" is the "err"). `name` says which helper in those errors."""
+    refused (its "refused" is the "err"). `name` says which helper in those errors. A
+    Secret in `req` is written as its value, here and nowhere else."""
     try:
         p = subprocess.Popen(["sudo", "-n", SYSTEM_PYTHON, helper, verb], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except OSError as e:
         return {"ok": False, "err": str(e)}
     try:
-        out, err = p.communicate(json.dumps(req), timeout=timeout)
+        out, err = p.communicate(json.dumps(req, default=revealed), timeout=timeout)
     except subprocess.TimeoutExpired:
         p.kill()
         p.communicate()

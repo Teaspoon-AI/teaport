@@ -38,9 +38,11 @@
 #      the step may be left empty. It needs no internet, so the login is made as
 #      the form arrives, through the root helper, before the join begins; a password the
 #      helper does not take, or a create that fails, brings the page back with the reason
-#      and no join. The form can now make the box's admin account, so a post must come
-#      from the page itself (Handler._cross_site), and a second tap while the first is
-#      under way gets the "joining" page, not an error.
+#      and no join. The form can now make the box's admin account, so the page answers
+#      only under its own names (Handler._own_host: a captive probe's name is sent there,
+#      which also defeats DNS rebinding -- NM's dnsmasq answers every name with the box),
+#      a post must come from the page itself (Handler._cross_site), and a second tap
+#      while the first is under way gets the first one's answer, not an error.
 #   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
@@ -94,6 +96,9 @@ PAGE_PORT = 7869
 # request that dawdles is dropped, and only so many are served at once.
 MAX_FORM_BYTES = 4096
 REQUEST_TIMEOUT_SECS = 10
+# How long a second tap waits for the first one's answer (a login being created) before
+# it says the login is still being created.
+POST_WAIT_SECS = 30
 MAX_CLIENTS = 32
 # How long the setup network's address may take to show on the device once NM says the
 # network is up (only a warning when it does not: the page is bound to it regardless).
@@ -440,10 +445,12 @@ def parse_key(body: bytes) -> str:
     return (form.get("ai_key") or [""])[0].strip()
 
 
-def parse_login(body: bytes) -> tuple[str, str]:
-    """The login step's two passwords from the posted form, as typed ("" for none)."""
+def parse_login(body: bytes) -> tuple[owner_login.Secret, owner_login.Secret]:
+    """The login step's two passwords from the posted form, as typed ("" for none), as
+    Secrets from here on (their repr hides them)."""
     form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
-    return (form.get("login_password") or [""])[0], (form.get("login_again") or [""])[0]
+    return (owner_login.Secret((form.get("login_password") or [""])[0]),
+            owner_login.Secret((form.get("login_again") or [""])[0]))
 
 
 def parse_form(body: bytes) -> tuple[str, str, bool, str]:
@@ -582,6 +589,9 @@ class Setup:
         # Held by the post that is creating the login or asking for the join: a second
         # one (a second tap) meanwhile is answered as the first will be, never as an error.
         self.posting = threading.Lock()
+        # The answer the last post that got through gave, for its second tap: a callable
+        # of the reader's language to the page (Handler.do_POST).
+        self.outcome = None
         # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
         # its profile), never 0.0.0.0 — the box's other networks must not reach a page
         # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -635,10 +645,22 @@ class Setup:
                 kept = i18n.chosen(cookie.group(1)) if cookie else None
                 return kept or i18n.for_accept_language(self.headers.get("Accept-Language")), []
 
+            def _own_host(self) -> bool:
+                """The request names the page by one of its own names (setup.names): the
+                setup address, its .local name, on any port. Not a captive probe's name
+                (captive.apple.com), nor one rebound to the box: NM's dnsmasq answers
+                every name with it, so a page from evil.example, rebound, would otherwise
+                be same-origin with this one."""
+                host = urllib.parse.urlsplit("//" + (self.headers.get("Host") or "").strip()).hostname
+                return (host or "").lower() in setup.names()
+
             def do_GET(self):
-                # Every path is the page: the captive-portal probes (Apple's
-                # hotspot-detect, Android's generate_204, Windows' connecttest) expect
-                # something else, so the phone shows this as a sign-in page.
+                # Every path is the page, under its own name: anything else (a captive
+                # probe's name, a rebound one) is sent there -- the captive portal's own
+                # redirect, which the phone follows into its sign-in sheet. The probes
+                # expect something else than the page, so the phone shows it as a sign-in.
+                if not self._own_host():
+                    return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 t, remember = self._t()
@@ -647,20 +669,13 @@ class Setup:
             def _cross_site(self) -> bool:
                 """A post from another site's page: a phone on the setup network often keeps
                 its mobile data, and a tab there could post the form. The page's own posts
-                carry no Origin, "null" (some captive browsers), or the page's host: the
-                setup address, its .local name, or the name the phone asked for (a captive
-                probe, captive.apple.com, gets the page under its own name), on any port."""
+                carry no Origin, "null" (some captive browsers), or one of its own names."""
                 if (self.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
                     return True
                 origin = (self.headers.get("Origin") or "").strip()
                 if not origin or origin == "null":
                     return False
-                host = (urllib.parse.urlsplit(origin).hostname or "").lower()
-                asked = (urllib.parse.urlsplit("//" + (self.headers.get("Host") or "")).hostname or "").lower()
-                own = {setup.address.lower(), asked}
-                if setup.avahi_name:
-                    own.add(f"{setup.avahi_name}.local".lower())
-                return not host or host not in own
+                return (urllib.parse.urlsplit(origin).hostname or "").lower() not in setup.names()
 
             def do_POST(self):
                 raw = (self.headers.get("Content-Length") or "0").strip()
@@ -672,44 +687,71 @@ class Setup:
                     body = self.rfile.read(int(raw))
                 except OSError:  # the timeout, or the phone left
                     return
-                if self._cross_site():
+                if not self._own_host() or self._cross_site():
                     return self.send_error(403)
                 ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
                 if not setup.posting.acquire(blocking=False):
-                    return self._send(200, render_joining((setup.request or (ssid,))[0], t), extra=remember)
+                    # A second tap while the first is under way: the first one's answer,
+                    # once it has one -- a create can still fail, and then nothing joins.
+                    if not setup.posting.acquire(timeout=POST_WAIT_SECS):
+                        return self._send(200, setup.page(owner_login.say(t, owner_login.TEXT["creating"]), t),
+                                          extra=remember)
+                    try:
+                        outcome = setup.outcome
+                    finally:
+                        setup.posting.release()
+                    return self._send(200, outcome(t) if outcome else setup.page("", t), extra=remember)
                 try:
                     if setup.request is not None:   # the join is already asked for
                         return self._send(200, render_joining(setup.request[0], t), extra=remember)
-                    if error:
-                        return self._send(200, setup.page(t._(error), t), extra=remember)
-                    made = False
-                    login_password, login_again = parse_login(body)
-                    skipped = setup.login_skippable and not (login_password or login_again)
-                    if setup.login_offered and not skipped:   # required: empty is "too short"
-                        why = setup.create_login(login_password, login_again)
-                        if why:
-                            said = (owner_login.TEXT["skip"] if why in owner_login.SYSTEM
-                                    else owner_login.WHY[why])
-                            return self._send(200, setup.page(owner_login.say(t, said), t),
-                                              extra=remember)
-                        made = True
-                    self._send(200, render_joining(ssid, t, login=made), extra=remember)
-                    setup.key = parse_key(body) if setup.account is not None else ""
-                    setup.lang = t  # the screens from here on (_text)
-                    setup.request = (ssid, password, hidden)
-                    setup.wake.set()
+                    setup.outcome, join = self._answer(body, ssid, error)
+                    self._send(200, setup.outcome(t), extra=remember)
+                    if join:
+                        setup.key = parse_key(body) if setup.account is not None else ""
+                        setup.lang = t  # the screens from here on (_text)
+                        setup.request = (ssid, password, hidden)
+                        setup.wake.set()
                 finally:
                     setup.posting.release()
 
+            def _answer(self, body: bytes, ssid: str, error: str):
+                """What this post comes to: (the page it answers with, a function of the
+                reader's language kept for its second tap; whether to join)."""
+                def page(said):
+                    return (lambda t: setup.page(said(t), t)), False
+                if error:
+                    return page(lambda t: t._(error))
+                made = False
+                login_password, login_again = parse_login(body)
+                skipped = setup.login_skippable and not (login_password.reveal() or login_again.reveal())
+                if setup.login_offered and not skipped:   # required: empty is "too short"
+                    why = setup.create_login(login_password, login_again)
+                    if why:
+                        said = (owner_login.TEXT["skip"] if why in owner_login.SYSTEM
+                                else owner_login.WHY[why])
+                        return page(lambda t: owner_login.say(t, said))
+                    made = True
+                return (lambda t: render_joining(ssid, t, login=made)), True
+
         return Handler
+
+    def names(self) -> set[str]:
+        """The page's own host names: the setup address, the address it is bound to (a
+        test's 127.0.0.1), and the .local name avahi announces."""
+        names = {self.address.lower()}
+        if self.bind:
+            names.add(self.bind.lower())
+        if self.avahi_name:
+            names.add(f"{self.avahi_name}.local".lower())
+        return names
 
     def page(self, error: str, t: i18n.T) -> str:
         """The setup page as this run offers it, `error` (in t's language) on top."""
         return render_page(self.networks, error, t, account=self.account is not None,
                            login=self.login_offered, login_required=not self.login_skippable)
 
-    def create_login(self, password: str, again: str) -> str:
+    def create_login(self, password: owner_login.Secret, again: owner_login.Secret) -> str:
         """The owner's login from the page's two passwords: "" once it exists, else the
         WHY code. A login that already exists, or that is no longer pending, takes the step
         off the page. Logged by outcome only: the password stays in this call."""

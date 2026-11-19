@@ -990,7 +990,7 @@ def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
         with socket.create_connection(("127.0.0.1", setup.port), timeout=5) as third:
             assert third.recv(10) == b""          # full: dropped at once
         time.sleep(0.5)                           # the idle two time out and free their slots
-        assert _raw(setup.port, b"GET / HTTP/1.0\r\n\r\n").startswith("HTTP/1.0 200")
+        assert _raw(setup.port, b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").startswith("HTTP/1.0 200")
         for c in idle:
             c.close()
     finally:

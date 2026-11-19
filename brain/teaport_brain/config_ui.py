@@ -853,6 +853,15 @@ def _owner_login():
     return owner_login.Login()
 
 
+def _login_body(body) -> tuple:
+    """{password, again} as two owner_login.Secrets; a 400 for anything else."""
+    from teaport_brain import owner_login
+    fields = [body.get(k) if isinstance(body, dict) else None for k in ("password", "again")]
+    if not all(isinstance(f, str) for f in fields):
+        raise HTTPException(status_code=400, detail="password and again must be text")
+    return owner_login.Secret(fields[0]), owner_login.Secret(fields[1])
+
+
 @router.get("/api/login")
 async def login_state(request: Request):
     """Whether the card is offered, and its words in the reader's language."""
@@ -872,13 +881,11 @@ async def login_create(request: Request):
     from teaport_brain import owner_login
     _authorize(request)
     try:
-        body = await request.json()
+        # Straight into Secrets: no variable of this frame holds the password as text, for
+        # a traceback that prints them (loguru's diagnose).
+        password, again = _login_body(await request.json())
     except ValueError:
         raise HTTPException(status_code=400, detail="the request is not JSON") from None
-    password = body.get("password") if isinstance(body, dict) else None
-    again = body.get("again") if isinstance(body, dict) else None
-    if not isinstance(password, str) or not isinstance(again, str):
-        raise HTTPException(status_code=400, detail="password and again must be text")
     ok, why = await asyncio.to_thread(_owner_login().create, password, again)
     logger.info("config: the owner's login " + ("created" if ok else f"not created ({why})")
                 + " from Settings")

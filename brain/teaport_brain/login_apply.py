@@ -13,12 +13,16 @@
 #           password set through chpasswd on stdin. Only while the pending marker
 #           (PENDING_PATH) is there; success removes the marker, so it works once. A
 #           failed step undoes the ones before it.
-# The marker means "no owner login yet". While it is there, a `teaport` account is one a
-# create began and did not finish (a power cut, or a SIGKILL, between useradd and
-# chpasswd): status says PENDING, and the next create finishes it -- its home directory
-# if useradd did not get that far, its password, the sudo group -- and removes the marker. Provisioning refuses a box that already has a
-# `teaport` account before it writes the marker, so no other account is taken over this
-# way. Without the marker, an existing `teaport` account is the owner's: EXISTS.
+# The marker means "no owner login yet". While it is there, a `teaport` account that a
+# create began and never gave a password (a power cut between useradd and chpasswd) is
+# finished by the next create -- its home directory if useradd did not get that far, its
+# password, the sudo group -- and the marker goes. Only an account that is plainly such a
+# leftover counts (Ops.unfinished: no password ever set, our GECOS, and a home that is
+# missing or its own with no .ssh); any other `teaport` account is EXISTS, marker or not,
+# so an account someone prepared -- a password set, keys planted -- is never handed to the
+# owner as theirs: they see "already has a login". Provisioning refuses a box that already
+# has a `teaport` account, or a `teaport` group (which useradd --user-group cannot take),
+# before it writes the marker; the helper refuses the group too (GROUP).
 # The marker is root's: provisioning writes it at seal (Teaspoon-AI/teaport-appliance#3),
 # in a root-only directory outside every path the run user can write (/etc/teaport is the
 # run user's through config_apply; the state directory is its own). Nothing in this
@@ -41,18 +45,23 @@
 # by its type alone (main), since an exception's text can quote its input. The process
 # can leave no core dump (RLIMIT_CORE 0, and not dumpable), which would hold it.
 #
-# Nothing the run user can send stops a create part-way: every signal that can be blocked
-# is, for the whole run (sudo passes the run user's signals on -- TERM, INT, HUP, but also
-# USR1, USR2, ALRM and QUIT, which it can send from another process group -- and systemd
-# stopping setup signals every process of the unit). SIGKILL and a power cut still can;
-# the next create finishes what they left (above).
+# Nothing the run user can do stops a create part-way. Every signal that can be blocked is
+# (sudo passes the run user's signals on: TERM, INT, HUP, but also USR1, USR2, ALRM and
+# QUIT, which it can send from another process group). That is not enough: sudo itself,
+# sent SIGALRM, ends its command -- HUP, TERM, then SIGKILL to its process group two
+# seconds later (use_pty, Ubuntu's default). So a create runs detached (_detached): a
+# child in a session and process group of its own does the whole of it, the lock
+# included, and the process sudo started only relays its answer. sudo can kill that one;
+# the child finishes regardless, its marker removal included. A power cut still can stop
+# it; the next create finishes what it left, if that is plainly a leftover (above).
 #
 # Run as the sudoers line (packaging/deb/sudoers-sync) names it:
 #   /usr/bin/python3 /usr/lib/teaport/login_apply.py <verb>
 # the root-owned copy the teaport-brain package ships, on the SYSTEM python, never the
 # venv's (like config_apply.py and wifi_apply.py). Standard library only. In the brain's
 # tree owner_login.py reads its constants and password rule, and tests run it in-process
-# (handle()) against a pretend useradd, chpasswd, getent, usermod and userdel.
+# (handle()) against a pretend useradd, chpasswd, getent, usermod, mkhomedir_helper and
+# userdel, and as a real process for the signals and the detached create.
 #
 import ctypes
 import fcntl
@@ -89,8 +98,17 @@ PENDING, CREATED, NOT_OFFERED = "pending", "created", "not_offered"
 # see. FAILED: a step failed (a retry finishes or redoes it); NOT_OFFERED (status's word
 # too): no pending marker; BUSY: another create holds the lock (it is not a failure: that
 # one is under way).
-SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED, BUSY = (
-    "short", "long", "character", "exists", "failed", "refused", "busy")
+SHORT, LONG, CHARACTER, EXISTS, FAILED, REFUSED, BUSY, GROUP = (
+    "short", "long", "character", "exists", "failed", "refused", "busy", "group")
+# The most account-tool calls a create makes (each up to TOOL_SECS): systemctl, getent
+# passwd, then getent group, useradd, chpasswd and an undo's userdel for a new account,
+# or getent shadow, mkhomedir_helper, chpasswd and usermod to finish one. The caller's
+# timeout is built on it (owner_login.HELPER_SECS); tests hold both paths to it.
+MAX_TOOL_CALLS = 6
+# A shadow password field that no chpasswd ever set: empty, or locked with no hash behind
+# it (useradd's "!", and the forms other tools write).
+_NEVER_SET = ("", "!", "!!", "*", "!*")
+GECOS = "Teaport owner"
 # userdel's exit status for "no such user".
 _USERDEL_NO_USER = 6
 # prctl(2)'s PR_SET_DUMPABLE.
@@ -165,34 +183,46 @@ class Ops:
     def __init__(self, run=run_tool, home: str = HOME_DIR, login_defs: str = LOGIN_DEFS):
         self._run, self.home, self.login_defs = run, home, login_defs
 
-    def _passwd(self) -> list[str] | None:
+    def passwd(self) -> list[str] | None:
         """The account's passwd entry, split; None when there is none."""
         rc, out, _ = self._run(["getent", "passwd", USERNAME])
         if rc not in (0, 2):   # 2: no such user; anything else is not an answer
             raise Refused("could not tell whether a login exists")
         return out.strip().split(":") if rc == 0 else None
 
-    def exists(self) -> bool:
-        return self._passwd() is not None
+    def group_exists(self) -> bool:
+        rc, _, _ = self._run(["getent", "group", USERNAME])
+        if rc not in (0, 2):
+            raise Refused("could not tell whether a teaport group exists")
+        return rc == 0
 
-    def home_ready(self) -> bool:
-        """An unfinished account's home directory, there or made as useradd would make it:
-        mkhomedir_helper (libpam-modules-bin, which the package depends on) creates it
-        owned by the account, from /etc/skel, at the mode login.defs gives a new home.
-        One already there must be a real directory of the account's own; anything else
-        (a file, a link, someone else's directory) is refused, never taken over."""
-        entry = self._passwd()
-        if entry is None or len(entry) < 3 or not entry[2].isdigit():
-            raise Refused("could not read the login's account")
+    def unfinished(self, entry: list[str]) -> bool:
+        """`entry` is plainly a create's leftover, to be finished (the module comment):
+        no password was ever set, the GECOS is ours, and the home directory is missing or
+        a real directory of its own with no .ssh. Anything else is someone's login."""
+        if len(entry) < 7 or not entry[2].isdigit() or entry[4] != GECOS:
+            return False
+        rc, out, _ = self._run(["getent", "shadow", USERNAME])
+        fields = out.strip().split(":")
+        if rc != 0 or len(fields) < 2 or fields[1] not in _NEVER_SET:
+            return False
         try:
             st = os.lstat(self.home)
         except FileNotFoundError:
-            umask = 0o777 & ~home_mode(self.login_defs)
-            rc, _, _ = self._run(["mkhomedir_helper", USERNAME, f"{umask:04o}"])
-            return rc == 0
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != int(entry[2]):
-            raise Refused(f"{self.home} is there and is not the login's own directory")
-        return True
+            return True
+        return (stat.S_ISDIR(st.st_mode) and st.st_uid == int(entry[2])
+                and not os.path.lexists(os.path.join(self.home, ".ssh")))
+
+    def home_ready(self) -> bool:
+        """An unfinished account's home directory, there (unfinished() checked it) or made
+        as useradd would make it: mkhomedir_helper (libpam-modules-bin, which the package
+        depends on) creates it owned by the account, from /etc/skel, at the mode
+        login.defs gives a new home."""
+        if os.path.lexists(self.home):
+            return True
+        umask = 0o777 & ~home_mode(self.login_defs)
+        rc, _, _ = self._run(["mkhomedir_helper", USERNAME, f"{umask:04o}"])
+        return rc == 0
 
     def run_user(self) -> str:
         _, out, _ = self._run(["systemctl", "show", "-p", "User", "--value", BRAIN_UNIT])
@@ -201,7 +231,7 @@ class Ops:
     def useradd(self) -> bool:
         rc, _, _ = self._run(["useradd", "--create-home", "--home-dir", self.home,
                               "--shell", SHELL, "--groups", ADMIN_GROUP, "--user-group",
-                              "--comment", "Teaport owner", USERNAME])
+                              "--comment", GECOS, USERNAME])
         return rc == 0
 
     def chpasswd(self, password: str) -> bool:
@@ -249,22 +279,31 @@ class Marker:
 
 
 def status(ops: Ops, marker: Marker) -> dict:
-    # The marker first: with it, an existing account is an unfinished create (above).
-    if marker.present():
-        return {"state": PENDING}
-    return {"state": CREATED if ops.exists() else NOT_OFFERED}
+    entry = ops.passwd()
+    if not marker.present():
+        return {"state": CREATED if entry else NOT_OFFERED}
+    if entry:
+        return {"state": PENDING if ops.unfinished(entry) else CREATED}
+    if ops.group_exists():
+        raise Refused("a teaport group already exists", GROUP)
+    return {"state": PENDING}
 
 
 def create(ops: Ops, marker: Marker, req: dict) -> dict:
     password = check_password(req.get("password"))
     if ops.run_user() == USERNAME:
         raise Refused(f"the brain runs as {USERNAME}: the login must be another account")
+    entry = ops.passwd()
     if not marker.present():
-        if ops.exists():
+        if entry:
             raise Refused("this box already has a login", EXISTS)
         raise Refused("no login is pending on this box", NOT_OFFERED)
-    if ops.exists():
+    if entry:
+        if not ops.unfinished(entry):
+            raise Refused("this box already has a login", EXISTS)
         return _finish(ops, marker, password)
+    if ops.group_exists():
+        raise Refused("a teaport group already exists", GROUP)
     if os.path.lexists(ops.home):
         # An undo removes the home directory: one that was there first is not this run's.
         raise Refused(f"{ops.home} is already there")
@@ -272,7 +311,7 @@ def create(ops: Ops, marker: Marker, req: dict) -> dict:
     try:
         if ops.useradd() and ops.chpasswd(password):
             # Gone with the success, or the create is undone: a marker left behind would
-            # make the account an unfinished one, its password anyone's to set.
+            # keep the gate open for whoever later removes the account.
             marker.remove()
             done = True
     finally:
@@ -282,10 +321,11 @@ def create(ops: Ops, marker: Marker, req: dict) -> dict:
 
 
 def _finish(ops: Ops, marker: Marker, password: str) -> dict:
-    """The account an earlier create left unfinished: its home directory, password and
-    group, then the marker gone. Nothing is undone on a failure: the account stays
-    unfinished, and the next create tries again."""
-    if ops.home_ready() and ops.chpasswd(password) and ops.admin():
+    """The leftover an earlier create made (unfinished()): its home directory and group,
+    its password last -- once it has one it is no longer a leftover (unfinished()), so
+    nothing may be left to do after it but the marker. Nothing is undone on a failure:
+    until chpasswd succeeds it is still a leftover, and the next create tries again."""
+    if ops.home_ready() and ops.admin() and ops.chpasswd(password):
         marker.remove()
         return {"ok": True, "username": USERNAME}
     return {"ok": False, "why": FAILED}
@@ -328,6 +368,56 @@ def _reply(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def _serve(verb: str, req) -> tuple[int, dict]:
+    """One request, to its exit status and reply; an error nobody expected by its type
+    alone (the module comment says why), in "error" for main to report."""
+    try:
+        if verb == "create":
+            _lock()   # this process's own: the one that does the work holds it
+        return 0, handle(Ops(), Marker(), verb, req)
+    except Refused as e:
+        return 2, {"refused": str(e), "why": e.why}
+    except Exception as e:  # noqa: BLE001 -- see the module comment: never its text
+        return 1, {"ok": False, "why": FAILED, "error": type(e).__name__}
+
+
+def _detached(work) -> tuple[int, dict]:
+    """`work()` in a child of its own session and process group, out of reach of what
+    sudo does to its command (the module comment): its answer comes back on a pipe, and
+    if this process is killed meanwhile the child finishes all the same. The child keeps
+    the blocked signals and the core limits (inherited across fork) and lets go of the
+    caller's stdin, stdout and stderr, so a caller whose sudo was killed is not held open
+    by it."""
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.close(r)
+            os.setsid()
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            answer = json.dumps(work()).encode()
+            try:
+                while answer:
+                    answer = answer[os.write(w, answer):]
+            except OSError:
+                pass   # the relay is gone (sudo killed it): the work is done regardless
+        finally:
+            os._exit(0)
+    os.close(w)
+    chunks = []
+    while chunk := os.read(r, 65536):
+        chunks.append(chunk)
+    os.close(r)
+    os.waitpid(pid, 0)
+    try:
+        rc, reply = json.loads(b"".join(chunks))
+        return int(rc), dict(reply)
+    except (ValueError, TypeError):
+        return 1, {"ok": False, "why": FAILED, "error": "no answer from the create"}
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if os.geteuid() != 0:
@@ -349,10 +439,6 @@ def main(argv: list[str] | None = None) -> int:
             req = json.loads(data) if data.strip() else {}
         except ValueError:
             raise Refused("the request is not JSON") from None
-        if argv[0] == "create":
-            _lock()
-        _reply(handle(Ops(), Marker(), argv[0], req))
-        return 0
     except Refused as e:
         _reply({"refused": str(e), "why": e.why})
         return 2
@@ -360,6 +446,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"login_apply: {type(e).__name__}\n")
         _reply({"ok": False, "why": FAILED})
         return 1
+    verb = argv[0]
+    rc, reply = _detached(lambda: _serve(verb, req)) if verb == "create" else _serve(verb, req)
+    if "error" in reply:
+        sys.stderr.write(f"login_apply: {reply.pop('error')}\n")
+    _reply(reply)
+    return rc
 
 
 if __name__ == "__main__":
