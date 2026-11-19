@@ -188,7 +188,7 @@ teaport has three optional components. The installer sets up none of them by def
 
    All three services show `active`, with the engine and brain ports and the memory use.
 
-   <!-- source: cli/teaport:5,234,1886#678e2a72 -->
+   <!-- source: cli/teaport:5,234,1885#678e2a72 -->
 
 2. Run the health check:
 
@@ -200,7 +200,7 @@ teaport has three optional components. The installer sets up none of them by def
    configuration, the services, and the ports. Every check prints `ok`, or a warning that
    says what to fix.
 
-   <!-- source: cli/teaport:6,363-397#4ebc3a82 -->
+   <!-- source: cli/teaport:6,368-402#4ebc3a82 -->
 
 3. Optional: to confirm that speech recognition uses the fast path, read the engine's first
    messages:

@@ -43,7 +43,7 @@ To install what the check found:
 
 The update runs as the `teaport-update` service, and the command prints its output until it ends. The user that runs the brain can start that service without a password; anyone else is asked for an administrator's password. To install without the question, for example from a script, run `teaport update --yes`.
 
-<!-- source: cli/teaport:575-628#cdc96203 -->
+<!-- source: cli/teaport:580-633#cdc96203 -->
 
 The service fetches the installer of the release, at the release tag that the manifest names. It never runs an installer from a branch, or one from before `teaport update` existed. When the engine or the models changed, it runs `install.sh --only engine`; when the brain changed, it then runs `install.sh --only brain`. Each run downloads first. An update never goes back: when the channel you pick names an older brain or an older engine than the device has, `teaport update` installs nothing from it, and `teaport update --check` says so. To go back on purpose, use `install.sh --rollback`. Before it swaps in the new engine or brain, it waits until nobody is talking to the device: no phone call, no Talk session, and no conversation with the device's microphone. After an hour of conversation, the run stops before the swap and keeps what it downloaded, so the next try is quick. Each run puts the previous engine or brain back by itself if the new one doesn't come back healthy, as the next sections describe.
 

@@ -649,7 +649,7 @@ cmd_licenses() {
 # user -- never as root: the key file, the trial marker and OpenClaw's store are that
 # user's, and the venv's python is not run as root. Only installing wifi-setup.env, which
 # is root's (systemd reads it for teaport-wifi-setup.service), goes through sudo.
-provision_python() {
+provision_user() {
   local venv="$PREFIX/brain" user
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
   [ "$(id -u)" != 0 ] || die "run this as the box's user, not as root (it uses sudo itself where it must)"
@@ -657,11 +657,11 @@ provision_python() {
   if [ -n "$user" ] && [ "$user" != "$(id -un)" ]; then
     die "run this as $user, the user the brain runs as (its key file and state are $user's)"
   fi
-  printf '%s' "$venv/bin/python"
 }
+provision() { provision_user; brain_python "$PREFIX/brain" -I -m teaport_brain.provision "$@"; }
 
 cmd_key() {
-  local sub="${1:-}" py; shift || true
+  local sub="${1:-}"; shift || true
   case "$sub" in
     set) ;;
     ""|-h|--help|help)
@@ -679,12 +679,11 @@ EOF
       return 0 ;;
     *) die "unknown key subcommand: $sub (try: teaport key set)" ;;
   esac
-  py="$(provision_python)"
-  "$py" -I -m teaport_brain.provision key --etc "$ETC" "$@"
+  provision key --etc "$ETC" "$@"
 }
 
 cmd_setup_card() {
-  local new=0 a py env_file="$ETC/wifi-setup.env" text="" fresh line pass=()
+  local new=0 a env_file="$ETC/wifi-setup.env" text="" fresh line pass=()
   for a in "$@"; do
     case "$a" in
       --new-password) new=1 ;;
@@ -701,7 +700,7 @@ EOF
       *) die "unknown argument: $a (try: teaport setup-card [--new-password] [--json])" ;;
     esac
   done
-  py="$(provision_python)"
+  provision_user
   if [ -r "$env_file" ]; then text="$(cat "$env_file")"
   elif [ -e "$env_file" ]; then text="$(SUDO cat "$env_file")"
   fi
@@ -710,7 +709,7 @@ EOF
     # whatever the user (whom the agent runs as) had swapped in, a link to any root-only
     # file included. It stays in memory, holds only setup settings and comments (the
     # file is the setup unit's: nothing else belongs in it), and goes to root on stdin.
-    fresh="$(printf '%s' "$text" | "$py" -I -m teaport_brain.provision setup-env --etc "$ETC")" \
+    fresh="$(printf '%s' "$text" | provision setup-env --etc "$ETC")" \
       || die "could not make a new setup password"
     # A carriage return is a line end to systemd's env-file reader but not to `read`:
     # refused, so no second line hides behind a setup setting (genuine text has none).
@@ -728,7 +727,7 @@ EOF
     text="$fresh"; pass+=(--new)
   fi
   # The card is made from the text the box now has, so it shows the password it uses.
-  printf '%s' "$text" | "$py" -I -m teaport_brain.provision card --etc "$ETC" ${pass[@]+"${pass[@]}"}
+  printf '%s' "$text" | provision card --etc "$ETC" ${pass[@]+"${pass[@]}"}
 }
 
 # ---- logs ------------------------------------------------------------------

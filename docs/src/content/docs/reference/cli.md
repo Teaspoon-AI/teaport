@@ -12,7 +12,7 @@ and the release manifest, and it reads the layout the installer creates: `/opt/t
 The `teaport-brain` package installs the command at `/usr/bin/teaport`. Run `teaport` with no arguments, or `teaport help`, to print the
 command summary. An unknown command or option prints an error and exits 1.
 
-<!-- source: install.sh:1328#9d1a0148; cli/teaport:43,1882-1896#c36cc6ea -->
+<!-- source: install.sh:1328#9d1a0148; cli/teaport:43,1881-1895#c36cc6ea -->
 
 The paths and ports in this reference are the defaults that the command reads at startup.
 `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`,
@@ -33,7 +33,7 @@ recent requests for a reply met at the model provider, whether a newer release i
 load average, and, on a device with OpenClaw, whether OpenClaw uses the brain's key. When the Session Initiation Protocol (SIP) gateway unit is enabled, it also shows the
 `teaport-sip` service and the brain's SIP front-end. It takes no options.
 
-<!-- source: cli/teaport:218-236#17a6a5ad -->
+<!-- source: cli/teaport:223-241#17a6a5ad -->
 
 Example:
 
@@ -83,13 +83,13 @@ Option:
 | --- | --- |
 | `--fix` | Restarts what failed: a service that is not active, the SIP gateway when it is down or has not registered, and the brain when its SIP front-end is not connected. |
 
-<!-- source: cli/teaport:394,450-455#b03ef28b -->
+<!-- source: cli/teaport:399,455-460#b03ef28b -->
 
 The final line is `doctor: all good` when every check passed, otherwise
 `doctor: issues above`. The command exits 0 in the first case and 1 in the second; a warning
 does not change the exit status.
 
-<!-- source: cli/teaport:360-361,464-465#4c8069a5 -->
+<!-- source: cli/teaport:365-366,469-470#4c8069a5 -->
 
 Example:
 
@@ -216,7 +216,7 @@ take the key, the brain keeps the key it had. In the rare case where OpenClaw mi
 the key before it failed, `teaport status` says that the two might be on different keys until
 the next save.
 
-<!-- source: cli/teaport:518-539#7ceed65b; brain/teaport_brain/provision.py:145-194#4e21552e -->
+<!-- source: cli/teaport:663-683#591dde97; brain/teaport_brain/provision.py:145-194#4e21552e -->
 
 The command runs with the brain's environment: the settings in `/etc/teaport/brain.env`,
 your user's home directory from the system's user database, and systemd's default `PATH`.
@@ -225,7 +225,7 @@ reads that copy first, so the command saves nothing and tells you to remove the 
 command as the user the brain runs as, not as root. A running brain uses the new key from
 the next conversation, without a restart.
 
-<!-- source: brain/teaport_brain/provision.py:73-78,100-113#37151763; cli/teaport:500-516#21fa185b -->
+<!-- source: brain/teaport_brain/provision.py:73-78,100-113#37151763; cli/teaport:645-661#7e82c962 -->
 
 | Option | Description |
 | --- | --- |
@@ -249,7 +249,7 @@ takes effect when the check ends, after at most about 10 seconds, or 16 with `--
 With `--starter`, exit 2 can also mean that the key was saved but couldn't be marked as the
 trial key. In each of these cases, running the command again finishes the job.
 
-<!-- source: brain/teaport_brain/provision.py:48-53,82-86,239-298#0574ef8b; cli/teaport:41,507-516#9aebeb27 -->
+<!-- source: brain/teaport_brain/provision.py:48-53,82-86,239-298#0574ef8b; cli/teaport:43,653-661#95298e84 -->
 
 Example, with the key in a file:
 
@@ -272,14 +272,14 @@ card, and with 1 when it prints none: no password is fixed, setup mode doesn't a
 fixed one, the device has no Wi-Fi, or `--new-password` couldn't install the new
 file. Stopped by a signal, it prints no card and exits with another nonzero status.
 
-<!-- source: cli/teaport:541-587#ca104852; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:177-192#73a41f3c -->
+<!-- source: cli/teaport:685-731#8760cc59; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:177-192#73a41f3c -->
 
 | Option | Description |
 | --- | --- |
 | `--new-password` | Makes a new password, in the same format as the ones setup mode makes, and fixes it in `wifi-setup.env`. The command keeps the file's other setup settings and comments, installs the file owned by root and readable by the group of the user who runs the command (mode 640, like the installer's other settings files), and prints the card only after the file is in place. It uses `sudo`. If the file holds a line that isn't a setup setting (`WIFI_SETUP_...`) or a comment, or a carriage return, the command changes nothing and exits 1; fix the file by hand. |
 | `--json` | Prints the name, the password, and the QR code text as one JSON object. |
 
-<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:201-213#67817dfa; cli/teaport:541-587#ca104852 -->
+<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:201-213#67817dfa; cli/teaport:685-731#8760cc59 -->
 
 Example:
 
@@ -308,11 +308,11 @@ unchanged, so `-f`, `-n LINES`, and `--since` work directly. With no further arg
 passes `-b`, so a bare `teaport logs` shows this boot's entries instead of the whole
 journal.
 
-<!-- source: cli/teaport:735-749#ec2c88d8 -->
+<!-- source: cli/teaport:734-748#ec2c88d8 -->
 
 The command exits with the exit status of `journalctl`.
 
-<!-- source: cli/teaport:749#2240fe1f -->
+<!-- source: cli/teaport:748#2240fe1f -->
 
 Example:
 
@@ -325,7 +325,7 @@ teaport logs engine -f
 `teaport sip` controls the opt-in telephony: phone calls over SIP. Telephony is off on a
 fresh install; `teaport sip configure` turns it on and `teaport sip disable` turns it off.
 
-<!-- source: cli/teaport:1863-1876#41b599bf -->
+<!-- source: cli/teaport:1862-1875#41b599bf -->
 
 The wizard writes the gateway configuration to `~/.config/teaport/teaport-sip.conf`. The
 gateway binary is `~/teaport-sip/build/teaport-sip`, and the gateway and the brain's SIP
@@ -337,7 +337,7 @@ front-end meet on the `/run/teaport/teaport-sip.sock` socket.
 The subcommands are `configure`, `status`, `aec`, `restart`, and `disable`. For a walk
 through of the setup, see [Set up phone calls](/guides/phone-calls/).
 
-<!-- source: cli/teaport:1856-1879#f2927b40 -->
+<!-- source: cli/teaport:1855-1878#f2927b40 -->
 
 ### teaport sip configure
 
@@ -353,13 +353,13 @@ host. A re-run keeps the settings of the installed configuration that it does no
 anything: if the registration fails, the configuration is not written and the units are
 left as they were.
 
-<!-- source: cli/teaport:1619-1686#135300db -->
+<!-- source: cli/teaport:1618-1685#135300db -->
 
 On success it writes the configuration with mode 600, enables and restarts the gateway, and
 prints `SIP enabled — telephony is on. Check: teaport sip status`. It then waits up to
 20 seconds for the first registration; a missing registration does not fail the command.
 
-<!-- source: cli/teaport:1613-1616,1685#30407607 -->
+<!-- source: cli/teaport:1612-1615,1684#30407607 -->
 
 With `--conf FILE` it adopts an existing gateway configuration instead of asking. The file
 must be readable and must set `id_uri`, `registrar_uri`, `username`, and `password`. The
@@ -367,7 +367,7 @@ must be readable and must set `id_uri`, `registrar_uri`, `username`, and `passwo
 services need, each change prints a note, and the result is test-registered exactly like
 the wizard.
 
-<!-- source: cli/teaport:1701-1711,1733-1753#db00ef74 -->
+<!-- source: cli/teaport:1700-1710,1732-1752#db00ef74 -->
 
 | Option | Description |
 | --- | --- |
@@ -380,14 +380,14 @@ the wizard.
 | `--conf FILE` | Adopt this gateway configuration instead of running the wizard. |
 | `-h`, `--help` | Print the usage. |
 
-<!-- source: cli/teaport:1620-1639,1647-1664#a33788a9 -->
+<!-- source: cli/teaport:1619-1638,1646-1663#a33788a9 -->
 
 The command exits 1 and leaves the installed configuration, if any, unchanged when a flag
 is unknown, an argument is missing, a check refuses the install, the gateway can't finish
 its check of the configuration, the test registration fails, or the configuration file
 changes while the test runs.
 
-<!-- source: cli/teaport:1607-1612,1634,1655-1681#b5fa4053 -->
+<!-- source: cli/teaport:1606-1611,1633,1654-1680#b5fa4053 -->
 
 Example:
 
@@ -411,7 +411,7 @@ this run's registration outcome. Without a configuration it prints `config` as `
 with the configure command, and it still reports the gateway's registration attempt from
 the journal. It takes no options.
 
-<!-- source: cli/teaport:1813-1840#e661c53b -->
+<!-- source: cli/teaport:1812-1839#e661c53b -->
 
 Example:
 
@@ -431,12 +431,12 @@ rewrite the `aec` key in place, print the old and new value, and restart the gat
 reads the setting at startup. The restart preconditions are checked before the file is
 touched.
 
-<!-- source: cli/teaport:1786-1810#2fb69cec -->
+<!-- source: cli/teaport:1785-1809#2fb69cec -->
 
 The command exits 1 when the argument is none of the accepted values, the telephony
 preconditions fail, or the rewrite fails; a failed rewrite leaves `aec` as it was.
 
-<!-- source: cli/teaport:1773-1777,1801,1805-1807#8a3e62a5 -->
+<!-- source: cli/teaport:1772-1776,1800,1804-1806#8a3e62a5 -->
 
 Example:
 
@@ -456,7 +456,7 @@ front-end reconnects to the gateway on its own; the brain service, and any Talk 
 is not touched. The command then waits up to 20 seconds for a fresh registration, and a
 missing one does not fail it. It takes no options.
 
-<!-- source: cli/teaport:1767-1784,1874#3bec60db -->
+<!-- source: cli/teaport:1766-1783,1873#3bec60db -->
 
 Example:
 
@@ -475,17 +475,17 @@ Stops and disables the `teaport-sip` service and prints
 configuration is kept and the command says where. Afterwards, `teaport status` and
 `teaport doctor` report telephony as off by choice.
 
-<!-- source: cli/teaport:419-420,1843-1852#2f9df694 -->
+<!-- source: cli/teaport:419-420,1842-1851#2f9df694 -->
 
 | Option | Description |
 | --- | --- |
 | `--purge` | Also deletes the configuration file and prints its path. |
 
-<!-- source: cli/teaport:1844,1847-1848#15f03923 -->
+<!-- source: cli/teaport:1843,1846-1847#15f03923 -->
 
 A failing `systemctl` call does not fail the command.
 
-<!-- source: cli/teaport:1845#adf95939 -->
+<!-- source: cli/teaport:1844#adf95939 -->
 
 Example:
 

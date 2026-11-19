@@ -152,7 +152,7 @@ Restart the service that reads the file you changed. The table lists each config
 
 A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request. To fix a new setup password in it and print it for a card, run `teaport setup-card --new-password`; see [teaport setup-card](/reference/cli/#teaport-setup-card).
 
-<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84; cli/teaport:541-587#ca104852 -->
+<!-- source: brain/teaport_brain/config_schema.toml:98-102#a13e1c84; cli/teaport:685-731#8760cc59 -->
 
 On the configuration page, the restart runs the same command two seconds later. The delay gives the brain time to answer the page before it replaces itself, and the timer survives the brain exiting.
 
@@ -198,7 +198,7 @@ teaport key set
 
 In a terminal on the device, the command asks for the key without showing it. It also reads the key from standard input, for example `teaport key set < key.txt`; over SSH, use that form, because without a terminal there is no prompt, and your own terminal shows the key as you type it. The next conversation uses the new key; the brain needs no restart. The [teaport key set](/reference/cli/#teaport-key-set) reference lists its options and exit statuses.
 
-<!-- source: brain/teaport_brain/provision.py:138-142,145-194#4d4c2267; cli/teaport:518-539#7ceed65b -->
+<!-- source: brain/teaport_brain/provision.py:138-142,145-194#4d4c2267; cli/teaport:663-683#591dde97 -->
 
 ### In the configuration files
 
