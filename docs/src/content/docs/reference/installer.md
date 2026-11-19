@@ -196,12 +196,12 @@ The install root. It holds the engine in `bin/`, the model directories `models/v
 
 An older installer gave these files to the user that runs the brain. On such a device, the first run of this installer rebuilds `/opt/teaport` and `/var/lib/teaport` as root's, next to the old ones, from what it can check, swaps them in, and removes the old ones:
 
-- The engine and the models come along when each is a regular file; the next engine update checks them against the manifest.
+- The engine binary, its notices, and every file in `bin/g2p/`, `models/voxtral/`, and `models/kokoro/` come along when each is a regular file that belongs to that user, or is root's, readable by everyone and writable by root alone, with no special permission bits or extended attributes (root's come along unchanged), and is not a download in progress (a `.part` file); the next engine update checks the ones the manifest names against it.
 - The brain package's files come along when they match the checksums that dpkg recorded for the package. Of its symbolic links, only the Python environment's own come along, each with the one target it has: `bin/python` to the system's `python3`, `bin/python3` and `bin/python3.12` to `python`, and `lib64` to `lib`. Nothing else in `brain/` comes along. If something the package needs was left out, the next `install.sh --only brain` puts it back, and until then `install.sh --only engine` and `--rollback engine` stop and say so, because the engine's restart restarts the brain too.
 - The engine's kept rollback copies don't come along; the next engine update keeps a new one.
 - `bridge/`, and anything else of that user's at the top of `/opt/teaport`, moves over as it is and stays theirs. Hidden entries there, whose names start with a dot, don't move over; they go with the old tree.
 
-<!-- source: packaging/install/root_layout.py:3-34#d73fa52e; install.sh:214-253#ac60c7e4 -->
+<!-- source: packaging/install/root_layout.py:3-37#b23d1c04; packaging/install/root_layout.py:60-64,207-224#4b82e3aa; install.sh:214-253#ac60c7e4 -->
 
 **`/var/cache/teaport/`**
 
@@ -231,7 +231,7 @@ The secrets directory, created with mode 700. The installer seeds `persona.md` w
 
 Download space: release archives and the brain package the manifest names. It also holds `engine.release`, the engine release the installer last put live, which `teaport update` reads so that it never installs an older engine. The installer creates it, owned by root. The first run on a device that an older installer set up keeps only the record and text of the engine license you accepted, and the notes on the journal and network settings; downloads are fetched again.
 
-<!-- source: install.sh:96,1377#40b78c24; install.sh:829#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:27-28,61-62#78e4ef3b -->
+<!-- source: install.sh:96,1377#40b78c24; install.sh:829#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:30-31,70-71#78e4ef3b -->
 
 The lock that keeps a second run of the installer from starting while one is running is `/run/teaport-install.lock`.
 

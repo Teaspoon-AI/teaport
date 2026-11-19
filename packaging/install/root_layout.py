@@ -16,7 +16,10 @@
 # rename. What goes into the new tree:
 #   - the engine's files and the models, hard-linked (they are large; the engine runs as
 #     the run user and root only reads them, so a handle kept on one gains nothing), each
-#     taken only if it is a regular file reached without a symlink, and stripped of ACLs;
+#     taken only if it is a regular file reached without a symlink, and stripped of ACLs:
+#     the binary and its notices, and every file in the engine's data directories (bin/g2p,
+#     models/voxtral, models/kokoro), not only the ones this release names -- an engine
+#     reads more of its own there than an older installer knew (a dictionary per language);
 #   - the installed manifest, copied the same way (root reads it as data);
 #   - the brain package's tree, copied file by file from what dpkg lists: a regular file
 #     only if its MD5 is the one dpkg recorded, a symlink only if it stays in the tree or
@@ -53,6 +56,12 @@ ENGINE = ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict", "bin/g2p/kokoro_pos.bin",
           "THIRD_PARTY_NOTICES.txt", "models/voxtral/consolidated.safetensors",
           "models/voxtral/tekken.json", "models/voxtral/params.json",
           "models/kokoro/Kokoro_espeak_F16.gguf")
+# The engine's data directories: every regular file in them is the engine's, carried with
+# ENGINE (the dictionaries and models a later engine reads are not all named above). Not a
+# download in progress: install.sh's download() resumes a <file>.part, and one carried
+# over would put bytes the run user wrote into a file root installs.
+ENGINE_DIRS = ("bin/g2p", "models/voxtral", "models/kokoro")
+PARTIAL = ".part"
 COPIED = ("manifest.json",)
 # Names at the top of $PREFIX this rebuilds, or leaves behind on purpose; anything else
 # there is the run user's own (bridge/, venvs/, venv, ...) and moves over as it is.
@@ -89,6 +98,7 @@ class Tree:
 
     def __init__(self, path: str):
         self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.uid = os.fstat(self.fd).st_uid
 
     def _parent(self, rel: str):
         parts = [p for p in rel.split("/") if p]
@@ -149,6 +159,21 @@ class Tree:
         finally:
             os.close(fd)
 
+    def names(self, rel: str) -> list[str]:
+        """The names in directory <rel> when it is reached without a symlink; [] otherwise.
+        Only plain names (no dot files); what each is, link_into checks."""
+        try:
+            fd, name = self._parent(rel + "/x")
+        except OSError:
+            return []
+        try:
+            return sorted(n for n in os.listdir(fd)
+                          if not n.startswith(".") and "/" not in n and not n.endswith(PARTIAL))
+        except OSError:
+            return []
+        finally:
+            os.close(fd)
+
     def link_into(self, rel: str, dest: str) -> bool:
         """Hard-link the regular file <rel> to <dest> (a path in the new tree, which only root
         can change). The new name is checked after the link: a symlink swapped in meanwhile
@@ -163,10 +188,40 @@ class Tree:
             return False
         finally:
             os.close(fd)
-        if not stat.S_ISREG(os.lstat(dest).st_mode):
+        st = os.lstat(dest)
+        if not stat.S_ISREG(st.st_mode):
             os.unlink(dest)
             return False
+        try:
+            xattrs = os.listxattr(dest, follow_symlinks=False)
+        except OSError:
+            xattrs = ["?"]
+        if not _carry_owner_ok(st.st_uid, st.st_gid, st.st_mode, xattrs, self.uid):
+            os.unlink(dest)
+            say(f"not carried over: {rel} (uid {st.st_uid}, mode {stat.S_IMODE(st.st_mode):o}: "
+                "neither the old tree owner's nor a root file that can be carried as it is)")
+            return False
         return True
+
+
+def _carry_owner_ok(uid: int, gid: int, mode: int, xattrs, tree_uid: int) -> bool:
+    """Whose file a carried link may be. A carried inode is the same file under every name
+    it has, so what the rebuild does to it, it does to every other name too.
+      - The old tree's owner's (the run user's) is made root's with a fixed mode (_finish):
+        theirs to give.
+      - Root's is carried only as it already is, and never changed: root:root, readable by
+        everyone, writable by nobody else, no set-id or sticky bit, no extended attribute
+        (no ACL, no file capability). Such a file the run user could read anyway, so
+        carrying it exposes nothing, however it got into their tree (root put it there, or
+        they linked or renamed it in), and leaving it untouched changes nothing of anyone
+        else's.
+      - Anyone else's: not carried.
+    Checked on the new name, after the link: the inode is fixed once linked."""
+    if uid == tree_uid and uid != 0:
+        return True
+    if uid != 0:
+        return False
+    return (gid == 0 and bool(mode & stat.S_IROTH) and not mode & 0o7022 and not xattrs)
 
 
 def _strip_acl(path: str) -> None:
@@ -397,11 +452,13 @@ def _rebuild_prefix(prefix: str, package: str, stamp: str, owner) -> int:
             old = Tree(prefix)
             try:
                 n = 0
-                for rel in ENGINE:
+                extra = [f"{d}/{n}" for d in ENGINE_DIRS for n in old.names(d)]
+                for rel in dict.fromkeys(ENGINE + tuple(extra)):
                     _mkdirs(new, rel, owner)
                     if old.link_into(rel, os.path.join(new, rel)):
                         st = os.lstat(os.path.join(new, rel))
-                        _finish(os.path.join(new, rel), bool(st.st_mode & 0o111), owner)
+                        if st.st_uid != 0:   # root's own is carried as it is (_carry_owner_ok)
+                            _finish(os.path.join(new, rel), bool(st.st_mode & 0o111), owner)
                         n += 1
                 manifest = sum(_copy(old, rel, os.path.join(new, rel), owner, limit=SMALL) for rel in COPIED)
                 taken, left = _rebuild_brain(old, prefix, new, package, owner)
