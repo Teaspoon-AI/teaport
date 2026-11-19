@@ -17,7 +17,7 @@ root, in `/usr/lib/teaport/`. It runs on the system Python, never the brain's ow
 environment. The `teaport-brain` package installs the helpers, and
 `/usr/lib/teaport/sudoers-sync` writes their rules into `/etc/sudoers.d/teaport-config`.
 
-<!-- source: packaging/deb/sudoers-sync:5-10#cfea6970; packaging/deb/sudoers-sync:47-56#56986163; packaging/nfpm.yaml:82,91,100#54fe789f -->
+<!-- source: packaging/deb/sudoers-sync:5-10#cfea6970; packaging/deb/sudoers-sync:49-58#58460f9b; packaging/nfpm.yaml:82,91,100#54fe789f -->
 
 | Helper | What the run user can ask it to do |
 | --- | --- |
@@ -47,7 +47,7 @@ ships ready to set up has no login at all, and the owner creates it during setup
 account named `teaport` with a home folder, a Bash shell, and `sudo` rights. It is
 never the run user's own account.
 
-<!-- source: brain/teaport_brain/login_apply.py:85-86#1c1c90ab; brain/teaport_brain/login_apply.py:294-295#5f08f622; brain/teaport_brain/login_apply.py:231-235#57a7a7ce -->
+<!-- source: brain/teaport_brain/login_apply.py:89-90#1c1c90ab; brain/teaport_brain/login_apply.py:298-299#5f08f622; brain/teaport_brain/login_apply.py:235-239#57a7a7ce -->
 
 `login_apply.py` creates it one time only, and only on a device that asked for it:
 
@@ -75,25 +75,30 @@ never the run user's own account.
 - The helper also refuses when a group named `teaport` exists without the account,
   because the new account can't get a group of its own name.
 
-<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:156-177#84310eeb; brain/teaport_brain/login_apply.py:199-226#5edb85ef; brain/teaport_brain/login_apply.py:281-332#d8d4e8b2 -->
+<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:160-181#84310eeb; brain/teaport_brain/login_apply.py:203-230#5edb85ef; brain/teaport_brain/login_apply.py:285-336#d8d4e8b2 -->
 
 The helper finishes what it starts. It blocks every signal it can, and it runs the
 create in a process of its own session, apart from the one that `sudo` started. `sudo`
 can end its command, for example when the run user sends `sudo` an alarm signal, and
-then stops the command's whole process group with `SIGKILL`; the create goes on regardless, through to
-removing the marker. Only a power cut can stop it partway, and the next create finishes
-what it left, if that is plainly a leftover. The helper leaves no core dump that could
-hold the password.
+then stops the command's whole process group with `SIGKILL`; the create goes on
+regardless, through to removing the marker. The create still belongs to the service
+that asked for it, though, and takes about a second: stopping that service (after its
+stop timeout), the out-of-memory killer, a restart of the device, or a power cut can
+stop it partway. The next create usually finishes what it left, when that is plainly a
+leftover; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login)
+for when it doesn't. The helper leaves no core dump that could hold the password.
 
-<!-- source: brain/teaport_brain/login_apply.py:48-56#4c152a7b; brain/teaport_brain/login_apply.py:384-419#57ad4d30; brain/teaport_brain/login_apply.py:358-363#e61abdcf; brain/teaport_brain/login_apply.py:430-433#701bd93e -->
+<!-- source: brain/teaport_brain/login_apply.py:48-60#e5e125ca; brain/teaport_brain/login_apply.py:388-423#57ad4d30; brain/teaport_brain/login_apply.py:362-367#e61abdcf; brain/teaport_brain/login_apply.py:434-437#701bd93e -->
 
 The password goes from the setup page or the settings to the helper, and from the
 helper to `chpasswd` on standard input. It is never written to a log, the journal,
-the Wi-Fi setup status file, an error message, or a command line. On its way it is held
-in a wrapper that hides it from an error report that prints variables. A password is at
+the Wi-Fi setup status file, an error message, or a command line. The helper's `sudo`
+rule says `NOLOG_INPUT`, so even where `sudo` logs what its commands read, it doesn't
+keep the password. On its way it is held in a wrapper that hides it from an error report
+that prints variables. A password is at
 least 12 characters and at most 256 bytes, without control or invisible characters.
 
-<!-- source: brain/teaport_brain/login_apply.py:40-46#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:14-31#e5fe5bd8; brain/teaport_brain/login_apply.py:86-90#831554ec; brain/teaport_brain/login_apply.py:130-141#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:40-46#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:47-48,58#739424b7; brain/teaport_brain/login_apply.py:90-94#831554ec; brain/teaport_brain/login_apply.py:134-145#020cf4bc -->
 
 The setup page's form can create the administrator account, so the page answers only
 under its own names: the setup network's address and its `.local` name. A request for
@@ -101,9 +106,12 @@ any other name, such as a captive-portal check (`captive.apple.com`) or a name t
 site has pointed at the device, is sent to the setup address instead, which is the
 usual captive-portal redirect. The page accepts the form only under those names, and
 only from its own pages: it refuses a post that a page from another site sends, for
-example from a tab that the phone loaded over its mobile data.
+example from a tab that the phone loaded over its mobile data. A post that names no
+origin is accepted. One whose origin is `null`, which some captive browsers send but so
+does a sandboxed frame on any site, is accepted only when the browser also says the post
+comes from the page itself.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:648-678#444b8672; brain/teaport_brain/wifi_setup.py:740-753#74bd2512 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:669-684#362b2378; brain/teaport_brain/wifi_setup.py:751-764#74bd2512 -->
 
 Teaspoon AI's provisioning, which runs outside this repository when it prepares a
 Teaspoon AI device for shipping, writes the marker, refuses a device that already has a
@@ -122,6 +130,20 @@ compromised agent, could create the login first. The owner then sees that the de
 already has a login, in place of the step. Because the setup page and the settings run
 as the run user, software that was compromised before the owner typed the password
 could also read the password as it is typed.
+
+Anyone who can reach the setup page or the settings can create the login first, too:
+
+- On the setup network: anyone who knows its password. That password is on the paper
+  insert, on the device's screen during setup, and spoken aloud by the device when it
+  has no screen or you say "repeat".
+- The setup page is plain HTTP over the setup network's WPA2 password. Someone who knows
+  that password and recorded the phone joining the network can read what the phone
+  sends, including the login password.
+- On a device without a gateway token (`GATEWAY_TOKEN`), the configuration page on the
+  device itself, `http://127.0.0.1:7861/config`, needs no token, so any user or program
+  on the device can create the login there.
+
+<!-- source: brain/teaport_brain/wifi_setup.py:7-13#5369985c; brain/teaport_brain/wifi_setup.py:669-684#362b2378; brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/config_ui.py:138-140#7c7d40df -->
 
 The setup page makes the step required, so on a device set up through that page the
 window ends at setup. The exception is a create that fails because of the device, not

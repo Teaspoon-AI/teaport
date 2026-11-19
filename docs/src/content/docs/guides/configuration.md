@@ -73,14 +73,14 @@ On a device that ships ready to set up, such as a Teaspoon AI device, you create
 To create your login in the settings, follow these steps:
 
 1. Say "open my settings", and open the settings on your phone, as [Open the settings from your phone](#open-the-settings-from-your-phone) shows.
-2. In the **Create your login** card, type a password of at least 12 characters, and type it again in the second field. Spaces and letters from any language are fine; invisible or control characters are not. The longest password is 256 bytes: 256 Latin letters, for example, or 85 Chinese, Japanese, or Korean characters.
+2. In the **Create your login** card, type a password of at least 12 characters, and type it again in the second field. Spaces and letters from any language are fine; invisible or control characters are not. The longest password is 256 bytes: 256 unaccented letters, for example, or 85 Chinese, Japanese, or Korean characters. An accented letter, such as é, takes 2 bytes.
 3. Tap **Create login**. The card says that your login is ready, and the next time you open the settings the card is gone.
 
-<!-- source: brain/teaport_brain/login_apply.py:77,89-90#e21145c0; brain/teaport_brain/login_apply.py:130-141#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:81,93-94#e21145c0; brain/teaport_brain/login_apply.py:134-145#020cf4bc -->
 
-The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, try again: a try that stopped partway is finished by the next one. If it says that it is creating your login, another try is already under way; open the settings again in a moment.
+The device creates the login one time only. If the card says that the device already has a login, someone created it before you; see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it couldn't create your login, try again: the next try usually finishes one that stopped partway. If the card then says that the device already has a login, or the card doesn't come back, see [The device already has a login](/guides/troubleshooting/#the-device-already-has-a-login). If it says that it is creating your login, another try is already under way; open the settings again in a moment.
 
-<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:281-332#d8d4e8b2; brain/teaport_brain/owner_login.py:52-67#d92ff90c -->
+<!-- source: brain/teaport_brain/login_apply.py:16-25#91ddc3b6; brain/teaport_brain/login_apply.py:285-336#d8d4e8b2; brain/teaport_brain/owner_login.py:52-67#d92ff90c -->
 
 ## Connect your OpenRouter account
 

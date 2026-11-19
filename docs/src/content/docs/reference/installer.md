@@ -240,18 +240,18 @@ The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`
 ```text
 USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/config_apply.py *
 USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/wifi_apply.py *
-USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/login_apply.py *
+USER ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 /usr/lib/teaport/login_apply.py *
 ```
 
-The package runs it after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
+The login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's new password, which `sudo` must not keep where its input logging is on. The package runs `sudoers-sync` after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
 
-<!-- source: packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:47-56#56986163 -->
+<!-- source: packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:47-58#a31d5105 -->
 
 **`/var/lib/teaport-owner/`**
 
 The owner's login marker, `pending`, in a folder only root can open. Neither the installer nor the package creates it: the step that prepares a device for shipping writes it, and `login_apply.py` removes it when it creates the owner's login. A device that you install yourself never has it.
 
-<!-- source: brain/teaport_brain/login_apply.py:26-29#71da1c1e; brain/teaport_brain/login_apply.py:81-83#2cb3dff3 -->
+<!-- source: brain/teaport_brain/login_apply.py:26-29#71da1c1e; brain/teaport_brain/login_apply.py:85-87#2cb3dff3 -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 

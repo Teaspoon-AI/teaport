@@ -703,7 +703,7 @@ Teaspoon AI device, the service account, the user the brain runs as, has no pass
 and no SSH key, so nobody can sign in before then. A device that you installed yourself
 has the login of the user you installed it as, and never offers this step.
 
-<!-- source: brain/teaport_brain/login_apply.py:281-290#5f298187; brain/teaport_brain/static/config.html:820#106e56e9 -->
+<!-- source: brain/teaport_brain/login_apply.py:285-294#5f298187; brain/teaport_brain/static/config.html:820#106e56e9 -->
 
 **Fix**
 
@@ -727,9 +727,9 @@ If neither the settings nor the setup page shows the step, one of these is true:
 - A group named `teaport` exists without the account, so the login's account can't be
   made. The helper refuses it, and the pages show no step.
 
-<!-- source: brain/teaport_brain/login_apply.py:281-290#5f298187 -->
+<!-- source: brain/teaport_brain/login_apply.py:285-294#5f298187 -->
 
-<!-- source: brain/teaport_brain/owner_login.py:97-101#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:56#73f92b02 -->
+<!-- source: brain/teaport_brain/owner_login.py:97-101#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:58#b62acd37 -->
 
 ### The device already has a login
 
@@ -741,11 +741,18 @@ until it is set up, software running on the device, such as a compromised agent,
 create it first. The setup page and the settings run as that same service account, so
 software that was compromised before you typed your password could also have read it.
 
-<!-- source: brain/teaport_brain/login_apply.py:31-38#01fb9b96; brain/teaport_brain/login_apply.py:297-304#c7e4a1ad -->
+<!-- source: brain/teaport_brain/login_apply.py:31-38#01fb9b96; brain/teaport_brain/login_apply.py:301-308#c7e4a1ad -->
 
 **Fix**
 
 - If you created the login, sign in as `teaport` with the password you chose.
+- If a try to create it stopped partway, for example because the device restarted, the
+  next try usually finishes it. If the device still says that it already has a login, or
+  the step never comes back, the device can't finish that try by itself: reflash it and
+  install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
 - If you didn't create it, you can't know who did or what they changed. Don't keep
   private data on the device. Reflash it and install teaport again, as
   [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
@@ -766,7 +773,7 @@ it from a computer.
 3. Run `teaport status` to see what is wrong. Administrator commands, such as
    `sudo systemctl restart teaport-brain`, ask for the same password.
 
-<!-- source: brain/teaport_brain/login_apply.py:77-80#d31172cc; brain/teaport_brain/login_apply.py:231-235#57a7a7ce -->
+<!-- source: brain/teaport_brain/login_apply.py:81-84#d31172cc; brain/teaport_brain/login_apply.py:235-239#57a7a7ce -->
 
 ## Where the logs are
 
