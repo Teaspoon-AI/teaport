@@ -1029,6 +1029,103 @@ async def test_a_late_word_at_the_front_of_a_kept_turn_s_preview_is_that_turn_s(
     assert s.corrections() == [] and not s._early, s.corrections()
 
 
+async def test_a_late_word_is_the_turn_s_at_whose_front_it_is_not_the_first_vouching_turn_s():
+    # Audit S1 (the model at three commits, a lossy preview): the settled turn's preview
+    # missed its word, and so did the next turn's, which vouches for a word of its own;
+    # the third turn's preview has the late word and delivered it. Late, below the
+    # settled turn, it is the third turn's -- the turn at whose front it is -- though the
+    # second, asked first, waits on another word. Asked of the second alone, the open
+    # turn took it and the next commit delivered it again.
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await preview(s, 1000, "")
+    await _settled_early(s)
+    await turn(s)                                  # at 2000
+    await preview(s, 2000, " Okay.")
+    await turn(s)                                  # at 3000
+    await preview(s, 3000, " hi Okay.")            # "Okay." is the second turn's: trimmed
+    assert s.finals() == [("Okay.", 2), ("hi", 3)], s.finals()
+    interims = list(s.interims())
+    await delta(s, " hi", 900, start=700)          # late, below the settled turn
+    assert not s._open_words and s.interims() == interims, s._open_words
+    assert [t.expect for t in s._turns] == [["okay"], []], [t.expect for t in s._turns]
+    await delta(s, " Okay.", 1800, start=1500)
+    await progress(s, 3000 + stt_mod._VOUCH_MS)
+    assert s.corrections() == [] and not s._turns, s.corrections()
+    await turn(s)                                  # at 4000: nothing left to deliver again
+    await preview(s, 4000, "")
+    assert s.finals() == [("Okay.", 2), ("hi", 3)], s.finals()
+
+
+async def test_a_word_a_kept_turn_takes_unvouched_is_spent_from_the_later_turn_s_front():
+    # Audit S1, the spend the front-word rule reads (the model's "waitSpend"): the kept
+    # turn takes a late word of its stretch that its preview missed and a later turn's
+    # had. That turn will not be sent it: left at the front of what it expects, it hid
+    # the turn's next word, which -- late, below a turn settled since -- went to the
+    # open turn, delivered already. The later turn waiting on its final, or kept too.
+    for third_kept in (False, True):
+        s = Service()
+        await created(s)
+        await turn(s)                              # at 1000
+        await preview(s, 1000, " so")
+        await _settled_early(s)
+        kept = s._early[0]
+        # _settled_early zeroes the backstop, a kept turn's wall-clock exit too: not
+        # this one's.
+        kept.kept_at += 60
+        await turn(s)                              # at 2000
+        await preview(s, 2000, "")
+        await _settled_early(s)                    # nothing delivered: not kept
+        assert s._early == [kept] and s._final_through == 2000
+        await turn(s)                              # at 3000
+        await preview(s, 3000, " we went")
+        assert s.finals()[-1] == ("we went", 3), s.finals()
+        if third_kept:
+            await _settled_early(s)
+        third = s._early[1] if third_kept else s._turns[0]
+        await delta(s, " so", 500, start=300)
+        await delta(s, " we", 800, start=600)      # the kept turn's stretch, unvouched
+        await delta(s, " went", 1500, start=900)   # below the second turn, the third's
+        assert not s._open_words, (third_kept, s._open_words)
+        assert [w for w, *_ in kept.words] == [" so", " we"], kept.words
+        assert [w for w, *_ in third.words] == [" went"] and not third.expect, third
+        await progress(s, 3000)
+        # Each turn's final says where the word is: the kept turn's adds it, the
+        # third's drops it. Once each.
+        fixes = [(c.stop_n, c.final) for c in s.corrections()]
+        assert fixes == [(1, "so we"), (3, "went")], (third_kept, fixes)
+        assert not s._early and not s._turns
+
+
+async def test_a_word_a_kept_turn_takes_unvouched_is_spent_from_a_peek_s_preview():
+    # The same beside the stop's peek (the shipped default; audit S3): the peek's
+    # preview, held for its adoption, has the kept turn's late word at its front. The
+    # kept turn takes it, and the turn that adopts the peek does not vouch for it.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await s._send_commit(final=True, why="backstop")        # at 1000, the VAD stuck
+    await preview(s, 1000, " so")
+    await _settled_early(s)
+    kept = s._early[0]
+    await audio(s, 1000)
+    await vad_stop(s)                                         # the peek at 2000
+    at = s._peek.at_ms
+    await preview(s, at, " we went")
+    await delta(s, " so", 500, start=300)
+    await delta(s, " we", 800, start=600)                    # the kept turn's stretch
+    await delta(s, " went", at - 200, start=at - 500)        # the open turn's, to adopt
+    assert s._peek.msg["delta"] == " went", s._peek.msg
+    assert [w for w, *_ in kept.words] == [" so", " we"], kept.words
+    await complete(s)                                         # adopts the peek
+    assert not s._open_words and not s._turns[0].expect, s._turns[0].expect
+    await progress(s, at)
+    assert [c.final for c in s.corrections()] == ["so we", "went"], s.corrections()
+    assert not s._early and not s._turns
+
+
 async def test_a_kept_turn_whose_bounds_never_move_goes_after_the_backstop_s_wait():
     s = Service()
     await created(s)
