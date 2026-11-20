@@ -147,6 +147,27 @@ def test_a_list_naming_no_known_voice_is_no_answer():
         engine_tts._served_voices, engine_tts.urllib.request.urlopen = saved, ask
 
 
+def test_the_startup_ask_retries_until_the_engine_answers():
+    answers = [None, None, OLD_MODEL, ALL]
+    asked = []
+
+    def ask(timeout=1.0, quiet=False):
+        asked.append(quiet)
+        return answers[len(asked) - 1]
+
+    saved = engine_tts.served_voices
+    engine_tts.served_voices = ask
+    try:
+        asyncio.run(engine_tts.prefetch_served_voices(tries=5, every_s=0))
+        assert asked == [True, True, True], asked   # stops at the first answer
+        asked.clear()
+        answers[:] = [None, None]
+        asyncio.run(engine_tts.prefetch_served_voices(tries=2, every_s=0))
+        assert asked == [True, False], asked        # gives up; the last failure is logged
+    finally:
+        engine_tts.served_voices = saved
+
+
 def test_a_language_the_model_lacks_entirely_is_dropped():
     assert "cmn" not in engine_tts.offered_voices(frozenset({"af_heart"}))
 

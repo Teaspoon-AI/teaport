@@ -672,12 +672,12 @@ async def _lifespan(_app):
     # OpenClaw's browser, stopped once idle (browser_idle.py, #385): a look every few
     # minutes, never in a turn.
     browser = asyncio.create_task(browser_idle.MONITOR.run())
-    # OpenClaw's restart for a key it was given, and the first look at whether it already
-    # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
-    # the engine counts as live already.
     # The voices the engine's model holds (engine_tts.served_voices), asked here so no
     # session blocks on the question: a few seconds' asks until the engine is up.
     voices = asyncio.create_task(prefetch_served_voices())
+    # OpenClaw's restart for a key it was given, and the first look at whether it already
+    # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
+    # the engine counts as live already.
     restarter = asyncio.create_task(agent_key.RESTARTER.run(
         live=lambda: arb.ARBITER.anything_live() or arb.ARBITER.status()["call"],
         listeners=arb.ARBITER.listeners, brain=ai_account.brain_key))
