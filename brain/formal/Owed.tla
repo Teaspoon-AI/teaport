@@ -139,6 +139,26 @@
 (*              the record's own run (FailVerdicts). "about" read a reply's  *)
 (*              words, and a vague "I don't have it yet" (MENTION, for a     *)
 (*              failure too) closed it unheard: ow_failure_aboutVague.       *)
+(*              NO VERDICT on any other noted reply (the judge is one LLM    *)
+(*              call with a 2 s wait: slow or down, every verdict is none)   *)
+(*              is no evidence either way, and the reply COUNTS as a telling *)
+(*              nobody could confirm, on one count with the cut tellings:    *)
+(*              the second ends the record -- closed if it played through    *)
+(*              (the backstop an answer has), dropped if it was cut          *)
+(*              (FailBackstop, Unproven; the audit of 2026-11-19). Until     *)
+(*              then a failure told in a caller's turn with the judge down   *)
+(*              stayed owed, the next note said "NOT heard", and it was told *)
+(*              again on every turn. An explicit OWED is believed (0/22 and  *)
+(*              0/84 false OWED measured): PTOWES is the residual left       *)
+(*              (ow_failure_ptOwes).                                         *)
+(*   "noBackstop" (MUT), for a failure -- the code before that audit: a      *)
+(*              reply with no verdict counts for nothing.                    *)
+(*   "nvCutFree" (MUT) -- only a reply PLAYED THROUGH with no verdict        *)
+(*              counts, not one cut (the audit's first draft): told and cut  *)
+(*              on every turn with the judge down, it stays owed.            *)
+(*   "splitCount" (MUT) -- the replies with no verdict that played through   *)
+(*              are counted apart from the cut ones, as an answer's are: one *)
+(*              played through, one cut, and a third telling begins.         *)
 (*                                                                          *)
 (* OUTCOME: "items" -- two items with terms (a two-story list); "failure"   *)
 (*   -- one item the consult's failure states (no answer). The lexical      *)
@@ -461,13 +481,47 @@ PtVerdicts(g) ==
 \* ("all"), OWED on anything else, a vague "I don't have it yet" ("mention") included; the
 \* residuals: PTOWES (a telling judged OWED: 0/22 and 0/84 measured), gistWrong (a vague
 \* one judged HEARD: 0/30 on the eval's cases, 7/37 on the model's own), NOVERDICT (none:
-\* closes only the failure's own run). A telling cut before its stream ended is judged on
-\* what was heard of it (owed.Owed._failed): told, and counted, only if that already tells
-\* it.
+\* closes the failure's own run; any other reply counts, FailBackstop). A reply with no
+\* audio is not judged ("skip"). A telling cut before its stream ended is judged on what
+\* was heard of it (owed.Owed._failed): told, and counted, only if that already tells it.
 FailVerdicts(g) ==
-    (IF g = "all" THEN {"heard"} \cup Opt(PTOWES, "owed")
-     ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
-    \cup Opt(NOVERDICT, "none")
+    IF g = "nothing" THEN {"skip"}
+    ELSE (IF g = "all" THEN {"heard"} \cup Opt(PTOWES, "owed")
+          ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
+         \cup Opt(NOVERDICT, "none")
+
+\* The failure's rule since #380.
+Judged == OUTCOME = "failure" /\ RUNCLOSE = "judge"
+
+\* A CUT failure reply is judged twice (owed.Owed._failed): the cut judge on what they
+\* heard (CutVerdicts, below), and before it this verdict `w` on its WHOLE text -- is it
+\* a telling of the failure at all? Only a telling can close on the cut judge's HEARD,
+\* counts as a cut telling, and has the caller's words read against it (Told: `told` in
+\* _failed; the record's own run is one whatever the verdict).
+WholeVerdicts(s, g) ==
+    IF Judged /\ g # "nothing" THEN FailVerdicts(IF s = "tell" THEN "all" ELSE "filler")
+    ELSE {"skip"}
+Told(p, w) == p \in Runs \/ w = "heard"
+
+\* A failure reply nobody could judge: noted, with audio, not the record's own run, and no
+\* verdict on whether it tells it -- played through (`v`) or cut (`w`). No evidence either
+\* way, so it counts as a telling nobody could confirm (noBackstop: for nothing; nvCutFree:
+\* not when it was cut).
+Unjudged(p, n, cut, g, v, w) ==
+    /\ Judged /\ n /\ st = "owed" /\ g # "nothing" /\ p \notin Runs /\ ~Mut("noBackstop")
+    /\ IF cut THEN w = "none" /\ ~Mut("nvCutFree") ELSE v = "none"
+
+\* The tellings of a failure with no evidence they were heard, so far: the replies with no
+\* verdict and the cut tellings, on ONE count -- the second ends the record. Counted apart
+\* (splitCount), a reply played through with no verdict and then a cut one leave it owed
+\* for a third telling, which RetellOnce forbids. `played`: the reply ending now played
+\* through (else it was cut).
+Unproven(played) ==
+    IF ~Mut("splitCount") THEN told + cuts ELSE IF played THEN told ELSE cuts
+
+\* The failure's backstop: a second telling nobody could confirm, played to its end,
+\* closes the record as an answer's second about-reply does (Backstop, below).
+FailBackstop(p, n, g, v) == Unjudged(p, n, FALSE, g, v, "skip") /\ Unproven(TRUE) >= 1
 
 \* A cut, "gist": once what was heard of the record holds the answer, the gate passes and
 \* the judge reads all of it.
@@ -485,8 +539,9 @@ Restrained == ~TWICE /\ CLOSE = "gist" /\ told = 1 /\ part1 /\ st = "owed"
 \* owed.py's close rule, on one ended reply. Only a reply whose request carried the
 \* note can close (§3: "when it carried the note in its request"). A reply played through:
 \* the verdict on its whole text (PtVerdicts: lexical or the gist judge; no verdict
-\* closes), or the backstop. A cut: the cut judge's verdict `v`.
-Closes(p, n, cut, g, v) ==
+\* closes), or the backstop. A cut: the cut judge's verdict `v` -- for a failure, on a
+\* reply its whole text's verdict `w` found a telling.
+Closes(p, n, cut, g, v, w) ==
     /\ n
     /\ IF     Mut("fraction")    THEN p \in Runs /\ g \in {"lead", "some", "all"}
        \* singleWord keeps the per-item rule: only the common-word list and the "2" are gone,
@@ -495,12 +550,13 @@ Closes(p, n, cut, g, v) ==
        ELSE IF Mut("oneItem")    THEN RunUncut(p, cut, g) \/ g \in {"some", "all"}
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
        ELSE IF cut /\ Mut("prefixLexical") THEN g \in {"words", "all"}
-       ELSE IF cut THEN v = "heard"
+       ELSE IF cut THEN v = "heard" /\ (~Judged \/ Told(p, w))
        \* one item, told whole. Before "about": only a run played through uncut. "about":
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
        ELSE IF OUTCOME = "failure"
-            THEN IF RUNCLOSE = "judge" THEN v = "heard" \/ (v = "none" /\ p \in Runs)
+            THEN IF RUNCLOSE = "judge"
+                   THEN v = "heard" \/ (v = "none" /\ p \in Runs) \/ FailBackstop(p, n, g, v)
                  ELSE IF RUNCLOSE = "about" THEN About(g) /\ (p \in Runs \/ ~Mut("failNotAbout"))
                  ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
        ELSE \* the design: an uncut run, the verdict, or the backstop
@@ -527,31 +583,41 @@ Reads(cut, g) ==
 
 \* `arm`: the ending arms the re-offer whatever it closed (a caller turn's cut). Under
 \* "anyMiss" a run that ended without closing the record arms it too. `mk`: this cut makes
-\* the record (ORIGIN "cut"), its first cut telling.
-Finish(cut, g, arm, mk) ==
+\* the record (ORIGIN "cut"), its first cut telling. `w`: a cut failure reply's verdict on
+\* its whole text (WholeVerdicts; "skip" for any other reply).
+Finish(cut, g, arm, mk, w) ==
     \E r \in Reads(cut, g) :
     \E v \in (IF cut THEN CutVerdicts(say, r)
               ELSE IF OUTCOME = "items" THEN PtVerdicts(r)
               ELSE IF RUNCLOSE = "judge" THEN FailVerdicts(r) ELSE {"skip"}) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
-          c  == Closes(req, nreg, cut, r, v) \/ (Mut("countSettle") /\ u = 2)
-          ab == CLOSE = "gist" /\ ~cut /\ nreg /\ st = "owed" /\ About(r)
-          \* a noted telling of the record, cut after its audio began (#231)
-          ct == cut /\ nreg /\ st = "owed" /\ say \in {"tell", "part"} /\ g # "nothing"
-                /\ ~Mut("cutsUncounted")
-                \* failNotAbout: a failure's telling by any reply but its run is not one
-                /\ (req \in Runs \/ OUTCOME # "failure" \/ ~Mut("failNotAbout"))
+          c  == Closes(req, nreg, cut, r, v, w) \/ (Mut("countSettle") /\ u = 2)
+          \* a noted reply played to its end that counts toward the backstop: one about the
+          \* record; for a failure (judged, not read by its words), one with no verdict
+          ab == IF Judged THEN ~cut /\ Unjudged(req, nreg, FALSE, r, v, w)
+                ELSE CLOSE = "gist" /\ ~cut /\ nreg /\ st = "owed" /\ About(r)
+          \* a noted telling of the record, cut after its audio began (#231). A failure's:
+          \* a reply the judge found a telling, or could not judge
+          ct == cut /\ nreg /\ st = "owed" /\ g # "nothing" /\ ~Mut("cutsUncounted")
+                /\ IF Judged THEN Told(req, w) \/ Unjudged(req, nreg, TRUE, r, v, w)
+                   ELSE /\ say \in {"tell", "part"}
+                        \* failNotAbout: a failure's telling by any reply but its run is not one
+                        /\ (req \in Runs \/ OUTCOME # "failure" \/ ~Mut("failNotAbout"))
+          \* the cut tellings before this one, and for a failure the unjudged replies too
+          n1 == IF Judged THEN Unproven(FALSE) ELSE cuts
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
          /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close"
-                   ELSE IF ct /\ cuts >= 1 THEN "drop" ELSE fed
+                   ELSE IF ct /\ n1 >= 1 THEN "drop" ELSE fed
          /\ cuts' = IF ct THEN (IF cuts < 2 THEN cuts + 1 ELSE 2) ELSE IF mk THEN 1 ELSE cuts
          /\ uncut' = u
          /\ told' = IF ab THEN (IF told < 2 THEN told + 1 ELSE 2) ELSE told
-         /\ part1' = IF ab /\ told = 0 THEN r # "all" ELSE part1
-         /\ hacc' = (hacc \/ (CLOSE = "gist" /\ nreg /\ st = "owed" /\ r = "all"))
+         /\ part1' = IF ab /\ told = 0 /\ ~Judged THEN r # "all" ELSE part1
+         \* A failure's: only a telling's words join what was heard of it (owed.Owed._apply)
+         /\ hacc' = (hacc \/ (CLOSE = "gist" /\ nreg /\ st = "owed" /\ r = "all"
+                              /\ (~Judged \/ (cut /\ Told(req, w)))))
          /\ missed' = (missed \/ arm
                        \/ (REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed" /\ ~c))
          /\ got' = g
@@ -819,7 +885,7 @@ Say ==
          /\ tellings' = IF noted /\ rst = "owed" /\ s \in {"tell", "part"}
                           THEN (IF tellings < 4 THEN tellings + 1 ELSE 4) ELSE tellings
          /\ IF s \in {"silent", "stay", "tool"}
-              THEN /\ Finish(FALSE, "nothing", FALSE, FALSE)
+              THEN /\ Finish(FALSE, "nothing", FALSE, FALSE, "skip")
                    /\ tres' = (s = "tool") /\ mark' = (s = "tool")
               ELSE /\ say' = s /\ ph' = "play"
                    /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
@@ -832,7 +898,8 @@ Say ==
 \* gate here with its call still out (tend).
 Played ==
     /\ ~ended /\ ph = "play"
-    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") : Finish(FALSE, g, FALSE, FALSE)
+    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") :
+         Finish(FALSE, g, FALSE, FALSE, "skip")
     /\ tend' = (tres /\ say = "texttool")
     /\ UNCHANGED <<st, reoffers, dw, due, dck, decl, repeat, line, q, hPost, rloc, rk, tres, mark, gtool,
                    ended, runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook,
@@ -866,16 +933,20 @@ TurnStart ==
     \* there (Decline). A turn that cut no telling leaves an earlier turn's words to be read.
     \* ORIGIN "cut": the cut of the first reply's telling of the sync result makes the record
     \* (unless the judge found it all heard -- or OWES), its first cut telling.
+    \* A failure's telling has their words read only if the judge found it one (`w`, Told):
+    \* of a reply it could not judge, or judged OWED, nothing is read, and a check an
+    \* earlier cut left due stays as it was.
     /\ IF req # "none"
-         THEN \E g \in CutGot(say, ph) :
+         THEN \E g \in CutGot(say, ph) : \E w \in WholeVerdicts(say, g) :
                 LET tl == ph = "play" /\ say \in {"tell", "part"}
                     mk == ORIGIN = "cut" /\ st = "none" /\ got = "none" /\ tl
                           /\ req \in {"caller", "post"} /\ (g # "all" \/ OWES)
-                IN /\ Finish(TRUE, g, st = "owed" \/ mk, mk)
+                    rd == ~Judged \/ Told(req, w)
+                IN /\ Finish(TRUE, g, st = "owed" \/ mk, mk, w)
                    /\ st' = IF mk THEN "owed" ELSE st
-                   /\ IF (tl /\ nreg /\ st = "owed") \/ mk
+                   /\ IF ((tl /\ nreg /\ st = "owed") \/ mk) /\ (rd \/ ~due)
                         THEN /\ dw' \in {"want", "decline"}
-                             /\ due' = ~(Mut("noDecline") \/ (mk /\ Mut("cutRecordUnread")))
+                             /\ due' = (rd /\ ~(Mut("noDecline") \/ (mk /\ Mut("cutRecordUnread"))))
                         ELSE UNCHANGED <<dw, due>>
          ELSE /\ missed' = (missed \/ st = "owed")
               /\ UNCHANGED <<st, dw, due, reply, heard, fed, uncut, told, part1, hacc, cuts, got>>
@@ -1030,7 +1101,8 @@ TypeOK ==
                       "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
                       "declineWrong", "cutsUncounted", "cutRecordUnread",
-                      "failNotAbout", "rewriteOnce", "noRenderPlace"}
+                      "failNotAbout", "rewriteOnce", "noRenderPlace", "nvCutFree",
+                      "splitCount"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about", "judge"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
     /\ tr \in {"none", "ph", "out"} /\ staleRes \in BOOLEAN
