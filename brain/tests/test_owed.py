@@ -1007,6 +1007,76 @@ async def test_a_verdict_still_to_come_at_the_sessions_end_errs_owed():
     assert [r.key for r in b.owed()] == ["call-ws"], "applied twice, or lost"
 
 
+# =============================================================== a held stop (Owed.tla Hold)
+
+async def test_a_held_stop_disarms_the_reoffer_until_their_next_turn():
+    """barge_pause.py A BARE STOP -> Owed.caller_waits: "Okay, wait." asks nothing, so no
+    request carries the note, and the re-offer its turn armed is disarmed -- they asked
+    the box to wait. The record stays owed (OwedResolvesOrWaits); their next turn arms
+    the re-offer again (TurnRearms) and its request carries the note."""
+    b, ctx, gate = book(reoffer_quiet_s=0.05)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    gate.asked.clear()                        # its run waits at the door: the turn drops it
+    rec = b.record("call-hn")
+    b.caller_turn()
+    b.caller_waits()
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [] and rec.state == OWED and not rec.missed, (gate.asked, rec)
+    b.caller_turn()
+    assert rec.missed, "their next turn did not arm it again"
+    says(ctx, "Okay, I'm back.")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",)
+    await asyncio.sleep(0.3)
+    assert gate.asked == [(["call-hn"], "reoffer")], gate.asked
+
+
+async def test_a_consult_that_lands_while_the_caller_waits_asks_no_run():
+    """ow_holdLandRuns: a consult landing inside the held turn stayed quiet (a caller
+    request was pending, and the hold disarmed the re-offer), while one landing a moment
+    after the hold asked its run and spoke over the wait. Either side of the hold it says
+    nothing now: no run, nothing armed, until their next turn."""
+    b, ctx, gate = book(reoffer_quiet_s=0.05)
+    b.caller_turn()
+    b.caller_waits()
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    rec = b.record("call-hn")
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [] and rec.state == OWED and not rec.missed, (gate.asked, rec)
+    b.caller_turn()
+    says(ctx, "Did you find it?")
+    assert rec.missed and (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",)
+    # The wait is over: a consult that lands now asks its run as ever.
+    b.land(CAL_REQ, None, "call-cal", failure="timeout")
+    assert (["call-cal"], "run") in gate.asked, gate.asked
+
+
+async def test_a_cut_answer_made_after_the_hold_is_not_reoffered_over_the_wait():
+    """ow_holdArmed: a sync answer cut by "Okay, wait." is made a record when its verdicts
+    land (_cut_answer), which can be after the hold; armed there, it was re-offered ten
+    seconds into the wait they had asked for. Whichever comes first, the hold covers it."""
+    for late in (True, False):
+        release = asyncio.Event()
+        b, _, gate = sync_book(judge=FakeJudge(False, release=release), reoffer_quiet_s=0.05)
+        b.caller_turn()
+        cut(b, answer_reply(b, round_msgs()), "There's a", TOY)
+        if not late:
+            release.set()
+            await judged(b)
+        b.caller_waits()
+        release.set()
+        await judged(b)
+        rec = b.record("call-ws")
+        assert rec is not None and rec.state == OWED and not rec.missed, (late, rec)
+        gate.quiet = 99.0
+        await asyncio.sleep(0.3)
+        assert gate.asked == [], (late, gate.asked)
+        b.caller_turn()
+        await asyncio.sleep(0.3)
+        assert gate.asked == [(["call-ws"], "reoffer")], (late, gate.asked)
+
+
 def test_the_rest_the_judge_is_shown_is_aligned_by_characters():
     """One helper, the ledger's (_unheard): the heard prefix is rebuilt from per-word
     frames whose spacing is theirs ("five- five- zero-"), so the rest is found by
@@ -2777,17 +2847,45 @@ async def test_a_failure_told_and_cut_twice_is_dropped():
     assert b.record("call-cal").state == owed.DROPPED and len(fj.calls) == 2
 
 
-async def test_a_cut_failure_with_no_verdict_stays_owed_and_uncounted():
-    """No failure judge, or one that errs: no verdict that the reply told it -- owed, not a
-    cut telling of it (the cut judge, which looks for a name or a number, is never asked
-    about a failure)."""
+async def test_a_cut_failure_with_no_verdict_counts_and_is_not_read_as_a_telling():
+    """No failure judge, or one that errs: no verdict that the reply told it. It stays
+    owed and counts toward the bound (Owed.tla Unjudged) -- but it is no telling anyone
+    found: nothing of it is quoted, the caller's words are not read against it, and the
+    cut judge, which looks for a name or a number, is never asked about a failure."""
     for fj in (None, FakeFailureJudge(error=RuntimeError("x"))):
         judge = FakeJudge(True)
         b, _, _ = credit_cut(fj, judge)
         await judged(b)
         rec = b.record("call-cal")
-        assert rec.state == OWED and rec.cuts == 0 and judge.calls == [], (fj, rec.cuts)
-        assert rec.heard_quote == "" and not b.decline_due()
+        assert rec.state == OWED and rec.cuts == 1 and judge.calls == [], (fj, rec.cuts)
+        assert rec.heard_quote == "" and rec.heard == [] and not b.decline_due()
+
+
+async def test_a_failure_cut_twice_with_no_verdict_is_dropped():
+    """ow_failure_nvCutFree: with the judge down, a failure told in the caller's turns and
+    cut each time counted for nothing and was told again on every turn. The second such
+    cut ends it, as the second cut telling does (BoundedTellings): dropped, not closed --
+    nothing says they heard it."""
+    b, ctx, _ = credit_cut(FakeFailureJudge(error=RuntimeError("down")))
+    await judged(b)
+    says(ctx, "Sorry, go on.")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ("call-cal",)
+    cut(b, noted_reply(b, "caller", ("call-cal",)), CREDIT_CUT, CREDIT_REPLY)
+    await judged(b)
+    assert b.record("call-cal").state == owed.DROPPED
+    says(ctx, "And the weather?")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ()
+
+
+async def test_an_own_cut_with_no_verdict_counts_for_nothing():
+    """The brain's own cut of a reply (own_cut: a call going on hold) is no caller's cut:
+    with no verdict it counts for nothing, as a telling's own cut does."""
+    b, _, _ = failure_book(FakeFailureJudge(error=RuntimeError("down")))
+    b.own_cut = True
+    cut(b, noted_reply(b, "caller", ("call-cal",)), CREDIT_CUT, CREDIT_REPLY)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.cuts == 0 and rec.told == 0, rec
 
 
 # =============================================================== a failure, judged (#380)
@@ -2835,13 +2933,113 @@ async def test_a_played_through_reply_that_does_not_tell_the_failure_keeps_it_ow
 async def test_a_failures_own_run_closes_on_no_verdict_a_caller_reply_does_not():
     """No verdict (the judge errs or is not wired): the failure's own run, which tells it
     by its line (FAILURE_RUN_LINE), closes it played through; any other reply leaves it
-    owed."""
+    owed, and counts."""
     for kind, closes in ((owed.RUN, True), ("caller", False)):
         b, _, _ = failure_book(FakeFailureJudge(error=RuntimeError("down")))
         b.settle(noted_reply(b, kind, ("call-cal",)), CREDIT_REPLY, cut=False, audio=True,
                  text=CREDIT_REPLY)
         await judged(b)
-        assert (b.record("call-cal").state == CLOSED) is closes, kind
+        rec = b.record("call-cal")
+        assert (rec.state == CLOSED) is closes, kind
+        assert rec.told == (0 if closes else 1), (kind, rec)
+        assert closes or rec.heard == [], "words nobody judged, taken as heard of it"
+
+
+async def test_a_failure_told_twice_with_no_verdict_is_closed():
+    """Audit O2 (ow_failure_noBackstop): the failure judge is one LLM call with two seconds
+    to answer, and with it down every verdict is none. A failure told in the caller's turn
+    then stayed owed, the next note said "NOT heard", and it was told again on every turn.
+    No verdict is no evidence either way, so the reply counts, and the second closes the
+    record as an answer's second about-reply does (the backstop). No judge at all is the
+    same."""
+    for fj in (FakeFailureJudge(error=RuntimeError("down")), None):
+        b, ctx, _ = failure_book(fj)
+        b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False,
+                 audio=True, text=CREDIT_REPLY)
+        await judged(b)
+        rec = b.record("call-cal")
+        assert rec.state == OWED and rec.told == 1, rec
+        says(ctx, "Okay. What about tomorrow?")
+        view, keys = await b.view(ctx, owed.COMMIT)
+        assert keys == ("call-cal",) and owed.NOT_HEARD in _note_of(view)
+        b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False,
+                 audio=True, text=CREDIT_REPLY)
+        await judged(b)
+        assert rec.state == CLOSED, rec
+        says(ctx, "And the day after?")
+        assert (await b.view(ctx, owed.COMMIT))[1] == (), "told again on a third turn"
+
+
+async def test_an_owed_verdict_on_a_failure_is_believed_and_counts_for_nothing():
+    """The other side: an explicit OWED says the reply told nothing of it (0/22 and 0/84
+    false OWED measured), so it is no telling to count -- a vague reply on every turn
+    never closes a failure unheard (ow_failure_ptOwes is what a false OWED costs)."""
+    b, ctx, _ = failure_book(FakeFailureJudge(whole=False))
+    for _ in range(3):
+        b.settle(noted_reply(b, "caller", ("call-cal",)), NOT_YET, cut=False, audio=True,
+                 text=NOT_YET)
+        await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.told == 0 and rec.cuts == 0, rec
+
+
+async def test_a_reply_with_no_audio_is_not_judged_and_counts_for_nothing():
+    """Only a reply that played is one the caller could have heard: with no audio the
+    failure judge is not asked, and nothing counts (Owed.tla FailVerdicts "skip")."""
+    fj = FakeFailureJudge(error=RuntimeError("down"))
+    b, _, _ = failure_book(fj)
+    for _ in range(2):
+        b.settle(noted_reply(b, "caller", ("call-cal",)), None, cut=False, audio=False)
+        await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == OWED and rec.told == 0 and fj.wholes == [], rec
+
+
+async def test_a_failures_unjudged_replies_and_cut_tellings_are_one_count():
+    """ow_failure_splitCount: counted apart, a reply played through with no verdict and
+    then a cut telling left the failure owed for a third telling. On one count the second
+    of either ends it -- dropped when it was a cut, closed when it played through."""
+    # No verdict on a reply played through, then a telling the judge finds and they cut.
+    down = RuntimeError("down")
+    fj = FakeFailureJudge(False, error=down)
+    b, ctx, _ = failure_book(fj, judge=FakeJudge(True), decline=FakeDecline(False))
+    b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False, audio=True,
+             text=CREDIT_REPLY)
+    await judged(b)
+    fj.error = None
+    cut(b, noted_reply(b, "caller", ("call-cal",)), CREDIT_CUT, CREDIT_REPLY)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == owed.DROPPED and (rec.told, rec.cuts) == (1, 1), rec
+    # A cut telling, then no verdict on the reply played through after it.
+    fj = FakeFailureJudge(False)
+    b, ctx, _ = credit_cut(fj)
+    await judged(b)
+    fj.error = down
+    says(ctx, "Wait, why not?")
+    await b.view(ctx, owed.COMMIT)
+    b.settle(noted_reply(b, "caller", ("call-cal",)), CREDIT_REPLY, cut=False, audio=True,
+             text=CREDIT_REPLY)
+    await judged(b)
+    rec = b.record("call-cal")
+    assert rec.state == CLOSED and (rec.told, rec.cuts) == (1, 1), rec
+
+
+async def test_a_failure_verdict_still_to_come_at_the_sessions_end_counts_as_none():
+    """close_session applies a verdict still in flight as none: a caller's reply played
+    through counts toward the backstop (and the second closes), the run's own closes."""
+    async def never(question, outcome, heard, rest=None):
+        await asyncio.Event().wait()
+
+    for kind, told, state in (("caller", 1, OWED), (owed.RUN, 0, CLOSED)):
+        b, _, _ = failure_book(never)
+        b.settle(noted_reply(b, kind, ("call-cal",)), CREDIT_REPLY, cut=False, audio=True,
+                 text=CREDIT_REPLY)
+        await asyncio.sleep(0.05)
+        assert not b.is_settled()
+        rec = b.record("call-cal")
+        b.close_session()
+        assert b.is_settled() and (rec.state, rec.told) == (state, told), (kind, rec)
 
 
 async def test_a_cut_reply_that_tells_nothing_of_the_failure_is_no_cut_telling():

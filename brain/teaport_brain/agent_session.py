@@ -1430,7 +1430,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                 and settings_access.usable([settings_phrase]))
     if llm is not None:
         llm.owed = owed
-    # A held bare stop asked to wait: no re-offer at the lull for it (barge_pause.py).
+    # A held bare stop asked to wait: no re-offer at the lull and no landing run until the
+    # caller's next turn (barge_pause.py; owed.Owed.caller_waits).
     start_strategy.on_held = owed.caller_waits
     if prompt is not None:
         # "No, wait." to "Should I step away?" is the answer, for answer_phone_call.

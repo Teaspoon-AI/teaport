@@ -577,8 +577,10 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 # Orin Nano, a 2 s wall-clock timeout fired with the decoder 89 ms past the turn's cut,
 # and the word the turn waited for came 0.2 s later, alone, as a turn of its own. The
 # wall clock is only the backstop for an engine that stops reporting at all
-# (_FINAL_BACKSTOP_SECS). A word of a settled turn that comes later goes to the open turn,
-# as one the bound let through.
+# (_FINAL_BACKSTOP_SECS). A word of a settled turn that comes later is still the turn's
+# while it is kept (settled early with words its provisional delivered still to come:
+# _early), or a turn's whose preview vouched for it, at its front (_front_vouched); else
+# it goes to the open turn, as one the bound let through.
 #
 # In slice mode a commit damages nothing, so what repaired its damage is off: the carry
 # (no segment opens behind a commit), with it the hint's re-prime floor, and the wait for
@@ -2562,23 +2564,22 @@ class TeaportSTTService(WebsocketSTTService):
         goes_on = self._goes_on(w, self._last_piece)
         if not goes_on:
             self._spend_later()                       # the word before is whole now
-        early = self._early_taker(w, goes_on)
-        if early is not None:
-            # A word a turn settled early vouched for: its provisional delivered it, and
-            # the turn after it must not deliver it again.
+        target, had = self._early_taker(w, goes_on)
+        if target is not None:
+            # A word of a turn settled early: its provisional delivered it, and the turn
+            # after it must not deliver it again.
             if not goes_on:
-                logger.debug(f"{self}: {quoted(piece.strip())}, late, is the word VAD stop "
-                             f"{early.stop_n}'s provisional already had (settled early)")
-            target = early
+                logger.debug(f"{self}: {quoted(piece.strip())}, late, is VAD stop "
+                             f"{target.stop_n}'s (settled early)")
         elif end < self._final_through and not goes_on:
             # A word of a turn already settled: the engine's end_through_ms did not hold,
-            # or that turn's final timed out. A later turn whose preview vouched for it
+            # or that turn's final timed out. A turn whose preview vouched for it
             # delivered it already: it is that turn's, spent (audit A3, a preview that
-            # missed it for its own turn) -- the first such turn's FIRST vouched word
-            # only, as _spend_later reads them: a late "a" is no later "about". Otherwise
-            # kept, not lost: the open turn has it -- never a later turn, whose stretch it
-            # is not in (its correction would add it a second time).
-            target = self._front_vouched(piece)
+            # missed it for its own turn) -- the oldest turn's whose FIRST vouched word
+            # it is (_front_vouched). Otherwise kept, not lost: the open turn has it --
+            # never a later turn, whose stretch it is not in (its correction would add it
+            # a second time).
+            target, had = self._front_vouched(piece), True
             if target is None:
                 self._warn_once("bound", f"a word ending at {end} ms arrived after the "
                                 f"turn through {self._final_through} ms was settled -- the "
@@ -2586,44 +2587,51 @@ class TeaportSTTService(WebsocketSTTService):
                                 "timed out; the open turn takes it")
         else:
             target, had = self._file(w, self._last_piece, self._turns)
-            if target is not None and not goes_on and not had:
-                self._spending = (target, [piece])
-            elif (goes_on and self._spending is not None
-                  and self._spending[0] is target):
-                self._spending[1].append(piece)
+        if target is not None and not goes_on and not had:
+            self._spending = (target, [piece])
+        elif goes_on and self._spending is not None and self._spending[0] is target:
+            self._spending[1].append(piece)
         self._last_piece = (start, end, target)
         (target.words if target is not None else self._open_words).append(w)
         return target is not None
 
-    def _early_taker(self, w: tuple, goes_on: bool) -> Optional[_Turn]:
+    def _early_taker(self, w: tuple, goes_on: bool) -> tuple:
         """The turn settled early (_early) main piece `w` is the late word of, if any: the
         rest of a word one took; or a word of its stretch -- ending before its position
         and not before the turn before it's, whatever its text (its final corrects it,
         _prune_early) -- or ending at or past it that its preview vouched for (_vouch).
-        One below a kept turn's stretch is not its: the late branch's front-word rule
+        And whether that turn's preview had the word (a first piece only), as _file says
+        it. One below a kept turn's stretch is not its: the late branch's front-word rule
         decides it (_front_vouched), or the vouch check's prefix match would take it
         for any of the turn's words ("a" for its "about")."""
         if goes_on:
             last = self._last_piece[2]
-            return last if any(t is last for t in self._early) else None
+            return (last if any(t is last for t in self._early) else None), False
         for turn in self._early:
             if turn.lo_ms <= w[1] < turn.at_ms:
-                self._claim_expected(turn, w[0])
-                return turn
+                return turn, self._claim_expected(turn, w[0])
             if w[1] >= turn.at_ms and self._vouch(turn, *w):
-                return turn
-        return None
+                return turn, True
+        return None, False
 
     def _front_vouched(self, piece: str) -> Optional[_Turn]:
-        """The first turn -- kept (settled early) or waiting -- with words its preview
-        vouched for, if the first of them is the word `piece` begins (its first piece: a
-        prefix of it); spent."""
-        turn = next((t for t in (*self._early, *self._turns) if t.expect), None)
+        """The oldest turn -- kept (settled early), then waiting -- the FIRST of whose
+        vouched words still to come is the word `piece` begins (its first piece: a prefix
+        of it); spent. The engine sends words in order and every word that came was taken
+        out (claimed, or spent: _spend_later), so a turn's first is the next of its
+        preview's words to come: a late word a preview delivered is at that turn's front.
+        Only the front: a late "a" is no later "about". And every turn's, not the first
+        vouching turn's alone (audit S1): a turn before the right one that waits on
+        another word must not hide it, or the open turn takes a word already delivered
+        and the next commit delivers it again (formal/SttSlice.tla LateTakers)."""
         key = _word_key(piece)
-        if turn is None or not key or not turn.expect[0].startswith(key):
+        if not key:
             return None
-        turn.expect.pop(0)
-        return turn
+        for turn in (*self._early, *self._turns):
+            if turn.expect and turn.expect[0].startswith(key):
+                turn.expect.pop(0)
+                return turn
+        return None
 
     def _keep_early(self, turn: _Turn, lo: int) -> bool:
         """`turn`, its stretch from `lo`, settles before its final: keep it (_early) if
@@ -2656,10 +2664,12 @@ class TeaportSTTService(WebsocketSTTService):
         self._early = kept
 
     def _spend_later(self):
-        """The word last filed to a turn whose preview did not have it, whole now (its
-        pieces come together, before any other message): the first turn after it whose
-        preview has the word at its front does not wait for it too -- or, no turn's
-        having it, a peek's preview not yet adopted (THE CUT'S MARGIN). Only such a word:
+        """The word last filed to a turn -- waiting, or settled early and kept -- whose
+        preview did not have it, whole now (its pieces come together, before any other
+        message): the first turn after it whose preview has the word at its front does
+        not wait for it too -- or, no turn's having it, a peek's preview not yet adopted
+        (THE CUT'S MARGIN). That keeps a turn's first vouched word the next of them to
+        come, which a late word is matched against (_front_vouched). Only such a word:
         one the earlier preview had is what the trim already took off the later one's
         front (_past_earlier), and the same word there again is the later turn's own
         ("yes. Yes."). Only from the first: its preview held the word unsent, so the trim
@@ -2672,7 +2682,7 @@ class TeaportSTTService(WebsocketSTTService):
         key = _word_key("".join(pieces))
         if not key:
             return
-        for later in self._turns:
+        for later in (*self._early, *self._turns):
             if later.at_ms > turn.at_ms and later.expect and later.expect[0] == key:
                 later.expect.pop(0)
                 return

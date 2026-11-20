@@ -369,7 +369,7 @@ class FollowupGate(FrameProcessor):
         # uninterruptible, so it can reach here AFTER the barge-in that cancelled its call
         # (it waits in the TTS's and the transport's queues), and one for an id already
         # settled or cancelled (_calls_done) is ignored. As one flag it set the round
-        # again for good when no completion followed (staleFlag: OwedResolves).
+        # again for good when no completion followed (staleFlag: OwedResolvesOrWaits).
         self._calls_out: dict = {}
         self._calls_done: OrderedDict = OrderedDict()
         # A commit's LLMContextFrame passed TurnCommitMark and the LLM has not rendered it
@@ -855,7 +855,7 @@ class FollowupGate(FrameProcessor):
     def ask(self, keys, purpose: str, context) -> None:
         """gate.ask (Owed.tla Ask): a run of ours for the owed records `keys`, "run" or
         "reoffer", on `context`. One run waits at a time: one already waiting takes the
-        new keys too (it renders every owed record anyway)."""
+        new keys too (its note carries the records of its keys: owed.Owed.view)."""
         keys = list(keys)
         if self._run is not None:
             old_keys, old_purpose, _, task = self._run

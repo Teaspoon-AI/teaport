@@ -769,6 +769,94 @@ async def test_a_final_while_the_caller_talks_on_leaves_the_rest_of_their_words_
             f"the rest of the caller's words were taken as a tail: {rig.events}")
 
 
+async def _committed_while_they_talk_on(rig, stop):
+    """A turn committed on the caller's first words while the VAD still hears them: the
+    model is asked (the cut fence tells the strategy of the commit, as hold_commits does
+    in a session), the finalize is refused, and the turn stays open."""
+    await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await rig.feed(InterimTranscriptionFrame(QUESTION, "u", "t"))
+    await rig.feed(final(QUESTION, None))
+    assert not await rig.start.hold_bare_stop(QUESTION)   # CutReplyFence.holds
+    await stop.commit()                                   # refused: they talk on
+    assert rig.events == ["start"], rig.events
+
+
+async def test_a_turn_that_stops_after_its_reply_began_leaves_no_wait():
+    """Audit 2026-11-19 (formal/ReplyWait.tla, WaitOnlyInFlight, rw_waitAtStop). The
+    reply to a turn committed while the caller talks on starts playing BEFORE their VAD
+    stop re-applies the refused finalize. Awaited from that stop, it kept the wait open
+    for ten seconds after it had played: the caller's next word with no VAD start
+    under it joined a turn already answered. The reply has played: one word is a turn."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await _committed_while_they_talk_on(rig, stop)
+        await rig.feed(BotStartedSpeakingFrame())             # the reply, the turn open
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        assert rig.events == ["start", "stop"], rig.events
+        await rig.feed(SegmentDoneFrame(stop_n=1))            # their speech had its words
+        await rig.feed(BotStoppedSpeakingFrame())             # ...and the reply has played
+        assert not rig.start._waiting(), "a reply that has played is still awaited"
+        await rig.feed(final("Yes.", NO_STOP))                # the VAD missed its start
+        assert rig.starts() == 2 and rig.appended == [], (
+            f"the answer to the finished reply joined the turn before: {rig.events}, "
+            f"{rig.appended}")
+
+
+async def test_a_turn_that_stops_after_its_reply_ended_unspoken_leaves_no_wait():
+    """The same with a reply that ended with nothing of it to play before the turn's
+    stop (UnspokenReplyTap): the model's shortest trace of it. Nothing is in flight."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await _committed_while_they_talk_on(rig, stop)
+        rig.start.reply_unspoken("an empty answer")
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        assert rig.events == ["start", "stop"], rig.events
+        await rig.feed(SegmentDoneFrame(stop_n=1))
+        assert not rig.start._waiting(), "a reply that ended unspoken is still awaited"
+        await rig.feed(final("Hello?", NO_STOP))
+        assert rig.starts() == 2 and rig.appended == [], (rig.events, rig.appended)
+
+
+async def test_a_turn_that_stops_before_its_reply_still_waits_for_it():
+    """The control: the refused finalize is re-applied while the reply is still to
+    come. That is the wait (#22): a word nobody spoke joins the turn, and cuts nothing."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await _committed_while_they_talk_on(rig, stop)
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        await rig.feed(SegmentDoneFrame(stop_n=1))
+        assert rig.start._waiting(), "the reply in flight is not awaited"
+        await rig.feed(final(TAIL, NO_STOP))
+        assert rig.starts() == 1 and rig.appended == [TAIL], (rig.events, rig.appended)
+
+
+async def test_a_second_commit_in_the_turn_is_awaited_whatever_answered_the_first():
+    """Without the cut fence's drop (Talk, the room) a turn can have the model asked
+    twice: on its first words, and on the rest at the VAD stop. The first reply audible
+    says nothing of the second: that one is still to come, and is awaited once the bot
+    is quiet (formal/ReplyWait.tla: sAnswered is of the LATEST asked commit)."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await _committed_while_they_talk_on(rig, stop)
+        await rig.feed(BotStartedSpeakingFrame())             # the first reply plays
+        await rig.feed(final("And in winter?", None))
+        assert not await rig.start.hold_bare_stop("And in winter?")   # the second commit
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        assert rig.events == ["start", "stop"], rig.events
+        await rig.feed(SegmentDoneFrame(stop_n=1))
+        assert not rig.start._waiting(), "the bot is audible: nothing is a tail over it"
+        await rig.feed(BotStoppedSpeakingFrame())
+        assert rig.start._waiting(), "the second reply, still to come, is not awaited"
+
+
 async def test_a_wordless_close_does_not_make_the_speech_it_closed_a_tail():
     """Slice mode's empty provisional: the speech's VAD stop closes wordless and its
     words come after, as new words stamped NO_STOP. They had a VAD span: a turn."""

@@ -6,7 +6,8 @@
 # --full adds the rows too large for the default run: today six SttCommit rows (the
 # carry, the missed stop, the repaired final and the reset in their full environments) whose state
 # spaces are tens of millions, and SttSlice's three-word rows, its peek with frozen
-# bounds, and its peek at the owed-peek row's bounds (formal/README.md). The default run
+# bounds, its peek at the owed-peek row's bounds, and its early settle with lossy
+# previews, with the peek too, and at three words (formal/README.md). The default run
 # does not guard every shipped fix: the peek's owed flag (_Peek.owed) is guarded only by
 # SttSlice's two --full peek rows.
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
@@ -185,9 +186,12 @@ echo
 echo "Owed.tla — owed until heard (#203): the record, the note rendered per request, closed on evidence"
 echo "  (written before the code; owed.py, the render hook and the gate's door implement it)"
 run Owed.tla ow_design            "(expected: holds — the design as the model corrected it (anyMiss, about), runs that tell part or nothing, every safety property)"
-run Owed.tla ow_design_live       "(expected: holds — OwedResolves under FairSpec: heard, the session ends, or the one re-offer is spent)"
+run Owed.tla ow_design_live       "(expected: holds — OwedResolvesOrWaits under FairSpec: heard, the session ends, the one re-offer is spent, or the caller asked to wait and has not spoken since)"
+run Owed.tla ow_hold_unconditional "(expected: FAILS OwedResolves — the liveness claimed before the held turn was modelled, \"without assuming the caller ever speaks\": after \"Okay, wait.\" (held: nothing asked, the re-offer disarmed) an owed record stays untold until they speak)"
+run Owed.tla ow_holdArmed         "(expected: FAILS QuietWhileWaiting — the hold leaves the re-offer armed (before 5aaf9a28; and until the 2026-11-19 audit for a cut sync answer's record, made after the hold): re-offered into the wait the caller asked for)"
+run Owed.tla ow_holdLandRuns      "(expected: FAILS QuietWhileWaiting — a consult that lands while the caller's wait stands asks its run (the code before the 2026-11-19 audit): quiet if it landed inside the held turn, spoken a moment after)"
 run Owed.tla ow_asWritten_closed  "(expected: FAILS ClosedOnEvidence — DESIGN §3 as written: an uncut run closes, and a run that told one item of two played through)"
-run Owed.tla ow_asWritten_live    "(expected: FAILS OwedResolves — DESIGN §4 as written: a run with no audio (or dropped at the hold cap) arms no re-offer, owed for good)"
+run Owed.tla ow_asWritten_live    "(expected: FAILS OwedResolvesOrWaits — DESIGN §4 as written: a run with no audio (or dropped at the hold cap) arms no re-offer, owed for good)"
 run Owed.tla ow_fraction          "(expected: FAILS ClosedOnEvidence — today's >= 1/3 of the words: a run cut before its items closes (#203))"
 run Owed.tla ow_countSettle       "(expected: FAILS ClosedOnEvidence — two uncut noted replies close, neither with every item (X2-Igone))"
 run Owed.tla ow_singleWord        "(expected: FAILS ClosedOnEvidence — no common-word list: \"Sure, take your time.\" closes)"
@@ -203,14 +207,21 @@ run Owed.tla ow_oneSlot           "(expected: FAILS HoldNoLoss — the hold's si
 run Owed.tla ow_turnLevel         "(expected: FAILS NoRunUnderSpeech — a turn-level window: the run goes into speech whose words have not come (#197))"
 run Owed.tla ow_vadLevel          "(expected: FAILS NoRunMidTurn — a VAD-level window: the run goes between a tool call and its answer)"
 run Owed.tla ow_endClearsTool     "(expected: FAILS NoRunMidTurn — the gate's turn ends at a completion's End with its call still out (\"Let me check.\" + a tool): the run goes before the answer)"
-run Owed.tla ow_staleFlag          "(expected: FAILS OwedResolves — the gate's tool round as one flag: a cancelled call's uninterruptible in-progress frame sets it after the barge-in, no completion clears it, the door and the lull stay shut)"
+run Owed.tla ow_staleFlag          "(expected: FAILS OwedResolvesOrWaits — the gate's tool round as one flag: a cancelled call's uninterruptible in-progress frame sets it after the barge-in, no completion clears it, the door and the lull stay shut)"
 run Owed.tla ow_adoptDropsKeys     "(expected: FAILS NoRepeatRecital — the commit adopting a speculation does not register the keys its note carried: a full telling is no evidence, and the lull tells it again)"
 run Owed.tla ow_failure           "(expected: holds — a failure record (one item, told whole) under the design (judge, vague replies included): every safety property)"
-run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolves under FairSpec)"
+run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolvesOrWaits under FairSpec)"
 run Owed.tla ow_rewriteOnce       "(expected: FAILS NoStaleResult — the landing rewrites the tool result once (before #386): a consult that fails before its placeholder is in the context finds nothing, and the placeholder that comes in after says it is still running)"
 run Owed.tla ow_noRenderPlace     "(expected: FAILS NoStaleResult — the held landing placed only by the placeholder's on_context_updated task, not by the render: the landing run renders before that task has run and reads the placeholder)"
 run Owed.tla ow_failure_aboutVague "(expected: FAILS ClosedOnEvidence — a failure closed by a reply ABOUT it by its words (before #380): a vague \"I don't have it yet\" that names the request is heard to its end and closes it unheard)"
 run Owed.tla ow_failure_judgeWrong "(expected: FAILS ClosedOnEvidence — the failure judge answers HEARD on a vague reply (the measured residual: 0/30 on the eval's cases, 7/37 on the model's own tellings): the record closes unheard)"
+run Owed.tla ow_failure_noBackstop "(expected: FAILS RetellOnce — a failure's reply with no verdict counts for nothing (the code before the 2026-11-19 audit): with the failure judge down, a failure heard in the caller's turn stays owed and every turn after tells it again)"
+run Owed.tla ow_failure_nvCutFree  "(expected: FAILS BoundedTellings — only a reply played through with no verdict counts, not one cut (the audit's first draft): told and cut on every turn with the judge down, a failure stays owed)"
+run Owed.tla ow_failure_splitCount "(expected: FAILS RetellOnce — a failure's unjudged replies played through counted apart from its cut tellings, as an answer's are: one played through, one cut, and a third telling begins)"
+run Owed.tla ow_failure_noVerdict  "(expected: FAILS ClosedOnEvidence — NOVERDICT on a failure, the residual: the failure judge gives no verdict in time, and the second telling nobody could confirm closes the record on a reply that told nothing of it)"
+run Owed.tla ow_failure_noVerdict_rest "(expected: holds — NOVERDICT on a failure: RetellOnce and BoundedTellings by the one count, and every property but ClosedOnEvidence and the ones a missing verdict leaves stale meanwhile (NoStaleNote, NoRunAfterHeard, NoRepeatRecital: heard and still owed until the second; NoNoteAfterDecline: a cut reply nobody judged has no words read))"
+run Owed.tla ow_failure_ptOwes     "(expected: FAILS RetellOnce — PTOWES on a failure, the residual (0/22 and 0/84 measured): an explicit OWED on a full telling is believed, no backstop bounds it, and every turn after tells it again)"
+run Owed.tla ow_failure_ptOwes_rest "(expected: holds — PTOWES on a failure: what a false OWED cannot break (ClosedOnEvidence, the note, the door, OneReoffer, DeclinedOnEvidence); RetellOnce, BoundedTellings and the stale-note properties fall, and NoNoteAfterDecline with them)"
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
 run Owed.tla ow_failNotAbout      "(expected: FAILS NoStaleNote — a failure record with no terms (before the formal audit's C1): a telling in its own words, by any reply but its run, is not about it, never closes it, and the note says NOT heard)"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
@@ -223,7 +234,7 @@ run Owed.tla ow_gist_lexical      "(expected: FAILS RetellOnce — CLOSE lexical
 run Owed.tla ow_gist_noBackstop   "(expected: FAILS RetellOnce — the gist judge with no backstop: a judge that answers OWED on full tellings (PTOWES) re-tells a heard answer on every turn)"
 run Owed.tla ow_gist_oneReply     "(expected: FAILS RetellOnce — the judges read the one reply, not what was heard of the record: a re-telling cut before its facts is OWED though the telling before it was heard)"
 run Owed.tla ow_gist_ptOwes       "(expected: FAILS NoStaleNote — PTOWES, the residual (2-4/29 measured): a full telling judged OWED, the next request still says NOT heard)"
-run Owed.tla ow_gist_ptOwes_rest  "(expected: holds — PTOWES: every property but the one re-telling and its stale note; RetellOnce by the backstop)"
+run Owed.tla ow_gist_ptOwes_rest  "(expected: holds — PTOWES on an answer: every property but the one re-telling and its stale note; RetellOnce by the backstop, which an answer has and a failure's OWED does not (ow_failure_ptOwes))"
 run Owed.tla ow_gist_noVerdict    "(expected: FAILS ClosedOnEvidence — NOVERDICT, the user's choice: no verdict on a reply about the record played through closes it, a mention with no answer included)"
 run Owed.tla ow_gist_noVerdict_rest "(expected: holds — NOVERDICT: every other property)"
 run Owed.tla ow_gist_wrong        "(expected: FAILS ClosedOnEvidence — the gist judge answers HEARD on a part or a mention (0/25 by majority measured))"
@@ -235,7 +246,7 @@ run Owed.tla ow_declineMiss_rest  "(expected: holds — DECMISS: every other pro
 run Owed.tla ow_declineWrong      "(expected: FAILS DeclinedOnEvidence — the check answers DECLINED on words that wanted the rest (10/770 measured): the record ends unheard)"
 run Owed.tla ow_cutsUncounted     "(expected: FAILS BoundedTellings — before #231: a cut telling counts toward nothing, and a record told and cut on every turn stays owed (10-25: five tellings in five minutes))"
 run Owed.tla ow_cutRecord         "(expected: holds — ORIGIN cut: a sync answer's record made at the cut of its first telling (the issue's own cases), every safety property)"
-run Owed.tla ow_cutRecord_live    "(expected: holds — ORIGIN cut: OwedResolves under FairSpec)"
+run Owed.tla ow_cutRecord_live    "(expected: holds — ORIGIN cut: OwedResolvesOrWaits under FairSpec)"
 run Owed.tla ow_cutRecordUnread   "(expected: FAILS NoNoteAfterDecline — the record made at a cut has nothing due (the first fix's gap, found in review): \"that's all I needed\" cuts a web_search answer and the next request carries its note)"
 echo
 echo "OwedAnswers.tla — how a sync tool's answer becomes owed (#204): position, one more reply, the narrow re-lookup"
@@ -349,6 +360,14 @@ run UserTurn.tla ut_talk_judge_all                    "(expected: holds — the 
 run UserTurn.tla ut_talk_shipped_nostalereply         "(expected: FAILS NoStaleReply — Talk has no reply hold (TEAPORT_REPLY_HOLD_TALK off): the reply plays over the resumed user, with the pause on as without)"
 run UserTurn.tla ut_talk_shipped_nosplitturn          "(expected: FAILS NoSplitTurn — the same: nothing drops the unplayed reply, so the continuation is a second message)"
 echo
+echo "ReplyWait.tla — the reply's wait and the bare stop (#22, barge_pause.py): a wait only for a reply still to come, a stop held only for a turn that cut something"
+run ReplyWait.tla rw_shipped          "(expected: holds — AS SHIPPED where the reply hold is (SIP): the wait ends with whatever answers the turn's last asked commit; a stop is held only as the first words a turn has the model asked on, or for a reply the fence dropped)"
+run ReplyWait.tla rw_shipped_talk     "(expected: holds — AS SHIPPED without the fence's drop (Talk, the room): two replies of one turn may both stay)"
+run ReplyWait.tla rw_waitAtStop       "(expected: FAILS WaitOnlyInFlight — BEFORE THE 2026-11-19 AUDIT: awaited from every stop with words; a refused finalize re-applied after the reply began, or ended unspoken, opens the wait for a reply that is not coming)"
+run ReplyWait.tla rw_waitAtStop_held  "(expected: FAILS NoHeldWithNothingCut — the same, its cost: a turn begun in that wait reads as one that cut something, and a stop said to the finished reply is held, nothing asked)"
+run ReplyWait.tla rw_holdAnyCommit    "(expected: FAILS NoHeldWithNothingCut — BEFORE THE 2026-11-19 AUDIT: any commit of a turn that cut something may be held; a stop after words the model was already asked on, in one turn, is discarded and that reply plays on)"
+run ReplyWait.tla rw_noWait           "(expected: FAILS TailJoins — BEFORE #22: no wait; words nobody spoke cut the reply before a word of it plays)"
+echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85; the voice clock since #255)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
@@ -450,13 +469,19 @@ run SttSlice.tla ss_heard_reach     "(expected: FAILS HeardAllSent — witness: 
 run SttSlice.tla ss_heard_endOnly   "(expected: FAILS NoWordAfterHeard — the end bound alone, as before 3a46b6c (its smaller margin not shown): a word the voice end falls inside comes after the answer)"
 run SttSlice.tla ss_heard_final     "(expected: FAILS NoWordAfterHeard — a proposal, rejected 2026-11-06: a turn's final past the voice end answers the watch; a word stamped at the commit, inside the margin, is the next turn's and still to come)"
 run SttSlice.tla ss_early_shipped   "(expected: FAILS NoDoubleDeliver — BEFORE AUDIT A3: a turn settled early (the backstop, the pause's cap) forgets the words its provisional delivered; late, they go to the open turn and the next preview asks them again)"
-run SttSlice.tla ss_early_kept      "(expected: holds — AS SHIPPED (A3): a turn settled early keeps its stretch's late words and its vouching for the trim until the bounds pass it, then settles its final; a late word below a settled turn is a later vouching turn's; NoDoubleDeliver and NoDeliveredOpen; ~4.8M states)"
+run SttSlice.tla ss_early_kept      "(expected: holds — AS SHIPPED (A3): a turn settled early keeps its stretch's late words and its vouching for the trim until the bounds pass it, then settles its final; a late word below a settled turn is the oldest turn's at the front of whose vouched words it is; NoDoubleDeliver and NoDeliveredOpen; ~4.8M states)"
+run SttSlice.tla ss_early_first     "(expected: FAILS NoDeliveredOpen — BEFORE AUDIT S1: a late word below a settled turn is asked only of the first turn that vouches for anything; three commits, a lossy preview: that turn waits on another word, the third delivered this one, and the open turn takes it)"
+run SttSlice.tla ss_early_waitSpend "(expected: FAILS NoDeliveredOpen — BEFORE AUDIT S1: a word a kept turn takes that its preview lacked is not spent from the later turn that vouched for it; that turn's next word, late, finds the front taken)"
+run SttSlice.tla ss_early_kept_three "(expected: holds — AS SHIPPED (S1) at ss_early_first's bounds, three commits and lossy previews: ~1.4M states)"
+run SttSlice.tla ss_early_kept_peek "(expected: holds — AS SHIPPED with the preview at the VAD stop (S3), at ss_peek's bounds: ~3.7M states)"
 if [ "$FULL" = 1 ]; then
   limit=$FULL_ROW_TIMEOUT
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
   run SttSlice.tla ss_early_kept_lossy "(expected: holds — the A3 fix with lossy previews: ~20M states)"
+  run SttSlice.tla ss_early_kept_peek_lossy "(expected: holds — the early settle with the peek and lossy previews: ~12.5M states)"
+  run SttSlice.tla ss_early_kept_spend "(expected: holds — the early settle at ss_early_waitSpend's three words and three commits, the channel two deep: ~12M states)"
   run SttSlice.tla ss_peekOwed_shipped "(expected: holds — the peek as shipped at ss_noPeekOwed's bounds: the owed flag keeps the adopted peek waiting, ~31M states)"
   limit=$ROW_TIMEOUT
 fi
@@ -545,6 +570,9 @@ run LedgerPlayout.tla lp_position                      "(expected: FAILS NoPlaye
 run LedgerPlayout.tla lp_guarded                       "(expected: FAILS HeardPrefixOnOwn — the first fix (guarded, still the newest message, cut by cut): a reply cut partway with a queued reply committed after it keeps its full text)"
 run LedgerPlayout.tla lp_unspeakable_tail              "(expected: FAILS HeardPrefixOnOwn — BEFORE THE EMOJI FIX (seqTail): an emoji reply, charted nothing but committed, after a reply cut partway takes its heard prefix)"
 run LedgerPlayout.tla lp_failed                        "(expected: holds — AS SHIPPED (seq corrector: each cut on its own message), every property but NoUnheardAheadOfPlayed)"
+run LedgerPlayout.tla lp_failed_heardPts               "(expected: FAILS UnheardSaidIsCorrected — BEFORE THE 2026-11-19 AUDIT (heard text by the pts alone): a failed reply's force-completed text is stamped in the past, so the reply nobody heard a sound of is kept in the context as said)"
+run LedgerPlayout.tla lp_said_synth                    "(expected: FAILS NoPlayedReplyDeleted — BEFORE THE 2026-11-19 AUDIT (committed = its synthesis is over): a reply synthesized whole behind the one playing commits nothing at a barge-in, and its cut deletes the played reply's message)"
+run LedgerPlayout.tla lp_said_played                   "(expected: FAILS HeardPrefixOnOwn — committed by the audio alone, not what shipped: the caption lead lets a queued reply's first words out while the reply ahead still plays, and that reply's heard prefix lands on them)"
 run LedgerPlayout.tla lph_phantom      "(expected: holds — hermetic wiring)"
 run LedgerPlayout.tla lph_once         "(expected: holds — hermetic wiring, two replies)"
 run LedgerPlayout.tla lph_wrongText    "(expected: holds — hermetic wiring, two replies)"

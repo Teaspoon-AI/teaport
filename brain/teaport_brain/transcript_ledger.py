@@ -179,9 +179,14 @@ class Utterance:
     # opened in, which is the order pipecat committed the replies' messages (each at its
     # context's end) -- not always the order they are charted in: a reply the engine
     # failed on is charted at its stop frame, while the reply ahead of it still plays.
-    # committed: pipecat committed a message for it -- words of it played, or its
-    # context ended and the TTS force-completed its text (a failed reply's included).
-    # Only a reply a barge-in cut before its context ended, with nothing played, has none.
+    # committed: pipecat committed a message for it -- a word frame of it came out of the
+    # output transport, which releases each at its pts and drops the rest at an
+    # interruption (TranscriptLedger._text_out). A reply's own words ride its audio; the
+    # text the TTS force-completes for a reply with no audio is stamped at the last word
+    # before it. So a reply synthesized whole and queued behind the one playing has
+    # committed nothing when a barge-in lands in that one, and a reply charted never
+    # played is False until its text is out (settled at the next window close or
+    # interruption: _settle_text). formal/LedgerPlayout.tla, `said`, SaidIsCommitted.
     turn_seq: Optional[int] = None
     committed: bool = True
 
@@ -368,6 +373,9 @@ class TranscriptLedger(BaseObserver):
         # it, so the layout is read at that instant, and every queued chunk plays that
         # much later.
         self._paused_at: Optional[float] = None
+        # Replies charted never played whose force-completed text is still waiting at the
+        # transport, as (utterance, the pts it comes out at): _settle_text.
+        self._text_due: List[tuple] = []
         self._seen: OrderedDict = OrderedDict()
         # InterruptionFrame ids already cut, each with its broadcast sibling's: "ahead"
         # (sighted, not yet by the TTS), "tts" (cut where the TTS sighted it), or "past"
@@ -966,6 +974,33 @@ class TranscriptLedger(BaseObserver):
         the next window continues it)."""
         self._credit(self._play_t(t))
         self._close_ready(t)
+        self._settle_text(t)
+
+    def _text_out(self, turn: dict, t: float) -> bool:
+        """Whether a word frame of `turn` has come out of the output transport by `t`:
+        the transport releases each when its clock reaches the frame's pts (one with no
+        pts at once), and only what it releases reaches the assistant aggregator -- so
+        this is whether pipecat has committed a message for the reply
+        (Utterance.committed). Read on the raw pts: the caption lead and a schedule
+        anchored early (_pts_rebase) are about when the words are HEARD, not when the
+        transport lets them through."""
+        now_ns = self._voice_ns(t)
+        return any(p is None or p <= now_ns for _, p in turn["spoken"])
+
+    def _settle_text(self, t: float, flushed: bool = False):
+        """The replies charted never played whose text was still waiting in the transport
+        (_finish): committed once its pts has passed. `flushed`: an interruption has
+        dropped whatever had not -- those committed nothing, and never will."""
+        if not self._text_due:
+            return
+        now_ns = self._voice_ns(t)
+        waiting = []
+        for u, pts in self._text_due:
+            if pts <= now_ns:
+                u.committed = True
+            elif not flushed:
+                waiting.append((u, pts))
+        self._text_due = waiting
 
     def _voice_ns(self, t: float) -> float:
         """The voice clock (ns) at pipeline instant `t` (s): the transport's, or with no
@@ -1154,6 +1189,9 @@ class TranscriptLedger(BaseObserver):
         for turn in list(self._turns):
             self._finish(turn, t, heard=turn["played"] + portions.get(id(turn), 0.0),
                          interrupted=True)
+        # The transport drops every word frame its clock has not released: a reply charted
+        # never played whose text was still waiting behind this audio committed nothing.
+        self._settle_text(t, flushed=True)
         # Replies cut before their TTS context opened -- still streaming, or queued for
         # one: heard nothing (Owed.tla CutGot "gen").
         for entry in [self._gen, *self._queue]:
@@ -1218,6 +1256,15 @@ class TranscriptLedger(BaseObserver):
             heard_text = "".join(txt for txt, _ in spoken).strip()
         else:
             heard_text = est
+        if interrupted and heard <= 0:
+            # No audio of it played: nothing of it was heard, whatever pts its word
+            # frames carry. The text the TTS force-completes for a reply the engine
+            # yielded no audio for is stamped at the last word before it -- in the past
+            # -- and read by its pts the whole reply was "heard": charted heard 0% with
+            # all of its text, which HeardContextCorrector then kept in the context as
+            # said (formal/LedgerPlayout.tla, HeardText; lp_failed_heardPts).
+            heard_text = ""
+            pts_heard = None if pts_heard is None else ""
         return heard_text, frac, pts_heard
 
     def _finish(self, turn: dict, t: float, heard: float, interrupted: bool,
@@ -1290,11 +1337,25 @@ class TranscriptLedger(BaseObserver):
         t_end = max(t_start, min(t, t_end))
         if never:
             logger.warning(f"LEDGER assistant reply was never played: {quoted(intended[:60])}")
-        self._add(Utterance("assistant", intended, t_start, t_end,
-                            interrupted=interrupted, heard_fraction=frac,
-                            heard_text=heard_text, turn_seq=turn["seq"],
-                            committed=(not interrupted or never or turn["synth_done"]
-                                       or heard > 0)))
+        # Whether pipecat committed a message for it (Utterance.committed): played
+        # through, or a word frame of it is out of the transport (_text_out; `heard > 0`
+        # for a reply whose words carry no frames of their own). "Its synthesis is over"
+        # is not that: a reply synthesized whole behind the one a barge-in lands in has
+        # every word still waiting at the transport, which drops them -- and counted as
+        # committed, its cut was taken to the played reply's message and deleted it
+        # (formal/LedgerPlayout.tla, lp_said_synth).
+        out = not interrupted or heard > 0 or self._text_out(turn, t)
+        u = Utterance("assistant", intended, t_start, t_end,
+                      interrupted=interrupted, heard_fraction=frac,
+                      heard_text=heard_text, turn_seq=turn["seq"], committed=out)
+        if never and not out:
+            # Never played, charted outside a barge-in: the text the TTS force-completed
+            # for it waits at the transport behind the audio ahead of it, and comes out
+            # when that has played -- unless a barge-in drops it first (_settle_text).
+            due = [p for _, p in turn["spoken"] if p is not None]
+            if due:
+                self._text_due.append((u, min(due)))
+        self._add(u)
         # The settle feed (on_reply_end), here and nowhere earlier: a reply that played
         # through is charted only once its synthesis is done and all of its audio has
         # played (_close_ready) -- not at a BotStoppedSpeaking that came mid-reply, which

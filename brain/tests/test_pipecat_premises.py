@@ -998,7 +998,7 @@ async def check_an_upstream_context_frame_is_answered_by_the_llm():
 
     If it goes: a run of ours is never answered (pipecat passes it on up and nothing
     asks the model), or it is answered on another context; the record stays owed with
-    nothing said, which OwedResolves leaves to the lull alone."""
+    nothing said, which OwedResolvesOrWaits leaves to the lull alone."""
     from dataclasses import dataclass as _dataclass
     from types import SimpleNamespace as NS
 
@@ -1379,8 +1379,59 @@ async def _commits_with_no_audio(text):
     assert " ".join(f.text for f in words).split() == text.split(), (
         f"force-completed before the End: {[f.text for f in words]}")
     assert all(f.append_to_context for f in words), "the text is not for the context"
+    # ...and ahead of the context's stop frame, each with a pts (the last word's before
+    # it: 0 here): TranscriptLedger charts a never-played reply AT the stop, and reads
+    # there whether its text has come out of the transport yet (_text_out, the pts
+    # against the voice clock: Utterance.committed, LedgerPlayout.tla `said`). After the
+    # stop, or unstamped, the ledger would chart it with no text frame to go by.
+    i_stop = _of(probe, TTSStoppedFrame, ctx)[0][0]
+    late = [f.text for i, f in _of(probe, TTSTextFrame, ctx) if i > i_stop]
+    assert not late, f"force-completed AFTER the stop frame: {late}"
+    assert all(f.pts is not None for f in words), "force-completed text carries no pts"
     said = [m.get("content") for m in context.get_messages() if m.get("role") == "assistant"]
     assert said == [text], f"committed: {said}"
+
+
+async def check_a_reply_queued_behind_the_one_cut_commits_nothing():
+    """LedgerPlayout.tla, `textOut` / `Out` (SaidIsCommitted, lp_said_synth): a reply's
+    words reach the assistant aggregator through the output transport, which holds each
+    word frame to its pts and drops what it still holds at an interruption. So a reply
+    synthesized WHOLE behind the one playing -- its context ended, its stop frame out --
+    has committed nothing when a barge-in lands in the one playing, and that one has
+    committed only the words whose time had come. TranscriptLedger._text_out reads the
+    same pts to say which replies have a message (Utterance.committed).
+
+    If it goes (the transport lets text through ahead of its pts, or pipecat commits a
+    context's text at its stop whatever played): a queued reply's message is there and
+    the ledger says it is not -- the cut reply's heard prefix lands on the queued one's
+    message and the cut reply keeps its full text."""
+    import numpy as np
+
+    from teaport_brain.engine_tts import _SAMPLE_RATE as rate
+
+    first, queued = "The bakery opens at eight and closes at six.", "It is Tuesday the second."
+
+    async def segments(text, eager=True):
+        secs = 3.0 if text.startswith("The bakery") else 0.6
+        words = text.split()
+        timed = [(w, i * secs / len(words)) for i, w in enumerate(words)]
+        await asyncio.sleep(0.01)
+        yield "audio", np.zeros(int(secs * rate), dtype=np.float32), timed
+        yield "end", timed
+
+    context = LLMContext([{"role": "user", "content": "hi"}])
+    tts, probe = _tts(segments), Probe()
+    async with Run(tts, probe, StubOutput(), LLMContextAggregatorPair(context).assistant()) as run:
+        await run.send(LLMFullResponseStartFrame(), LLMTextFrame(first), LLMFullResponseEndFrame(),
+                       LLMFullResponseStartFrame(), LLMTextFrame(queued), LLMFullResponseEndFrame())
+        await _until(lambda: len(_of(probe, TTSStoppedFrame)) >= 2)
+        assert len(_of(probe, TTSStoppedFrame)) >= 2, "the queued reply was not synthesized whole"
+        await asyncio.sleep(1.0)                    # a second into the first reply's words
+        await run.send(InterruptionFrame())
+        await asyncio.sleep(0.4)
+    said = [m.get("content") for m in context.get_messages() if m.get("role") == "assistant"]
+    assert len(said) == 1 and said[0] and first.startswith(said[0]) and said[0] != first, (
+        f"committed at a barge-in a second into the first of two queued replies: {said}")
 
 
 async def check_a_timed_out_context_resumes_under_its_own_id():

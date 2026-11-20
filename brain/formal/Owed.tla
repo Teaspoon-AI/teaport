@@ -139,6 +139,26 @@
 (*              the record's own run (FailVerdicts). "about" read a reply's  *)
 (*              words, and a vague "I don't have it yet" (MENTION, for a     *)
 (*              failure too) closed it unheard: ow_failure_aboutVague.       *)
+(*              NO VERDICT on any other noted reply (the judge is one LLM    *)
+(*              call with a 2 s wait: slow or down, every verdict is none)   *)
+(*              is no evidence either way, and the reply COUNTS as a telling *)
+(*              nobody could confirm, on one count with the cut tellings:    *)
+(*              the second ends the record -- closed if it played through    *)
+(*              (the backstop an answer has), dropped if it was cut          *)
+(*              (FailBackstop, Unproven; the audit of 2026-11-19). Until     *)
+(*              then a failure told in a caller's turn with the judge down   *)
+(*              stayed owed, the next note said "NOT heard", and it was told *)
+(*              again on every turn. An explicit OWED is believed (0/22 and  *)
+(*              0/84 false OWED measured): PTOWES is the residual left       *)
+(*              (ow_failure_ptOwes).                                         *)
+(*   "noBackstop" (MUT), for a failure -- the code before that audit: a      *)
+(*              reply with no verdict counts for nothing.                    *)
+(*   "nvCutFree" (MUT) -- only a reply PLAYED THROUGH with no verdict        *)
+(*              counts, not one cut (the audit's first draft): told and cut  *)
+(*              on every turn with the judge down, it stays owed.            *)
+(*   "splitCount" (MUT) -- the replies with no verdict that played through   *)
+(*              are counted apart from the cut ones, as an answer's are: one *)
+(*              played through, one cut, and a third telling begins.         *)
 (*                                                                          *)
 (* OUTCOME: "items" -- two items with terms (a two-story list); "failure"   *)
 (*   -- one item the consult's failure states (no answer). The lexical      *)
@@ -263,6 +283,31 @@
 (*                     task places a held landing, not the render: a run    *)
 (*                     rendered before that task has run reads it stale.    *)
 (*                                                                          *)
+(* THE HELD TURN (barge_pause.py A BARE STOP, 5aaf9a28; the audit of         *)
+(* 2026-11-19): a caller turn whose words are only a stop ("Okay, wait.")    *)
+(* is HELD at its commit -- nothing goes into the context and nothing is     *)
+(* asked (Hold). They asked the box to wait, so from there until their next  *)
+(* turn (`cwait`) it says nothing of its own: the re-offer that turn's start *)
+(* armed is disarmed, a consult that lands meanwhile asks no run, and        *)
+(* nothing arms the re-offer (owed.Owed.caller_waits; QuietWhileWaiting).    *)
+(* Their next turn arms it again (TurnRearms) and its request carries the    *)
+(* note (NoteWhileOwed). So an owed record stays untold for as long as they  *)
+(* stay silent after a "wait": OwedResolves, which held "without assuming    *)
+(* the caller ever speaks", no longer does (ow_hold_unconditional), and      *)
+(* OwedResolvesOrWaits is what holds. Which turns are held -- words that are *)
+(* only a stop, in a turn that cut a reply -- is not modelled: any turn may  *)
+(* be.                                                                      *)
+(*   "holdArmed"    (MUT) -- the hold leaves the re-offer armed: the code    *)
+(*                     before 5aaf9a28 for every record, and after it for    *)
+(*                     one armed once the hold has passed (a cut sync        *)
+(*                     answer's record is made when its verdicts land,       *)
+(*                     owed._cut_answer): told unprompted ten seconds after  *)
+(*                     "Okay, wait.".                                        *)
+(*   "holdLandRuns" (MUT) -- a consult that lands while the wait stands asks *)
+(*                     its run (the code before the audit): landing inside   *)
+(*                     the held turn it stayed quiet, a moment after the     *)
+(*                     hold it spoke.                                        *)
+(*                                                                          *)
 (* adoptDropsKeys (MUT) -- the commit that adopts a speculative reply's     *)
 (*   stream does not register the keys its note carried (the note was in    *)
 (*   the request, rendered in the speculation's own task): its telling is   *)
@@ -323,6 +368,8 @@ VARIABLES
                   \*   no commit carrying them, no release timer since its VAD start
     turn,         \* a caller turn is open (UserStartedSpeakingFrame .. its commit)
     speech,       \* bursts of speech so far (the bound)
+    cwait,        \* the caller's last turn was only a stop, held (Hold), and no turn
+                  \*   of theirs has started since: they asked the box to wait
     \* --- the door: FollowupGate and the LLM's input ---
     q,            \* the LLM's next request: "none" | "caller" (a commit's context
                   \*   frame) | "post" (a sync tool result's answer, pushed up)
@@ -365,7 +412,7 @@ VARIABLES
     staleRes      \* a request was rendered with the placeholder after the landing
 
 rec   == <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, dw, due, dck>>
-line  == <<vad, pend, turn, speech>>
+line  == <<vad, pend, turn, speech, cwait>>
 door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
 reply == <<req, rst, noted, nreg, say, ph>>
 mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, retell, got,
@@ -382,7 +429,7 @@ Init ==
     /\ st = "none" /\ fed = "none" /\ uncut = 0 /\ missed = FALSE /\ reoffers = 0
     /\ told = 0 /\ part1 = FALSE /\ hacc = FALSE /\ cuts = 0 /\ dw = "none" /\ due = FALSE /\ dck = FALSE
     /\ heard = FALSE /\ decl = FALSE /\ repeat = FALSE
-    /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
+    /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0 /\ cwait = FALSE
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
     /\ tend = FALSE /\ mark = FALSE /\ gtool = FALSE
     /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ nreg = FALSE /\ say = "none" /\ ph = "none"
@@ -461,13 +508,47 @@ PtVerdicts(g) ==
 \* ("all"), OWED on anything else, a vague "I don't have it yet" ("mention") included; the
 \* residuals: PTOWES (a telling judged OWED: 0/22 and 0/84 measured), gistWrong (a vague
 \* one judged HEARD: 0/30 on the eval's cases, 7/37 on the model's own), NOVERDICT (none:
-\* closes only the failure's own run). A telling cut before its stream ended is judged on
-\* what was heard of it (owed.Owed._failed): told, and counted, only if that already tells
-\* it.
+\* closes the failure's own run; any other reply counts, FailBackstop). A reply with no
+\* audio is not judged ("skip"). A telling cut before its stream ended is judged on what
+\* was heard of it (owed.Owed._failed): told, and counted, only if that already tells it.
 FailVerdicts(g) ==
-    (IF g = "all" THEN {"heard"} \cup Opt(PTOWES, "owed")
-     ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
-    \cup Opt(NOVERDICT, "none")
+    IF g = "nothing" THEN {"skip"}
+    ELSE (IF g = "all" THEN {"heard"} \cup Opt(PTOWES, "owed")
+          ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
+         \cup Opt(NOVERDICT, "none")
+
+\* The failure's rule since #380.
+Judged == OUTCOME = "failure" /\ RUNCLOSE = "judge"
+
+\* A CUT failure reply is judged twice (owed.Owed._failed): the cut judge on what they
+\* heard (CutVerdicts, below), and before it this verdict `w` on its WHOLE text -- is it
+\* a telling of the failure at all? Only a telling can close on the cut judge's HEARD,
+\* counts as a cut telling, and has the caller's words read against it (Told: `told` in
+\* _failed; the record's own run is one whatever the verdict).
+WholeVerdicts(s, g) ==
+    IF Judged /\ g # "nothing" THEN FailVerdicts(IF s = "tell" THEN "all" ELSE "filler")
+    ELSE {"skip"}
+Told(p, w) == p \in Runs \/ w = "heard"
+
+\* A failure reply nobody could judge: noted, with audio, not the record's own run, and no
+\* verdict on whether it tells it -- played through (`v`) or cut (`w`). No evidence either
+\* way, so it counts as a telling nobody could confirm (noBackstop: for nothing; nvCutFree:
+\* not when it was cut).
+Unjudged(p, n, cut, g, v, w) ==
+    /\ Judged /\ n /\ st = "owed" /\ g # "nothing" /\ p \notin Runs /\ ~Mut("noBackstop")
+    /\ IF cut THEN w = "none" /\ ~Mut("nvCutFree") ELSE v = "none"
+
+\* The tellings of a failure with no evidence they were heard, so far: the replies with no
+\* verdict and the cut tellings, on ONE count -- the second ends the record. Counted apart
+\* (splitCount), a reply played through with no verdict and then a cut one leave it owed
+\* for a third telling, which RetellOnce forbids. `played`: the reply ending now played
+\* through (else it was cut).
+Unproven(played) ==
+    IF ~Mut("splitCount") THEN told + cuts ELSE IF played THEN told ELSE cuts
+
+\* The failure's backstop: a second telling nobody could confirm, played to its end,
+\* closes the record as an answer's second about-reply does (Backstop, below).
+FailBackstop(p, n, g, v) == Unjudged(p, n, FALSE, g, v, "skip") /\ Unproven(TRUE) >= 1
 
 \* A cut, "gist": once what was heard of the record holds the answer, the gate passes and
 \* the judge reads all of it.
@@ -485,8 +566,9 @@ Restrained == ~TWICE /\ CLOSE = "gist" /\ told = 1 /\ part1 /\ st = "owed"
 \* owed.py's close rule, on one ended reply. Only a reply whose request carried the
 \* note can close (§3: "when it carried the note in its request"). A reply played through:
 \* the verdict on its whole text (PtVerdicts: lexical or the gist judge; no verdict
-\* closes), or the backstop. A cut: the cut judge's verdict `v`.
-Closes(p, n, cut, g, v) ==
+\* closes), or the backstop. A cut: the cut judge's verdict `v` -- for a failure, on a
+\* reply its whole text's verdict `w` found a telling.
+Closes(p, n, cut, g, v, w) ==
     /\ n
     /\ IF     Mut("fraction")    THEN p \in Runs /\ g \in {"lead", "some", "all"}
        \* singleWord keeps the per-item rule: only the common-word list and the "2" are gone,
@@ -495,12 +577,13 @@ Closes(p, n, cut, g, v) ==
        ELSE IF Mut("oneItem")    THEN RunUncut(p, cut, g) \/ g \in {"some", "all"}
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
        ELSE IF cut /\ Mut("prefixLexical") THEN g \in {"words", "all"}
-       ELSE IF cut THEN v = "heard"
+       ELSE IF cut THEN v = "heard" /\ (~Judged \/ Told(p, w))
        \* one item, told whole. Before "about": only a run played through uncut. "about":
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
        ELSE IF OUTCOME = "failure"
-            THEN IF RUNCLOSE = "judge" THEN v = "heard" \/ (v = "none" /\ p \in Runs)
+            THEN IF RUNCLOSE = "judge"
+                   THEN v = "heard" \/ (v = "none" /\ p \in Runs) \/ FailBackstop(p, n, g, v)
                  ELSE IF RUNCLOSE = "about" THEN About(g) /\ (p \in Runs \/ ~Mut("failNotAbout"))
                  ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
        ELSE \* the design: an uncut run, the verdict, or the backstop
@@ -527,31 +610,41 @@ Reads(cut, g) ==
 
 \* `arm`: the ending arms the re-offer whatever it closed (a caller turn's cut). Under
 \* "anyMiss" a run that ended without closing the record arms it too. `mk`: this cut makes
-\* the record (ORIGIN "cut"), its first cut telling.
-Finish(cut, g, arm, mk) ==
+\* the record (ORIGIN "cut"), its first cut telling. `w`: a cut failure reply's verdict on
+\* its whole text (WholeVerdicts; "skip" for any other reply).
+Finish(cut, g, arm, mk, w) ==
     \E r \in Reads(cut, g) :
     \E v \in (IF cut THEN CutVerdicts(say, r)
               ELSE IF OUTCOME = "items" THEN PtVerdicts(r)
               ELSE IF RUNCLOSE = "judge" THEN FailVerdicts(r) ELSE {"skip"}) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
-          c  == Closes(req, nreg, cut, r, v) \/ (Mut("countSettle") /\ u = 2)
-          ab == CLOSE = "gist" /\ ~cut /\ nreg /\ st = "owed" /\ About(r)
-          \* a noted telling of the record, cut after its audio began (#231)
-          ct == cut /\ nreg /\ st = "owed" /\ say \in {"tell", "part"} /\ g # "nothing"
-                /\ ~Mut("cutsUncounted")
-                \* failNotAbout: a failure's telling by any reply but its run is not one
-                /\ (req \in Runs \/ OUTCOME # "failure" \/ ~Mut("failNotAbout"))
+          c  == Closes(req, nreg, cut, r, v, w) \/ (Mut("countSettle") /\ u = 2)
+          \* a noted reply played to its end that counts toward the backstop: one about the
+          \* record; for a failure (judged, not read by its words), one with no verdict
+          ab == IF Judged THEN ~cut /\ Unjudged(req, nreg, FALSE, r, v, w)
+                ELSE CLOSE = "gist" /\ ~cut /\ nreg /\ st = "owed" /\ About(r)
+          \* a noted telling of the record, cut after its audio began (#231). A failure's:
+          \* a reply the judge found a telling, or could not judge
+          ct == cut /\ nreg /\ st = "owed" /\ g # "nothing" /\ ~Mut("cutsUncounted")
+                /\ IF Judged THEN Told(req, w) \/ Unjudged(req, nreg, TRUE, r, v, w)
+                   ELSE /\ say \in {"tell", "part"}
+                        \* failNotAbout: a failure's telling by any reply but its run is not one
+                        /\ (req \in Runs \/ OUTCOME # "failure" \/ ~Mut("failNotAbout"))
+          \* the cut tellings before this one, and for a failure the unjudged replies too
+          n1 == IF Judged THEN Unproven(FALSE) ELSE cuts
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
          /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close"
-                   ELSE IF ct /\ cuts >= 1 THEN "drop" ELSE fed
+                   ELSE IF ct /\ n1 >= 1 THEN "drop" ELSE fed
          /\ cuts' = IF ct THEN (IF cuts < 2 THEN cuts + 1 ELSE 2) ELSE IF mk THEN 1 ELSE cuts
          /\ uncut' = u
          /\ told' = IF ab THEN (IF told < 2 THEN told + 1 ELSE 2) ELSE told
-         /\ part1' = IF ab /\ told = 0 THEN r # "all" ELSE part1
-         /\ hacc' = (hacc \/ (CLOSE = "gist" /\ nreg /\ st = "owed" /\ r = "all"))
+         /\ part1' = IF ab /\ told = 0 /\ ~Judged THEN r # "all" ELSE part1
+         \* A failure's: only a telling's words join what was heard of it (owed.Owed._apply)
+         /\ hacc' = (hacc \/ (CLOSE = "gist" /\ nreg /\ st = "owed" /\ r = "all"
+                              /\ (~Judged \/ (cut /\ Told(req, w)))))
          /\ missed' = (missed \/ arm
                        \/ (REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed" /\ ~c))
          /\ got' = g
@@ -577,6 +670,9 @@ Ask(k) ==
 \* is still to be RENDERED (their turn is open, or committed and not yet asked): that
 \* request carries the note, and the run would speak over or before it. A caller request
 \* already rendered (in flight without the note) does not stop the run: it waits behind.
+\* Nor is the run asked while the caller's "wait" stands (`cwait`, Hold): nothing is asked
+\* and nothing armed, and their next turn arms the re-offer and carries the note.
+\* holdLandRuns: it is asked.
 \* A consult OpenClaw CANCELLED (#230: the caller called it off) lands no record
 \* (Owed._cancelled): that is a behaviour in which Land never fires, which Spec already
 \* has (Land is not fair), so it needs no action of its own.
@@ -586,9 +682,11 @@ Land ==
     \* The rewrite: over the placeholder if it is in; else held for it (Placed).
     /\ tr' = IF tr = "ph" THEN "out" ELSE tr
     /\ UNCHANGED staleRes
-    /\ IF turn \/ q = "caller"
-         THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
-         ELSE Ask("run") /\ UNCHANGED missed
+    /\ IF cwait /\ ~Mut("holdLandRuns")
+         THEN UNCHANGED <<missed, rloc, rk, hPost, displaced>>
+         ELSE IF turn \/ q = "caller"
+           THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
+           ELSE Ask("run") /\ UNCHANGED missed
     /\ UNCHANGED <<fed, uncut, reoffers, told, part1, hacc, cuts, dw, due, dck, heard, decl, repeat, line,
                    q, tres, tend, mark, gtool, reply, ended, runUnder, runMid, staleNote, noNote,
                    staleHeard, relook, retell, got, tellings, staleDecl>>
@@ -724,8 +822,8 @@ GateQuiet ==
     /\ ~ended /\ pend /\ ~vad /\ ~turn
     /\ pend' = FALSE
     /\ IF hPost THEN hPost' = FALSE /\ q' = "post" ELSE UNCHANGED <<hPost, q>>
-    /\ UNCHANGED <<rec, heard, decl, repeat, vad, turn, speech, rloc, rk, tres, tend, mark, gtool,
-                   reply, ended, mons, ctx>>
+    /\ UNCHANGED <<rec, heard, decl, repeat, vad, turn, speech, cwait, rloc, rk, tres, tend, mark,
+                   gtool, reply, ended, mons, ctx>>
 
 \* A sync tool's result lands and the assistant aggregator pushes the answer UP
 \* (_maybe_push_context_after_function_result): held while speech is pending, else asked.
@@ -819,7 +917,7 @@ Say ==
          /\ tellings' = IF noted /\ rst = "owed" /\ s \in {"tell", "part"}
                           THEN (IF tellings < 4 THEN tellings + 1 ELSE 4) ELSE tellings
          /\ IF s \in {"silent", "stay", "tool"}
-              THEN /\ Finish(FALSE, "nothing", FALSE, FALSE)
+              THEN /\ Finish(FALSE, "nothing", FALSE, FALSE, "skip")
                    /\ tres' = (s = "tool") /\ mark' = (s = "tool")
               ELSE /\ say' = s /\ ph' = "play"
                    /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
@@ -832,7 +930,8 @@ Say ==
 \* gate here with its call still out (tend).
 Played ==
     /\ ~ended /\ ph = "play"
-    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") : Finish(FALSE, g, FALSE, FALSE)
+    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") :
+         Finish(FALSE, g, FALSE, FALSE, "skip")
     /\ tend' = (tres /\ say = "texttool")
     /\ UNCHANGED <<st, reoffers, dw, due, dck, decl, repeat, line, q, hPost, rloc, rk, tres, mark, gtool,
                    ended, runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook,
@@ -844,21 +943,23 @@ Played ==
 VadStart ==
     /\ ~ended /\ ~vad /\ speech < MaxSpeech
     /\ vad' = TRUE /\ pend' = TRUE /\ speech' = speech + 1
-    /\ UNCHANGED <<rec, heard, decl, repeat, turn, door, reply, ended, mons, ctx>>
+    /\ UNCHANGED <<rec, heard, decl, repeat, turn, cwait, door, reply, ended, mons, ctx>>
 
 VadStop ==
     /\ ~ended /\ vad
     /\ vad' = FALSE
-    /\ UNCHANGED <<rec, heard, decl, repeat, pend, turn, speech, door, reply, ended, mons, ctx>>
+    /\ UNCHANGED <<rec, heard, decl, repeat, pend, turn, speech, cwait, door, reply, ended, mons,
+                   ctx>>
 
 \* Their words start a turn: the InterruptionFrame. The reply in flight is cut (what the
 \* caller heard of it is charted at the cut), the gate drops what it holds -- a held
 \* post-tool answer (the turn's commit reads the result) and the run (an attempt: the
 \* turn carries the note, §4) -- the reset drops anything queued at the LLM, and a sync
-\* tool call is cancelled. A caller turn after the answer landed arms the re-offer.
+\* tool call is cancelled. A caller turn after the answer landed arms the re-offer, and
+\* ends a "wait" an earlier turn asked for (`cwait`).
 TurnStart ==
     /\ ~ended /\ pend /\ ~turn
-    /\ turn' = TRUE /\ pend' = FALSE
+    /\ turn' = TRUE /\ pend' = FALSE /\ cwait' = FALSE
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
     /\ tend' = FALSE /\ gtool' = FALSE  \* the cancel; a queued in-progress frame stays (mark)
     \* What they say as they cut a telling of the owed record (#231): they want the rest, or
@@ -866,16 +967,20 @@ TurnStart ==
     \* there (Decline). A turn that cut no telling leaves an earlier turn's words to be read.
     \* ORIGIN "cut": the cut of the first reply's telling of the sync result makes the record
     \* (unless the judge found it all heard -- or OWES), its first cut telling.
+    \* A failure's telling has their words read only if the judge found it one (`w`, Told):
+    \* of a reply it could not judge, or judged OWED, nothing is read, and a check an
+    \* earlier cut left due stays as it was.
     /\ IF req # "none"
-         THEN \E g \in CutGot(say, ph) :
+         THEN \E g \in CutGot(say, ph) : \E w \in WholeVerdicts(say, g) :
                 LET tl == ph = "play" /\ say \in {"tell", "part"}
                     mk == ORIGIN = "cut" /\ st = "none" /\ got = "none" /\ tl
                           /\ req \in {"caller", "post"} /\ (g # "all" \/ OWES)
-                IN /\ Finish(TRUE, g, st = "owed" \/ mk, mk)
+                    rd == ~Judged \/ Told(req, w)
+                IN /\ Finish(TRUE, g, st = "owed" \/ mk, mk, w)
                    /\ st' = IF mk THEN "owed" ELSE st
-                   /\ IF (tl /\ nreg /\ st = "owed") \/ mk
+                   /\ IF ((tl /\ nreg /\ st = "owed") \/ mk) /\ (rd \/ ~due)
                         THEN /\ dw' \in {"want", "decline"}
-                             /\ due' = ~(Mut("noDecline") \/ (mk /\ Mut("cutRecordUnread")))
+                             /\ due' = (rd /\ ~(Mut("noDecline") \/ (mk /\ Mut("cutRecordUnread"))))
                         ELSE UNCHANGED <<dw, due>>
          ELSE /\ missed' = (missed \/ st = "owed")
               /\ UNCHANGED <<st, dw, due, reply, heard, fed, uncut, told, part1, hacc, cuts, got>>
@@ -899,7 +1004,24 @@ Commit ==
          \* words nobody will read: their meaning is in `decl` now
          /\ dw' = IF words /\ ~due THEN "none" ELSE dw
     /\ UNCHANGED <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, due, heard, repeat,
-                   vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons, ctx>>
+                   vad, speech, cwait, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons,
+                   ctx>>
+
+\* The turn's words are only a stop ("Okay, wait."), and its commit is HELD
+\* (barge_pause.PauseAwareMinWordsStrategy.hold_bare_stop, through
+\* endpointing.CutReplyFence.holds): nothing goes into the context and nothing is asked.
+\* They asked the box to wait (owed.Owed.caller_waits): the re-offer this turn's start
+\* armed is disarmed, and until their next turn nothing arms it and no run is asked
+\* (Land). The record stays owed. A decline check the cut made due reads their next
+\* words, not these: `dw` and `due` stay, as an empty final leaves them. Whether a turn is
+\* only a stop is the caller's: never forced (not in FairSpec; Commit, which is, ends any
+\* turn this does not). holdArmed: the re-offer stays armed.
+Hold ==
+    /\ ~ended /\ turn /\ ~vad
+    /\ turn' = FALSE /\ pend' = FALSE /\ cwait' = TRUE
+    /\ missed' = (missed /\ Mut("holdArmed"))
+    /\ UNCHANGED <<st, fed, uncut, reoffers, told, part1, hacc, cuts, dw, due, dck, heard, decl,
+                   repeat, vad, speech, door, reply, ended, mons, ctx>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
 \* the liveness property, never forced. A consult still running ends with it (#122,
@@ -914,7 +1036,7 @@ Next ==
     \/ Land \/ Place \/ Placed \/ Settle \/ Decline \/ Lull
     \/ RunGo \/ Cap \/ GateQuiet \/ ToolResult \/ Mark
     \/ Issue \/ Say \/ Played
-    \/ VadStart \/ VadStop \/ TurnStart \/ Commit \/ SessionEnd
+    \/ VadStart \/ VadStop \/ TurnStart \/ Commit \/ Hold \/ SessionEnd
 
 Spec == Init /\ [][Next]_vars
 
@@ -923,7 +1045,8 @@ Spec == Init /\ [][Next]_vars
 \* lets a waiting run go once its window is open, a release timer fires. So does the
 \* caller's VAD stop and commit (nobody talks forever: MaxSpeech bounds them anyway).
 \* `Lull` is time passing on a quiet line. NOT fair: the consult landing, the caller
-\* starting to speak or to take a turn, the hold cap, the session ending.
+\* starting to speak or to take a turn, a turn being only a stop (Hold), the hold cap,
+\* the session ending.
 FairSpec ==
     /\ Spec
     /\ WF_vars(Settle) /\ WF_vars(Decline) /\ WF_vars(Lull) /\ WF_vars(RunGo) /\ WF_vars(GateQuiet)
@@ -992,9 +1115,25 @@ BoundedTellings == tellings <= 3
 \* those results yet", for a lookup that had failed).
 NoStaleResult == ~staleRes
 
+\* While the caller's "wait" stands (their last turn was only a stop, held), the brain says
+\* nothing of its own: no run of ours waits at the door or goes.
+QuietWhileWaiting == cwait => (rloc = "none" /\ req \notin Runs)
+
+\* A caller's turn arms the re-offer of the record it finds owed -- the turn after a held
+\* one too: a "wait" never leaves a record that their speaking again cannot get told.
+TurnRearms == (turn /\ st = "owed") => missed
+
 \* Liveness: an owed answer is heard, or the session ends, or the brain has spent its one
 \* re-offer (a terminal for UNPROMPTED speech only: the note goes on rendering, so the
-\* caller who asks gets it).
+\* caller who asks gets it) -- or the caller asked the box to wait and has not spoken
+\* since. From every owed state: once they speak again the wait is over, and it must
+\* resolve from there.
+OwedResolvesOrWaits ==
+    (st = "owed") ~> (st \in {"closed", "declined", "dropped"} \/ ended \/ reoffers > 0 \/ cwait)
+
+\* The liveness claimed before the held turn was in the model: "without assuming the
+\* caller ever speaks". It no longer holds, by design (ow_hold_unconditional): after
+\* "Okay, wait." an owed record stays untold for as long as they say nothing.
 OwedResolves == (st = "owed") ~> (st \in {"closed", "declined", "dropped"} \/ ended \/ reoffers > 0)
 
 TypeOK ==
@@ -1006,6 +1145,7 @@ TypeOK ==
     /\ told \in 0..2 /\ part1 \in BOOLEAN /\ hacc \in BOOLEAN /\ retell \in 0..2
     /\ heard \in BOOLEAN /\ repeat \in BOOLEAN
     /\ vad \in BOOLEAN /\ pend \in BOOLEAN /\ turn \in BOOLEAN /\ speech \in 0..MaxSpeech
+    /\ cwait \in BOOLEAN /\ (cwait => ~turn)
     /\ q \in {"none", "caller", "post"} /\ hPost \in BOOLEAN
     /\ rloc \in {"none", "wait"} /\ rk \in {"none", "run", "reoffer"} /\ tres \in BOOLEAN
     /\ tend \in BOOLEAN /\ (tend => tres)
@@ -1030,7 +1170,8 @@ TypeOK ==
                       "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
                       "declineWrong", "cutsUncounted", "cutRecordUnread",
-                      "failNotAbout", "rewriteOnce", "noRenderPlace"}
+                      "failNotAbout", "rewriteOnce", "noRenderPlace", "nvCutFree",
+                      "splitCount", "holdArmed", "holdLandRuns"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about", "judge"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
     /\ tr \in {"none", "ph", "out"} /\ staleRes \in BOOLEAN
