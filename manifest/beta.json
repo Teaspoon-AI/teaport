@@ -2,6 +2,14 @@
   "version": "0.0.0-beta.0",
   "channel": "beta",
   "_note": "Beta channel manifest — same shape as stable.json. Placeholder values until the first beta is cut.",
+  "access": {
+    "_note": "The engine license gate (worker/: the download gate Worker). install.sh records each acceptance of engine.eula with api (POST <api>/accept; a later run, POST <api>/token) and sends the token it returns with every download whose URL starts with one of gated: the engine's files and its models, which live in a private bucket only the Worker reads. Everything else here downloads without one: the license text, the brain package, and the engine's THIRD_PARTY_NOTICES.txt (under dl/notices/, public on purpose). manifest/check.py downloads the gated files with DL_CHECK_TOKEN.",
+    "api": "https://get.teaspoon.tech/api",
+    "gated": [
+      "https://get.teaspoon.tech/dl/engine/",
+      "https://get.teaspoon.tech/dl/models/"
+    ]
+  },
   "engine": {
     "release": "TODO",
     "eula": {
@@ -27,7 +35,7 @@
     },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from. Carries the MIT/BSD/Apache-2.0 attributions for the engine's third-party components. install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-THIRD_PARTY_NOTICES.txt",
+      "url": "https://get.teaspoon.tech/dl/notices/teaport-engine-TODO-THIRD_PARTY_NOTICES.txt",
       "sha256": "TODO"
     }
   },

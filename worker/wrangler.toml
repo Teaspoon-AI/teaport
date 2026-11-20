@@ -1,0 +1,46 @@
+# teaport download gate (src/index.js). Deployed by hand from worker/, not by CI:
+#
+#   npx wrangler d1 create teaport-gate            # once: put its id in database_id below
+#   npx wrangler d1 migrations apply teaport-gate --remote
+#   npx wrangler secret put TOKEN_KEY              # once: 32+ random bytes, e.g. openssl rand -base64 48
+#   npx wrangler secret put CHECK_TOKEN            # once: the same value as the repo's DL_CHECK_TOKEN secret
+#   npx wrangler deploy
+#
+# The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated
+# download paths only; everything else there is still the public bucket teaport-get.
+name = "teaport-download-gate"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = false
+preview_urls = false
+
+routes = [
+  { pattern = "get.teaspoon.tech/api/*", zone_name = "teaspoon.tech" },
+  { pattern = "get.teaspoon.tech/dl/engine/*", zone_name = "teaspoon.tech" },
+  { pattern = "get.teaspoon.tech/dl/models/*", zone_name = "teaspoon.tech" },
+]
+
+# The gated files: private, no public URL. Only this Worker reads it.
+[[r2_buckets]]
+binding = "DIST"
+bucket_name = "teaport-engine-dist"
+
+# The public bucket, read for manifest/<channel>.json: which license is current.
+[[r2_buckets]]
+binding = "PUBLIC"
+bucket_name = "teaport-get"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "teaport-gate"
+database_id = "TODO"
+migrations_dir = "migrations"
+
+# /api/accept and /api/token: 20 requests a minute per IP address.
+[[ratelimits]]
+name = "ACCEPT_LIMIT"
+namespace_id = "4301"
+simple = { limit = 20, period = 60 }
+
+[observability]
+enabled = true

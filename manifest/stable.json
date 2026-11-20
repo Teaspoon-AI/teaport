@@ -2,6 +2,14 @@
   "version": "0.0.0",
   "channel": "stable",
   "_note": "Release manifest \u2014 single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from get.teaspoon.tech (no HF, no binaries repo). Placeholder values until the first release is cut.",
+  "access": {
+    "_note": "The engine license gate (worker/: the download gate Worker). install.sh records each acceptance of engine.eula with api (POST <api>/accept; a later run, POST <api>/token) and sends the token it returns with every download whose URL starts with one of gated: the engine's files and its models, which live in a private bucket only the Worker reads. Everything else here downloads without one: the license text, the brain package, and the engine's THIRD_PARTY_NOTICES.txt (under dl/notices/, public on purpose). manifest/check.py downloads the gated files with DL_CHECK_TOKEN.",
+    "api": "https://get.teaspoon.tech/api",
+    "gated": [
+      "https://get.teaspoon.tech/dl/engine/",
+      "https://get.teaspoon.tech/dl/models/"
+    ]
+  },
   "engine": {
     "release": "1.6",
     "eula": {
@@ -27,7 +35,7 @@
     },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from (teagram-engine `make -C engine check-third-party` guarantees it is current there). Carries the MIT/BSD/Apache-2.0 attributions \u2014 including the \u00a74(b) modification statements \u2014 for the engine's third-party components (misaki, Marlin, Voxtral, Kokoro, civetweb, fvad, ggml, \u2026). install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt",
+      "url": "https://get.teaspoon.tech/dl/notices/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt",
       "sha256": "84b6a21a5324ed991a057bc2cce8140c9762f28289fcc814e236b05d1a7ede76"
     }
   },

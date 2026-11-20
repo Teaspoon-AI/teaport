@@ -18,6 +18,12 @@
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
 #     without it, or an npm registry that does not answer, fails the check.
+#   - access.gated (the engine license gate's download prefixes) and access.api are
+#     https URLs on the download host. A gated artifact is fetched with DL_CHECK_TOKEN (the
+#     download gate Worker's CHECK_TOKEN) and its sha256 compared; without the token (a
+#     pull request's run) it must refuse an anonymous download (HTTP 401), which is all
+#     that is checked of it. One served without a token means the gate is not in front of
+#     it: an error either way.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -112,13 +118,16 @@ def repos(node, path=""):
                 yield from repos(value, f"{path}.{key}" if path else key)
 
 
-def fetch(url, digest):
-    """GET url, hashing the body into digest (None: just open it). Retries a failed
-    transfer from the start, as a fresh digest."""
+def fetch(url, digest, token=None):
+    """GET url, hashing the body into digest (None: just open it), with a download token
+    when given. Retries a failed transfer from the start, as a fresh digest."""
+    headers = {"User-Agent": "teaport-manifest-check"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     for attempt in range(1, ATTEMPTS + 1):
         d = digest.copy() if digest is not None else None
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 while d is not None and (chunk := resp.read(CHUNK)):
                     d.update(chunk)
@@ -131,6 +140,41 @@ def fetch(url, digest):
             if attempt == ATTEMPTS:
                 raise
         time.sleep(5 * attempt)
+
+
+def refused(url):
+    """None when url refuses an anonymous download (HTTP 401), as a gated artifact must;
+    else what it did."""
+    try:
+        fetch(url, None)
+    except urllib.error.HTTPError as e:
+        return None if e.code == 401 else f"HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001 -- no answer at all
+        return str(e)
+    return "served without a download token: the license gate is not in front of it"
+
+
+def gate(manifest):
+    """(gated URL prefixes, problems) of the manifest's access entry."""
+    access = manifest.get("access")
+    if access is None:
+        return [], []
+    problems, prefixes = [], []
+    if not isinstance(access, dict):
+        return [], [f"access: not an object ({access!r})"]
+    api, gated = access.get("api"), access.get("gated")
+    if not isinstance(api, str) or urlparse(api).scheme != "https" or urlparse(api).hostname != HOST:
+        problems.append(f"access.api: not an https URL on {HOST} ({api!r})")
+    if not isinstance(gated, list) or not gated:
+        problems.append(f"access.gated: not a list of URL prefixes ({gated!r})")
+    else:
+        for p in gated:
+            if (not isinstance(p, str) or urlparse(p).scheme != "https" or urlparse(p).hostname != HOST
+                    or not p.endswith("/")):
+                problems.append(f"access.gated: not an https URL prefix on {HOST} ending in / ({p!r})")
+            else:
+                prefixes.append(p)
+    return prefixes, problems
 
 
 def resolves(repo, tag):
@@ -159,6 +203,8 @@ def check(manifest_path, placeholders_ok):
     with open(manifest_path) as f:
         manifest = json.load(f)
     problems, checked = [], 0
+    prefixes, problems = gate(manifest)
+    token = os.environ.get("DL_CHECK_TOKEN", "")
 
     def placeholder(where, value):
         if not placeholders_ok:
@@ -185,8 +231,18 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
+        if any(url.startswith(p) for p in prefixes) and not token:
+            why = refused(url)
+            if why:
+                problems.append(f"{where}: {url} -> {why}")
+            else:
+                checked += 1
+                print(f"ok {where} (gated: refused without a token; its contents are checked "
+                      "with DL_CHECK_TOKEN)")
+            continue
         try:
-            digest = fetch(url, hashlib.sha256() if sha else None)
+            digest = fetch(url, hashlib.sha256() if sha else None,
+                           token if any(url.startswith(p) for p in prefixes) else None)
         except Exception as e:  # HTTPError, URLError, timeouts: all mean "not published"
             problems.append(f"{where}: {url} -> {e}")
             continue

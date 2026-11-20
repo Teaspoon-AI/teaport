@@ -20,6 +20,12 @@ name: publish
 #   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  an R2 API token with write access to the
 #                                           teaport-get bucket
 #   R2_ENDPOINT                             https://<account id>.r2.cloudflarestorage.com
+#
+# The engine's files and models are gated (manifest access.gated: the download gate Worker
+# in worker/ serves them from a private bucket, only with a token). The check downloads them
+# with DL_CHECK_TOKEN, a repository secret equal to the Worker's CHECK_TOKEN, on every run
+# but a pull request's; a pull request's run checks only that each refuses a download
+# without a token.
 
 on:
   push:
@@ -60,6 +66,8 @@ jobs:
         run: bash -n install-bootstrap.sh
       - name: The manifests name everything install.sh needs, published as named
         # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
+        env:
+          DL_CHECK_TOKEN: ${{ github.event_name != 'pull_request' && secrets.DL_CHECK_TOKEN || '' }}
         run: |
           python3 manifest/check.py manifest/stable.json
           python3 manifest/check.py --placeholders-ok manifest/beta.json
