@@ -75,6 +75,8 @@
 #                          for nobody to be talking to the box (default 0: no wait; set by
 #                          teaport update's teaport-update.service)
 #   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
+#   TEAPORT_MEMORY_EMBED_MODEL    the embedding model a host OpenClaw's memory search gets on
+#                          OpenRouter, where it has no provider yet (default baai/bge-m3)
 #   TEAPORT_HOST           the front door's name (default teaport.local, or teaport-<id>.local
 #                          when another box already answers to teaport.local)
 #   TEAPORT_TLS_CERT / TEAPORT_TLS_KEY  a certificate (full chain, PEM) and key for that name,
@@ -1943,6 +1945,95 @@ add_docs_to_openclaw_wiki() {
     return 0
   fi
   OPENCLAW="$OPENCLAW" "$DOCS_WIKI_SYNC" --docs "$TEAPORT_DOCS_DIR" || warn "the teaport docs were not written into OpenClaw's memory wiki ($DOCS_WIKI_SYNC)"
+}
+
+# Memory embeddings for a host OpenClaw: semantic memory_search (paraphrases, other languages)
+# on top of the keyword index. bge-m3 on OpenRouter: multilingual, 1024 dims, $0.01 per
+# million tokens; a box's whole memory is cents to index. Set only where the owner chose no
+# provider (memory.search.provider unset), so an explicit choice, "none" included, stays.
+# A remote embedding provider fails closed: while OpenRouter is unreachable or out of credit,
+# memory_search errors instead of falling back to keyword search. On a box whose voice and
+# agent already run on OpenRouter that is the same outage, which is why the key comes from
+# there, never from anywhere else.
+MEMORY_EMBED_MODEL="${TEAPORT_MEMORY_EMBED_MODEL:-baai/bge-m3}"
+
+# write_memory_embed_patch OUT PROVIDERS LLM_URL KEYFILE — the memory.search patch, from what
+# is there: PROVIDERS is OpenClaw's models.providers (`config get --json`, keys redacted; ""
+# when unset), LLM_URL the brain's endpoint, KEYFILE the brain's key. An OpenClaw provider
+# on openrouter.ai is used by its id, so OpenClaw resolves its own key (a literal, a profile);
+# else, when the brain's endpoint is OpenRouter, an openai-compatible entry with the brain's
+# key. Exits 3, writing nothing, when there is no OpenRouter to use. The patch is written
+# mode 600: it can hold a key.
+write_memory_embed_patch() {
+  ( umask 077; python3 -I - "$@" "$MEMORY_EMBED_MODEL" <<'PY'
+import json, sys, urllib.parse
+out, providers, llm_url, keyfile, model = sys.argv[1:6]
+def openrouter(url):
+    host = urllib.parse.urlsplit(url or "").hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+try:
+    providers = json.loads(providers) if providers.strip() else {}
+except ValueError:
+    providers = {}
+search = None
+for pid, p in sorted((providers or {}).items()):
+    if isinstance(p, dict) and openrouter(p.get("baseUrl")):
+        search = {"provider": pid, "model": model}
+        break
+if search is None and openrouter(llm_url):
+    try:
+        key = open(keyfile).read().strip()
+    except OSError:
+        key = ""
+    if key:
+        search = {"provider": "openai-compatible", "model": model,
+                  "remote": {"baseUrl": "https://openrouter.ai/api/v1", "apiKey": key}}
+if search is None:
+    sys.exit(3)
+with open(out, "w") as f:
+    json.dump({"memory": {"search": search}}, f)
+print(search["provider"])
+PY
+  )
+}
+
+# phase_agent_memory — after phase_credentials (the brain's endpoint and key are settled
+# there): give a host OpenClaw's memory_search the embedding model, then rebuild its index
+# (a changed provider pauses vector search until then). An index that cannot be built takes
+# the setting back out. Any failure is said and the install goes on.
+phase_agent_memory() {
+  [ "$AGENT_MODE" = openclaw ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
+    return 0
+  fi
+  local cur
+  if cur="$("$OPENCLAW" config get memory.search.provider --json 2>/dev/null)"; then
+    log "OpenClaw memory search keeps its provider ($cur)"
+    return 0
+  fi
+  local providers patch rc=0 pid
+  providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
+  patch="$(mktemp)"
+  pid="$(write_memory_embed_patch "$patch" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key")" || rc=$?
+  if [ "$rc" = 3 ]; then
+    log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
+    rm -f "$patch"; return 0
+  elif [ "$rc" != 0 ] || ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
+    warn "OpenClaw memory search was not given an embedding model"
+    rm -f "$patch"; return 0
+  fi
+  rm -f "$patch"
+  log "OpenClaw memory search embeds with $MEMORY_EMBED_MODEL via $pid; rebuilding its index"
+  timeout 900 "$OPENCLAW" memory index --force >/dev/null && return 0
+  # The embedding provider fails closed: left set, a key or account that cannot embed would
+  # make every memory_search fail, not fall back. So it goes again, and memory search stays
+  # keyword-only until the next install finds the account working.
+  patch="$(mktemp)"
+  printf '{ "memory": { "search": { "provider": null, "model": null, "remote": null } } }\n' > "$patch"
+  "$OPENCLAW" config patch --file "$patch" >/dev/null || true
+  rm -f "$patch"
+  warn "OpenClaw's memory index could not be built with $MEMORY_EMBED_MODEL (the reason is above): memory search stays keyword-only. Check the OpenRouter key and credit, then run the installer again"
 }
 
 # The published plugin, when there is no local source to pack.
@@ -3827,6 +3918,7 @@ main() {
   install_arp_multihome
   phase_agent
   phase_credentials
+  phase_agent_memory   # needs the brain's LLM endpoint and key (phase_credentials)
   phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them
   phase_services
   phase_frontdoor
