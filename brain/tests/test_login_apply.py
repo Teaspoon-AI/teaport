@@ -732,6 +732,22 @@ def test_the_package_ships_the_helper_on_the_system_python():
     assert "/usr/lib/teaport/login_apply.py" in ci   # compiled on the installed package
 
 
+def test_nothing_that_installs_or_updates_touches_the_marker():
+    # The marker is provisioning's alone: no install, update, rollback or removal writes or
+    # removes it (an update that did would reopen, or close, the owner's login), and dpkg
+    # never owns it. The updater (#417) runs install.sh as root, and root_layout.py rebuilds
+    # /var/lib/teaport -- a sibling, not the marker's directory.
+    marker_dir = os.path.dirname(login_apply.PENDING_PATH)
+    assert marker_dir != "/var/lib/teaport" and not marker_dir.startswith("/var/lib/teaport/")
+    for rel in ("install.sh", "packaging/deb/update_apply.py", "packaging/install/root_layout.py",
+                "packaging/deb/postinst", "packaging/deb/postrm", "packaging/deb/sudoers-sync",
+                "packaging/nfpm.yaml", "cli/teaport"):
+        assert "teaport-owner" not in (ROOT / rel).read_text(), rel
+    # The rebuild names its own siblings only (<base>.new-*, <base>.pre-root-*).
+    layout = (ROOT / "packaging/install/root_layout.py").read_text()
+    assert 'base + ".new-"' in layout and 'base + ".pre-root-"' in layout
+
+
 def test_the_caller_waits_for_a_whole_create():
     # Every account-tool call of the longest path (counted in the helper, and held to its
     # real paths by test_the_longest_paths_make_the_counted_tool_calls), each to its limit:
