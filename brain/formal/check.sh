@@ -349,6 +349,14 @@ run UserTurn.tla ut_talk_judge_all                    "(expected: holds — the 
 run UserTurn.tla ut_talk_shipped_nostalereply         "(expected: FAILS NoStaleReply — Talk has no reply hold (TEAPORT_REPLY_HOLD_TALK off): the reply plays over the resumed user, with the pause on as without)"
 run UserTurn.tla ut_talk_shipped_nosplitturn          "(expected: FAILS NoSplitTurn — the same: nothing drops the unplayed reply, so the continuation is a second message)"
 echo
+echo "ReplyWait.tla — the reply's wait and the bare stop (#22, barge_pause.py): a wait only for a reply still to come, a stop held only for a turn that cut something"
+run ReplyWait.tla rw_shipped          "(expected: holds — AS SHIPPED where the reply hold is (SIP): the wait ends with whatever answers the turn's last asked commit; a stop is held only as the first words a turn has the model asked on, or for a reply the fence dropped)"
+run ReplyWait.tla rw_shipped_talk     "(expected: holds — AS SHIPPED without the fence's drop (Talk, the room): two replies of one turn may both stay)"
+run ReplyWait.tla rw_waitAtStop       "(expected: FAILS WaitOnlyInFlight — BEFORE THE 2026-11-19 AUDIT: awaited from every stop with words; a refused finalize re-applied after the reply began, or ended unspoken, opens the wait for a reply that is not coming)"
+run ReplyWait.tla rw_waitAtStop_held  "(expected: FAILS NoHeldWithNothingCut — the same, its cost: a turn begun in that wait reads as one that cut something, and a stop said to the finished reply is held, nothing asked)"
+run ReplyWait.tla rw_holdAnyCommit    "(expected: FAILS NoHeldWithNothingCut — BEFORE THE 2026-11-19 AUDIT: any commit of a turn that cut something may be held; a stop after words the model was already asked on, in one turn, is discarded and that reply plays on)"
+run ReplyWait.tla rw_noWait           "(expected: FAILS TailJoins — BEFORE #22: no wait; words nobody spoke cut the reply before a word of it plays)"
+echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85; the voice clock since #255)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"

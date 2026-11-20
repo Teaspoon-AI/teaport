@@ -3485,7 +3485,11 @@ on as well (`NoUnjudgedWords` too), and the witnesses (`ut_talk_pause_reach`, `u
 pause and the judging are reached without it. The room's own turn timing (`ROOM_*`, #159) and
 `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
-### Words nobody spoke (#22): not modelled yet
+### Words nobody spoke (#22): not modelled here
+
+(The wait itself -- when the strategy awaits a reply, and when it must not -- has its own
+model since the 2026-11-19 audit: `ReplyWait.tla`, below. What follows is why
+`UserTurn.tla` cannot hold it.)
 
 The model has no row for a final with no VAD span. `Interject` is any transcript,
 unguarded by `userSpeaking`, so the model does produce words after a `Commit` with no
@@ -3537,7 +3541,10 @@ pending. The ghost has to be threaded through every action, and this change was 
 where TLC could not be run (no Java runtime), so the row is left for the next change to
 `UserTurn.tla` rather than added unchecked.
 
-### A bare stop is held: not modelled
+### A bare stop is held: not modelled here
+
+(Which commits may be held is `ReplyWait.tla`'s `HOLD`, below, since the 2026-11-19
+audit; this section is the hold's place in this model's terms.)
 
 The model's `Commit` always appends the turn's words and asks the model (`inference`),
 and its words carry no content, so nothing in it says a turn was only "wait". As
@@ -3620,6 +3627,129 @@ the tests pin both (`test_bare_stop.py`, `test_zero_length_final.py`).
   journal does — nor how often the interim and the final disagree; it checks the design
   that stays right whenever they do.
 - **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each; with tool rounds (2026-10-15) 1.2k and 2.2k for `HOLD = "gate"` with words in time and without, 5.1k and 12k for the shipped pause, 63k for `ut_shipped_all` and 237k for `ut_shipped_timed`; with the in-transit call (#185) 2.3k and 5.3k, 11k and 32k, 172k and 632k; seconds each.
+
+## `ReplyWait.tla` — the reply's wait, and the bare stop (#22)
+
+`UserTurn.tla` says why it cannot hold these two (its words carry no content, and
+nothing in it records whether words had speech under them); until the 2026-11-19 audit
+they were the code's alone, unit-tested. The audit found the wait open for a reply that
+had already played, reproduced on main's code, and that is a state-machine fact, not a
+fact about words: this module is the strategy's state
+(`barge_pause.PauseAwareMinWordsStrategy`) against what it cannot see, the reply.
+
+**What a caller should get** (the module's header, and `barge_pause.py`'s WORDS NOBODY
+SPOKE and A BARE STOP):
+
+- Words the STT returns with no speech under them, after a turn was committed and before
+  its reply is audible, do not cut that reply before a word of it plays: they join the
+  committed turn (a tail).
+- That wait is for a reply still to come, and for nothing else. Once the reply has been
+  audible, or has ended with nothing to play, a word is a turn again.
+- "Okay, wait." stops the reply and asks nothing — but only a turn that cut something,
+  and only when the stop is all the turn said.
+
+**The model.** Ground truth is the turn (`turn`, `owed`: pipecat's refused finalize, as in
+`UserTurn.tla`), the words in hand (`agg`: none, a bare stop, anything else) and the
+reply (`pending` replies asked for and not yet audible, `playing`). The strategy keeps
+`sDue` (`_reply_due`), `sAudible`, `sHeard` (speech whose words have not come), `sCut`
+(`_turn_cut`, read at the turn's start) and, since this audit, `sAsked` / `sAnswered`.
+It sees the turn's start and stop, each commit (the cut fence asks it whether to hold
+one: `CutReplyFence.holds`), the bot's audio, and the reply ending unspoken
+(`UnspokenReplyTap`). Three constants: `WAIT` (when a stopped turn's reply is awaited),
+`HOLD` (which commits may be held), `FENCE` (a later commit of a turn drops that turn's
+unplayed reply: where the reply hold is).
+
+| action | code |
+|---|---|
+| `Say(c, sp)` | a transcript reaching `PauseAwareMinWordsStrategy`: its turn's own words, a tail (`_tail`, `_take_tail`), or a turn start (`handle_user_turn_started`, with the interruption) |
+| `Conclude`, `VadStop` | the stop strategy's inference and the refused finalize re-applied (`endpointing.keep_barge_in_reachable`); `CommitWords` is `CutReplyFence.hold_commits`' `_push_aggregation`: the drop (`Drops`), then `hold_bare_stop` (`Holds`) |
+| `Stopped` | `handle_user_turn_stopped`: `_reply_due` |
+| `BotStart`, `BotStop` | `_note` on `BotStartedSpeakingFrame` / `BotStoppedSpeakingFrame` |
+| `Unspoken` | `reply_unspoken` (`UnspokenReplyTap`) |
+| `Expire` | `REPLY_WAIT_S` in `_waiting` |
+
+**Properties.** `WaitOnlyInFlight`: the strategy never awaits a reply that is not still
+to come (`Waiting => pending > 0`). `NoHeldWithNothingCut`: a commit is held as a bare
+stop only if its turn cut something and the stop is all the turn has had the model asked
+on, or the fence dropped an unplayed reply for it. `TailJoins`: with one reply awaited,
+inside the bound, words nobody spoke are a tail (#22's own requirement; without it
+"never wait" would pass the other two).
+
+| row | design | result |
+|---|---|---|
+| `rw_shipped` | **as shipped**, `FENCE = TRUE` (SIP) | ✓ (1.6k states) |
+| `rw_shipped_talk` | **as shipped**, `FENCE = FALSE` (Talk, the room) | ✓ (1.5k) |
+| `rw_waitAtStop` | `WAIT = "stop"`: the code before the audit | ✗ `WaitOnlyInFlight` (6) |
+| `rw_waitAtStop_held` | the same, its cost | ✗ `NoHeldWithNothingCut` (8) |
+| `rw_holdAnyCommit` | `HOLD = "commit"`: the code before the audit | ✗ `NoHeldWithNothingCut` (8) |
+| `rw_noWait` | `WAIT = "never"`: before #22 | ✗ `TailJoins` |
+
+### What the model found
+
+**A turn can stop after its reply.** The stop strategy concluding while the VAD still
+hears the caller commits the turn — the model is asked — and pipecat refuses the
+finalize, so the turn stays open until their VAD stop. The code awaited the reply from
+that stop (`_reply_due = _turn_words`), whatever had happened to it since the commit.
+`rw_waitAtStop`, 6 states:
+
+```
+VadStart Say Conclude      committed while they talk on: asked, the turn still open
+Unspoken                   the reply ends with nothing to play (or: it plays)
+VadStop                    the finalize, re-applied: the wait opens for a reply that is over
+```
+
+The audit had found the variant where the reply plays (`BotStart` in `Unspoken`'s
+place; the wait then opens when the bot goes quiet); the model's shortest trace is the
+unspoken one, which the first sketch of the fix (mark the turn answered at the bot's
+audio only) missed and TLC rejected. In the wait that should not be, the caller's next
+word with no VAD start under it joins a turn already answered — and a turn begun in it
+reads as one that cut something (`_turn_cut` takes `_waiting()`), so a "Wait." said to
+the finished reply is held and nothing is asked (`rw_waitAtStop_held`; reproduced on
+main with a probe before the model was written).
+
+**A turn is not one commit.** `hold_bare_stop` read `_turn_cut` on every commit of a
+turn. A turn that cut a reply and committed "What about Tuesday?" while the caller
+talked on, then "Wait." at their VAD stop, had the second commit held: on Talk and the
+room nothing is dropped for it, so the stop was discarded and the reply to the question
+played on (`rw_holdAnyCommit`, 8 states). The header's own rule is whole turns: a stop
+that follows words the model was already asked on is not a bare-stop turn.
+
+### What was changed
+
+The cut fence already tells the strategy of every commit (`hold_bare_stop`). A commit it
+passes on sets `_turn_asked` and clears `_answered`; the bot becoming audible, or the
+reply ending unspoken, while the turn is open and asked sets `_answered`
+(`_answer`); `handle_user_turn_stopped` awaits a reply only when `_turn_words and not
+_answered`. `_answered` is of the turn's LATEST asked commit, so a second commit's reply
+(Talk, the room) is still awaited once the first is quiet. `hold_bare_stop` holds a
+commit only when the fence dropped a reply for it or `_turn_cut and not _turn_asked`
+(`_holds`). Regression: `test_zero_length_final.py`
+(`test_a_turn_that_stops_after_its_reply_began_leaves_no_wait`, `..._ended_unspoken_...`,
+the control `..._before_its_reply_still_waits_for_it`, and
+`test_a_second_commit_in_the_turn_is_awaited_whatever_answered_the_first`) and
+`test_bare_stop.py` (`test_a_stop_after_a_reply_that_played_under_an_open_turn_is_the_
+models`, `test_a_stop_after_words_the_model_was_asked_on_in_the_same_turn_is_not_held`,
+`test_a_held_stop_then_the_question_in_the_same_turn_is_asked`); five of the seven fail
+on the code before.
+
+### Known limits of this model
+
+- **The onset test** is not here: speech heard is the VAD's (`sHeard`). Where the reply
+  hold is, an onset counts as speech too (THE ONSET), which only makes fewer words a
+  tail.
+- **Audio that is no reply** — a filler, the box's own line — ends the wait in the code
+  as any audio does; the model's only audio is a reply's.
+- **A reply that ends unspoken where the tap does not see it** (a synthesis that fails):
+  `Expire`, the 10 s bound, is what ends that wait, in the code and here; for those
+  seconds the wait is open with nothing in flight, by design, and `Unspoken` is only the
+  ending the tap sees.
+- **Two replies of one turn** (`FENCE = FALSE`, a second commit that dropped nothing):
+  `TailJoins` asks nothing while both are alive (`multi`). The strategy hears "the bot is
+  audible", not which reply it is; `UserTurn.tla`'s `NoStaleReply` fails there already.
+- **Which stop closes which words** (`_closed`, by the STT's stop stamps) is one bit
+  here: words are the heard speech's, or nobody's.
+- The incoming-call question (`never_holds`), the barge-in pause and the judge are
+  `UserTurn.tla`'s and the tests'.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 
@@ -4485,7 +4615,7 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | premise | model(s) | check | source (1.8.1) | 1.8.1 (the previous pin) | 1.12 (main's pin) |
 |---|---|---|---|---|---|
 | A second user turn start is refused while one is open; a start calls each stop strategy's `handle_user_turn_started` (the late-start rule) | UserTurn (`StartTurn`; `retryOnQuiet`), SttCommit (`OpenTurn`) | `check_a_second_turn_start_is_refused_while_one_is_open`; the composite wedge: `test_barge_in_survives_an_open_turn.py::test_the_stock_controller_still_wedges` | `turns/user_turn_controller.py:332-351` | ✓ | ✓ |
-| A finalize is refused while the user speaks, leaving the turn open and the stop strategy un-reset; an accepted stop resets it (`handle_user_turn_stopped`) | UserTurn (`Finalize`, `EARLY_FINAL`), SttCommit (`TURNSTOP = "verdict"`) | `check_a_finalize_is_refused_while_the_user_speaks` | `turns/user_turn_controller.py:367-396` | ✓ | ✓ |
+| A finalize is refused while the user speaks, leaving the turn open and the stop strategy un-reset; an accepted stop resets it (`handle_user_turn_stopped`) | UserTurn (`Finalize`, `EARLY_FINAL`), SttCommit (`TURNSTOP = "verdict"`), ReplyWait (`Conclude`, `owed`: a turn that stops after its reply) | `check_a_finalize_is_refused_while_the_user_speaks` | `turns/user_turn_controller.py:367-396` | ✓ | ✓ |
 | The stop watchdog is an inactivity timer every VAD edge and transcript re-arms, fires only while the user is quiet, and its stop resets the strategies | UserTurn (`Arm`, `ForceStop`), SttCommit (`TurnStop`) | `check_the_stop_watchdog_is_starved_by_speech_and_resets_the_strategy` | `turns/user_turn_controller.py:266-296, 398-415` | ✓ | ✓ |
 | `MinWordsUserTurnStartStrategy` asks `min_words` while the bot speaks and one word otherwise | UserTurn (PAUSE: `OneWord`, `NoLostAnswer`) | `check_min_words_relaxes_to_one_word_only_while_the_bot_is_silent` | `turns/user_start/min_words_user_turn_start_strategy.py:77-111` | ✓ | ✓ |
 | A user turn start broadcasts an `InterruptionFrame` both ways (barge-in is a turn start) | UserTurn (`StartTurn`/`CutLands`); every `Interrupt` (Ledger, LedgerPlayout, Followup) | `check_a_turn_start_broadcasts_the_interruption` | `llm_response_universal.py:1275-1292`; `processors/frame_processor.py:1017-1022` | ✓ | ✓ |
