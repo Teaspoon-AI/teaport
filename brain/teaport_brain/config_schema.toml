@@ -2341,6 +2341,18 @@ tier = "installer"
 help = "Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody."
 source = "install.sh"
 
+[[settings]]
+name = "VOX_REQUIRE_WATERMARK"
+store = "engine_env"
+group = "engine_service"
+type = "enum"
+values = ["1"]
+default = "1"
+read = "startup"
+tier = "installer"
+help = "Refuse to serve if the AI watermark is not loaded (its weights missing from /opt/teaport/bin/watermark/, or VOX_TTS_WATERMARK=0), rather than speak without the machine-readable mark synthetic audio must carry. Engines before 1.7 ignore it."
+source = "install.sh"
+
 # ================================================================ teaport-sip.conf
 
 [[settings]]

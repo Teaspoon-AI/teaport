@@ -313,6 +313,7 @@
   <div class="page" id="page" hidden>
     <nav class="index adv" id="index" aria-label="Sections"></nav>
     <div>
+      <section class="account" id="login" hidden></section>
       <section class="account" id="account" hidden></section>
       <div class="adv-toggle" id="advtoggle" hidden><button class="btn-ghost" type="button" id="advbtn"><span class="btn-label" id="advlabel">Show advanced</span></button></div>
       <header class="intro adv" id="top">
@@ -809,6 +810,37 @@
         BASE && !a.trusted_cert ? h('p', { class: 'note' }, h('a', { href: '/settings/trust' }, T.trust)) : null));
     sec.hidden = false;
   };
+  // ---- the owner's login (#421): offered while one is pending on this box (a box that got
+  // online without the setup page), in the reader's language, until it exists. The
+  // passwords go to POST /api/login and nowhere else; the fields are cleared either way.
+  const renderLogin = async () => {
+    const sec = $('#login');
+    let l;
+    try { l = (await api('/api/login')).body; } catch (e) { sec.hidden = true; return; }
+    if (!l.offered) { sec.hidden = true; return; }
+    const T = l.text || {};
+    const field = (label) => h('input', { type: 'password', autocomplete: 'new-password', autocapitalize: 'none', spellcheck: 'false', 'aria-label': label, placeholder: label });
+    const pw = field(T.password), again = field(T.again);
+    const out = h('p', { class: 'acct-msg', 'aria-live': 'polite' });
+    const btn = h('button', { class: 'btn-primary', type: 'submit' }, T.create);
+    const form = h('form', { class: 'acct-form', onsubmit: async (e) => {
+      e.preventDefault();
+      if (!pw.value) { pw.focus(); return; }
+      btn.disabled = true; out.className = 'acct-msg'; out.textContent = T.creating;
+      try {
+        const res = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: pw.value, again: again.value }) });
+        // busy: another create of this login is under way (a second tap elsewhere), not a failure.
+        out.className = 'acct-msg ' + (res.body.ok ? 'ok' : res.body.why === 'busy' ? '' : 'err'); out.textContent = res.body.message || res.body.detail || '';
+        // Done, or another login got there first: the form goes, the message stays.
+        if (res.body.ok || res.body.why === 'exists' || res.body.why === 'not_offered') form.remove();
+      } catch (err) { out.className = 'acct-msg err'; out.textContent = err.message; }
+      finally { pw.value = ''; again.value = ''; btn.disabled = false; }
+    } }, pw, again, h('p', { class: 'note' }, T.rule), h('div', { class: 'acct-actions' }, btn));
+    sec.replaceChildren(
+      h('div', { class: 'group-head' }, h('h2', {}, T.title), h('p', { class: 'group-blurb' }, T.intro)),
+      h('div', { class: 'group-body' }, form, out));
+    sec.hidden = false;
+  };
   // Back from OpenRouter can bring this page back from the browser's cache, as it was
   // before the sign-in started: read the account step again (the code field, #282).
   window.addEventListener('pageshow', (e) => { if (e.persisted && data) renderAccount(); });
@@ -1044,6 +1076,7 @@
       $('#gate').hidden = true; $('#page').hidden = false; $('#jumpbar').hidden = false;
       render();
       renderWifi();
+      renderLogin();
       renderAccount();
       if (banner) renderBanners(banner);
     } catch (e) {

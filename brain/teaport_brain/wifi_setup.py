@@ -11,9 +11,15 @@
 #      time: twelve characters in three groups of four, "k7mq-x4tn-p9wr"
 #      (setup_password), the hyphens part of it -- what the screen shows is what is typed
 #   3. serve the setup page at 10.42.0.1 (wifi.AP_ADDRESS, pinned in the setup profile),
-#      and only there — never on the box's other networks: on PAGE_PORT, which the
-#      unit's iptables rule makes port 80 for that address (port 80 itself is the front
-#      door's — Caddy's http->https redirect). NM's dnsmasq answers every name with that
+#      on PAGE_PORT, which the unit's iptables rule makes port 80 for that address (port
+#      80 itself is the front door's — Caddy's http->https redirect). Only to the setup
+#      network: binding that address is not enough (Linux takes a packet for any of its
+#      addresses on any interface, so a host on the box's other networks can route
+#      10.42.0.1 to it), so the server answers only clients whose address is in the
+#      setup network's subnet (_Server.verify_request; a LAN host cannot complete a TCP
+#      handshake from a spoofed 10.42.0.x address). The DNAT rule has no -i: the setup
+#      network's interface is the code's choice at run time (NM.wifi_device), unknown to
+#      the root unit that adds the rule. NM's dnsmasq answers every name with that
 #      address (/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf, put there by
 #      the unit for as long as it runs), so a
 #      phone's captive-portal probe lands here and the OS opens the page by itself;
@@ -28,6 +34,21 @@
 #      key (ai_account.adopt): saved only if the provider accepts it. How that went rides
 #      in the "connected" status, and the voice says it (wifi_voice.py); a key never
 #      leaves this process but to the provider and the brain's key file.
+#      On a box provisioning marked for it, the page also has a "Create your login" step
+#      (#421): a password, typed twice, for the box's admin account (owner_login.py).
+#      Required while a login is pending (as on the DGX Spark): a step that could be
+#      skipped would leave the box's login to whoever makes it first, for as long as the
+#      owner has none (login_apply.py's known window). A box whose helper cannot answer
+#      shows no step, and still gets online, as does one whose create failed for the
+#      system's reason, not the password's (owner_login.SYSTEM): from then on in that run
+#      the step may be left empty. It needs no internet, so the login is made as
+#      the form arrives, through the root helper, before the join begins; a password the
+#      helper does not take, or a create that fails, brings the page back with the reason
+#      and no join. The form can now make the box's admin account, so the page answers
+#      only under its own names (Handler._own_host: a captive probe's name is sent there,
+#      which also defeats DNS rebinding -- NM's dnsmasq answers every name with the box),
+#      a post must come from the page itself (Handler._cross_site), and a second tap
+#      while the first is under way gets the first one's answer, not an error.
 #   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
@@ -67,12 +88,13 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import ai_account, conversation_log, display, i18n
+from teaport_brain import ai_account, conversation_log, display, i18n, owner_login
 from teaport_brain.i18n import N_
 from teaport_brain.settings import setting, state_dir
-from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
+from teaport_brain.wifi import AP_ADDRESS, AP_PREFIX, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
 # iptables DNAT rule while it runs (packaging/wifi-setup/wifi-setup-net names this port too).
@@ -81,6 +103,9 @@ PAGE_PORT = 7869
 # request that dawdles is dropped, and only so many are served at once.
 MAX_FORM_BYTES = 4096
 REQUEST_TIMEOUT_SECS = 10
+# How long a second tap waits for the first one's answer (a login being created) before
+# it says the login is still being created.
+POST_WAIT_SECS = 30
 MAX_CLIENTS = 32
 # How long the setup network's address may take to show on the device once NM says the
 # network is up (only a warning when it does not: the page is bound to it regardless).
@@ -257,7 +282,7 @@ PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="ut
 <h1>{heading}</h1>
 <p>{intro}</p>
 {error}
-<form method="post" action="/connect?lang={lang_q}">
+<form method="post" action="/connect?lang={lang_q}" onsubmit="this.querySelector('button[type=submit]').disabled=true">
 {networks}
 <label class="net"><input type="radio" name="ssid" value="" {other_checked}>
 <span>{other}</span></label>
@@ -265,6 +290,7 @@ PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="ut
 <label class="f" for="pw">{password}</label>
 <input type="password" id="pw" name="password" autocomplete="off" autocapitalize="none" spellcheck="false">
 <label class="show"><input type="checkbox" onclick="pw.type=this.checked?'text':'password'"> {show}</label>
+{login}
 {account}
 <button type="submit">{connect}</button>
 </form></main></body></html>"""
@@ -274,7 +300,7 @@ JOINING = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset=
 <style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
 <h1>{heading}</h1>
-<p>{body}</p></main></body></html>"""
+<p>{body}</p>{login}</main></body></html>"""
 
 
 def _lang_attr(t: i18n.T) -> str:
@@ -333,10 +359,28 @@ def render_account(t: i18n.T) -> str:
             '</details>')
 
 
+def render_login(t: i18n.T, required: bool = True) -> str:
+    """The "Create your login" step (#421): the password for the box's admin account,
+    typed twice. Required (the module comment says why) unless a create failed for the
+    system's reason in this run (`required` False: it can be left empty)."""
+    def say(key):
+        return html.escape(owner_login.say(t, owner_login.TEXT[key]))
+    field = ('<input type="password" id="{id}" name="{id}" autocomplete="new-password" '
+             'autocapitalize="none" spellcheck="false"'
+             + (f' required minlength="{owner_login.MIN_PASSWORD}">' if required else '>'))
+    return (f'<div class="login"><h2>{say("title")}</h2><p>{say("intro")}</p>'
+            f'<label class="f" for="login_password">{say("password")}</label>'
+            + field.format(id="login_password")
+            + f'<label class="f" for="login_again">{say("again")}</label>'
+            + field.format(id="login_again")
+            + f'<p class="hint">{say("rule")}</p></div>')
+
+
 def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
-                account: bool = False) -> str:
+                account: bool = False, login: bool = False, login_required: bool = True) -> str:
     """The page, in t's language. `error` is already in that language. `account`: the AI
-    account step is offered (the box's endpoint is OpenRouter's: main)."""
+    account step is offered (the box's endpoint is OpenRouter's: main). `login`: the
+    "Create your login" step is (a login is pending here: Setup.login_offered)."""
     t = t or i18n.get(i18n.SOURCE_LANG)
     rows = []
     for i, n in enumerate(networks):
@@ -361,6 +405,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None,
         password=html.escape(t._("Password")),
         show=html.escape(t._("Show password")),
         connect=html.escape(t._("Connect")),
+        login=render_login(t, login_required) if login else "",
         account=render_account(t) if account else "")
 
 
@@ -386,10 +431,13 @@ def _isolate(text: str, names: list[str]) -> str:
     return "".join(out) + html.escape(text[pos:])
 
 
-def render_joining(ssid: str, t: i18n.T) -> str:
+def render_joining(ssid: str, t: i18n.T, login: bool = False) -> str:
+    """`login`: the owner's login was just created with this form; the page says so."""
     strong = f"<strong><bdi>{html.escape(ssid)}</bdi></strong>"
+    ready = (f'<p>{html.escape(owner_login.say(t, owner_login.TEXT["created"]))}</p>'
+             if login else "")
     return JOINING.format(
-        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
+        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(), login=ready,
         title=html.escape(t._("Teaport is joining")),
         heading=html.escape(t._("Joining {network}…")).format(network=f"<bdi>{html.escape(ssid)}</bdi>"),
         body=html.escape(t._("Teaport is leaving this setup network now. Switch your phone "
@@ -402,6 +450,14 @@ def parse_key(body: bytes) -> str:
     """The AI account key from the posted form, stripped; "" for none."""
     form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
     return (form.get("ai_key") or [""])[0].strip()
+
+
+def parse_login(body: bytes) -> tuple[owner_login.Secret, owner_login.Secret]:
+    """The login step's two passwords from the posted form, as typed ("" for none), as
+    Secrets from here on (their repr hides them)."""
+    form = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
+    return (owner_login.Secret((form.get("login_password") or [""])[0]),
+            owner_login.Secret((form.get("login_again") or [""])[0]))
 
 
 def parse_form(body: bytes) -> tuple[str, str, bool, str]:
@@ -482,13 +538,23 @@ def _on_sigterm(signum, frame):
 
 class _Server(ThreadingHTTPServer):
     """The page's server: bound to one address that comes and goes (the setup network is
-    down while the box tries a join), with a cap on connections served at once."""
+    down while the box tries a join), answering only clients in that address's subnet
+    (the setup network's: AP_PREFIX), with a cap on connections served at once."""
 
     daemon_threads = True
 
     def __init__(self, address, handler):
         self._slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self._clients = ipaddress.ip_network(f"{address[0]}/{AP_PREFIX}", strict=False)
         super().__init__(address, handler)
+
+    def verify_request(self, request, client_address):
+        """Only a client on the setup network: another is dropped before a byte is read
+        (the module comment says why binding the address is not enough)."""
+        try:
+            return ipaddress.ip_address(client_address[0]) in self._clients
+        except ValueError:
+            return False
 
     def server_bind(self):
         # IP_FREEBIND (15 on Linux; not in the socket module): bind even while the
@@ -516,7 +582,8 @@ class Setup:
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
                  bind: str | None = None, screen: display.Screen | None = None,
-                 account: str | None = None, lang: i18n.T | None = None):
+                 account: str | None = None, lang: i18n.T | None = None,
+                 login: owner_login.Login | None = None):
         self.nm, self.status, self.port = nm, status, port
         self.screen = screen
         # The language of whoever reads the screen (_text): the voice's to begin with
@@ -528,6 +595,20 @@ class Setup:
         # offered (an OpenRouter endpoint: main); None, and the page has no such step.
         self.account = account
         self.key = ""  # the key posted with the last Wi-Fi choice (never logged)
+        # The owner's login (#421): asked once, as the run begins (_run), whether one is
+        # pending here; the page offers the step while it is. Only a create from this
+        # page changes that (and a login made elsewhere meanwhile is the helper's
+        # refusal, which takes the step away).
+        self.login = login
+        self.login_offered = False
+        # A create failed for the system's reason in this run: the step may be left empty.
+        self.login_skippable = False
+        # Held by the post that is creating the login or asking for the join: a second
+        # one (a second tap) meanwhile is answered as the first will be, never as an error.
+        self.posting = threading.Lock()
+        # The answer the last post that got through gave, for its second tap: a callable
+        # of the reader's language to the page (Handler.do_POST).
+        self.outcome = None
         # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
         # its profile), never 0.0.0.0 — the box's other networks must not reach a page
         # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -581,15 +662,43 @@ class Setup:
                 kept = i18n.chosen(cookie.group(1)) if cookie else None
                 return kept or i18n.for_accept_language(self.headers.get("Accept-Language")), []
 
+            def _own_host(self) -> bool:
+                """The request names the page by one of its own names (setup.names): the
+                setup address, its .local name, on any port. Not a captive probe's name
+                (captive.apple.com), nor one rebound to the box: NM's dnsmasq answers
+                every name with it, so a page from evil.example, rebound, would otherwise
+                be same-origin with this one."""
+                host = urllib.parse.urlsplit("//" + (self.headers.get("Host") or "").strip()).hostname
+                return (host or "").lower() in setup.names()
+
             def do_GET(self):
-                # Every path is the page: the captive-portal probes (Apple's
-                # hotspot-detect, Android's generate_204, Windows' connecttest) expect
-                # something else, so the phone shows this as a sign-in page.
+                # Every path is the page, under its own name: anything else (a captive
+                # probe's name, a rebound one) is sent there -- the captive portal's own
+                # redirect, which the phone follows into its sign-in sheet. The probes
+                # expect something else than the page, so the phone shows it as a sign-in.
+                if not self._own_host():
+                    return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 t, remember = self._t()
-                self._send(200, render_page(setup.networks, setup.error_text(t), t,
-                                            account=setup.account is not None), extra=remember)
+                self._send(200, setup.page(setup.error_text(t), t), extra=remember)
+
+            def _cross_site(self) -> bool:
+                """A post from another site's page: a phone on the setup network often keeps
+                its mobile data, and a tab there could post the form. The page's own posts
+                carry no Origin, one of its own names, or "null" (some captive browsers) --
+                which a sandboxed frame on any site sends too (old iOS), so "null" only with
+                a Sec-Fetch-Site that says the post is the page's own (same-origin, or none:
+                typed or followed by the user)."""
+                fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+                if fetch_site == "cross-site":
+                    return True
+                origin = (self.headers.get("Origin") or "").strip()
+                if not origin:
+                    return False
+                if origin == "null":
+                    return fetch_site not in ("same-origin", "none")
+                return (urllib.parse.urlsplit(origin).hostname or "").lower() not in setup.names()
 
             def do_POST(self):
                 raw = (self.headers.get("Content-Length") or "0").strip()
@@ -601,19 +710,87 @@ class Setup:
                     body = self.rfile.read(int(raw))
                 except OSError:  # the timeout, or the phone left
                     return
+                if not self._own_host() or self._cross_site():
+                    return self.send_error(403)
                 ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
+                if not setup.posting.acquire(blocking=False):
+                    # A second tap while the first is under way: the first one's answer,
+                    # once it has one -- a create can still fail, and then nothing joins.
+                    if not setup.posting.acquire(timeout=POST_WAIT_SECS):
+                        return self._send(200, setup.page(owner_login.say(t, owner_login.TEXT["creating"]), t),
+                                          extra=remember)
+                    try:
+                        outcome = setup.outcome
+                    finally:
+                        setup.posting.release()
+                    return self._send(200, outcome(t) if outcome else setup.page("", t), extra=remember)
+                try:
+                    if setup.request is not None:   # the join is already asked for
+                        return self._send(200, render_joining(setup.request[0], t), extra=remember)
+                    setup.outcome, join = self._answer(body, ssid, error)
+                    if join:   # asked for before the answer goes out; begun (wake) after it
+                        setup.key = parse_key(body) if setup.account is not None else ""
+                        setup.lang = t  # the screens from here on (_text)
+                        setup.request = (ssid, password, hidden)
+                    try:
+                        self._send(200, setup.outcome(t), extra=remember)
+                    finally:
+                        # Whether or not the answer reached the phone (it can have left
+                        # while the login was made): the join is asked for, so it begins,
+                        # or every later tap would hear "joining" and nothing would.
+                        if join:
+                            setup.wake.set()
+                finally:
+                    setup.posting.release()
+
+            def _answer(self, body: bytes, ssid: str, error: str):
+                """What this post comes to: (the page it answers with, a function of the
+                reader's language kept for its second tap; whether to join)."""
+                def page(said):
+                    return (lambda t: setup.page(said(t), t)), False
                 if error:
-                    return self._send(200, render_page(setup.networks, t._(error), t,
-                                                       account=setup.account is not None),
-                                      extra=remember)
-                self._send(200, render_joining(ssid, t), extra=remember)
-                setup.key = parse_key(body) if setup.account is not None else ""
-                setup.lang = t  # the screens from here on (_text)
-                setup.request = (ssid, password, hidden)
-                setup.wake.set()
+                    return page(lambda t: t._(error))
+                made = False
+                login_password, login_again = parse_login(body)
+                skipped = setup.login_skippable and not (login_password.reveal() or login_again.reveal())
+                if setup.login_offered and not skipped:   # required: empty is "too short"
+                    why = setup.create_login(login_password, login_again)
+                    if why:
+                        said = (owner_login.TEXT["skip"] if why in owner_login.SYSTEM
+                                else owner_login.WHY[why])
+                        return page(lambda t: owner_login.say(t, said))
+                    made = True
+                return (lambda t: render_joining(ssid, t, login=made)), True
 
         return Handler
+
+    def names(self) -> set[str]:
+        """The page's own host names: the setup address, the address it is bound to (a
+        test's 127.0.0.1), and the .local name avahi announces."""
+        names = {self.address.lower()}
+        if self.bind:
+            names.add(self.bind.lower())
+        if self.avahi_name:
+            names.add(f"{self.avahi_name}.local".lower())
+        return names
+
+    def page(self, error: str, t: i18n.T) -> str:
+        """The setup page as this run offers it, `error` (in t's language) on top."""
+        return render_page(self.networks, error, t, account=self.account is not None,
+                           login=self.login_offered, login_required=not self.login_skippable)
+
+    def create_login(self, password: owner_login.Secret, again: owner_login.Secret) -> str:
+        """The owner's login from the page's two passwords: "" once it exists, else the
+        WHY code. A login that already exists, or that is no longer pending, takes the step
+        off the page. Logged by outcome only: the password stays in this call."""
+        ok, why = self.login.create(password, again)
+        if ok or why in (owner_login.EXISTS, owner_login.NOT_OFFERED):
+            self.login_offered = False
+        if why in owner_login.SYSTEM:
+            self.login_skippable = True
+        log("the owner's login: " + ("created" if ok else f"not created ({why})"))
+        return why
 
     def serve(self) -> None:
         self.server = _Server((self.bind or self.address, self.port), self.handler())
@@ -761,6 +938,7 @@ class Setup:
 
     def _run(self, dev: str, ssid: str, password: str) -> int:
         self.status.set("scanning")
+        self.login_offered = self.login is not None and self.login.pending()
         self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
@@ -886,7 +1064,7 @@ def main(argv=None) -> int:
     setup = Setup(nm, status, port=args.port, minutes=args.minutes,
                   screen=display.Screen("wifi-setup"),
                   account=base_url if ai_account.is_openrouter(base_url) else None,
-                  lang=lang)
+                  lang=lang, login=owner_login.Login())
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 

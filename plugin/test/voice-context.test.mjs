@@ -240,14 +240,24 @@ test("index.js registers the route behind gateway auth and serves it from the SD
   for (const f of files) copyFileSync(join(here, f), join(dir, f));
   const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
   const routes = [];
+  const hooks = [];
+  let plugins;
   entry.register({
     registrationMode: "full",
     logger: { info: () => {}, warn: () => {} },
-    runtime: { version: "2026.10.5", config: { current: () => ({ agents: { entries: { voice: {} } } }) } },
+    runtime: { version: "2026.10.5", config: { current: () => ({ agents: { entries: { voice: {} } }, plugins }) } },
     registerRealtimeVoiceProvider: () => {},
     registerGatewayMethod: () => {},
     registerHttpRoute: (route) => routes.push(route),
+    on: (name, handler) => hooks.push([name, handler]),
   });
+  // The docs hint (docs-hint.js) rides on before_prompt_build, reading api.runtime's current
+  // config each turn: nothing without the docs in the wiki, the hint once the installer put them there.
+  assert.deepEqual(hooks.map(([name]) => name), ["before_prompt_build"]);
+  assert.equal(hooks[0][1](), undefined);
+  plugins = { entries: { "memory-wiki": { enabled: true }, "teaport-realtime": { config: { docsInWiki: true } } } };
+  assert.match(hooks[0][1]()?.appendSystemContext ?? "", /teaport documentation/);
+  plugins = undefined;
   assert.equal(routes.length, 1);
   const [route] = routes;
   assert.equal(route.path, "/teaport/voice-context");

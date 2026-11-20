@@ -821,3 +821,53 @@ msgstr "\\btradu\\w*|\\bin (?:inglese|italiano|spagnolo|francese|tedesco)\\b|\\b
 msgctxt "pattern"
 msgid "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
 msgstr "\\b(?:(?:andare|vai|va'?|vada|torni|tornare|torna) (?:già )?a (?:dormire|nanna|letto)|a dormire|a nanna|smettere di ascoltare|smetti di ascoltare|(?:sei|è) ancora svegli[oa]|ancora svegli[oa]|stai ancora ascoltando|(?:è|e) tutto|basta così|basta cosi|stai zitt[oa]|zitt[oa]|silenzio)\\b"
+
+# The owner's login (#421): the setup page's step and the Settings card (owner_login.py).
+msgid "Create your login"
+msgstr "Crea il tuo accesso"
+
+msgid "You'll use this to sign in to Teaport from a computer. Your username is {username}."
+msgstr "Ti servirà per accedere a Teaport da un computer. Il tuo nome utente è {username}."
+
+msgid "Choose a password"
+msgstr "Scegli una password"
+
+msgid "Type it again"
+msgstr "Scrivila di nuovo"
+
+msgid "Use at least {count} characters."
+msgstr "Usa almeno {count} caratteri."
+
+msgid "Create login"
+msgstr "Crea accesso"
+
+msgid "Creating your login…"
+msgstr "Creazione del tuo accesso…"
+
+msgid "Your login is ready. Sign in as {username} with the password you chose."
+msgstr "Il tuo accesso è pronto. Accedi come {username} con la password che hai scelto."
+
+msgid "The two passwords don't match."
+msgstr "Le due password non coincidono."
+
+msgid "Your password needs at least {count} characters."
+msgstr "La password deve avere almeno {count} caratteri."
+
+msgid "That password is too long."
+msgstr "Questa password è troppo lunga."
+
+msgid "Your password can't contain invisible or control characters."
+msgstr "La password non può contenere caratteri invisibili o di controllo."
+
+msgid "This Teaport already has a login."
+msgstr "Questo Teaport ha già un accesso."
+
+msgid "Creating a login isn't available on this Teaport."
+msgstr "Su questo Teaport non è possibile creare un accesso."
+
+msgid "Teaport couldn't create your login. Try again."
+msgstr "Teaport non è riuscito a creare il tuo accesso. Riprova."
+
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport non è riuscito a creare il tuo accesso. Puoi connetterti ora e crearlo più tardi nelle Impostazioni."
+

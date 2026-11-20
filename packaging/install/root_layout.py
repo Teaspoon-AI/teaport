@@ -18,7 +18,7 @@
 #     the run user and root only reads them, so a handle kept on one gains nothing), each
 #     taken only if it is a regular file reached without a symlink, and stripped of ACLs:
 #     the binary and its notices, and every file in the engine's data directories (bin/g2p,
-#     models/voxtral, models/kokoro), not only the ones this release names -- an engine
+#     bin/watermark, models/voxtral, models/kokoro), not only the ones this release names -- an engine
 #     reads more of its own there than an older installer knew (a dictionary per language);
 #   - the installed manifest, copied the same way (root reads it as data);
 #   - the brain package's tree, copied file by file from what dpkg lists: a regular file
@@ -53,14 +53,14 @@ import time
 
 MARK = ".root-layout"
 ENGINE = ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict", "bin/g2p/kokoro_pos.bin",
-          "THIRD_PARTY_NOTICES.txt", "models/voxtral/consolidated.safetensors",
-          "models/voxtral/tekken.json", "models/voxtral/params.json",
+          "bin/watermark/perth_implicit.v2.bin", "THIRD_PARTY_NOTICES.txt",
+          "models/voxtral/consolidated.safetensors", "models/voxtral/tekken.json", "models/voxtral/params.json",
           "models/kokoro/Kokoro_espeak_F16.gguf")
 # The engine's data directories: every regular file in them is the engine's, carried with
 # ENGINE (the dictionaries and models a later engine reads are not all named above). Not a
 # download in progress: install.sh's download() resumes a <file>.part, and one carried
 # over would put bytes the run user wrote into a file root installs.
-ENGINE_DIRS = ("bin/g2p", "models/voxtral", "models/kokoro")
+ENGINE_DIRS = ("bin/g2p", "bin/watermark", "models/voxtral", "models/kokoro")
 PARTIAL = ".part"
 COPIED = ("manifest.json",)
 # Names at the top of $PREFIX this rebuilds, or leaves behind on purpose; anything else
@@ -470,7 +470,7 @@ def _rebuild_prefix(prefix: str, package: str, stamp: str, owner) -> int:
                          if name not in MANAGED and not name.startswith(".")]
             finally:
                 os.close(old.fd)
-        for d in ("bin/g2p", "models/voxtral", "models/kokoro"):
+        for d in ENGINE_DIRS:
             _mkdirs(new, d + "/x", owner)
         _mark(new, owner, INCOMPLETE_TEXT if left else COMPLETE)
     except BaseException:

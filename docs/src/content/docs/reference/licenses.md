@@ -24,13 +24,13 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:65-70,106-120#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:94,602,947#228177a9; packaging/nfpm.yaml:65-70,106-121#873f7aec -->
+<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:96,605,985#d68294c9; packaging/nfpm.yaml:69-74,119-134#873f7aec -->
 
 ## See the licenses on the device
 
 The configuration page has an Open-source licenses link at the bottom. It opens a page with the notices the package installs, and the Python packages in the brain with each one's version and license. Select a package to read its license text. The page is `/settings/licenses` on the Settings site and `http://127.0.0.1:7861/licenses` on the device itself. Like the configuration page, it loads its data with the Settings session or the token.
 
-<!-- source: brain/teaport_brain/static/config.html:335#8731c6bc; brain/teaport_brain/config_ui.py:481-492#526a7abf; brain/teaport_brain/gateway_server.py:704#db147ffa; brain/teaport_brain/config_ui.py:100-116#6e4abba8 -->
+<!-- source: brain/teaport_brain/static/config.html:336#8731c6bc; brain/teaport_brain/config_ui.py:483-494#526a7abf; brain/teaport_brain/gateway_server.py:704#db147ffa; brain/teaport_brain/config_ui.py:102-118#6e4abba8 -->
 
 `teaport licenses` shows the same on the command line. See the [teaport licenses](/reference/cli/#teaport-licenses) reference.
 
@@ -38,7 +38,7 @@ The configuration page has an Open-source licenses link at the bottom. It opens 
 
 The engine is a separate component with its own license terms. The installer shows the engine license and asks you to accept it. `--accept-eula`, or `TEAPORT_ACCEPT_EULA=1`, accepts it without the prompt. The installer records the accepted version in `eula-accepted.json` in the state directory, `/var/lib/teaport` by default, and asks again only when the version changes.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:96,121,298-300,306#1d85658a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:98,123,300-302,308#1d85658a -->
 
 ## The LGPL libraries
 

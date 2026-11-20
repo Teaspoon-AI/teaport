@@ -36,7 +36,7 @@
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
-# THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
 # from the manifest's beside the live ones, and checks them as a full run does (ldd, and
 # cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
 # rollback (with any model it replaces), moves the new files in, renders
@@ -75,6 +75,8 @@
 #                          for nobody to be talking to the box (default 0: no wait; set by
 #                          teaport update's teaport-update.service)
 #   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
+#   TEAPORT_MEMORY_EMBED_MODEL    the embedding model a host OpenClaw's memory search gets on
+#                          OpenRouter, where it has no provider yet (default baai/bge-m3)
 #   TEAPORT_HOST           the front door's name (default teaport.local, or teaport-<id>.local
 #                          when another box already answers to teaport.local)
 #   TEAPORT_TLS_CERT / TEAPORT_TLS_KEY  a certificate (full chain, PEM) and key for that name,
@@ -555,9 +557,10 @@ setup_logs() {
 }
 
 # --- engine: staged, swapped in whole, one rollback away ---------------------------------
-# The engine is a binary and three files of its own release (the manifest's g2p_dict note:
+# The engine is a binary and the files of its own release (the manifest's g2p_dict note:
 # "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
-# from <exe_dir>/g2p/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# from <exe_dir>/g2p/, from 1.7 on the AI watermark's weights it reads from
+# <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
 # models go with it here too: a release that changes one changes what the binary loads.
 # phase_engine used to download each over the live one in turn, so a run that failed half
 # way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
@@ -599,7 +602,7 @@ ENGINE_STAGE="$PREFIX/engine.staged"
 ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
 ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
 ENGINE_KEEP=2
-ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
 ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
 ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
 ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
@@ -622,6 +625,21 @@ engine_fetch() {
   fi
   download "$url" "$dest" "$sha"
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
+}
+
+# engine_release_marks <release> — whether that engine release puts the AI watermark on its
+# speech, and so cannot be installed without engine.watermark: 1.7 on (the first release cut
+# from teagram-engine main@bd5974a or later). One that is not a dotted number (a
+# placeholder, "unknown", empty) counts as marking: the check fails closed.
+# manifest/check.py holds the same line (WATERMARK_FROM); keep the two in step.
+ENGINE_WATERMARK_FROM=1.7
+engine_release_marks() {
+  python3 -I - "$1" "$ENGINE_WATERMARK_FROM" <<'PY'
+import re, sys
+rel, first = sys.argv[1], sys.argv[2]
+num = lambda v: tuple(int(x) for x in v.split("."))
+sys.exit(0 if not re.fullmatch(r"[0-9]+(\.[0-9]+)*", rel) or num(rel) >= num(first) else 1)
+PY
 }
 
 # engine_describe <binary> — what the installed manifest says <binary> is. Sets
@@ -931,6 +949,26 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     engine_fetch "$pos_url" bin/g2p/kokoro_pos.bin "$pos_sha"
   fi
+  # The AI watermark's weights (perth_implicit.v2.bin: the embedder of Resemble AI's Perth
+  # implicit watermarker, MIT, converted by teagram-engine tools/wm_convert.py; attribution
+  # in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 every TTS output carries
+  # Perth's imperceptible watermark, the machine-readable mark EU AI Act Art. 50(2) asks of
+  # synthetic audio (teagram-engine #125). The engine probes
+  # <exe_dir>/watermark/perth_implicit.v2.bin; without it, it speaks UNMARKED with one
+  # banner on stderr, or with VOX_REQUIRE_WATERMARK=1 (engine.env) refuses to serve.
+  # Fail-fast like the dict for a release that marks; a release before 1.7 has no use for it.
+  local wm_url wm_sha wm_rel
+  wm_rel="$(mget engine.release 2>/dev/null)" || wm_rel=""
+  wm_url="$(mget engine.watermark.url 2>/dev/null)" || wm_url=""
+  wm_sha="$(mget engine.watermark.sha256 2>/dev/null)" || wm_sha=""
+  if [ -n "$wm_url" ] && [ -n "$wm_sha" ]; then
+    engine_fetch "$wm_url" bin/watermark/perth_implicit.v2.bin "$wm_sha"
+  elif engine_release_marks "$wm_rel"; then
+    local wm_msg="manifest has no engine.watermark (url+sha256) for engine ${wm_rel:-?} — a box installed without it speaks synthetic audio with no AI watermark; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$wm_msg"; else die "$wm_msg"; fi
+  else
+    log "engine $wm_rel predates the AI watermark: no watermark weights to install"
+  fi
   # THIRD_PARTY_NOTICES.txt — the MIT/BSD/Apache-2.0 attributions (misaki, Marlin, Voxtral,
   # Kokoro, civetweb, fvad, ggml, …) for the engine binary and the dict above, per the engine
   # repo's own check-third-party gate. Three docs (this repo's THIRD_PARTY_LICENSES.md, this
@@ -1052,13 +1090,28 @@ engine_verify() {
   done
   sel=(-u teaport-engine.service --since '-10 min')
   if [ -n "$id" ]; then sel=("_SYSTEMD_INVOCATION_ID=$id"); fi
-  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  # Each check reads the engine's own status line ("TTS: dict G2P ready|unavailable ..."),
+  # not every line that names the thing: the warning banner a degraded engine prints after
+  # it ("* TTS: en-us dict G2P or its POS tagger is NOT loaded", "* TTS: the AI watermark is
+  # NOT loaded") names it too, and as the last match would hide the status line.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: dict G2P (ready|unavailable)' | tail -1 || true)"
   if contains "dict G2P unavailable" "$line"; then
     warn "the engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $line"; return 1
   fi
-  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$line"; then
     warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
+  fi
+  # From 1.7 the engine says whether it marks its speech (an older one says nothing): "AI
+  # watermark on", "off" (VOX_TTS_WATERMARK=0), "unavailable", or "watermark needs <rate>"
+  # (a model at another sample rate). VOX_REQUIRE_WATERMARK=1 makes one that does not mark
+  # exit, which fails above; this catches an engine.env that sets it to 0.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: (AI watermark (on|off|unavailable)|watermark needs)' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$line" || contains "watermark needs" "$line"; then
+    warn "the engine is running WITHOUT the AI watermark (its speech goes out unmarked): $line"; return 1
+  fi
+  if contains "AI watermark off" "$line"; then
+    warn "the AI watermark is turned off in engine.env (VOX_TTS_WATERMARK=0): its speech goes out unmarked"
   fi
   log "teaport-engine is listening on :$port and stayed up"
 }
@@ -1458,7 +1511,7 @@ brain_deb_prune() {
 # did not exist yet when the package was configured. One writer: the package's own script.
 brain_sudoers() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] /usr/lib/teaport/sudoers-sync %s\n' "$RUN_USER"; return 0; fi
-  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page and Wi-Fi, or the update's polkit rule, were not written (/usr/lib/teaport/sudoers-sync failed)"
+  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page, Wi-Fi and the owner's login, or the update's polkit rule, were not written (/usr/lib/teaport/sudoers-sync failed)"
 }
 
 # brain_retire_old_tools -- the pre-package installer's CLI and config helper, once the
@@ -1894,14 +1947,249 @@ resolve_gateway_token() {
 #     way to pair a phone. Pointing it at Caddy is what makes the QR resolvable.
 # wss, not ws: OpenClaw hands a cleartext LAN pairing only a read+talk profile, so a phone
 # paired over ws:// silently comes up without operator scope.
+#
+# teaport-realtime hooks.allowConversationAccess — OpenClaw lets a non-bundled plugin register
+# before_prompt_build only with it. The teaport plugin uses that hook for one static
+# system-prompt paragraph saying where the teaport docs are (plugin/docs-hint.js); it reads
+# nothing from the conversation.
 write_talk_patch() {
   cat > "$1" <<JSON
 { "talk": { "realtime": {
   "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "agent-consult",
   "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } },
-  "plugins": { "entries": { "device-pair": {
-  "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } } } } }
+  "plugins": { "entries": {
+  "device-pair": { "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } },
+  "teaport-realtime": { "hooks": { "allowConversationAccess": true } } } } }
 JSON
+}
+
+# The user docs the brain package ships (packaging/nfpm.yaml), for the host OpenClaw's agent:
+# they go into OpenClaw's memory wiki, one page per section (docs-wiki-sync, which the
+# package also ships and re-runs on every upgrade, so the pages follow the installed version).
+# The wiki, not memory.search.extraPaths: a plain memory_search never searches the wiki, so
+# the docs cannot push the owner's own memories out of recall. The teaport plugin tells the
+# agent the docs are there (plugin/docs-hint.js).
+TEAPORT_DOCS_DIR=/usr/share/teaport/docs
+DOCS_WIKI_SYNC=/usr/lib/teaport/docs-wiki-sync
+
+# add_docs_to_openclaw_wiki — enable the bundled memory-wiki plugin, create its vault when
+# there is none, and write the docs into it. Before the gateway (re)start that follows in
+# agent_openclaw, which loads the plugin. Enabling an enabled plugin and initialising an
+# existing vault change nothing; an owner's own wiki pages are never touched. Any failure
+# here is said and the install goes on: the docs are a help, not a part of the voice.
+add_docs_to_openclaw_wiki() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw plugins enable memory-wiki; openclaw wiki init; %s (teaport docs -> memory wiki)\n' "$DOCS_WIKI_SYNC"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime config.docsInWiki=<whether the docs went in> (docs hint)\n'
+    return 0
+  fi
+  local ok=false
+  if [ ! -d "$TEAPORT_DOCS_DIR" ] || [ ! -x "$DOCS_WIKI_SYNC" ]; then
+    warn "no teaport docs at $TEAPORT_DOCS_DIR (a brain package from before they shipped): the agent will not have them"
+  # An owner who turned the wiki off keeps it off (unset reads as a failure: not false).
+  elif [ "$("$OPENCLAW" config get plugins.entries.memory-wiki.enabled --json 2>/dev/null || true)" = false ]; then
+    log "OpenClaw's memory wiki is turned off: the teaport docs were not added (openclaw plugins enable memory-wiki, then reinstall)"
+  elif ! "$OPENCLAW" plugins enable memory-wiki >/dev/null || ! "$OPENCLAW" wiki init >/dev/null; then
+    warn "could not set up OpenClaw's memory wiki: the teaport docs were not added"
+  else
+    write_openclaw_cli_record
+    if OPENCLAW="$OPENCLAW" "$DOCS_WIKI_SYNC" --docs "$TEAPORT_DOCS_DIR"; then
+      ok=true
+    else
+      warn "the teaport docs were not written into OpenClaw's memory wiki ($DOCS_WIKI_SYNC)"
+    fi
+  fi
+  # The plugin's docs hint goes out only where the docs are (plugin/docs-hint.js): told here,
+  # every install, so a wiki turned off or a sync that failed takes the hint away too.
+  local patch; patch="$(mktemp)"
+  printf '{ "plugins": { "entries": { "teaport-realtime": { "config": { "docsInWiki": %s } } } } }\n' "$ok" > "$patch"
+  "$OPENCLAW" config patch --file "$patch" >/dev/null \
+    || warn "could not tell the teaport plugin whether the docs are in the wiki: its docs hint stays as it was"
+  rm -f "$patch"
+}
+
+# write_openclaw_cli_record — the openclaw this install used, for the package's postinst: it
+# re-runs docs-wiki-sync on every upgrade with a plain PATH, where an OpenClaw installed
+# under nvm or ~/.npm-global (and the node beside it) is not found. In the run user's own
+# ~/.config/teaport (OPENCLAW_CLI_RECORD), the path docs-wiki-sync reads, whatever
+# TEAPORT_SECRETS_DIR says; read only by docs-wiki-sync running as that user. OpenClaw's
+# state and config locations go with it when this install had them set.
+OPENCLAW_CLI_RECORD="$RUN_HOME/.config/teaport/openclaw-cli"
+write_openclaw_cli_record() {
+  local node dirs dir; node="$(command -v node 2>/dev/null || true)"
+  dirs="$(dirname "$OPENCLAW")"
+  [ -n "$node" ] && [ "$(dirname "$node")" != "$dirs" ] && dirs="$dirs:$(dirname "$node")"
+  dir="$(dirname "$OPENCLAW_CLI_RECORD")"
+  { mkdir -p "$dir" && chmod 700 "$dir" && {
+      printf 'cli=%s\npath=%s\n' "$OPENCLAW" "$dirs"
+      if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then printf 'OPENCLAW_STATE_DIR=%s\n' "$OPENCLAW_STATE_DIR"; fi
+      if [ -n "${OPENCLAW_CONFIG_PATH:-}" ]; then printf 'OPENCLAW_CONFIG_PATH=%s\n' "$OPENCLAW_CONFIG_PATH"; fi
+    } > "$OPENCLAW_CLI_RECORD"; } \
+    || warn "could not record the openclaw path in $dir: package upgrades may not refresh the docs"
+}
+
+# Memory embeddings for a host OpenClaw: semantic memory_search (paraphrases, other languages)
+# on top of the keyword index. bge-m3 on OpenRouter: multilingual, 1024 dims, $0.01 per
+# million tokens; a box's whole memory is cents to index. Set only where the owner chose no
+# provider (memory.search.provider unset), so an explicit choice, "none" included, stays.
+# A remote embedding provider fails closed: while OpenRouter is unreachable or out of credit,
+# memory_search errors instead of falling back to keyword search. On a box whose voice and
+# agent already run on OpenRouter that is the same outage, which is why the key comes from
+# there, never from anywhere else.
+MEMORY_EMBED_MODEL="${TEAPORT_MEMORY_EMBED_MODEL:-baai/bge-m3}"
+
+# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE RECORD CONFIG — the
+# memory.search patch, from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS
+# its models.providers (`config get --json`, keys redacted; "" when unset), LLM_URL the
+# brain's endpoint, KEYFILE the brain's key, RECORD the installer's note that it wrote the
+# setting with that key (MEMORY_EMBED_RECORD: the key's sha256), CONFIG openclaw.json, for
+# the key as written there (`config get` has already put a ${VAR}'s value in its place).
+# Prints the provider id, then, when the setting carries the brain's key, that key's sha256
+# for the record. Exits
+#   0  a new setting: an OpenClaw provider on openrouter.ai by its id, so OpenClaw resolves
+#      its own key (a literal, a profile); else, when the brain's endpoint is OpenRouter, an
+#      openai-compatible entry with the brain's key;
+#   3  nothing written: no OpenRouter to use;
+#   4  nothing written: the owner's provider, or ours with the brain's key as it is. Ours is
+#      only a setting whose key, as written in openclaw.json, is the one the record says this
+#      installer put there: a ${VAR}, a SecretRef or a key of the owner's own is theirs;
+#   5  ours, with the key the brain has now (a rotated key would otherwise leave memory
+#      search failing closed for good).
+# The patch is written mode 600: it can hold a key.
+write_memory_embed_patch() {
+  ( umask 077; python3 -I - "$@" "$MEMORY_EMBED_MODEL" <<'PY'
+import hashlib, json, sys, urllib.parse
+out, current, providers, llm_url, keyfile, record, config, model = sys.argv[1:9]
+OR_URL = "https://openrouter.ai/api/v1"
+def openrouter(url):
+    host = urllib.parse.urlsplit(url if isinstance(url, str) else "").hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+def parse(text):
+    try:
+        v = json.loads(text) if text.strip() else {}
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+def brain_key():
+    if not openrouter(llm_url):
+        return ""
+    try:
+        return open(keyfile).read().strip()
+    except OSError:
+        return ""
+def write(search):
+    with open(out, "w") as f:
+        json.dump({"memory": {"search": search}}, f)
+def digest(key):
+    return hashlib.sha256(key.encode()).hexdigest()
+try:
+    recorded = open(record).read().strip()
+except OSError:
+    recorded = ""
+def written_key():
+    """memory.search.remote.apiKey as openclaw.json has it, when it is a plain string."""
+    try:
+        cfg = json.load(open(config))
+        key = cfg["memory"]["search"]["remote"]["apiKey"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    return key if isinstance(key, str) and "${" not in key else ""
+current, providers = parse(current), parse(providers)
+if current.get("provider"):
+    remote = current.get("remote") if isinstance(current.get("remote"), dict) else {}
+    written = written_key()
+    ours = (bool(recorded) and current["provider"] == "openai-compatible"
+            and remote.get("baseUrl") == OR_URL and current.get("model") == model
+            and bool(written) and digest(written) == recorded)
+    key = brain_key() if ours else ""
+    print(current["provider"])
+    if not key or digest(key) == recorded:
+        sys.exit(4)
+    write({"remote": {"apiKey": key}})
+    print(digest(key))
+    sys.exit(5)
+search = None
+for pid, p in sorted(providers.items()):
+    if isinstance(p, dict) and openrouter(p.get("baseUrl")):
+        search = {"provider": pid, "model": model}
+        break
+key = brain_key()
+if search is None and key:
+    search = {"provider": "openai-compatible", "model": model,
+              "remote": {"baseUrl": OR_URL, "apiKey": key}}
+if search is None:
+    sys.exit(3)
+write(search)
+print(search["provider"])
+if "remote" in search:
+    print(digest(key))
+PY
+  )
+}
+
+# openclaw_memory_embeddings — give a host OpenClaw's memory_search the embedding model,
+# then rebuild its index (a changed provider pauses vector search until then). Called by
+# agent_openclaw while the gateway is stopped, before its one start: OpenClaw applies a
+# memory.search change by restarting the gateway. Needs the brain's endpoint and key, so
+# phase_credentials runs before phase_agent. A setting this installer wrote with the brain's
+# key follows that key when it changes, and the new key goes through the same check. An
+# index that cannot be built takes the setting back out. Any failure is said and the install
+# goes on.
+MEMORY_EMBED_RECORD="$SECRETS/openclaw-memory-embeddings"
+openclaw_memory_embeddings() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset; the key follows the brain'"'"'s when ours); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
+    return 0
+  fi
+  local current providers patch rc=0 out pid keyhash
+  current="$("$OPENCLAW" config get memory.search --json 2>/dev/null || true)"
+  providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
+  patch="$(mktemp)"
+  # The config file the CLI reads (OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, ...), as it says;
+  # unreadable, the setting is not taken for ours.
+  local config_file
+  config_file="$("$OPENCLAW" config file 2>/dev/null | tail -n 1 || true)"
+  out="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key" \
+    "$MEMORY_EMBED_RECORD" "${config_file:-$RUN_HOME/.openclaw/openclaw.json}")" || rc=$?
+  pid="$(printf '%s\n' "$out" | sed -n 1p)"; keyhash="$(printf '%s\n' "$out" | sed -n 2p)"
+  case "$rc" in
+    3) log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
+       rm -f "$patch"; return 0 ;;
+    4) log "OpenClaw memory search keeps its provider ($pid)"
+       rm -f "$patch"; return 0 ;;
+    0|5) ;;
+    *) warn "OpenClaw memory search was not given an embedding model"
+       rm -f "$patch"; return 0 ;;
+  esac
+  if ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
+    warn "OpenClaw memory search was not given an embedding model"
+    rm -f "$patch"; return 0
+  fi
+  rm -f "$patch"
+  if [ "$rc" = 5 ]; then
+    log "OpenClaw memory search: $MEMORY_EMBED_MODEL via OpenRouter, now with the brain's current key; rebuilding its index"
+  else
+    log "OpenClaw memory search embeds with $MEMORY_EMBED_MODEL via $pid; rebuilding its index"
+  fi
+  if timeout 900 "$OPENCLAW" memory index --force >/dev/null; then
+    # The record that this setting, and the key in it, are the installer's (not the key).
+    if [ -n "$keyhash" ]; then
+      ( umask 077; printf '%s\n' "$keyhash" > "$MEMORY_EMBED_RECORD" ) \
+        || warn "could not write $MEMORY_EMBED_RECORD: a later change of the key will not reach memory search"
+    else
+      rm -f "$MEMORY_EMBED_RECORD"   # OpenClaw's own provider: no key of the brain's in it
+    fi
+    return 0
+  fi
+  rm -f "$MEMORY_EMBED_RECORD"
+  # The embedding provider fails closed: left set, a key or account that cannot embed would
+  # make every memory_search fail, not fall back. So it goes again, and memory search stays
+  # keyword-only until the next install finds the account working.
+  patch="$(mktemp)"
+  printf '{ "memory": { "search": { "provider": null, "model": null, "remote": null } } }\n' > "$patch"
+  "$OPENCLAW" config patch --file "$patch" >/dev/null || true
+  rm -f "$patch"
+  warn "OpenClaw's memory index could not be built with $MEMORY_EMBED_MODEL (the reason is above): memory search stays keyword-only. Check the OpenRouter key and credit, then run the installer again"
 }
 
 # The published plugin, when there is no local source to pack.
@@ -1970,23 +2258,59 @@ cap_openclaw_heap() {
   log "OpenClaw gateway heap limit -> ${OPENCLAW_HEAP_MIB} MiB ($unit)"
 }
 
+# plugin_consent_flag OPENCLAW... — "--accept-capabilities" when this OpenClaw has it, else
+# nothing. OpenClaw (2026.9.x) installs and enables a third-party plugin only once its
+# declared capabilities are accepted, and asks again when an update declares more (the docs
+# hint's before_prompt_build hook did); without a terminal it refuses outright ("requires
+# capability consent. The plugin was not installed."). Ours, so accepted. An OpenClaw from
+# before the consent (2026.7.x) refuses the flag as an unknown option, which under set -e
+# would end the install: so it is passed only where the help lists it. The arguments are
+# the command that runs openclaw (the host's, or the sandbox's through nemoclaw exec).
+plugin_consent_flag() {
+  if [ "$DRY_RUN" = 1 ]; then printf -- '--accept-capabilities\n'; return 0; fi   # as on the pinned release
+  # Read whole, then matched: grep -q on a pipe would stop at the first match, and under
+  # pipefail the help's SIGPIPE would read as "not there".
+  local help; help="$(timeout 60 "$@" plugins install --help </dev/null 2>/dev/null || true)"
+  case "$help" in *--accept-capabilities*) printf -- '--accept-capabilities\n' ;; esac
+}
+
 agent_openclaw() {
   resolve_gateway_token
   log "host OpenClaw — installing the plugin + wiring talk.realtime"
   # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
   local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
 
-  local tgz; tgz="$(plugin_tgz)"
-  if [ -n "$tgz" ]; then
-    run "$OPENCLAW" plugins install "$tgz" --force
-  else
-    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin
+  local tgz caps; tgz="$(plugin_tgz)"
+  caps="$(plugin_consent_flag "$OPENCLAW")"
+  # A running gateway applies most of what follows (the plugin, gateway.*, memory.search) by
+  # restarting itself, a moment after each change, and the restart below would then land on
+  # one of those mid startup (see below). So it is stopped for the changes, and started
+  # once at the end; if the run stops on the way, the EXIT trap starts it again.
+  local gw_stopped=""
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] systemctl --user stop openclaw-gateway.service (when running), for the changes below\n'
+  elif case "$(systemctl --user show -p ActiveState --value openclaw-gateway.service 2>/dev/null || true)" in
+         active|activating|reloading|deactivating) true ;; *) false ;; esac; then
+    # activating too: a gateway on its way up, or waiting to restart after a crash; and
+    # deactivating, one mid restart.
+    if systemctl --user stop openclaw-gateway.service; then
+      gw_stopped=1
+      trap 'systemctl --user start openclaw-gateway.service || true' EXIT
+    else
+      warn "could not stop the OpenClaw gateway: it may restart itself while it is set up"
+    fi
   fi
-  run "$OPENCLAW" plugins enable teaport-realtime
+  if [ -n "$tgz" ]; then
+    run "$OPENCLAW" plugins install "$tgz" --force ${caps:+"$caps"}
+  else
+    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin ${caps:+"$caps"}
+  fi
+  run "$OPENCLAW" plugins enable teaport-realtime ${caps:+"$caps"}
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime hooks.allowConversationAccess=true (docs hint)\n'
     printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
@@ -2019,6 +2343,8 @@ JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
   fi
+  add_docs_to_openclaw_wiki
+  openclaw_memory_embeddings
 
   # `openclaw gateway install` installs AND starts the unit. Calling `gateway start` after
   # it restarts the service, killing that first process mid startup-migration and orphaning
@@ -2029,7 +2355,24 @@ JSON
     printf '  [dry-run] gateway unit: --max-old-space-size=%s (cap_openclaw_heap)\n' "$OPENCLAW_HEAP_MIB"
   elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
     cap_openclaw_heap || true
-    "$OPENCLAW" gateway restart
+    if [ -n "$gw_stopped" ]; then
+      # OpenClaw's own start, not systemctl's: it repairs a unit whose --port or program no
+      # longer matches the config (gateway.port was just set) and waits for it to be up. It
+      # fails both when the gateway is slower than that wait (45 s; started, so it is said and
+      # the install goes on) and when it refuses before starting anything (a state dir of
+      # its own, a config it finds invalid): then systemd starts the unit as it is, as the
+      # EXIT trap would, and phase_verify checks the gateway's port.
+      if ! "$OPENCLAW" gateway start; then
+        case "$(systemctl --user show -p ActiveState --value openclaw-gateway.service 2>/dev/null || true)" in
+          active|activating) ;;
+          *) systemctl --user start openclaw-gateway.service || true ;;
+        esac
+        warn "openclaw gateway start failed (it did not start or report ready): check it with openclaw gateway status --deep"
+      fi
+      trap - EXIT
+    else
+      "$OPENCLAW" gateway restart
+    fi
   else
     "$OPENCLAW" gateway install
     # Not restarted for it: see above. The limit takes effect at its next start.
@@ -2075,14 +2418,15 @@ agent_nemoclaw() {
   # 1. Plugin into the sandbox. Published -> npm spec; otherwise npm-pack a tgz (honors the
   #    files allowlist), upload it, and `openclaw plugins install <tgz>` copies it into
   #    .openclaw/extensions/ — the pack itself is shared with the host path (plugin_tgz).
-  local tgz; tgz="$(plugin_tgz)"
+  local tgz caps; tgz="$(plugin_tgz)"
+  caps="$(plugin_consent_flag "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw)"   # see plugin_consent_flag
   if [ -n "$tgz" ]; then
     run "$NEMOCLAW" "$SANDBOX" upload "$tgz" "$tgz"
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force ${caps:+"$caps"}
   else
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin ${caps:+"$caps"}
   fi
-  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime
+  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime ${caps:+"$caps"}
 
   # 2. talk.realtime + device-pair — one validated merge (openclaw config patch). The token
   #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
@@ -2090,6 +2434,7 @@ agent_nemoclaw() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime hooks.allowConversationAccess=true (docs hint)\n'
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
@@ -2463,8 +2808,11 @@ engine_env_lines() {
   # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
   # validated at (its batched decode is bit-identical to the unbatched one only there;
   # at 240 it scored a point worse, and --reprime's measurements are all at 480).
+  # VOX_REQUIRE_WATERMARK: refuse to serve if the AI watermark is not loaded (its weights
+  # missing, or VOX_TTS_WATERMARK=0) rather than speak unmarked (see phase_engine). Engines
+  # before 1.7 ignore it.
   ENGINE_ENV=("KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192"
-              "VOX_REQUIRE_DICT_G2P=1")
+              "VOX_REQUIRE_DICT_G2P=1" "VOX_REQUIRE_WATERMARK=1")
 }
 
 # box_id — four hex digits that tell boxes apart: the end of the Wi-Fi MAC, the same digits
@@ -3519,17 +3867,31 @@ phase_verify() {
   if [ -n "$AGENT_MODE" ]; then
     contains ":443 " "$(ss -ltn 2>/dev/null || true)" || { warn "front door :443 not listening — browser access is down"; ok=0; }
   fi
+  # A host OpenClaw's gateway, behind that front door: Caddy listens on :443 whether or not
+  # it is up. (agent_openclaw started it last; it can take a while to listen.)
+  if [ "$AGENT_MODE" = openclaw ]; then
+    for i in $(seq 1 20); do contains ":$GATEWAY_PORT " "$(ss -ltn 2>/dev/null || true)" && break; sleep 3; done
+    contains ":$GATEWAY_PORT " "$(ss -ltn 2>/dev/null || true)" \
+      || { warn "OpenClaw gateway :$GATEWAY_PORT not listening — Talk, the agent and memory recall are down (openclaw gateway status --deep)"; ok=0; }
+  fi
   # A listening engine can still be prosody-degraded: without bin/g2p/ it runs
   # espeak-only G2P and only says so in one journal line. Check that line.
-  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: dict G2P (ready|unavailable)' | tail -1 || true)"
   if contains "dict G2P unavailable" "$g2p_log"; then
     warn "engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $g2p_log"; ok=0
   fi
-  local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$pos_log"; then
     warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
   fi
-  [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
+  # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK=0 in
+  # engine.env, or it would not be listening) it speaks with no AI watermark. The status
+  # lines only, as engine_verify reads them (a banner follows a missing one).
+  local wm_log; wm_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: (AI watermark (on|off|unavailable)|watermark needs)' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$wm_log" || contains "AI watermark off" "$wm_log" || contains "watermark needs" "$wm_log"; then
+    warn "engine is running WITHOUT the AI watermark (its speech goes out unmarked): $wm_log"; ok=0
+  fi
+  [ "$ok" = 1 ] && log "engine + brain$([ "$AGENT_MODE" = openclaw ] && echo ' + gateway') are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }
 
 usage_footer() {
@@ -3777,8 +4139,8 @@ main() {
   install_busy_lamp
   install_dns_resilience
   install_arp_multihome
+  phase_credentials   # before phase_agent: a host OpenClaw's memory embeddings use the brain's key
   phase_agent
-  phase_credentials
   phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them
   phase_services
   phase_frontdoor

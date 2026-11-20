@@ -50,7 +50,7 @@ pronunciation dictionary. See
 **Cause** You are not on a Jetson, or the Jetson image carries no
 `/etc/nv_tegra_release`. The installer works only on Jetson devices.
 
-<!-- source: install.sh:361,380#582f6f18 -->
+<!-- source: install.sh:363,382#582f6f18 -->
 
 **Fix**
 
@@ -62,7 +62,7 @@ pronunciation dictionary. See
 **Cause** The device runs a JetPack that the engine does not support. The engine
 ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-<!-- source: install.sh:356-362,367-373#bdfac419 -->
+<!-- source: install.sh:358-364,369-375#bdfac419 -->
 
 **Fix**
 
@@ -83,7 +83,7 @@ ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 **Cause** The engine links against `libopenblas.so.0`. JetPack does not include
 it.
 
-<!-- source: install.sh:412-419,429#ce9fbe14 -->
+<!-- source: install.sh:414-421,431#ce9fbe14 -->
 
 **Fix**
 
@@ -99,19 +99,34 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:908-918#0ba66554 -->
+<!-- source: install.sh:926-936#0ba66554 -->
 
 **Fix**
 
 1. Wait until the manifest is republished with the entry, and then run the
    installer again. See [The speech sounds robotic](#the-speech-sounds-robotic).
 
+### `manifest has no engine.watermark`
+
+**Cause** The release manifest names an engine release from 1.7 on, which marks
+its speech with an AI watermark, but carries no `engine.watermark` entry with
+its URL and sha256. A device installed without the watermark weights speaks
+without the machine-readable mark that identifies its speech as AI-generated.
+The watermark check is necessary, so keep it.
+
+<!-- source: install.sh:635,956-968#b620437e -->
+
+**Fix**
+
+1. Wait until the manifest is republished with the entry, and then run the
+   installer again.
+
 ### `sha256 mismatch`
 
 **Cause** A downloaded file does not agree with the checksum in the manifest.
 The installer removes the partial download, so the next run starts it again.
 
-<!-- source: install.sh:287-292#172ce37b -->
+<!-- source: install.sh:289-294#172ce37b -->
 
 **Fix**
 
@@ -129,7 +144,7 @@ The installer removes the partial download, so the next run starts it again.
 **Cause** A second run of the installer started while one was running. Two runs at
 the same time replace the same files, so the second one stops before it changes anything.
 
-<!-- source: install.sh:185-193,194-211#05549d41 -->
+<!-- source: install.sh:187-195,196-213#05549d41 -->
 
 **Fix**
 
@@ -186,7 +201,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2211#2ca3ef5a; install.sh:2656-2725#d970b544 -->
+<!-- source: install.sh:2556#2ca3ef5a; install.sh:3004-3073#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +226,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2041-2054#3bb53588; install.sh:2040-2053#e0d335b8 -->
+<!-- source: install.sh:2384-2397#3bb53588; install.sh:2383-2396#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +257,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2059-2063#bf1269bd -->
+<!-- source: install.sh:2402-2406#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +288,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1891-1903#a65c0a82 -->
+<!-- source: install.sh:1944-1961#ffe8b2e4 -->
 
 **Fix**
 
@@ -344,7 +359,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2656-2725#d970b544; install.sh:2523-2573#a3eb07c3; install.sh:2505-2508,2523-2577#49197cea -->
+<!-- source: install.sh:3004-3073#d970b544; install.sh:2871-2921#a3eb07c3; install.sh:2853-2856,2871-2925#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +404,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2745-2749#3c1e6011; install.sh:2829-2832#b1e28ef5 -->
+<!-- source: install.sh:3093-3097#3c1e6011; install.sh:3177-3180#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -418,7 +433,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:411#649012b4; install.sh:898-899#12d8444d -->
+<!-- source: install.sh:413#649012b4; install.sh:916-917#12d8444d -->
 
 **Fix**
 
@@ -446,6 +461,44 @@ until a new engine is published.
 `doctor` tests that `espeak-ng` exists. `espeak-ng` is the fallback, not the
 dictionary. A device with correct speech and a device with robotic speech both
 pass. Use the journal command in step 1.
+:::
+
+## The engine stops at startup: `refusing to serve without the watermark`
+
+**Cause** From engine 1.7, the engine puts an imperceptible AI watermark into
+everything it says. It reads the watermark weights from
+`/opt/teaport/bin/watermark/perth_implicit.v2.bin`. The installer writes
+`VOX_REQUIRE_WATERMARK=1` into `/etc/teaport/engine.env`, so an engine that
+can't load the watermark stops instead of speaking without it. It also stops
+when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
+`VOX_REQUIRE_WATERMARK=0` instead, the engine starts and speaks without the
+watermark, and the installer's checks report `running WITHOUT the AI
+watermark`.
+
+<!-- source: install.sh:956-958,2811-2815,3890-3892,1109-1111#41f37ed9 -->
+
+**Fix**
+
+1. Check the engine's journal:
+
+   ```bash
+   sudo journalctl -u teaport-engine | grep -E 'AI watermark|refusing to serve'
+   ```
+
+   `AI watermark unavailable` means the weights file is absent or damaged.
+   `AI watermark off` means `engine.env` sets `VOX_TTS_WATERMARK=0`.
+2. If the weights file is absent or damaged, run the installer again to get it.
+3. If `engine.env` sets `VOX_TTS_WATERMARK=0`, remove that line, and then
+   restart the engine:
+
+   ```bash
+   sudo systemctl restart teaport-engine
+   ```
+
+:::note[The published engine has no watermark]
+The engine that `teaport update` installs today is 1.6, which has no
+watermark and ignores `VOX_REQUIRE_WATERMARK`. This section applies from engine
+1.7.
 :::
 
 ## Speech recognition is slow
@@ -517,7 +570,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2146-2154,2181-2187#4287c4a8; install.sh:2201-2204#cefd034b -->
+<!-- source: install.sh:2491-2499,2526-2532#4287c4a8; install.sh:2546-2549#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -525,7 +578,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2191-2199#b3851890 -->
+<!-- source: install.sh:2536-2544#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -625,7 +678,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
+<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:820-826#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -633,7 +686,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2041-2054#3bb53588; install.sh:2040-2053#e0d335b8 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2384-2397#3bb53588; install.sh:2383-2396#e0d335b8 -->
 
 **Fix**
 
@@ -693,6 +746,91 @@ device.
 
 Tests confirm it: 16% of a standard test set peaks below −30 dBFS, and
 24 of 2600 files returned an empty result.
+
+## You can't sign in to the device
+
+### There is no login yet
+
+**Cause** A device that ships ready to set up has no login until you create one. On a
+Teaspoon AI device, the service account, the user the brain runs as, has no password
+and no SSH key, so nobody can sign in before then. A device that you installed yourself
+has the login of the user you installed it as, and never offers this step.
+
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f; brain/teaport_brain/static/config.html:820#106e56e9 -->
+
+**Fix**
+
+1. Say "open my settings" at the device, and open the settings on your phone. While no
+   login exists, a **Create your login** card is at the top.
+2. Create the login there, as
+   [Create your login in the settings](/guides/configuration/#create-your-login-in-the-settings)
+   shows. In setup mode, the setup page offers the same step, as
+   [Create your login](/guides/wifi-setup/#create-your-login) shows.
+3. Sign in as `teaport`, with SSH or at the device itself.
+
+If neither the settings nor the setup page shows the step, one of these is true:
+
+- A login already exists. Sign in as `teaport`, or see
+  [The device already has a login](#the-device-already-has-a-login).
+- The helper that creates the login isn't installed or can't run, for example because
+  its `sudo` rule is missing from `/etc/sudoers.d/teaport-config`. The pages then show no
+  step rather than one that can't work. Installing the brain package again writes the
+  rule; see [Update teaport](/guides/updating/). On a Teaspoon AI device without a login,
+  ask the seller of the device.
+- A group named `teaport`, or a home folder `/home/teaport`, exists without the
+  account, for example after the account was removed by hand. The login's account can't
+  be made over it, so the helper refuses, and the pages show no step. The device then
+  needs a reflash, as
+  [The device already has a login](#the-device-already-has-a-login) describes, or the
+  seller of the device can do it.
+
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f -->
+
+<!-- source: brain/teaport_brain/owner_login.py:99-103#3acb30a5; packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:101#d4ce799b -->
+
+### The device already has a login
+
+**Cause** The device creates its login one time only. Someone created it before you,
+on the setup page or in the settings, or a `teaport` account is there that the device
+doesn't recognize as an unfinished one of its own: one with a password already set, or
+with SSH keys in its home folder. For as long as the device has no login, not only
+until it is set up, software running on the device, such as a compromised agent, could
+create it first. The setup page and the settings run as that same service account, so
+software that was compromised before you typed your password could also have read it.
+
+<!-- source: brain/teaport_brain/login_apply.py:34-41#01fb9b96; brain/teaport_brain/login_apply.py:303-310#c7e4a1ad -->
+
+**Fix**
+
+- If you created the login, sign in as `teaport` with the password you chose.
+- If a try to create it stopped partway, for example because the device restarted, the
+  next try usually finishes it. If the device still says that it already has a login, or
+  the step never comes back, the device can't finish that try by itself: reflash it and
+  install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
+- If you didn't create it, you can't know who did or what they changed. Don't keep
+  private data on the device. Reflash it and install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
+
+### Sign in at the device itself
+
+**Cause** The device is not on your network, or SSH does not answer, so you can't reach
+it from a computer.
+
+**Fix**
+
+1. Connect a USB keyboard and a display to the device. The device starts to a text
+   console, with a sign-in prompt.
+2. Sign in as `teaport` with your login's password. On a device you installed yourself,
+   sign in as the user you installed teaport as.
+3. Run `teaport status` to see what is wrong. Administrator commands, such as
+   `sudo systemctl restart teaport-brain`, ask for the same password.
+
+<!-- source: brain/teaport_brain/login_apply.py:84-87#d31172cc; brain/teaport_brain/login_apply.py:238-242#57a7a7ce -->
 
 ## Where the logs are
 

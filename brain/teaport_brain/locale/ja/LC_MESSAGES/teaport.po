@@ -916,3 +916,53 @@ msgstr "\\btranslat\\w*|\\bin english\\b|\\bword for\\b|\\bsynonym\\w*|\\bopposi
 msgctxt "pattern"
 msgid "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
 msgstr "\\b(?:go(?:ing)? (?:back )?to (?:sleep|bed)|sleep now|stop listening|still (?:awake|up|listening)|that's (?:all|it)|that is (?:all|it)|be quiet|shut up)\\b"
+
+# The owner's login (#421): the setup page's step and the Settings card (owner_login.py).
+msgid "Create your login"
+msgstr "ログインを作成"
+
+msgid "You'll use this to sign in to Teaport from a computer. Your username is {username}."
+msgstr "パソコンから Teaport にサインインするときに使います。ユーザー名は {username} です。"
+
+msgid "Choose a password"
+msgstr "パスワードを決めてください"
+
+msgid "Type it again"
+msgstr "もう一度入力してください"
+
+msgid "Use at least {count} characters."
+msgstr "{count} 文字以上にしてください。"
+
+msgid "Create login"
+msgstr "ログインを作成"
+
+msgid "Creating your login…"
+msgstr "ログインを作成しています…"
+
+msgid "Your login is ready. Sign in as {username} with the password you chose."
+msgstr "ログインの準備ができました。{username} と、決めたパスワードでサインインしてください。"
+
+msgid "The two passwords don't match."
+msgstr "2つのパスワードが一致しません。"
+
+msgid "Your password needs at least {count} characters."
+msgstr "パスワードは {count} 文字以上にしてください。"
+
+msgid "That password is too long."
+msgstr "パスワードが長すぎます。"
+
+msgid "Your password can't contain invisible or control characters."
+msgstr "パスワードに見えない文字や制御文字は使えません。"
+
+msgid "This Teaport already has a login."
+msgstr "この Teaport にはすでにログインがあります。"
+
+msgid "Creating a login isn't available on this Teaport."
+msgstr "この Teaport ではログインを作成できません。"
+
+msgid "Teaport couldn't create your login. Try again."
+msgstr "Teaport はログインを作成できませんでした。もう一度お試しください。"
+
+msgid "Teaport couldn't create your login. You can connect now and create it later in Settings."
+msgstr "Teaport はログインを作成できませんでした。今は接続だけ行い、あとで設定からログインを作成することもできます。"
+
