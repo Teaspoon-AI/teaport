@@ -980,6 +980,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     straight to the agent."""
     from teaport_brain import consult_bridge
 
+    started = time.monotonic()  # for owed.cancelled_since: a cancel after this is ours too
     progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
                                                       gate=gate, tts=tts))
                 if llm is not None else None)
@@ -1014,6 +1015,14 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         nonlocal answered
         if progress is not None:
             progress.cancel()
+        if outcome.failure == "empty" and await owed.cancelled_since(started):
+            # OpenClaw cancelled a run in this session since this consult began, or does
+            # within the grace: this empty is that cancel's sibling (#450), not a request
+            # that came back with nothing. Landed as cancelled, nothing is owed for it.
+            logger.info("openclaw_agent_consult(async): an empty result beside OpenClaw "
+                        "cancelling a run in this session -- landed as cancelled")
+            outcome = oc.ConsultOutcome(None, "cancelled",
+                                        "empty beside an OpenClaw cancel in this session")
         answered = bool(outcome.text)
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
                   detail=outcome.detail)

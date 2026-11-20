@@ -196,12 +196,16 @@ async def test_echoes_of_the_brains_own_tool_calls_are_not_logged():
 
 # --- the async waiter ---------------------------------------------------------------
 
-async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None):
+async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False):
     delivered = []
 
     class Owed:
         def land(self, request, text, key, *, failure=None, detail=""):
             delivered.append((text, failure))
+
+        async def cancelled_since(self, since, grace=None):
+            # `cancelled`: OpenClaw cancelled a run in the session (owed.Owed).
+            return cancelled
 
     saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
              oc.agent_consult)
@@ -243,6 +247,27 @@ async def test_the_no_text_placeholder_is_not_delivered_as_an_answer():
     fut.set_result("OpenClaw finished with no text.")
     delivered = await _wait(fut)
     assert delivered == [(None, "empty")], delivered
+
+
+async def test_an_empty_beside_an_openclaw_cancel_is_delivered_as_cancelled():
+    """#450: "cancel that" with two consults in the session's lane. The one whose run was
+    cancelled says so; the other comes back an empty final. Landed empty it was owed and
+    re-offered ("the lookup didn't return any information"); it is that cancel's sibling."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result("OpenClaw finished with no text.")
+    delivered = await _wait(fut, cancelled=True)
+    assert delivered == [(None, "cancelled")], delivered
+
+
+async def test_an_answer_or_a_timeout_beside_a_cancel_is_not_touched():
+    """Only an EMPTY result is read as the cancel's sibling: an answer is an answer, and
+    a timeout or an error is still told."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"text": "Three shops."})
+    assert await _wait(fut, cancelled=True) == [("Three shops.", None)]
+    fut = asyncio.get_running_loop().create_future()
+    fut.working = True
+    assert await _wait(fut, ack=0.05, ceiling=0.2, cancelled=True) == [(None, "timeout")]
 
 
 async def test_a_cancelled_run_is_delivered_as_cancelled():

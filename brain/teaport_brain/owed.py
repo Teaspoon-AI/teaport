@@ -113,6 +113,15 @@ MAX_RENDERED = 3
 # when its end arrives (Owed.settled), which errs owed.
 SETTLE_WAIT_S = 2.0
 
+# How long an empty consult waits for OpenClaw to cancel a run in this session before it
+# lands as empty (Owed.cancelled_since; #450). "Cancel that" while two consults share the
+# session's run lane: OpenClaw aborts the lane, the consult whose run it cancelled comes
+# back "cancelled", and the other can come back an empty final ("OpenClaw finished with
+# no text.") a moment BEFORE that cancel lands (live 2026-11-20 14:48:42: empty at .332,
+# cancelled at .437). Landed empty, it was owed, and the re-offer told the caller the
+# lookup "didn't return any information" -- of a request they had just called off.
+EMPTY_CANCEL_GRACE_S = 2.0
+
 # The lull before the one re-offer (§4 (a), the user's choice 2026-10-16): the line has
 # been quiet this long, with the caller's turn answered. setting(): brain.env.
 REOFFER_QUIET_S = setting("TEAPORT_REOFFER_AFTER_QUIET_S")
@@ -1044,6 +1053,10 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
+        # When OpenClaw last cancelled a consult in this session (time.monotonic(); None:
+        # never), and the event that wakes a cancelled_since waiting on one (_cancelled).
+        self._cancelled_at: Optional[float] = None
+        self._cancel_seen = asyncio.Event()
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1268,10 +1281,34 @@ class Owed:
         whose Land never fires (Land is not fair): the record stays "none", and no row
         speaks of such a one."""
         self._questions.pop(key, None)
+        self._cancelled_at = time.monotonic()
+        self._cancel_seen.set()
+        self._cancel_seen = asyncio.Event()
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
         logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
+
+    async def cancelled_since(self, since: float,
+                              grace: float = EMPTY_CANCEL_GRACE_S) -> bool:
+        """Did OpenClaw cancel a consult in this session at or after `since` (a
+        time.monotonic() reading: when the asking consult started), or does it within
+        `grace` seconds from now? tools._consult_and_land asks it of an EMPTY outcome
+        before landing it: such an empty is a sibling of the run the caller called off
+        (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing, told nothing.
+        Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
+        transition."""
+        deadline = time.monotonic() + grace
+        while True:
+            if self._cancelled_at is not None and self._cancelled_at >= since:
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0 or self._closed:
+                return False
+            try:
+                await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)
+            except asyncio.TimeoutError:
+                return False
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""

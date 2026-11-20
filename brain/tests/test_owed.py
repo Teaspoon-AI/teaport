@@ -791,6 +791,31 @@ async def test_a_consult_openclaw_cancelled_is_owed_nothing():
     assert render(ctx.get_messages(), b.owed(), "caller") == ctx.get_messages()
 
 
+
+async def test_cancelled_since_sees_a_cancel_before_or_within_the_grace():
+    """#450: a consult's empty result asks whether OpenClaw cancelled a run in the session
+    since it began. Both orders were seen live: the sibling's empty lands first (the
+    cancel arrives inside the grace) or after (the cancel is already recorded)."""
+    import time
+    msgs = tool_round("a") + tool_round("b")
+    b, _, _ = book(msgs=msgs)
+    began = time.monotonic()
+    assert await b.cancelled_since(began, grace=0.05) is False, "no cancel, no grace hit"
+    b.dispatch("a", HN_REQ)
+
+    async def cancel_soon():
+        await asyncio.sleep(0.05)
+        b.land(HN_REQ, None, "a", failure="cancelled", detail="Cancelled the active OpenClaw run.")
+
+    t = asyncio.create_task(cancel_soon())
+    assert await b.cancelled_since(began, grace=1.0) is True, "a cancel within the grace"
+    await t
+    assert await b.cancelled_since(began, grace=0) is True, "a cancel already recorded"
+    later = time.monotonic()
+    assert await b.cancelled_since(later, grace=0.05) is False, \
+        "a cancel from before this consult began is not its sibling"
+    assert b.owed() == []
+
 # =============================================================== a sync tool's answer (#204)
 
 TOY = ("There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
