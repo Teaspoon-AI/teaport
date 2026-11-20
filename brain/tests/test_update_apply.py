@@ -556,6 +556,95 @@ def test_the_trees_an_older_installer_gave_away_are_rebuilt_not_taken_over():
     assert layout.migrate(str(prefix), str(state), "teaport-brain", owner) == 0
 
 
+def test_every_file_in_the_engines_data_directories_is_carried_over():
+    """An engine reads more of its own than an older installer named (a dictionary per
+    language next to the en-us one): every regular file in bin/g2p and the model
+    directories comes along, and nothing that is not a plain file, nor a rollback copy."""
+    tmp = tempdir("teaport-layout-extra-")
+    prefix, state = pathlib.Path(tmp, "opt"), pathlib.Path(tmp, "state")
+    owner = (os.getuid(), os.getgid())
+    (prefix / "bin/g2p").mkdir(parents=True)
+    (prefix / "bin/voxtral").write_text("engine\n")
+    (prefix / "bin/voxtral.rollback-377508d").write_text("old engine\n")   # a hand-kept copy
+    (prefix / "bin/g2p/kokoro_g2p.v2.dict").write_text("en\n")
+    (prefix / "bin/g2p/kokoro_zh.v1.dict").write_text("zh\n")               # not named in ENGINE
+    (prefix / "bin/g2p/kokoro_zh.v1.dict").chmod(0o666)
+    os.symlink("/etc/passwd", prefix / "bin/g2p/kokoro_ja.v1.dict")         # a link out
+    os.mkfifo(prefix / "bin/g2p/pipe")
+    (prefix / "bin/g2p/sub").mkdir()
+    (prefix / "bin/g2p/sub/x.dict").write_text("x\n")
+    (prefix / "bin/g2p/.hidden").write_text("h\n")
+    (prefix / "bin/g2p/kokoro_zh.v2.dict.part").write_text("half\n")      # a download in progress
+    (prefix / "models/voxtral").mkdir(parents=True)
+    (prefix / "models/voxtral/consolidated.safetensors").write_text("model\n")
+    (prefix / "models/voxtral/extra.bin").write_text("extra\n")
+    state.mkdir()
+    layout = _layout()
+    layout._dpkg_files = lambda package: ([], {})
+    layout.migrate(str(prefix), str(state), "teaport-brain", owner)
+    assert (prefix / "bin/g2p/kokoro_zh.v1.dict").read_text() == "zh\n"
+    assert not os.stat(prefix / "bin/g2p/kokoro_zh.v1.dict").st_mode & 0o022   # made root's mode
+    assert (prefix / "models/voxtral/extra.bin").read_text() == "extra\n"
+    assert (prefix / "bin/g2p/kokoro_g2p.v2.dict").read_text() == "en\n"
+    for gone in ("bin/g2p/kokoro_ja.v1.dict", "bin/g2p/pipe", "bin/g2p/sub", "bin/g2p/.hidden",
+                 "bin/g2p/kokoro_zh.v2.dict.part", "bin/voxtral.rollback-377508d"):
+        assert not os.path.lexists(prefix / gone), gone
+    # A data directory reached through a link carries nothing, even one the run user owns
+    # with plain files in it (they would link fine: only the walk refuses them).
+    tmp2 = tempdir("teaport-layout-extra2-")
+    p2, s2, elsewhere = pathlib.Path(tmp2, "opt"), pathlib.Path(tmp2, "state"), pathlib.Path(tmp2, "elsewhere")
+    (p2 / "bin").mkdir(parents=True)
+    elsewhere.mkdir()
+    (elsewhere / "kokoro_zh.v1.dict").write_text("planted\n")
+    os.symlink(elsewhere, p2 / "bin/g2p")
+    s2.mkdir()
+    layout.migrate(str(p2), str(s2), "teaport-brain", owner)
+    assert os.listdir(p2 / "bin/g2p") == []
+
+
+def test_a_link_to_someone_elses_file_is_not_carried():
+    """Carrying makes the inode root's with a fixed mode under every name it has: a link the
+    run user made to another user's file is left behind, and root's own only where the
+    kernel lets nobody link what they could not write."""
+    layout = _layout()
+    me = os.getuid()
+    import stat
+    ok = layout._carry_owner_ok
+    reg = stat.S_IFREG
+    assert ok(me, me, reg | 0o600, [], me)                     # the run user's own: made root's
+    assert ok(me, me, reg | 0o600, ["user.x"], me)
+    assert not ok(me + 1, me + 1, reg | 0o644, [], me)        # another user's
+    # Root's, carried untouched only when it exposes and changes nothing: the engine binary
+    # and its dictionaries as root installed them.
+    assert ok(0, 0, reg | 0o755, [], me) and ok(0, 0, reg | 0o644, [], me)
+    for gid, mode, xattrs in ((0, 0o600, []),                 # not everyone could read it
+                              (0, 0o640, []),
+                              (0, 0o664, []),                 # others may write it
+                              (0, 0o646, []),
+                              (0, 0o4755, []), (0, 0o2755, []), (0, 0o1644, []),   # set-id, sticky
+                              (5, 0o644, []),                 # a group's
+                              (0, 0o644, ["system.posix_acl_access"]),   # an ACL (maybe a deny)
+                              (0, 0o755, ["security.capability"])):      # a file capability
+        assert not ok(0, gid, reg | mode, xattrs, me), (gid, oct(mode), xattrs)
+    # An old tree root owns: its root files go by the same rule, not as the owner's.
+    assert not ok(0, 0, reg | 0o600, [], 0)
+    # link_into checks it on the new name, and leaves nothing behind when it refuses.
+    tmp = tempdir("teaport-layout-owner-")
+    old = pathlib.Path(tmp, "old")
+    old.mkdir()
+    (old / "f").write_text("x\n")
+    new = pathlib.Path(tmp, "new")
+    new.mkdir()
+    tree = layout.Tree(str(old))
+    try:
+        tree.uid = me + 1                                    # as if the tree were someone else's
+        assert not tree.link_into("f", str(new / "f")) and not os.path.lexists(new / "f")
+        tree.uid = me
+        assert tree.link_into("f", str(new / "f"))
+    finally:
+        os.close(tree.fd)
+
+
 def _brain_box(tmp):
     prefix, state = pathlib.Path(tmp, "opt"), pathlib.Path(tmp, "state")
     brain = prefix / "brain"
