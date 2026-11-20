@@ -8,6 +8,13 @@ description: NVIDIA's house style for voice and tone, capitalization, punctuatio
 
 # NVIDIA Style Guidelines
 
+> **Teaport note.** Teaport is a Teaspoon AI product. Teaspoon AI is a member of NVIDIA Inception, and Teaport runs on NVIDIA Jetson Orin Nano and uses NVIDIA NemoClaw.
+> Apply this guide for writing style and for the correct names of NVIDIA products and trademarks.
+> Write as Teaspoon AI about Teaport, not as NVIDIA: where the guide says "our brand" or "we," read it as NVIDIA's own copy, not Teaport's.
+> Don't describe Teaport as an NVIDIA product or imply that NVIDIA builds, endorses, or certifies it.
+> Mention NVIDIA Inception or use its badge only as the Inception member guidelines allow.
+> NVIDIA's trademark rules about marking and legal copy are written for NVIDIA as the trademark owner; in Teaport copy, attribute NVIDIA trademarks to NVIDIA Corporation instead.
+
 Adapted from the NVIDIA Style Guidelines SharePoint page, last modified 2026-09-16 and retrieved 2026-11-19, the NVIDIA Technical Blog Writing and Style Guide, retrieved 2026-11-19, and the Technical Documentation Writing Guide Confluence pages, retrieved 2026-11-19; all three are NVIDIA-internal.
 Changes from the style guidelines page: converted to Markdown, with hyperlinks taken from the rendered page; text in the page's three images (the Voice and Tone comparison, the PACE table, and the annotated headings diagram) transcribed and marked as such; monospace applied to code-like examples in the Formatting table and punctuation examples, following the page's own rules.
 Links to NVIDIA-internal resources on SharePoint, Google Docs, and Confluence are removed, and those resources are named in plain text.
@@ -15,7 +22,7 @@ The Technical Documentation Writing Guide's Style Guide Cheat Sheet is included 
 The style guidelines page's sections are split into the files listed in [Topic Files](#topic-files), which replaces the page's table of contents; its cross-references are links between those files.
 Writing guidance from the Technical Blog guide is added to the matching sections and marked *(Technical Blog guide)*, with its examples labeled Correct and Incorrect; its publishing procedures (turnaround times, word counts, WordPress formatting, author accounts, featured images, categories, tags, and social media assets) are omitted.
 The wording is otherwise the sources'.
-Copied into Teaport from [NVIDIA/NemoClaw PR #14665](https://github.com/NVIDIA/NemoClaw/pull/14665) (merge commit `5a7910b5`, Apache-2.0); the only changes are this note, which replaces NemoClaw's WRITING.md pointer, and the trigger sentence in the description.
+Copied into Teaport from [NVIDIA/NemoClaw PR #14665](https://github.com/NVIDIA/NemoClaw/pull/14665) (merge commit `5a7910b5`, Apache-2.0); the only changes are the Teaport note above, this note, which replaces NemoClaw's WRITING.md pointer, and the trigger sentence in the description.
 
 In technical documentation, the [Technical Documentation Conventions](#technical-documentation-conventions) take precedence over the rest of this guide where they differ, such as on contractions, em dashes, heading case, and “see” compared to “refer to.”
 
