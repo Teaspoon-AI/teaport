@@ -758,7 +758,7 @@ async def test_a_run_waits_out_a_tool_call_put_out_with_a_line():
 
 
 async def test_a_cancelled_calls_late_in_progress_frame_opens_no_round():
-    """Owed.tla staleFlag (OwedResolves): "Let me check." + get_weather, the caller barges
+    """Owed.tla staleFlag (OwedResolvesOrWaits): "Let me check." + get_weather, the caller barges
     in during the line and their turn commits no words. The call's in-progress frame is
     uninterruptible -- it waits behind the line's audio -- and reaches the gate after the
     interruption and the call's cancel. As one flag it shut the door and the lull for

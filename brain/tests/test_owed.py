@@ -1007,6 +1007,76 @@ async def test_a_verdict_still_to_come_at_the_sessions_end_errs_owed():
     assert [r.key for r in b.owed()] == ["call-ws"], "applied twice, or lost"
 
 
+# =============================================================== a held stop (Owed.tla Hold)
+
+async def test_a_held_stop_disarms_the_reoffer_until_their_next_turn():
+    """barge_pause.py A BARE STOP -> Owed.caller_waits: "Okay, wait." asks nothing, so no
+    request carries the note, and the re-offer its turn armed is disarmed -- they asked
+    the box to wait. The record stays owed (OwedResolvesOrWaits); their next turn arms
+    the re-offer again (TurnRearms) and its request carries the note."""
+    b, ctx, gate = book(reoffer_quiet_s=0.05)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    gate.asked.clear()                        # its run waits at the door: the turn drops it
+    rec = b.record("call-hn")
+    b.caller_turn()
+    b.caller_waits()
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [] and rec.state == OWED and not rec.missed, (gate.asked, rec)
+    b.caller_turn()
+    assert rec.missed, "their next turn did not arm it again"
+    says(ctx, "Okay, I'm back.")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",)
+    await asyncio.sleep(0.3)
+    assert gate.asked == [(["call-hn"], "reoffer")], gate.asked
+
+
+async def test_a_consult_that_lands_while_the_caller_waits_asks_no_run():
+    """ow_holdLandRuns: a consult landing inside the held turn stayed quiet (a caller
+    request was pending, and the hold disarmed the re-offer), while one landing a moment
+    after the hold asked its run and spoke over the wait. Either side of the hold it says
+    nothing now: no run, nothing armed, until their next turn."""
+    b, ctx, gate = book(reoffer_quiet_s=0.05)
+    b.caller_turn()
+    b.caller_waits()
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    rec = b.record("call-hn")
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [] and rec.state == OWED and not rec.missed, (gate.asked, rec)
+    b.caller_turn()
+    says(ctx, "Did you find it?")
+    assert rec.missed and (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",)
+    # The wait is over: a consult that lands now asks its run as ever.
+    b.land(CAL_REQ, None, "call-cal", failure="timeout")
+    assert (["call-cal"], "run") in gate.asked, gate.asked
+
+
+async def test_a_cut_answer_made_after_the_hold_is_not_reoffered_over_the_wait():
+    """ow_holdArmed: a sync answer cut by "Okay, wait." is made a record when its verdicts
+    land (_cut_answer), which can be after the hold; armed there, it was re-offered ten
+    seconds into the wait they had asked for. Whichever comes first, the hold covers it."""
+    for late in (True, False):
+        release = asyncio.Event()
+        b, _, gate = sync_book(judge=FakeJudge(False, release=release), reoffer_quiet_s=0.05)
+        b.caller_turn()
+        cut(b, answer_reply(b, round_msgs()), "There's a", TOY)
+        if not late:
+            release.set()
+            await judged(b)
+        b.caller_waits()
+        release.set()
+        await judged(b)
+        rec = b.record("call-ws")
+        assert rec is not None and rec.state == OWED and not rec.missed, (late, rec)
+        gate.quiet = 99.0
+        await asyncio.sleep(0.3)
+        assert gate.asked == [], (late, gate.asked)
+        b.caller_turn()
+        await asyncio.sleep(0.3)
+        assert gate.asked == [(["call-ws"], "reoffer")], (late, gate.asked)
+
+
 def test_the_rest_the_judge_is_shown_is_aligned_by_characters():
     """One helper, the ledger's (_unheard): the heard prefix is rebuilt from per-word
     frames whose spacing is theirs ("five- five- zero-"), so the rest is found by

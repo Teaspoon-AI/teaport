@@ -848,8 +848,9 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 # is: nothing was rendered or played, so nothing is told or heard, and a decline check
 # the cut made due reads the caller's next words, not these. Its re-offer at a lull,
 # armed by the turn's start, is disarmed (Owed.caller_waits): "they asked you to wait,
-# don't push it", which the re-offer could only read in words no longer there; the
-# caller's next turn arms it again. On SIP, a reply the turn
+# don't push it", which the re-offer could only read in words no longer there; nothing
+# arms it and no consult that lands asks its run until the caller's next turn, which
+# arms it again (formal/Owed.tla Hold, QuietWhileWaiting). On SIP, a reply the turn
 # dropped before any of it played leaves the reply hold's TurnMerge asked for, so the
 # caller's next words join the question they cut short, as a continuation does; no
 # re-ask, since nothing commits until they speak.

@@ -52,8 +52,10 @@
 # strands). The door both go through is FollowupGate.ask (followup_gate.py: the #198
 # hold, a slot of their own beside the post-tool answer's, dropped at the cap, a window
 # both VAD- and turn-level); where it renders (view) it is checked again, and a run
-# whose records were heard meanwhile sends no request. OneReoffer, HoldNoLoss,
-# NoRunUnderSpeech, NoRunMidTurn, NoRunAfterHeard, OwedResolves.
+# whose records were heard meanwhile sends no request. Neither is asked while the
+# caller's "wait" stands -- their last turn was only a stop, held (caller_waits): the
+# record stays owed and their next turn carries the note. OneReoffer, HoldNoLoss,
+# NoRunUnderSpeech, NoRunMidTurn, NoRunAfterHeard, QuietWhileWaiting, OwedResolvesOrWaits.
 #
 # The SETTLE FEED is each reply's own end, charted by the transcript ledger: at the
 # interruption that cut it (TranscriptLedger._interrupt, ahead of the commit by
@@ -1041,6 +1043,9 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
+        # The caller's last turn was only a stop, held, and no turn of theirs has started
+        # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
+        self._waits = False
         if gate is not None:
             gate.on_caller_turn = self.caller_turn
             gate.on_run_dropped = self.run_dropped
@@ -1214,7 +1219,9 @@ class Owed:
         landing run -- unless a caller request is still to be rendered (their turn is
         open, or committed and not yet asked): that request carries the note, and a run
         would speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's
-        place is taken by the re-offer, armed.
+        place is taken by the re-offer, armed. Nor is it asked while the caller's "wait"
+        stands (caller_waits): then nothing is asked or armed, and their next turn carries
+        the note.
 
         A consult OpenClaw cancelled (failure "cancelled", consult_bridge.classify) makes
         no record and returns None: see _cancelled."""
@@ -1240,7 +1247,10 @@ class Owed:
                         f"{'rewritten' if rewrote else _HELD}")
         if not ask or self._closed or self.gate is None:
             return rec
-        if self.gate.caller_request_pending:
+        if self._waits:
+            logger.info(f"OWED: {key} lands while the caller asked to wait -- nothing is "
+                        "said until they speak; their next turn carries the note")
+        elif self.gate.caller_request_pending:
             logger.info(f"OWED: {key} lands with a caller request still to be rendered "
                         "-- it carries the note; the re-offer is armed instead of a run")
             self._arm([rec])
@@ -1358,20 +1368,31 @@ class Owed:
 
     def caller_turn(self) -> None:
         """A caller turn started (Owed.tla TurnStart): it arms the re-offer of every owed
-        record. The gate drops the run waiting at its door; the turn's own request
-        carries the note."""
+        record, and ends a wait an earlier turn asked for (caller_waits). The gate drops
+        the run waiting at its door; the turn's own request carries the note."""
+        self._waits = False
         self._arm(self.owed())
 
     def caller_waits(self) -> None:
-        """The caller's turn was only a stop, and it was held (barge_pause.py A BARE STOP):
-        they asked to wait, and nothing of theirs went into the context for a re-offer to
-        read ("if their last words asked you to wait ... call stay_silent" has no words to
-        go by). So the re-offer that turn's start armed (caller_turn) is disarmed: the
-        records stay owed, and the caller's next turn arms it again and carries the note."""
+        """The caller's turn was only a stop, and it was held (barge_pause.py A BARE STOP;
+        Owed.tla Hold): they asked to wait, and nothing of theirs went into the context for
+        a run of ours to read ("if their last words asked you to wait ... call stay_silent"
+        has no words to go by). So until their next turn the book says nothing of its own
+        (QuietWhileWaiting): the re-offer that turn's start armed (caller_turn) is
+        disarmed; nothing arms it meanwhile (_arm) -- a cut sync answer's record is made
+        when its verdicts land, which can be after this, and armed there it was told ten
+        seconds after "Okay, wait." (ow_holdArmed); and a consult that lands asks no run
+        (land) -- landing inside the held turn it stayed quiet, a moment after it spoke
+        (ow_holdLandRuns). The records stay owed, for as long as the caller says nothing
+        (OwedResolvesOrWaits); their next turn arms the re-offer again and carries the
+        note."""
+        self._waits = True
         for rec in self.owed():
             rec.missed = False
 
     def _arm(self, records) -> None:
+        if self._waits:
+            return                            # they asked to wait: their next turn arms it
         for rec in records:
             rec.missed = True
         if records and not self._closed and self.gate is not None \

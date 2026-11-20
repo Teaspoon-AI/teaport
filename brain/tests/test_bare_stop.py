@@ -404,6 +404,29 @@ async def test_the_session_never_holds_while_its_call_prompt_is_pending():
     assert await start.hold_bare_stop("No, wait.", dropped=True)
 
 
+async def test_a_held_stop_tells_the_sessions_owed_book_the_caller_waits():
+    """build_agent_session ties the hold to the session's owed book (on_held ->
+    Owed.caller_waits): held, the book says nothing of its own -- no re-offer, no run for
+    a consult that lands -- until the caller's next turn (formal/Owed.tla Hold,
+    QuietWhileWaiting)."""
+    from test_post_tool_under_speech import TalkTransport
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.owed import Owed
+    from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
+
+    session = build_agent_session(TalkTransport(), front_end="talk")
+    inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
+    user = next(p for p in inner.processors if isinstance(p, LLMUserAggregator))
+    start = user._user_turn_controller._user_turn_strategies.start[0]
+    book = getattr(start.on_held, "__self__", None)
+    assert isinstance(book, Owed) and start.on_held == book.caller_waits
+    assert not book._waits
+    assert await start.hold_bare_stop("Okay, wait.", dropped=True)
+    assert book._waits, "the hold did not reach the owed book"
+    book.caller_turn()                               # their next turn, as the gate reports it
+    assert not book._waits
+
+
 async def test_a_held_stop_stands_the_speculation_down_and_leaves_no_wait():
     """The speculation asked on the stop's words stands down; and with nothing awaited
     the caller's next words are a turn, not a tail joined to the question."""

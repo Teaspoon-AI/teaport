@@ -369,7 +369,7 @@ class FollowupGate(FrameProcessor):
         # uninterruptible, so it can reach here AFTER the barge-in that cancelled its call
         # (it waits in the TTS's and the transport's queues), and one for an id already
         # settled or cancelled (_calls_done) is ignored. As one flag it set the round
-        # again for good when no completion followed (staleFlag: OwedResolves).
+        # again for good when no completion followed (staleFlag: OwedResolvesOrWaits).
         self._calls_out: dict = {}
         self._calls_done: OrderedDict = OrderedDict()
         # A commit's LLMContextFrame passed TurnCommitMark and the LLM has not rendered it
