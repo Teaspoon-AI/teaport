@@ -1088,19 +1088,24 @@ engine_verify() {
   done
   sel=(-u teaport-engine.service --since '-10 min')
   if [ -n "$id" ]; then sel=("_SYSTEMD_INVOCATION_ID=$id"); fi
-  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  # Each check reads the engine's own status line ("TTS: dict G2P ready|unavailable ..."),
+  # not every line that names the thing: the warning banner a degraded engine prints after
+  # it ("* TTS: en-us dict G2P or its POS tagger is NOT loaded", "* TTS: the AI watermark is
+  # NOT loaded") names it too, and as the last match would hide the status line.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: dict G2P (ready|unavailable)' | tail -1 || true)"
   if contains "dict G2P unavailable" "$line"; then
     warn "the engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $line"; return 1
   fi
-  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$line"; then
     warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
   fi
-  # From 1.7 the engine says whether it marks its speech (an older one says nothing).
-  # VOX_REQUIRE_WATERMARK=1 makes one without the weights exit, which fails above; this
-  # catches the same engine in an engine.env that lost the key.
-  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'AI watermark' | tail -1 || true)"
-  if contains "AI watermark unavailable" "$line"; then
+  # From 1.7 the engine says whether it marks its speech (an older one says nothing): "AI
+  # watermark on", "off" (VOX_TTS_WATERMARK=0), "unavailable", or "watermark needs <rate>"
+  # (a model at another sample rate). VOX_REQUIRE_WATERMARK=1 makes one that does not mark
+  # exit, which fails above; this catches an engine.env that sets it to 0.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: (AI watermark (on|off|unavailable)|watermark needs)' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$line" || contains "watermark needs" "$line"; then
     warn "the engine is running WITHOUT the AI watermark (its speech goes out unmarked): $line"; return 1
   fi
   if contains "AI watermark off" "$line"; then
@@ -3570,18 +3575,19 @@ phase_verify() {
   fi
   # A listening engine can still be prosody-degraded: without bin/g2p/ it runs
   # espeak-only G2P and only says so in one journal line. Check that line.
-  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: dict G2P (ready|unavailable)' | tail -1 || true)"
   if contains "dict G2P unavailable" "$g2p_log"; then
     warn "engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $g2p_log"; ok=0
   fi
-  local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$pos_log"; then
     warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
   fi
-  # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK gone
-  # from engine.env, or it would not be listening) it speaks with no AI watermark.
-  local wm_log; wm_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'AI watermark' | tail -1 || true)"
-  if contains "AI watermark unavailable" "$wm_log" || contains "AI watermark off" "$wm_log"; then
+  # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK=0 in
+  # engine.env, or it would not be listening) it speaks with no AI watermark. The status
+  # lines only, as engine_verify reads them (a banner follows a missing one).
+  local wm_log; wm_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: (AI watermark (on|off|unavailable)|watermark needs)' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$wm_log" || contains "AI watermark off" "$wm_log" || contains "watermark needs" "$wm_log"; then
     warn "engine is running WITHOUT the AI watermark (its speech goes out unmarked): $wm_log"; ok=0
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"

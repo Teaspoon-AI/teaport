@@ -87,7 +87,7 @@ A full install writes every unit and env file and restarts the engine and the br
 
 The installer honors the overrides in this table; the default applies when the variable is unset. `TEAPORT_REPO` and `TEAPORT_REF` belong to the one-line form alone.
 
-<!-- source: install.sh:55-85,93-109,376,2258,3048,3055,3527,3535,3550#2f0acf56 -->
+<!-- source: install.sh:55-85,93-109,376,2263,3053,3060,3532,3540,3555#2f0acf56 -->
 
 | Variable | Default | Controls |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ The installer honors the overrides in this table; the default applies when the v
 | `TEAPORT_TLS_CERT`, `TEAPORT_TLS_KEY` | The certificate an earlier run was given, else none | Your own certificate and key for the front door, in place of the device's own. Set both empty to go back to the device's own. See [Use your own certificate](#use-your-own-certificate). |
 | `TEAPORT_REGENERATE_CA` | `0` | `1` replaces the device's own certificate authority, on every run where it is set. See [Replace the device's certificate](#replace-the-devices-certificate). |
 
-<!-- source: install.sh:78-84,2572-2622#8db56ee2; install.sh:78-84,2554-2557,2572-2626#4a45fbd7 -->
+<!-- source: install.sh:78-84,2577-2627#8db56ee2; install.sh:78-84,2559-2562,2577-2631#4a45fbd7 -->
 
 ## The front door's certificate
 
@@ -167,7 +167,7 @@ Renewal is up to you. Replace both files, then reload Caddy:
 sudo systemctl reload caddy.service
 ```
 
-<!-- source: install.sh:78-84,2626-2651,2572-2622#6819c2bb; install.sh:78-84,2630-2655,2554-2557,2572-2626#24d3909f -->
+<!-- source: install.sh:78-84,2631-2656,2577-2627#6819c2bb; install.sh:78-84,2635-2660,2559-2562,2577-2631#24d3909f -->
 
 ### Replace the device's certificate
 
@@ -182,7 +182,7 @@ After the replacement, no phone or laptop trusts the device until it installs an
 trusts the new certificate. Remove the old entry from each one.
 :::
 
-<!-- source: install.sh:2657-2667#48dc5507 -->
+<!-- source: install.sh:2662-2672#48dc5507 -->
 
 ## Files and directories
 
@@ -207,7 +207,7 @@ An older installer gave these files to the user that runs the brain. On such a d
 
 The brain packages the installer has installed, one `teaport-brain_VERSION_ARCH.deb` each. It keeps the newest three, plus the installed one, and removes the rest after an install. `--rollback brain` installs the newest other package in this directory.
 
-<!-- source: install.sh:1374,1375-1376,1490-1499#ce27d92b -->
+<!-- source: install.sh:1379,1380-1381,1495-1504#ce27d92b -->
 
 **`/opt/teaport/engine.staged/` and `engine.rollback/`**
 
@@ -219,19 +219,19 @@ A run downloads the engine files and models that differ from the manifest into `
 
 The non-secret configuration. The installer writes `engine.env` and `brain.env` here, group-readable with mode 640.
 
-<!-- source: install.sh:95,2327,2856,2883#33a4a431 -->
+<!-- source: install.sh:95,2332,2861,2888#33a4a431 -->
 
 **`~/.config/teaport/`**
 
 The secrets directory, created with mode 700. The installer seeds `persona.md` when it is absent and never overwrites it, and keeps the `openclaw_token` and `discord_bot_token` files at mode 600.
 
-<!-- source: install.sh:102,2098,2203,3070#70f18d40; install.sh:2897-2902#a0504365 -->
+<!-- source: install.sh:102,2103,2208,3075#70f18d40; install.sh:2902-2907#a0504365 -->
 
 **`/var/lib/teaport/`**
 
 Download space: release archives and the brain package the manifest names. It also holds `engine.release`, the engine release the installer last put live, which `teaport update` reads so that it never installs an older engine. The installer creates it, owned by root. The first run on a device that an older installer set up keeps only the record and text of the engine license you accepted, and the notes on the journal and network settings; downloads are fetched again.
 
-<!-- source: install.sh:96,1423#40b78c24; install.sh:845#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:30-31,70-71#78e4ef3b -->
+<!-- source: install.sh:96,1428#40b78c24; install.sh:845#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:30-31,70-71#78e4ef3b -->
 
 The lock that keeps a second run of the installer from starting while one is running is `/run/teaport-install.lock`.
 
@@ -247,7 +247,7 @@ The last `teaport update` run: `run.json`, its state, and `log`, its output. The
 
 Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its captive DNS configuration. The brain package does not install anything here.
 
-<!-- source: install.sh:3494#40276f47 -->
+<!-- source: install.sh:3499#40276f47 -->
 
 **`/usr/bin/teaport` and `/usr/lib/teaport/`**
 
@@ -257,66 +257,66 @@ The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 
-<!-- source: install.sh:477,505,1735,1780,3486-3491#41b1eb60; packaging/wifi-setup/50-teaport-wifi-setup.rules.in:14-19#029e8371 -->
+<!-- source: install.sh:477,505,1740,1785,3491-3496#41b1eb60; packaging/wifi-setup/50-teaport-wifi-setup.rules.in:14-19#029e8371 -->
 
 ## systemd units
 
 The installer renders the templates in `systemd/*.service.in` into `/etc/systemd/system/`, as root-owned files with mode 644.
 
-<!-- source: install.sh:466-472#eca2a531; install.sh:2291-2326#5225fc85 -->
+<!-- source: install.sh:466-472#eca2a531; install.sh:2296-2331#5225fc85 -->
 
 **`teaport-engine.service`**
 
 The speech engine: Voxtral for speech-to-text and Kokoro for text-to-speech. Rendered on every install and enabled.
 
-<!-- source: install.sh:2913,2924#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478 -->
+<!-- source: install.sh:2918,2929#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478 -->
 
 **`teaport-brain.service`**
 
 The voice pipeline. The brain serves Talk and the phone line's front end. Rendered on every install and enabled.
 
-<!-- source: install.sh:22,2914,2924#bd4f4709; systemd/teaport-brain.service.in:6#dd1fa334 -->
+<!-- source: install.sh:22,2919,2929#bd4f4709; systemd/teaport-brain.service.in:6#dd1fa334 -->
 
 **`teaport-sandbox-recover.service`**
 
 NemoClaw sandbox recovery at boot. Rendered and enabled only when the install has a NemoClaw sandbox.
 
-<!-- source: install.sh:2915,2935#c4ac276c; systemd/teaport-sandbox-recover.service.in:6#32a2e52e -->
+<!-- source: install.sh:2920,2940#c4ac276c; systemd/teaport-sandbox-recover.service.in:6#32a2e52e -->
 
 **`teaport-discord-bridge.service`**
 
 The Discord voice bridge. It runs on the host, owns the media leg, and pipes audio to the brain's `/talk` endpoint. The installer renders it when `TEAPORT_ENABLE_BRIDGE=1` or a bot token is already present, and enables it; the unit starts only after the guild, followed user, and token are configured.
 
-<!-- source: install.sh:3043,3048,3096,3098-3106#fb1ef353; systemd/teaport-discord-bridge.service.in:8#f85a03b3 -->
+<!-- source: install.sh:3048,3053,3101,3103-3111#fb1ef353; systemd/teaport-discord-bridge.service.in:8#f85a03b3 -->
 
 **`teaport-sip.service`**
 
 The SIP front end for phone calls. Rendered on every run, never enabled by the installer: the unit carries a `ConditionPathExists` on the SIP configuration, and `teaport sip configure` is what registers a trunk and turns it on. A repair re-renders the unit and leaves its enabled state alone. The gateway binary itself comes from the separate teaport-sip repository. While it renders the SIP unit, the installer also removes a leftover `teaport-sip-brain` unit from older installs.
 
-<!-- source: install.sh:3188-3196,3402-3409,3414-3424#e99260ed; systemd/teaport-sip.service.in:13,17#65131321 -->
+<!-- source: install.sh:3193-3201,3407-3414,3419-3429#e99260ed; systemd/teaport-sip.service.in:13,17#65131321 -->
 
 **`teaport-local-audio.service`**
 
 The local microphone and speaker bridge for a USB mic array, piping audio to the brain's `/talk` endpoint. Rendered on every install but inert until `.env` exists. `TEAPORT_ENABLE_LOCAL_AUDIO=1` seeds that file and enables the unit; a repair without it leaves the enabled state alone, so a bridge the operator disabled stays off.
 
-<!-- source: install.sh:3428-3432,3533,3552#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
+<!-- source: install.sh:3433-3437,3538,3557#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
 
 **`teaport-wifi-setup.service`**
 
 The Wi-Fi setup flow: a temporary setup network and a page where a phone enters the password. The brain starts it when the user asks for setup. Rendered when NetworkManager and iptables are present; never enabled by the installer. It runs as the run user. Its changes to the Wi-Fi, such as the setup network and joining your network, go through `wifi_apply.py` under `sudo`.
 
-<!-- source: install.sh:3474-3478,3481-3483#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:28-29#9534e228 -->
+<!-- source: install.sh:3479-3483,3486-3488#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:28-29#9534e228 -->
 
 **`teaport-wifi-setup-net.service`**
 
 The root side of Wi-Fi setup: the rule that sends port 80 on the setup network to the page, and the captive DNS file. It starts before `teaport-wifi-setup.service` and stops after it, however that ends. It loads no settings file: the settings in `/etc/teaport` are written on the run user's behalf, so no command that runs as root takes its environment from them. The brain package installs it in `/usr/lib/systemd/system`, and the installer also renders it into `/etc/systemd/system`.
 
-<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3481-3482#4a54cd32; packaging/nfpm.yaml:153-154#7b0f03ce -->
+<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3486-3487#4a54cd32; packaging/nfpm.yaml:153-154#7b0f03ce -->
 
 Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 
-<!-- source: install.sh:3523-3530#6384d3ce -->
+<!-- source: install.sh:3528-3535#6384d3ce -->
 
 The installer also enables `avahi-daemon` and `caddy`.
 
-<!-- source: install.sh:3011#e72e75fe -->
+<!-- source: install.sh:3016#e72e75fe -->

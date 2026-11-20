@@ -201,7 +201,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2257#2ca3ef5a; install.sh:2705-2774#d970b544 -->
+<!-- source: install.sh:2262#2ca3ef5a; install.sh:2710-2779#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -226,7 +226,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2087-2100#3bb53588; install.sh:2086-2099#e0d335b8 -->
+<!-- source: install.sh:2092-2105#3bb53588; install.sh:2091-2104#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -257,7 +257,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2105-2109#bf1269bd -->
+<!-- source: install.sh:2110-2114#bf1269bd -->
 
 **Fix**
 
@@ -288,7 +288,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1937-1949#a65c0a82 -->
+<!-- source: install.sh:1942-1954#a65c0a82 -->
 
 **Fix**
 
@@ -359,7 +359,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2705-2774#d970b544; install.sh:2572-2622#a3eb07c3; install.sh:2554-2557,2572-2626#49197cea -->
+<!-- source: install.sh:2710-2779#d970b544; install.sh:2577-2627#a3eb07c3; install.sh:2559-2562,2577-2631#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -404,7 +404,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2794-2798#3c1e6011; install.sh:2878-2881#b1e28ef5 -->
+<!-- source: install.sh:2799-2803#3c1e6011; install.sh:2883-2886#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -470,12 +470,12 @@ everything it says. It reads the watermark weights from
 `/opt/teaport/bin/watermark/perth_implicit.v2.bin`. The installer writes
 `VOX_REQUIRE_WATERMARK=1` into `/etc/teaport/engine.env`, so an engine that
 can't load the watermark stops instead of speaking without it. It also stops
-when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` lacks
-`VOX_REQUIRE_WATERMARK`, the engine starts and speaks without the watermark,
-and the installer's last check reports `engine is running WITHOUT the AI
+when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
+`VOX_REQUIRE_WATERMARK=0` instead, the engine starts and speaks without the
+watermark, and the installer's checks report `running WITHOUT the AI
 watermark`.
 
-<!-- source: install.sh:954-956,2512-2516,3583-3585#3802a23b -->
+<!-- source: install.sh:954-956,2517-2521,3589-3591,1107-1109#41f37ed9 -->
 
 **Fix**
 
@@ -570,7 +570,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2192-2200,2227-2233#4287c4a8; install.sh:2247-2250#cefd034b -->
+<!-- source: install.sh:2197-2205,2232-2238#4287c4a8; install.sh:2252-2255#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -578,7 +578,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2237-2245#b3851890 -->
+<!-- source: install.sh:2242-2250#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -686,7 +686,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2087-2100#3bb53588; install.sh:2086-2099#e0d335b8 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2092-2105#3bb53588; install.sh:2091-2104#e0d335b8 -->
 
 **Fix**
 
