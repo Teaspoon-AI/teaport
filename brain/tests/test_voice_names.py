@@ -11,8 +11,37 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from teaport_brain.engine_tts import ENGINE_VOICES, VOICE_NAMES  # noqa: E402
+from teaport_brain import engine_tts  # noqa: E402
+from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES  # noqa: E402
 from teaport_brain import tools  # noqa: E402
+
+# Every voice but the zm_* ones: the stable channel's model, which predates them.
+OLD_MODEL = frozenset(v for vs in ENGINE_VOICES.values() for v in vs
+                      if not v.startswith("zm_"))
+ALL = frozenset(v for vs in ENGINE_VOICES.values() for v in vs)
+
+
+class _Served:
+    """engine_tts's cached engine answer set to `served` for the block (None: the
+    engine could not be asked)."""
+
+    def __init__(self, served):
+        self.served = served
+
+    def __enter__(self):
+        self.saved = engine_tts._served_voices
+        engine_tts._served_voices = self.served
+        if self.served is None:
+            # Not asked: a bare test box has no engine, and one that does must not
+            # decide what this test sees.
+            self.ask = engine_tts.served_voices
+            engine_tts.served_voices = lambda timeout=1.0: None
+        return self
+
+    def __exit__(self, *exc):
+        engine_tts._served_voices = self.saved
+        if self.served is None:
+            engine_tts.served_voices = self.ask
 
 
 class _Params:
@@ -29,8 +58,9 @@ class _TTS:
     espeak_language = "cmn"
 
     def set_voice(self, voice):
-        return {"ok": True, "voice": voice, "language": "cmn",
-                "language_name": "Chinese (Mandarin)"}
+        lang = next(k for k, vs in ENGINE_VOICES.items() if voice in vs)
+        return {"ok": True, "voice": voice, "language": lang,
+                "language_name": LANG_NAMES[lang]}
 
 
 def test_every_named_voice_exists():
@@ -48,22 +78,56 @@ def test_the_male_mandarin_voices_are_offered():
 
 
 def test_list_voices_hands_over_the_names():
-    p = _Params()
-    asyncio.run(tools._list_voices(p, tts=_TTS()))
+    with _Served(ALL):
+        p = _Params()
+        asyncio.run(tools._list_voices(p, tts=_TTS()))
     assert p.result["voice_names"]["zm_yunxi"] == "云希"
-    assert "never the id" in p.result["note"]
+    assert "Mandarin" in p.result["note"]
 
 
 def test_switch_voice_names_a_named_voice():
-    p = _Params({"voice": "zm_yunxi"})
-    asyncio.run(tools._switch_voice(p, tts=_TTS()))
+    with _Served(ALL):
+        p = _Params({"voice": "zm_yunxi"})
+        asyncio.run(tools._switch_voice(p, tts=_TTS()))
     assert p.result["ok"] and "云希" in p.result["note"], p.result
 
 
 def test_switch_voice_note_unchanged_for_an_unnamed_voice():
-    p = _Params({"voice": "af_nova"})
-    asyncio.run(tools._switch_voice(p, tts=_TTS()))
-    assert p.result["note"].startswith("You now speak with af_nova. "), p.result
+    with _Served(ALL):
+        p = _Params({"voice": "af_nova"})
+        asyncio.run(tools._switch_voice(p, tts=_TTS()))
+    assert p.result["note"] == ("You now speak with af_nova. From now on reply only in "
+                                "English (US)."), p.result
+
+
+# An engine whose model lacks the zm_* voices (the stable channel's): they are not
+# offered, listed, named or accepted, so a switch to one cannot leave the session mute.
+def test_an_old_model_withholds_the_voices_it_lacks():
+    with _Served(OLD_MODEL):
+        assert "zm_yunxi" not in tools.offered_voices()["cmn"]
+        p = _Params()
+        asyncio.run(tools._list_voices(p, tts=_TTS()))
+        assert "zm_yunxi" not in p.result["voices_by_language"]["Chinese (Mandarin)"]
+        assert "zm_yunxi" not in p.result["voice_names"]
+        assert p.result["voice_names"]["zf_xiaobei"] == "晓北"
+        p = _Params({"voice": "zm_yunxi"})
+        asyncio.run(tools._switch_voice(p, tts=_TTS()))
+        assert p.result["ok"] is False, p.result
+        enum = next(t for t in tools.build_tools_schema(tools.ToolContext(has_tts=True))
+                    .standard_tools if t.name == "switch_voice").properties["voice"]["enum"]
+        assert set(enum) == OLD_MODEL, sorted(set(enum) ^ OLD_MODEL)
+
+
+def test_an_engine_that_cannot_be_asked_withholds_nothing():
+    with _Served(None):
+        assert tools.offered_voices() == ENGINE_VOICES
+        enum = next(t for t in tools.build_tools_schema(tools.ToolContext(has_tts=True))
+                    .standard_tools if t.name == "switch_voice").properties["voice"]["enum"]
+        assert set(enum) == ALL
+
+
+def test_a_language_the_model_lacks_entirely_is_dropped():
+    assert "cmn" not in engine_tts.offered_voices(frozenset({"af_heart"}))
 
 
 def main():

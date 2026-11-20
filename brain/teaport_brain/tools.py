@@ -84,7 +84,7 @@ from teaport_brain import openclaw_client as oc
 from teaport_brain.owed import CANCELLED_NOTE
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
-from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES
+from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES, offered_voices
 from teaport_brain.settings import setting
 
 # Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
@@ -315,7 +315,8 @@ SWITCH_VOICE = FunctionSchema(
         "description": "Exact voice id. The first letter is the language (a=US English, "
                        "b=British, e=Spanish, f=French, h=Hindi, i=Italian, j=Japanese, "
                        "p=Portuguese, z=Mandarin) and the second is the gender (f/m), so "
-                       "the Nova voice is 'af_nova' and Liam is 'am_liam'.",
+                       "the Nova voice is 'af_nova' and Liam is 'am_liam'. Mandarin voices "
+                       "are their names in pinyin: 云希 is 'zm_yunxi'.",
     }},
     required=["voice"],
 )
@@ -1327,22 +1328,23 @@ async def _remember(params: FunctionCallParams):
 
 
 async def _list_voices(params: FunctionCallParams, tts=None):
+    offered = offered_voices()
     await params.result_callback({
         "current_voice": getattr(tts, "_voice", None),
         "current_language": LANG_NAMES.get(
             getattr(tts, "espeak_language", ""), getattr(tts, "espeak_language", "?")),
-        "voices_by_language": {LANG_NAMES.get(k, k): v
-                               for k, v in ENGINE_VOICES.items()},
-        "voice_names": VOICE_NAMES,
-        "note": ("Japanese voices use a lower-quality phonemizer. A voice listed in "
-                 "voice_names is called by that name when you talk about it: say the "
-                 "name, never the id."),
+        "voices_by_language": {LANG_NAMES.get(k, k): v for k, v in offered.items()},
+        "voice_names": {v: n for v, n in VOICE_NAMES.items()
+                        if any(v in vs for vs in offered.values())},
+        "note": ("Japanese voices use a lower-quality phonemizer. When you speak "
+                 "Mandarin, call a voice in voice_names by its name rather than reading "
+                 "out its id."),
     })
 
 
 async def _switch_voice(params: FunctionCallParams, tts=None):
     voice = str((params.arguments or {}).get("voice", "")).strip()
-    lang = next((k for k, vs in ENGINE_VOICES.items() if voice in vs), None)
+    lang = next((k for k, vs in offered_voices().items() if voice in vs), None)
     if lang is None or tts is None:
         await params.result_callback(
             {"ok": False, "error": f"unknown voice {voice!r}",
@@ -1351,7 +1353,7 @@ async def _switch_voice(params: FunctionCallParams, tts=None):
     result = tts.set_voice(voice)
     if result.get("ok"):
         name = VOICE_NAMES.get(voice)
-        said = f"{name} ({voice}; call it {name}, never by the id)" if name else voice
+        said = f"{name} ({voice}; in Mandarin, call it {name})" if name else voice
         result["note"] = (f"You now speak with {said}. From now on reply only in "
                           f"{result['language_name']}.")
         logger.info(f"switch_voice: {voice} ({result['language_name']})")
@@ -2054,8 +2056,24 @@ def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
     status phrase (_with_status_phrase)."""
     ctx = ctx or ToolContext()
     host = {s.name: s for s in ctx.host_schemas}
-    return ToolsSchema(standard_tools=[_with_status_phrase(host.get(t.name, t.schema))
-                                       for t in active_tools(ctx)])
+    return ToolsSchema(standard_tools=[_with_offered_voices(
+        _with_status_phrase(host.get(t.name, t.schema))) for t in active_tools(ctx)])
+
+
+def _with_offered_voices(schema: FunctionSchema) -> FunctionSchema:
+    """switch_voice's schema with its enum cut to the voices the engine's model holds
+    (engine_tts.offered_voices), asked as each session's schema is built: _switch_voice
+    accepts exactly these, and a voice the model lacks would be refused by the engine on
+    every request after the switch. Any other schema as it is."""
+    if schema.name != SWITCH_VOICE.name or "voice" not in schema.properties:
+        return schema
+    offered = sorted({v for vs in offered_voices().values() for v in vs})
+    if offered == schema.properties["voice"].get("enum"):
+        return schema
+    return FunctionSchema(name=schema.name, description=schema.description,
+                          properties={**schema.properties,
+                                      "voice": {**schema.properties["voice"], "enum": offered}},
+                          required=list(schema.required))
 
 
 def _with_status_phrase(schema: FunctionSchema) -> FunctionSchema:
