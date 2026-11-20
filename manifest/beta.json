@@ -35,8 +35,8 @@
     },
     "watermark": {
       "_note": "engine/watermark/perth_implicit.v2.bin: the AI watermark's weights, the embedder of Resemble AI's Perth implicit watermarker (resemble-perth 1.0.1, MIT), converted by teagram-engine tools/wm_convert.py. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. From engine 1.7 every TTS output carries the mark (EU AI Act Art. 50(2)); MUST install to bin/watermark/ — without it the engine speaks unmarked, or with VOX_REQUIRE_WATERMARK=1 refuses to serve. install.sh and manifest/check.py require it for any engine release from 1.7 on. Arch-independent; rides the engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-watermark.bin",
-      "sha256": "TODO"
+      "url": "https://get.teaspoon.tech/dl/engine/watermark/perth_implicit.v2.bin",
+      "sha256": "85c1bf827fa18c91f3fd9359a3b0fe1c320c1584668649c558fe273bf44ddfa4"
     },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from. Carries the MIT/BSD/Apache-2.0 attributions for the engine's third-party components. install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
