@@ -253,7 +253,7 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the three `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:72-145#b185d90a; packaging/deb/sudoers-sync:1-29#3cec0b6e; packaging/deb/sudoers-sync:90-93#835838b5 -->
+<!-- source: packaging/nfpm.yaml:65-160#eb432db8; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:101-104#835838b5 -->
 
 `sudoers-sync` writes one rule per helper into `/etc/sudoers.d/teaport-config`. Each rule lets the user that runs the brain run that one script as root, with the system Python, and nothing else:
 
@@ -265,7 +265,7 @@ USER ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 /usr/lib/teaport/login_ap
 
 The login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's new password, which `sudo` must not keep where its input logging is on. The package runs `sudoers-sync` after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
 
-<!-- source: packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:47-58#a31d5105 -->
+<!-- source: packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:82-99#589be1a9 -->
 
 **`/var/lib/teaport-owner/`**
 
@@ -323,13 +323,13 @@ The local microphone and speaker bridge for a USB mic array, piping audio to the
 
 The Wi-Fi setup flow: a temporary setup network and a page where a phone enters the password. The brain starts it when the user asks for setup. Rendered when NetworkManager and iptables are present; never enabled by the installer. It runs as the run user. Its changes to the Wi-Fi, such as the setup network and joining your network, go through `wifi_apply.py` under `sudo`.
 
-<!-- source: install.sh:3425-3429,3432-3434#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:28-29#9534e228 -->
+<!-- source: install.sh:3425-3429,3432-3434#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:25-27#7524bbbc -->
 
 **`teaport-wifi-setup-net.service`**
 
 The root side of Wi-Fi setup: the rule that sends port 80 on the setup network to the page, and the captive DNS file. It starts before `teaport-wifi-setup.service` and stops after it, however that ends. It loads no settings file: the settings in `/etc/teaport` are written on the run user's behalf, so no command that runs as root takes its environment from them. The brain package installs it in `/usr/lib/systemd/system`, and the installer also renders it into `/etc/systemd/system`.
 
-<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3432-3433#4a54cd32; packaging/nfpm.yaml:153-154#7b0f03ce -->
+<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:3432-3433#4a54cd32; packaging/nfpm.yaml:166-167#7b0f03ce -->
 
 Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 

@@ -17,7 +17,7 @@ root, in `/usr/lib/teaport/`. It runs on the system Python, never the brain's ow
 environment. The `teaport-brain` package installs the helpers, and
 `/usr/lib/teaport/sudoers-sync` writes their rules into `/etc/sudoers.d/teaport-config`.
 
-<!-- source: packaging/deb/sudoers-sync:5-10#cfea6970; packaging/deb/sudoers-sync:49-58#58460f9b; packaging/nfpm.yaml:82,91,100#54fe789f -->
+<!-- source: packaging/deb/sudoers-sync:5-11#e895c837; packaging/deb/sudoers-sync:82-99#589be1a9; packaging/nfpm.yaml:86,95,104#54fe789f -->
 
 | Helper | What the run user can ask it to do |
 | --- | --- |
@@ -102,7 +102,7 @@ keep the password. On its way it is held in a wrapper that hides it from an erro
 that prints variables. A password is at
 least 12 characters and at most 256 bytes, without control or invisible characters.
 
-<!-- source: brain/teaport_brain/login_apply.py:43-49#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:47-48,58#739424b7; brain/teaport_brain/login_apply.py:93-97#831554ec; brain/teaport_brain/login_apply.py:137-148#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:43-49#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:89-91,95#42394c18; brain/teaport_brain/login_apply.py:93-97#831554ec; brain/teaport_brain/login_apply.py:137-148#020cf4bc -->
 
 The setup page's form can create the administrator account, so the page answers only
 under its own names: the setup network's address and its `.local` name. A request for

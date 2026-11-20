@@ -625,7 +625,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
+<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:820-826#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -733,7 +733,7 @@ If neither the settings nor the setup page shows the step, one of these is true:
 
 <!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f -->
 
-<!-- source: brain/teaport_brain/owner_login.py:99-103#3acb30a5; packaging/deb/sudoers-sync:22#89c77aa8; packaging/deb/sudoers-sync:58#b62acd37 -->
+<!-- source: brain/teaport_brain/owner_login.py:99-103#3acb30a5; packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:95#4b190318 -->
 
 ### The device already has a login
 

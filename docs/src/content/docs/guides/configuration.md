@@ -15,13 +15,13 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files. On a device that ships ready to set up, sign in as `teaport`, the login you created during setup; see [Create your login in the settings](#create-your-login-in-the-settings) if you have none yet.
 
-<!-- source: brain/teaport_brain/config_ui.py:17-24#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2802#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:19-26#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2802#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, so the token never crosses the network unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:100-116#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,34-40#a24a491a; brain/teaport_brain/config_schema.toml:2219-2229#39346419; brain/teaport_brain/static/config.html:382-392#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,36-42#a24a491a; brain/teaport_brain/config_schema.toml:2219-2229#39346419; brain/teaport_brain/static/config.html:383-393#2b63b6f7 -->
 
 To change a setting there:
 
@@ -204,7 +204,7 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:48-53#bb168482; brain/teaport_brain/config_schema.toml:244-263#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:676-693#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
+<!-- source: brain/teaport_brain/config_ui.py:50-55#bb168482; brain/teaport_brain/config_schema.toml:244-263#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:678-695#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 ### From the command line
 
