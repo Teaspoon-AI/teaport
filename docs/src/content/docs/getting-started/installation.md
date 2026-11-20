@@ -151,7 +151,7 @@ The installer does these tasks:
 
 - It downloads the engine, release 1.6, with its models and the pronunciation dictionary
   into `/opt/teaport`.
-- It installs the brain: the `teaport-brain` package, which carries the Python 3.12 environment, the `teaport` command, and the configuration helper.
+- It installs the brain: the `teaport-brain` package, which carries the Python 3.12 environment, the `teaport` command, and the helpers that run as root.
 - It installs the plugin into your agent and connects the agent to the brain.
 - With OpenClaw on the device, it adds the teaport documentation to OpenClaw's memory
   wiki, so that you can ask your agent how to set up or fix teaport.

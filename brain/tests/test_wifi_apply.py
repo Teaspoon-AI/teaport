@@ -282,12 +282,31 @@ def test_the_package_ships_the_helper_and_the_setup_unit_can_reach_it():
     assert imports <= {"fcntl", "json", "os", "re", "signal", "subprocess", "sys", "time"}, imports
 
 
-def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True, update_rules_writable=True):
-    """sudoers-sync with its paths under tmp_path; visudo is a stub."""
+# What `sudo --version` and `visudo --version` print: classic sudo, and sudo-rs (newer
+# Ubuntu releases' default).
+CLASSIC = ("Sudo version 1.9.15p5", "visudo version 1.9.15p5")
+SUDO_RS = ("sudo-rs 0.2.5", "visudo-rs 0.2.5")
+
+
+def _real_sudo_is_rs() -> bool:
+    out = ""
+    for tool in ("sudo", "visudo"):
+        try:
+            out += subprocess.run([tool, "--version"], capture_output=True, text=True).stdout
+        except OSError:
+            pass
+    return "sudo-rs" in out
+
+
+def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True, update_rules_writable=True,
+                  sudo=CLASSIC):
+    """sudoers-sync with its paths under tmp_path; visudo is a stub, and `sudo` the
+    (sudo, visudo) --version lines it says it is; sudo=None: this machine's own sudo and
+    visudo, for the real check."""
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     lib = tmp_path / "lib"
     lib.mkdir(exist_ok=True)
-    for name in ("config_apply.py", "wifi_apply.py"):
+    for name in ("config_apply.py", "wifi_apply.py", "login_apply.py"):
         (lib / name).write_text("#\n")
     (lib / "50-teaport-wifi-setup.rules.in").write_text(
         (ROOT / "packaging/wifi-setup/50-teaport-wifi-setup.rules.in").read_text())
@@ -308,10 +327,16 @@ def _sudoers_sync(tmp_path, rules_text=None, visudo_ok=True, update_rules_writab
     script.write_text(text)
     bin_ = tmp_path / "bin"
     bin_.mkdir(exist_ok=True)
-    (bin_ / "visudo").write_text(f"#!/bin/sh\nexit {0 if visudo_ok else 1}\n")
+    stubs = ["install"]
+    if sudo is not None:
+        sudo_line, visudo_line = sudo
+        (bin_ / "visudo").write_text(f'#!/bin/sh\n[ "$1" = --version ] && {{ echo "{visudo_line}"; exit 0; }}\n'
+                                     f"exit {0 if visudo_ok else 1}\n")
+        (bin_ / "sudo").write_text(f'#!/bin/sh\n[ "$1" = --version ] && echo "{sudo_line}"\nexit 0\n')
+        stubs += ["visudo", "sudo"]
     # install -o root needs root: the stub copies and sets the mode only.
     (bin_ / "install").write_text('#!/bin/sh\nmode=$2; shift 6; cp "$1" "$2"; chmod "$mode" "$2"\n')
-    for t in ("visudo", "install"):
+    for t in stubs:
         (bin_ / t).chmod(0o755)
     p = subprocess.run(["sh", str(script), "alice"], capture_output=True, text=True,
                        env={**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}"})
@@ -329,15 +354,34 @@ def test_an_update_rule_that_cannot_be_written_does_not_stop_the_wifi_narrowing(
 WIDE_RULE = 'polkit.addRule(function(action, subject) { if (subject.user == "alice" && (action.id == "org.freedesktop.NetworkManager.settings.modify.system")) return polkit.Result.YES; });\n'
 
 
-def test_sudoers_sync_writes_the_helpers_lines_and_narrows_a_wider_rule(tmp_path):
-    p, sudoers, rules = _sudoers_sync(tmp_path, WIDE_RULE)
+@pytest.mark.parametrize("sudo, tags", [(CLASSIC, "NOLOG_INPUT:"), (SUDO_RS, "")])
+def test_sudoers_sync_writes_the_helpers_lines_and_narrows_a_wider_rule(tmp_path, sudo, tags):
+    # NOLOG_INPUT only for classic sudo: sudo-rs keeps no input to leave the password out
+    # of, and its visudo refuses the tag, which would drop every line.
+    p, sudoers, rules = _sudoers_sync(tmp_path, WIDE_RULE, sudo=sudo)
     assert p.returncode == 0, p.stderr
     lines = [ln for ln in sudoers.read_text().splitlines() if not ln.startswith("#")]
     assert lines == [f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/config_apply.py *",
-                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/wifi_apply.py *"], lines
+                     f"alice ALL=(root) NOPASSWD: /usr/bin/python3 {tmp_path}/lib/wifi_apply.py *",
+                     f"alice ALL=(root) NOPASSWD:{tags} /usr/bin/python3 {tmp_path}/lib/login_apply.py *"], lines
     narrowed = rules.read_text()
     assert "settings.modify.system" not in narrowed.split("polkit.addRule")[1]
     assert 'subject.user == "alice"' in narrowed and "wifi.scan" in narrowed
+
+
+def test_the_generated_lines_pass_the_real_visudo(tmp_path):
+    # The stubs pass anything: the lines themselves must be what this machine's sudo takes
+    # (classic or sudo-rs), or sudoers-sync installs none of them -- with NOLOG_INPUT
+    # exactly when that sudo is classic.
+    visudo = next((p for p in ("/usr/sbin/visudo", "/sbin/visudo", "/usr/bin/visudo") if os.path.exists(p)), None)
+    if visudo is None:
+        pytest.skip("visudo is not installed here")
+    p, sudoers, _ = _sudoers_sync(tmp_path, sudo=None)
+    assert p.returncode == 0, p.stderr
+    check = subprocess.run([visudo, "-cf", str(sudoers)], capture_output=True, text=True)
+    assert check.returncode == 0, check.stdout + check.stderr
+    login = next(ln for ln in sudoers.read_text().splitlines() if ln.endswith("login_apply.py *"))
+    assert ("NOLOG_INPUT:" in login) == (not _real_sudo_is_rs()), login
 
 
 def test_sudoers_sync_leaves_the_rule_while_the_lines_cannot_go_in_and_makes_none(tmp_path):
