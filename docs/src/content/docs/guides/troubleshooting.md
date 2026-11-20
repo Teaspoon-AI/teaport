@@ -99,12 +99,27 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:910-920#0ba66554 -->
+<!-- source: install.sh:926-936#0ba66554 -->
 
 **Fix**
 
 1. Wait until the manifest is republished with the entry, and then run the
    installer again. See [The speech sounds robotic](#the-speech-sounds-robotic).
+
+### `manifest has no engine.watermark`
+
+**Cause** The release manifest names an engine release from 1.7 on, which marks
+its speech with an AI watermark, but carries no `engine.watermark` entry with
+its URL and sha256. A device installed without the watermark weights speaks
+without the machine-readable mark that identifies its speech as AI-generated.
+The watermark check is necessary, so keep it.
+
+<!-- source: install.sh:635,956-968#b620437e -->
+
+**Fix**
+
+1. Wait until the manifest is republished with the entry, and then run the
+   installer again.
 
 ### `sha256 mismatch`
 
@@ -186,7 +201,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2422#2ca3ef5a; install.sh:2867-2936#d970b544 -->
+<!-- source: install.sh:2473#2ca3ef5a; install.sh:2921-2990#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -211,7 +226,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2250-2263#3bb53588; install.sh:2249-2262#e0d335b8 -->
+<!-- source: install.sh:2301-2314#3bb53588; install.sh:2300-2313#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -242,7 +257,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2268-2272#bf1269bd -->
+<!-- source: install.sh:2319-2323#bf1269bd -->
 
 **Fix**
 
@@ -273,7 +288,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1893-1896,1910#746118b0 -->
+<!-- source: install.sh:1944-1961#ffe8b2e4 -->
 
 **Fix**
 
@@ -344,7 +359,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:2867-2936#d970b544; install.sh:2734-2784#a3eb07c3; install.sh:2716-2719,2734-2788#49197cea -->
+<!-- source: install.sh:2921-2990#d970b544; install.sh:2788-2838#a3eb07c3; install.sh:2770-2773,2788-2842#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -389,7 +404,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:2956-2960#3c1e6011; install.sh:3040-3043#b1e28ef5 -->
+<!-- source: install.sh:3010-3014#3c1e6011; install.sh:3094-3097#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -418,7 +433,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:413#649012b4; install.sh:900-901#12d8444d -->
+<!-- source: install.sh:413#649012b4; install.sh:916-917#12d8444d -->
 
 **Fix**
 
@@ -446,6 +461,44 @@ until a new engine is published.
 `doctor` tests that `espeak-ng` exists. `espeak-ng` is the fallback, not the
 dictionary. A device with correct speech and a device with robotic speech both
 pass. Use the journal command in step 1.
+:::
+
+## The engine stops at startup: `refusing to serve without the watermark`
+
+**Cause** From engine 1.7, the engine puts an imperceptible AI watermark into
+everything it says. It reads the watermark weights from
+`/opt/teaport/bin/watermark/perth_implicit.v2.bin`. The installer writes
+`VOX_REQUIRE_WATERMARK=1` into `/etc/teaport/engine.env`, so an engine that
+can't load the watermark stops instead of speaking without it. It also stops
+when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
+`VOX_REQUIRE_WATERMARK=0` instead, the engine starts and speaks without the
+watermark, and the installer's checks report `running WITHOUT the AI
+watermark`.
+
+<!-- source: install.sh:956-958,2728-2732,3800-3802,1109-1111#41f37ed9 -->
+
+**Fix**
+
+1. Check the engine's journal:
+
+   ```bash
+   sudo journalctl -u teaport-engine | grep -E 'AI watermark|refusing to serve'
+   ```
+
+   `AI watermark unavailable` means the weights file is absent or damaged.
+   `AI watermark off` means `engine.env` sets `VOX_TTS_WATERMARK=0`.
+2. If the weights file is absent or damaged, run the installer again to get it.
+3. If `engine.env` sets `VOX_TTS_WATERMARK=0`, remove that line, and then
+   restart the engine:
+
+   ```bash
+   sudo systemctl restart teaport-engine
+   ```
+
+:::note[The published engine has no watermark]
+The engine that `teaport update` installs today is 1.6, which has no
+watermark and ignores `VOX_REQUIRE_WATERMARK`. This section applies from engine
+1.7.
 :::
 
 ## Speech recognition is slow
@@ -517,7 +570,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2357-2365,2392-2398#4287c4a8; install.sh:2412-2415#cefd034b -->
+<!-- source: install.sh:2408-2416,2443-2449#4287c4a8; install.sh:2463-2466#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -525,7 +578,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2402-2410#b3851890 -->
+<!-- source: install.sh:2453-2461#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -633,7 +686,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2250-2263#3bb53588; install.sh:2249-2262#e0d335b8 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2301-2314#3bb53588; install.sh:2300-2313#e0d335b8 -->
 
 **Fix**
 
