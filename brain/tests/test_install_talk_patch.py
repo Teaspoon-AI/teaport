@@ -80,6 +80,8 @@ def _add_docs(enabled_get="", fail=(), docs=True, sync_rc=0):
                         if ln.startswith(("log() ", "warn() ")))
               + _fn("add_docs_to_openclaw_wiki") + _fn("write_openclaw_cli_record")
               + f'TEAPORT_DOCS_DIR="{t}/docs" DOCS_WIKI_SYNC="{sync}" OPENCLAW="{oc}" SECRETS="{t}/secrets"\n'
+              + "".join(ln + "\n" for ln in INSTALL.read_text().splitlines() if ln.startswith("OPENCLAW_CLI_RECORD="))
+                    .replace("$RUN_HOME", f"{t}/home")
               + "add_docs_to_openclaw_wiki\n")
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                        env={**os.environ, "TMPDIR": str(t), "OPENCLAW_STATE_DIR": "/srv/oc-state"})
@@ -106,10 +108,15 @@ def test_the_openclaw_it_used_is_recorded_for_the_package_upgrades():
     # postinst runs docs-wiki-sync with a plain PATH: the record says which openclaw (and
     # where its node and state are) for an OpenClaw installed under nvm or ~/.npm-global.
     rc, log, calls, synced, oc, hint, t = _add_docs()
-    rec = (t / "secrets/openclaw-cli").read_text().splitlines()
+    # In ~/.config/teaport, where docs-wiki-sync reads it, whatever TEAPORT_SECRETS_DIR says.
+    rec = (t / "home/.config/teaport/openclaw-cli").read_text().splitlines()
+    assert not (t / "secrets/openclaw-cli").exists()
     assert rec[0] == f"cli={oc}" and rec[1].startswith(f"path={t}"), rec
     assert "OPENCLAW_STATE_DIR=/srv/oc-state" in rec, rec
-    assert oct((t / "secrets").stat().st_mode & 0o777) == "0o700"
+    assert oct((t / "home/.config/teaport").stat().st_mode & 0o777) == "0o700"
+    assert 'OPENCLAW_CLI_RECORD="$RUN_HOME/.config/teaport/openclaw-cli"' in INSTALL.read_text()
+    sync_src = (INSTALL.parent / "packaging/deb/docs-wiki-sync").read_text()
+    assert 'pathlib.Path.home() / ".config/teaport/openclaw-cli"' in sync_src
 
 
 def test_an_owner_who_turned_the_wiki_off_keeps_it_off():

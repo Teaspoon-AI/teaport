@@ -21,6 +21,11 @@ set goes into .teaport-docs-compiled at the vault's root; a run that finds it mi
 different compiles, so a compile that failed (or never ran) is retried even when the pages
 on disk already match.
 
+After a run that leaves the docs compiled in the vault, the teaport plugin's
+config.docsInWiki is set (when it is not already), so its docs hint goes out: a compile that
+failed at install and succeeds on a later upgrade brings the hint back without a reinstall.
+install.sh clears it where the docs could not be added.
+
 Which openclaw: $OPENCLAW, else the one install.sh recorded in ~/.config/teaport/openclaw-cli
 (postinst runs this with a plain PATH, and an OpenClaw under nvm or ~/.npm-global is not on
 it), else PATH and the usual places.
@@ -241,6 +246,26 @@ def wiki_status(oc):
         return None
 
 
+HINT_KEY = "plugins.entries.teaport-realtime.config.docsInWiki"
+
+
+def hint_on(oc):
+    """Set the teaport plugin's docsInWiki, unless it is set already (a patch rewrites the
+    config file). A failure is said; the docs are in the wiki either way."""
+    p = cli(oc, "config", "get", HINT_KEY, "--json")
+    if p.returncode == 0 and p.stdout.strip().splitlines()[-1:] == ["true"]:
+        return
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"plugins": {"entries": {"teaport-realtime": {"config": {"docsInWiki": True}}}}}, f)
+    try:
+        p = cli(oc, "config", "patch", "--file", f.name)
+    finally:
+        os.unlink(f.name)
+    if p.returncode != 0:
+        say(f"could not turn on the teaport plugin's docs hint: {(p.stderr or p.stdout).strip()[-200:]}")
+
+
 def main(argv):
     if_present = "--if-present" in argv
     docs = pathlib.Path(argv[argv.index("--docs") + 1]) if "--docs" in argv else DOCS
@@ -282,6 +307,7 @@ def main(argv):
             say(f"openclaw wiki compile failed: {(p.stderr or p.stdout).strip()[-400:]}")
             return 1
         marker.write_text(done + "\n", encoding="utf-8")
+    hint_on(oc)
     print(f"teaport docs in the memory wiki: {len(want)} pages, {changed} changed ({sources})")
     return 0
 

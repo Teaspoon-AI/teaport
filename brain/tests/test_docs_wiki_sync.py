@@ -139,7 +139,8 @@ def _run(tmp, *args, status=None, compile_rc=0, docs=None, record=None, env_oc=T
     oc.write_text("#!/bin/bash\n"
                   f'echo "$*" >> "{calls}"\n'
                   f'if [ "$1 $2" = "wiki status" ]; then [ -n {json.dumps(st)} ] || exit 1; printf "%s\\n" {json.dumps(st)}; exit 0; fi\n'
-                  f'if [ "$1 $2" = "wiki status" ]; then :; fi\n'
+                  f'if [ "$1 $2" = "config get" ]; then [ -f "{tmp}/hint" ] && {{ cat "{tmp}/hint"; exit 0; }}; exit 1; fi\n'
+                  f'if [ "$1 $2" = "config patch" ]; then cat "$4" > "{tmp}/hint.patch"; echo true > "{tmp}/hint"; exit 0; fi\n'
                   f'if [ "$1 $2" = "wiki compile" ]; then echo "STATE=$OPENCLAW_STATE_DIR" >> "{calls}.env"; exit {compile_rc}; fi\n'
                   "exit 0\n")
     oc.chmod(0o755)
@@ -151,7 +152,9 @@ def _run(tmp, *args, status=None, compile_rc=0, docs=None, record=None, env_oc=T
     if env_oc:
         env["OPENCLAW"] = str(oc)
     p = subprocess.run(argv, capture_output=True, text=True, env=env)
-    return p.returncode, p.stdout + p.stderr, (calls.read_text().splitlines() if calls.exists() else [])
+    # The wiki calls; the docs hint's config calls are test_the_hint_is_turned_on_once_the_docs_are_in's.
+    wiki = [c for c in (calls.read_text().splitlines() if calls.exists() else []) if not c.startswith("config ")]
+    return p.returncode, p.stdout + p.stderr, wiki
 
 
 def _status(vault, scope="global"):
@@ -203,6 +206,24 @@ def test_the_openclaw_install_sh_recorded_is_found_without_path_or_env():
     rc, out, calls = _run(tmp, "--if-present", status=_status(sources.parent), docs=docs,
                           record="cli=/nonexistent/openclaw\n", env_oc=False)
     assert rc == 0 and calls == [] and "is gone" in out, (out, calls)
+
+
+def test_the_hint_is_turned_on_once_the_docs_are_in():
+    # A compile that failed at install (install.sh then cleared docsInWiki) and succeeds on a
+    # later run brings the plugin's docs hint back; a run that fails leaves it alone, and one
+    # that finds it on already writes nothing.
+    tmp = pathlib.Path(tempdir())
+    docs = _docs(tmp, {"guides/widget.md": PAGE})
+    sources = _vault(tmp)
+    config_calls = lambda: [c for c in (tmp / "calls").read_text().splitlines() if c.startswith("config ")]
+    _run(tmp, status=_status(sources.parent), compile_rc=1, docs=docs)
+    assert config_calls() == [] and not (tmp / "hint").exists()
+    rc, out, _ = _run(tmp, "--if-present", status=_status(sources.parent), docs=docs)
+    assert rc == 0 and json.loads((tmp / "hint.patch").read_text()) == {
+        "plugins": {"entries": {"teaport-realtime": {"config": {"docsInWiki": True}}}}}, out
+    (tmp / "calls").unlink()
+    _run(tmp, "--if-present", status=_status(sources.parent), docs=docs)
+    assert config_calls() == ["config get plugins.entries.teaport-realtime.config.docsInWiki --json"]
 
 
 def test_if_present_only_refreshes_what_an_install_put_there():

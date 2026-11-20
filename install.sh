@@ -2011,18 +2011,21 @@ add_docs_to_openclaw_wiki() {
 # write_openclaw_cli_record — the openclaw this install used, for the package's postinst: it
 # re-runs docs-wiki-sync on every upgrade with a plain PATH, where an OpenClaw installed
 # under nvm or ~/.npm-global (and the node beside it) is not found. In the run user's own
-# config dir, read only by docs-wiki-sync running as that user. OpenClaw's state and config
-# locations go with it when this install had them set.
+# ~/.config/teaport (OPENCLAW_CLI_RECORD), the path docs-wiki-sync reads, whatever
+# TEAPORT_SECRETS_DIR says; read only by docs-wiki-sync running as that user. OpenClaw's
+# state and config locations go with it when this install had them set.
+OPENCLAW_CLI_RECORD="$RUN_HOME/.config/teaport/openclaw-cli"
 write_openclaw_cli_record() {
-  local node dirs; node="$(command -v node 2>/dev/null || true)"
+  local node dirs dir; node="$(command -v node 2>/dev/null || true)"
   dirs="$(dirname "$OPENCLAW")"
   [ -n "$node" ] && [ "$(dirname "$node")" != "$dirs" ] && dirs="$dirs:$(dirname "$node")"
-  { mkdir -p "$SECRETS" && chmod 700 "$SECRETS" && {
+  dir="$(dirname "$OPENCLAW_CLI_RECORD")"
+  { mkdir -p "$dir" && chmod 700 "$dir" && {
       printf 'cli=%s\npath=%s\n' "$OPENCLAW" "$dirs"
       if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then printf 'OPENCLAW_STATE_DIR=%s\n' "$OPENCLAW_STATE_DIR"; fi
       if [ -n "${OPENCLAW_CONFIG_PATH:-}" ]; then printf 'OPENCLAW_CONFIG_PATH=%s\n' "$OPENCLAW_CONFIG_PATH"; fi
-    } > "$SECRETS/openclaw-cli"; } \
-    || warn "could not record the openclaw path in $SECRETS: package upgrades may not refresh the docs"
+    } > "$OPENCLAW_CLI_RECORD"; } \
+    || warn "could not record the openclaw path in $dir: package upgrades may not refresh the docs"
 }
 
 # Memory embeddings for a host OpenClaw: semantic memory_search (paraphrases, other languages)
@@ -2035,23 +2038,28 @@ write_openclaw_cli_record() {
 # there, never from anywhere else.
 MEMORY_EMBED_MODEL="${TEAPORT_MEMORY_EMBED_MODEL:-baai/bge-m3}"
 
-# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE — the memory.search patch,
-# from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS its models.providers
-# (`config get --json`, keys redacted; "" when unset), LLM_URL the brain's endpoint, KEYFILE
-# the brain's key. Prints the provider id, and exits
+# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE RECORD — the memory.search
+# patch, from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS its
+# models.providers (`config get --json`, keys redacted; "" when unset), LLM_URL the brain's
+# endpoint, KEYFILE the brain's key, RECORD the installer's note that it wrote the setting
+# with that key (MEMORY_EMBED_RECORD: the key's sha256). Prints the provider id, then, when
+# the setting carries the brain's key, that key's sha256 for the record. Exits
 #   0  a new setting: an OpenClaw provider on openrouter.ai by its id, so OpenClaw resolves
 #      its own key (a literal, a profile); else, when the brain's endpoint is OpenRouter, an
 #      openai-compatible entry with the brain's key;
 #   3  nothing written: no OpenRouter to use;
-#   4  nothing written: the owner's provider (any setting this installer did not write);
-#   5  the key of the setting an earlier install wrote, refreshed to the brain's current one
-#      (a rotated key would otherwise leave memory search failing closed for good).
+#   4  nothing written: the owner's provider, or ours with the brain's key as it is. Ours is
+#      only what the record says this installer wrote, still with a plain key: a ${VAR}
+#      or SecretRef the owner put in its place is theirs;
+#   5  ours, with the key the brain has now (a rotated key would otherwise leave memory
+#      search failing closed for good).
 # The patch is written mode 600: it can hold a key.
 write_memory_embed_patch() {
   ( umask 077; python3 -I - "$@" "$MEMORY_EMBED_MODEL" <<'PY'
-import json, sys, urllib.parse
-out, current, providers, llm_url, keyfile, model = sys.argv[1:7]
+import hashlib, json, sys, urllib.parse
+out, current, providers, llm_url, keyfile, record, model = sys.argv[1:8]
 OR_URL = "https://openrouter.ai/api/v1"
+REDACTED = "__OPENCLAW_REDACTED__"   # how `config get` shows a plain key
 def openrouter(url):
     host = urllib.parse.urlsplit(url if isinstance(url, str) else "").hostname or ""
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
@@ -2071,16 +2079,24 @@ def brain_key():
 def write(search):
     with open(out, "w") as f:
         json.dump({"memory": {"search": search}}, f)
+def digest(key):
+    return hashlib.sha256(key.encode()).hexdigest()
+try:
+    recorded = open(record).read().strip()
+except OSError:
+    recorded = ""
 current, providers = parse(current), parse(providers)
 if current.get("provider"):
     remote = current.get("remote") if isinstance(current.get("remote"), dict) else {}
-    ours = (current["provider"] == "openai-compatible" and remote.get("baseUrl") == OR_URL
-            and current.get("model") == model)
+    ours = (bool(recorded) and current["provider"] == "openai-compatible"
+            and remote.get("baseUrl") == OR_URL and current.get("model") == model
+            and remote.get("apiKey") == REDACTED)
     key = brain_key() if ours else ""
     print(current["provider"])
-    if not key:
+    if not key or digest(key) == recorded:
         sys.exit(4)
     write({"remote": {"apiKey": key}})
+    print(digest(key))
     sys.exit(5)
 search = None
 for pid, p in sorted(providers.items()):
@@ -2095,45 +2111,62 @@ if search is None:
     sys.exit(3)
 write(search)
 print(search["provider"])
+if "remote" in search:
+    print(digest(key))
 PY
   )
 }
 
 # openclaw_memory_embeddings — give a host OpenClaw's memory_search the embedding model,
 # then rebuild its index (a changed provider pauses vector search until then). Called by
-# agent_openclaw before its one gateway (re)start: OpenClaw applies a memory.search change
-# by restarting the gateway, and after that start it would be a second restart, mid startup.
-# Needs the brain's endpoint and key, so phase_credentials runs before phase_agent. An index
-# that cannot be built takes the setting back out. Any failure is said and the install goes on.
+# agent_openclaw while the gateway is stopped, before its one start: OpenClaw applies a
+# memory.search change by restarting the gateway. Needs the brain's endpoint and key, so
+# phase_credentials runs before phase_agent. A setting this installer wrote with the brain's
+# key follows that key when it changes, and the new key goes through the same check. An
+# index that cannot be built takes the setting back out. Any failure is said and the install
+# goes on.
+MEMORY_EMBED_RECORD="$SECRETS/openclaw-memory-embeddings"
 openclaw_memory_embeddings() {
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset; key refreshed when ours); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
+    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset; the key follows the brain'"'"'s when ours); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
     return 0
   fi
-  local current providers patch rc=0 pid
+  local current providers patch rc=0 out pid keyhash
   current="$("$OPENCLAW" config get memory.search --json 2>/dev/null || true)"
   providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
   patch="$(mktemp)"
-  pid="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key")" || rc=$?
+  out="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key" "$MEMORY_EMBED_RECORD")" || rc=$?
+  pid="$(printf '%s\n' "$out" | sed -n 1p)"; keyhash="$(printf '%s\n' "$out" | sed -n 2p)"
   case "$rc" in
     3) log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
        rm -f "$patch"; return 0 ;;
     4) log "OpenClaw memory search keeps its provider ($pid)"
        rm -f "$patch"; return 0 ;;
-    5) if "$OPENCLAW" config patch --file "$patch" >/dev/null; then
-         log "OpenClaw memory search: $MEMORY_EMBED_MODEL via OpenRouter, with the brain's current key"
-       else
-         warn "could not refresh the OpenRouter key of OpenClaw's memory search"
-       fi
+    0|5) ;;
+    *) warn "OpenClaw memory search was not given an embedding model"
        rm -f "$patch"; return 0 ;;
   esac
-  if [ "$rc" != 0 ] || ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
+  if ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
     warn "OpenClaw memory search was not given an embedding model"
     rm -f "$patch"; return 0
   fi
   rm -f "$patch"
-  log "OpenClaw memory search embeds with $MEMORY_EMBED_MODEL via $pid; rebuilding its index"
-  timeout 900 "$OPENCLAW" memory index --force >/dev/null && return 0
+  if [ "$rc" = 5 ]; then
+    log "OpenClaw memory search: $MEMORY_EMBED_MODEL via OpenRouter, now with the brain's current key; rebuilding its index"
+  else
+    log "OpenClaw memory search embeds with $MEMORY_EMBED_MODEL via $pid; rebuilding its index"
+  fi
+  if timeout 900 "$OPENCLAW" memory index --force >/dev/null; then
+    # The record that this setting, and the key in it, are the installer's (not the key).
+    if [ -n "$keyhash" ]; then
+      ( umask 077; printf '%s\n' "$keyhash" > "$MEMORY_EMBED_RECORD" ) \
+        || warn "could not write $MEMORY_EMBED_RECORD: a later change of the key will not reach memory search"
+    else
+      rm -f "$MEMORY_EMBED_RECORD"   # OpenClaw's own provider: no key of the brain's in it
+    fi
+    return 0
+  fi
+  rm -f "$MEMORY_EMBED_RECORD"
   # The embedding provider fails closed: left set, a key or account that cannot embed would
   # make every memory_search fail, not fall back. So it goes again, and memory search stays
   # keyword-only until the next install finds the account working.
@@ -2234,6 +2267,21 @@ agent_openclaw() {
 
   local tgz caps; tgz="$(plugin_tgz)"
   caps="$(plugin_consent_flag "$OPENCLAW")"
+  # A running gateway applies most of what follows (the plugin, gateway.*, memory.search) by
+  # restarting itself, a moment after each change, and the restart below would then land on
+  # one of those mid startup (see below). So it is stopped for the changes, and started
+  # once at the end; if the run stops on the way, the EXIT trap starts it again.
+  local gw_stopped=""
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] systemctl --user stop openclaw-gateway.service (when running), for the changes below\n'
+  elif systemctl --user is-active --quiet openclaw-gateway.service 2>/dev/null; then
+    if systemctl --user stop openclaw-gateway.service; then
+      gw_stopped=1
+      trap 'systemctl --user start openclaw-gateway.service || true' EXIT
+    else
+      warn "could not stop the OpenClaw gateway: it may restart itself while it is set up"
+    fi
+  fi
   if [ -n "$tgz" ]; then
     run "$OPENCLAW" plugins install "$tgz" --force ${caps:+"$caps"}
   else
@@ -2289,7 +2337,12 @@ JSON
     printf '  [dry-run] gateway unit: --max-old-space-size=%s (cap_openclaw_heap)\n' "$OPENCLAW_HEAP_MIB"
   elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
     cap_openclaw_heap || true
-    "$OPENCLAW" gateway restart
+    if [ -n "$gw_stopped" ]; then
+      systemctl --user start openclaw-gateway.service
+      trap - EXIT
+    else
+      "$OPENCLAW" gateway restart
+    fi
   else
     "$OPENCLAW" gateway install
     # Not restarted for it: see above. The limit takes effect at its next start.
