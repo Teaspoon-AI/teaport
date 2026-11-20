@@ -37,18 +37,27 @@ def sha(key):
     return hashlib.sha256(key.encode()).hexdigest()
 
 
-def _patch(providers, llm_url, key="sk-or-v1-synthetic", current="", record=None, lines=False):
+def _openclaw_json(path, written):
+    """An openclaw.json whose memory.search key, as written, is `written` (None: no file)."""
+    if written is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"memory": {"search": {"remote": {"apiKey": written}}}}))
+
+
+def _patch(providers, llm_url, key="sk-or-v1-synthetic", current="", record=None, lines=False, written=None):
     """write_memory_embed_patch's (rc, provider id, memory.search or None, patch file mode);
-    record: the installer's record (a key's sha256), None for none; lines: the whole stdout."""
+    record: the installer's record (a key's sha256), None for none; lines: the whole stdout;
+    written: the key as openclaw.json has it (`config get` shows it redacted, a ${VAR} resolved)."""
     t = pathlib.Path(tempdir())
-    out, keyfile, rec = t / "patch.json", t / "llm_key", t / "record"
+    out, keyfile, rec, cfg = t / "patch.json", t / "llm_key", t / "record", t / "openclaw.json"
     if key is not None:
         keyfile.write_text(key + "\n")
     if record is not None:
         rec.write_text(record + "\n")
+    _openclaw_json(cfg, written)
     script = ("set -euo pipefail\n" + _helpers() + _fn("write_memory_embed_patch")
-              + 'write_memory_embed_patch "$1" "$2" "$3" "$4" "$5" "$6"\n')
-    p = subprocess.run(["bash", "-c", script, "-", str(out), current, providers, llm_url, str(keyfile), str(rec)],
+              + 'write_memory_embed_patch "$1" "$2" "$3" "$4" "$5" "$6" "$7"\n')
+    p = subprocess.run(["bash", "-c", script, "-", str(out), current, providers, llm_url, str(keyfile), str(rec), str(cfg)],
                        capture_output=True, text=True)
     stdout = p.stdout.split() if lines else (p.stdout.split() or [""])[0]
     if not out.exists():
@@ -97,26 +106,29 @@ def test_the_setting_an_install_wrote_gets_the_brains_current_key():
     # The owner rotated the OpenRouter key: the brain has the new one, and so must OpenClaw,
     # or memory search fails closed from then on.
     old = sha("sk-or-v1-old")
-    rc, out, search, mode = _patch("", OR_URL, key="sk-or-v1-rotated", current=OURS, record=old, lines=True)
+    rc, out, search, mode = _patch("", OR_URL, key="sk-or-v1-rotated", current=OURS, record=old, lines=True,
+                                   written="sk-or-v1-old")
     assert rc == 5 and out == ["openai-compatible", sha("sk-or-v1-rotated")], (rc, out)
     assert search == {"remote": {"apiKey": "sk-or-v1-rotated"}}, search
     assert mode == 0o600, oct(mode)
     # The same key as recorded: nothing to do.
-    assert _patch("", OR_URL, key="sk-or-v1-old", current=OURS, record=old)[:3] == (4, "openai-compatible", None)
+    assert _patch("", OR_URL, key="sk-or-v1-old", current=OURS, record=old, written="sk-or-v1-old")[:3] == (4, "openai-compatible", None)
     # The brain moved off OpenRouter, or has no key: the setting is left as it is.
-    assert _patch("", "https://api.example.com/v1", current=OURS, record=old)[:3] == (4, "openai-compatible", None)
-    assert _patch("", OR_URL, key=None, current=OURS, record=old)[0] == 4
+    assert _patch("", "https://api.example.com/v1", current=OURS, record=old, written="sk-or-v1-old")[:3] == (4, "openai-compatible", None)
+    assert _patch("", OR_URL, key=None, current=OURS, record=old, written="sk-or-v1-old")[0] == 4
 
 
 def test_a_setting_the_installer_has_no_record_of_is_the_owners():
-    # The same provider, URL and model, but written by the owner (no record), or with the key
-    # replaced by a ${VAR} or a SecretRef: never overwritten with the brain's key.
+    # The same provider, URL and model, and `config get` showing a plain key (it resolves a
+    # ${VAR} before it redacts), but not the key the record says the installer wrote: no
+    # record, a ${VAR} or a SecretRef in openclaw.json, or the owner's own key put in its
+    # place. Never overwritten with the brain's key.
     old = sha("sk-or-v1-old")
-    assert _patch("", OR_URL, key="sk-or-v1-new", current=OURS)[:3] == (4, "openai-compatible", None)
-    for apikey in ("${OPENROUTER_API_KEY}", {"source": "env", "id": "OPENROUTER_API_KEY"}):
-        cur = json.dumps({"provider": "openai-compatible", "model": "baai/bge-m3",
-                          "remote": {"baseUrl": OR_URL, "apiKey": apikey}})
-        assert _patch("", OR_URL, key="sk-or-v1-new", current=cur, record=old)[:3] == (4, "openai-compatible", None), apikey
+    assert _patch("", OR_URL, key="sk-or-v1-new", current=OURS, written="sk-or-v1-old")[:3] == (4, "openai-compatible", None)
+    for written in ("${OPENROUTER_API_KEY}", {"source": "env", "id": "OPENROUTER_API_KEY"}, "sk-or-v1-owners-own"):
+        assert _patch("", OR_URL, key="sk-or-v1-new", current=OURS, record=old, written=written)[:3] == \
+            (4, "openai-compatible", None), written
+    assert _patch("", OR_URL, key="sk-or-v1-new", current=OURS, record=old)[0] == 4   # no openclaw.json to read
 
 
 def test_the_owners_setting_is_never_touched():
@@ -131,8 +143,10 @@ def test_the_owners_setting_is_never_touched():
         assert rc == 4 and out == cur["provider"] and search is None, (cur, rc, search)
 
 
-def _phase(current="", fail=(), providers='{"openrouter": {"baseUrl": "%s"}}' % OR_URL, key=None, record=None):
+def _phase(current="", fail=(), providers='{"openrouter": {"baseUrl": "%s"}}' % OR_URL, key=None, record=None,
+           written=None):
     t = pathlib.Path(tempdir())
+    _openclaw_json(t / ".openclaw/openclaw.json", written)
     if key is not None:
         (t / "llm_key").write_text(key + "\n")
     if record is not None:
@@ -150,9 +164,10 @@ def _phase(current="", fail=(), providers='{"openrouter": {"baseUrl": "%s"}}' % 
     oc.chmod(0o755)
     script = ("set -euo pipefail\nDRY_RUN=0\n" + _helpers() + _fn("write_memory_embed_patch")
               + _fn("openclaw_memory_embeddings")
-              + f'OPENCLAW="{oc}" LLM_BASE_URL={OR_URL} SECRETS="{t}" MEMORY_EMBED_RECORD="{t}/openclaw-memory-embeddings"\n'
+              + f'OPENCLAW="{oc}" LLM_BASE_URL={OR_URL} SECRETS="{t}" RUN_HOME="{t}" MEMORY_EMBED_RECORD="{t}/openclaw-memory-embeddings"\n'
               + "openclaw_memory_embeddings\n")
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**os.environ, "TMPDIR": str(t)})
+    env = {k: v for k, v in os.environ.items() if k != "OPENCLAW_CONFIG_PATH"}
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**env, "TMPDIR": str(t)})
     read = lambda f: f.read_text().splitlines() if f.exists() else []
     return p.returncode, p.stdout + p.stderr, read(calls), [json.loads(x) for x in read(patches) if x], t
 
@@ -184,18 +199,19 @@ def test_the_brains_key_is_recorded_once_the_index_is_built():
 
 
 def test_a_changed_key_is_refreshed_and_checked_like_a_new_one():
-    rc, log, calls, patches, t = _phase(current=OURS, key="sk-or-v1-new", record=sha("sk-or-v1-old"))
+    rc, log, calls, patches, t = _phase(current=OURS, key="sk-or-v1-new", record=sha("sk-or-v1-old"), written="sk-or-v1-old")
     assert rc == 0 and patches == [{"memory": {"search": {"remote": {"apiKey": "sk-or-v1-new"}}}}], (log, patches)
     assert calls[-1] == "memory index --force" and "current key" in log, (log, calls)
     assert (t / "openclaw-memory-embeddings").read_text().strip() == sha("sk-or-v1-new")
     assert not [f for f in t.iterdir() if f.name.startswith("tmp")], "the patch file was left behind"
     # A new key that cannot embed (a typo, a key at its limit) is taken back out, record and all.
-    rc, log, calls, patches, t = _phase(current=OURS, key="sk-or-v1-bad", record=sha("sk-or-v1-old"), fail=("memory index",))
+    rc, log, calls, patches, t = _phase(current=OURS, key="sk-or-v1-bad", record=sha("sk-or-v1-old"), written="sk-or-v1-old",
+                                        fail=("memory index",))
     assert rc == 0 and "stays keyword-only" in log, log
     assert patches[-1] == {"memory": {"search": {"provider": None, "model": None, "remote": None}}}, patches
     assert not (t / "openclaw-memory-embeddings").exists()
     # The key as recorded: nothing written, no rebuild.
-    rc, log, calls, patches, _ = _phase(current=OURS, key="sk-or-v1-old", record=sha("sk-or-v1-old"))
+    rc, log, calls, patches, _ = _phase(current=OURS, key="sk-or-v1-old", record=sha("sk-or-v1-old"), written="sk-or-v1-old")
     assert rc == 0 and patches == [] and "memory index --force" not in calls and "keeps its provider" in log, log
 
 
@@ -218,19 +234,21 @@ def test_it_runs_with_the_credentials_known():
     assert "phase_agent_memory" not in main
 
 
-def _agent(active):
-    """agent_openclaw with every step it calls stubbed: (rc, log, the ordered calls)."""
+def _agent(state, fail=""):
+    """agent_openclaw with every step it calls stubbed: (rc, log, the ordered calls). state:
+    the gateway unit's ActiveState; fail: an openclaw subcommand ("plugins install") that fails."""
     t = pathlib.Path(tempdir())
     calls = t / "calls"
     bin_ = t / "bin"
     bin_.mkdir()
     for name, body in (("systemctl", f'echo "systemctl $*" >> "{calls}"\n'
-                                     f'if [ "$2" = is-active ]; then exit {0 if active else 3}; fi\nexit 0\n'),
+                                     f'if [ "$2" = show ]; then echo {state}; fi\nexit 0\n'),
                        ("loginctl", "echo Linger=yes\n")):
         (bin_ / name).write_text("#!/bin/bash\n" + body)
         (bin_ / name).chmod(0o755)
     oc = t / "openclaw"
-    oc.write_text(f'#!/bin/bash\necho "openclaw $*" >> "{calls}"\nexit 0\n')
+    oc.write_text(f'#!/bin/bash\necho "openclaw $*" >> "{calls}"\n'
+                  f'[ "$1 $2" = {json.dumps(fail)} ] && exit 7\nexit 0\n')
     oc.chmod(0o755)
     stubs = "".join(f'{fn}() {{ echo "{fn}" >> "{calls}"; }}\n' for fn in (
         "resolve_gateway_token", "write_talk_patch", "add_docs_to_openclaw_wiki",
@@ -252,18 +270,26 @@ def test_a_running_gateway_is_stopped_for_the_changes_and_started_once():
     # OpenClaw applies the plugin, gateway.* and memory.search changes by restarting a running
     # gateway, each a moment after the change: so none of them may meet a running gateway,
     # and the one start comes after the last of them.
-    rc, log, calls = _agent(active=True)
-    assert rc == 0, log
-    i = lambda c: next(n for n, x in enumerate(calls) if x.startswith(c))
-    stop, start = i("systemctl --user stop openclaw-gateway.service"), i("systemctl --user start openclaw-gateway.service")
-    for change in ("openclaw plugins install", "openclaw plugins enable", "openclaw config patch",
-                   "add_docs_to_openclaw_wiki", "openclaw_memory_embeddings"):
-        assert stop < i(change) < start, (change, calls)
-    assert not [c for c in calls if "gateway restart" in c], calls   # started, not restarted again
-    assert sum(1 for c in calls if c.startswith("systemctl --user start")) == 1, calls
+    for state in ("active", "activating"):   # activating: on its way up, or about to restart
+        rc, log, calls = _agent(state)
+        assert rc == 0, log
+        i = lambda c: next(n for n, x in enumerate(calls) if x.startswith(c))
+        # OpenClaw's own start: it repairs a unit whose --port no longer matches gateway.port.
+        stop, start = i("systemctl --user stop openclaw-gateway.service"), i("openclaw gateway start")
+        for change in ("openclaw plugins install", "openclaw plugins enable", "openclaw config patch",
+                       "add_docs_to_openclaw_wiki", "openclaw_memory_embeddings"):
+            assert stop < i(change) < start, (state, change, calls)
+        assert not [c for c in calls if "gateway restart" in c or c.startswith("systemctl --user start")], calls
     # Not running: nothing stopped, and the unit is restarted as before.
-    rc, log, calls = _agent(active=False)
+    rc, log, calls = _agent("inactive")
     assert rc == 0 and not [c for c in calls if " stop " in c] and "openclaw gateway restart" in calls, calls
+
+
+def test_a_run_that_stops_on_the_way_starts_the_gateway_again():
+    rc, log, calls = _agent("active", fail="plugins install")
+    assert rc != 0, log
+    assert calls.index("systemctl --user stop openclaw-gateway.service") < \
+        calls.index("systemctl --user start openclaw-gateway.service"), calls   # the EXIT trap
 
 
 if __name__ == "__main__":

@@ -2038,28 +2038,29 @@ write_openclaw_cli_record() {
 # there, never from anywhere else.
 MEMORY_EMBED_MODEL="${TEAPORT_MEMORY_EMBED_MODEL:-baai/bge-m3}"
 
-# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE RECORD — the memory.search
-# patch, from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS its
-# models.providers (`config get --json`, keys redacted; "" when unset), LLM_URL the brain's
-# endpoint, KEYFILE the brain's key, RECORD the installer's note that it wrote the setting
-# with that key (MEMORY_EMBED_RECORD: the key's sha256). Prints the provider id, then, when
-# the setting carries the brain's key, that key's sha256 for the record. Exits
+# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE RECORD CONFIG — the
+# memory.search patch, from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS
+# its models.providers (`config get --json`, keys redacted; "" when unset), LLM_URL the
+# brain's endpoint, KEYFILE the brain's key, RECORD the installer's note that it wrote the
+# setting with that key (MEMORY_EMBED_RECORD: the key's sha256), CONFIG openclaw.json, for
+# the key as written there (`config get` has already put a ${VAR}'s value in its place).
+# Prints the provider id, then, when the setting carries the brain's key, that key's sha256
+# for the record. Exits
 #   0  a new setting: an OpenClaw provider on openrouter.ai by its id, so OpenClaw resolves
 #      its own key (a literal, a profile); else, when the brain's endpoint is OpenRouter, an
 #      openai-compatible entry with the brain's key;
 #   3  nothing written: no OpenRouter to use;
 #   4  nothing written: the owner's provider, or ours with the brain's key as it is. Ours is
-#      only what the record says this installer wrote, still with a plain key: a ${VAR}
-#      or SecretRef the owner put in its place is theirs;
+#      only a setting whose key, as written in openclaw.json, is the one the record says this
+#      installer put there: a ${VAR}, a SecretRef or a key of the owner's own is theirs;
 #   5  ours, with the key the brain has now (a rotated key would otherwise leave memory
 #      search failing closed for good).
 # The patch is written mode 600: it can hold a key.
 write_memory_embed_patch() {
   ( umask 077; python3 -I - "$@" "$MEMORY_EMBED_MODEL" <<'PY'
 import hashlib, json, sys, urllib.parse
-out, current, providers, llm_url, keyfile, record, model = sys.argv[1:8]
+out, current, providers, llm_url, keyfile, record, config, model = sys.argv[1:9]
 OR_URL = "https://openrouter.ai/api/v1"
-REDACTED = "__OPENCLAW_REDACTED__"   # how `config get` shows a plain key
 def openrouter(url):
     host = urllib.parse.urlsplit(url if isinstance(url, str) else "").hostname or ""
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
@@ -2085,12 +2086,21 @@ try:
     recorded = open(record).read().strip()
 except OSError:
     recorded = ""
+def written_key():
+    """memory.search.remote.apiKey as openclaw.json has it, when it is a plain string."""
+    try:
+        cfg = json.load(open(config))
+        key = cfg["memory"]["search"]["remote"]["apiKey"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    return key if isinstance(key, str) and "${" not in key else ""
 current, providers = parse(current), parse(providers)
 if current.get("provider"):
     remote = current.get("remote") if isinstance(current.get("remote"), dict) else {}
+    written = written_key()
     ours = (bool(recorded) and current["provider"] == "openai-compatible"
             and remote.get("baseUrl") == OR_URL and current.get("model") == model
-            and remote.get("apiKey") == REDACTED)
+            and bool(written) and digest(written) == recorded)
     key = brain_key() if ours else ""
     print(current["provider"])
     if not key or digest(key) == recorded:
@@ -2135,7 +2145,8 @@ openclaw_memory_embeddings() {
   current="$("$OPENCLAW" config get memory.search --json 2>/dev/null || true)"
   providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
   patch="$(mktemp)"
-  out="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key" "$MEMORY_EMBED_RECORD")" || rc=$?
+  out="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key" \
+    "$MEMORY_EMBED_RECORD" "${OPENCLAW_CONFIG_PATH:-$RUN_HOME/.openclaw/openclaw.json}")" || rc=$?
   pid="$(printf '%s\n' "$out" | sed -n 1p)"; keyhash="$(printf '%s\n' "$out" | sed -n 2p)"
   case "$rc" in
     3) log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
@@ -2274,7 +2285,9 @@ agent_openclaw() {
   local gw_stopped=""
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] systemctl --user stop openclaw-gateway.service (when running), for the changes below\n'
-  elif systemctl --user is-active --quiet openclaw-gateway.service 2>/dev/null; then
+  elif case "$(systemctl --user show -p ActiveState --value openclaw-gateway.service 2>/dev/null || true)" in
+         active|activating|reloading) true ;; *) false ;; esac; then
+    # activating too: a gateway on its way up, or waiting to restart after a crash.
     if systemctl --user stop openclaw-gateway.service; then
       gw_stopped=1
       trap 'systemctl --user start openclaw-gateway.service || true' EXIT
@@ -2338,7 +2351,9 @@ JSON
   elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
     cap_openclaw_heap || true
     if [ -n "$gw_stopped" ]; then
-      systemctl --user start openclaw-gateway.service
+      # OpenClaw's own start, not systemctl's: it repairs a unit whose --port or program no
+      # longer matches the config (gateway.port was just set) and waits for it to be up.
+      "$OPENCLAW" gateway start
       trap - EXIT
     else
       "$OPENCLAW" gateway restart
