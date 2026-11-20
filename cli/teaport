@@ -6,9 +6,16 @@
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update --check [--json] [--channel stable|beta]
 #                                 is a newer release out? (diff installed vs the channel's manifest)
+#   teaport update [--yes]        install it: the engine and models, the brain package (asks first)
+#   teaport update --status [--json]   the last update run: running, done or failed, and why
 #   teaport licenses [PACKAGE | --notices] [--json]
 #                                 the licenses of the software on the device: the brain's Python packages,
 #                                 one package's license text, or the third-party notices
+#   teaport key set [--starter] [--new-key] [--json]
+#                                 check and save the AI key read on stdin (brain + OpenClaw);
+#                                 --starter marks it as the box's trial key
+#   teaport setup-card [--new-password] [--json]
+#                                 the setup network's name, password and QR text, for a printed card
 #   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; bare, this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
@@ -45,7 +52,7 @@ brain_health() { curl -fsS --max-time 2 "http://127.0.0.1:$BRAIN_PORT/health" 2>
 # /health; "unknown" when the brain does not answer or predates it.
 brain_sip() {
   brain_health \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sip") or "unknown")' 2>/dev/null \
+    | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("sip") or "unknown")' 2>/dev/null \
     || echo unknown
 }
 sip_line() {  # the SIP front-end, as a status line
@@ -64,7 +71,7 @@ settings_site() {
 }
 brain_answers() {
   local site=0; settings_site && site=1
-  brain_health | python3 -c 'import json, sys, time
+  brain_health | python3 -I -c 'import json, sys, time
 a = json.load(sys.stdin).get("answers")
 if not isinstance(a, dict) or a.get("state") not in ("ok", "untried", "failing", "account",
                                                      "unconfigured"):
@@ -117,7 +124,7 @@ answers_line() {  # the answers, as a status line
 # none | own | unknown | ok | half | low | empty, or "unknown" when the brain does not say.
 # Plain words, as the owner's view of it.
 brain_credit() {
-  brain_health | python3 -c 'import json, sys
+  brain_health | python3 -I -c 'import json, sys
 c = json.load(sys.stdin).get("credit")
 if not isinstance(c, dict) or c.get("state") not in ("none", "own", "unknown", "ok", "half",
                                                      "low", "empty"):
@@ -150,7 +157,7 @@ credit_line() {  # the trial credit, as a status line; nothing off it (an own ke
 # Whether a newer release is out (/health "update", updates.py), as a status line; nothing
 # when the check is off or the brain does not say.
 update_line() {
-  local line; line="$(brain_health | python3 -c 'import json, sys
+  local line; line="$(brain_health | python3 -I -c 'import json, sys
 u = json.load(sys.stdin).get("update")
 if not isinstance(u, dict) or u.get("state") not in ("unknown", "current", "available"):
     raise SystemExit(1)
@@ -158,10 +165,13 @@ st = u["state"]
 ch = u.get("channel", "")
 stale = "" if u.get("fresh", True) else " (last check failed; this is the last known)"
 text = {"unknown": "not checked yet",
-        "current": "up to date (%s)%s" % (ch, stale),
-        "available": "a new release is out on %s: %s%s -- teaport update --check" % (
+        "current": ("the %s channel names an older release than this box has%s" if u.get("older")
+                    else "up to date (%s)%s") % (ch, stale),
+        "available": "a new release is out on %s: %s%s -- teaport update" % (
             ch, ", ".join(u.get("changed") or []), stale)}[st]
 print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
+  # One being installed says so instead: the brain's look predates it.
+  if update_running; then line="available"$'\t'"an update is being installed now -- teaport update --status"; fi
   [ -n "$line" ] || return 0
   local col="0"; case "${line%%$'\t'*}" in current) col="$GREEN" ;; available) col="$YEL" ;; esac
   printf '  %-28s %s\n' "release" "$(c "$col" "${line#*$'\t'}")"
@@ -170,7 +180,7 @@ print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
 # "<state>\t<text>": off | absent | other | remote | none | unsynced | separate | shared | restart | mismatch,
 # or "unknown" when the brain does not say.
 brain_agent_key() {
-  brain_health | python3 -c 'import json, sys
+  brain_health | python3 -I -c 'import json, sys
 k = json.load(sys.stdin).get("agent_key")
 if not isinstance(k, dict) or not k.get("state"):
     raise SystemExit(1)
@@ -280,7 +290,7 @@ brain_package_check() {
 # answer (doctor fails its port already) or predates the field. Uses doctor's ok/warnc.
 brain_pacing_check() {
   local line
-  line="$(brain_health | python3 -c 'import json, sys
+  line="$(brain_health | python3 -I -c 'import json, sys
 p = json.load(sys.stdin).get("tts_pacing") or {}
 c, e = p.get("configured"), p.get("effective")
 if not c:
@@ -452,7 +462,7 @@ cmd_doctor() {
   fi
   local nc="$HOME/.local/bin/nemoclaw"; have nemoclaw && nc="$(command -v nemoclaw)"
   if [ -x "$nc" ] && [ -f "$HOME/.nemoclaw/sandboxes.json" ]; then
-    local sb; sb="$(python3 -c "import json;d=json.load(open('$HOME/.nemoclaw/sandboxes.json'));print(d.get('defaultSandbox') or '')" 2>/dev/null || true)"
+    local sb; sb="$(python3 -I -c "import json;d=json.load(open('$HOME/.nemoclaw/sandboxes.json'));print(d.get('defaultSandbox') or '')" 2>/dev/null || true)"
     [ -n "$sb" ] && ok "NemoClaw sandbox: $sb (deeper check: nemoclaw $sb doctor)"
   fi
   echo
@@ -460,26 +470,166 @@ cmd_doctor() {
   return "$RC"
 }
 
+# brain_python <venv> <args...> -- the brain's python, as the brain's user. Run as root (sudo
+# teaport ...), the CLI does not run the venv's code as root: the brain's tree is code for
+# the run user, and root runs none of it. setpriv to the user the brain unit names; none,
+# or root itself: refused.
+brain_python() {
+  local venv="$1"; shift
+  if [ "$(id -u)" != 0 ]; then "$venv/bin/python" "$@"; return; fi
+  local u; u="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+  [ -n "$u" ] && [ "$u" != root ] || die "as root, this runs the brain's code as the user teaport-brain runs as, and that unit names none — run it as that user instead"
+  setpriv --reuid="$u" --regid="$(id -g "$u")" --init-groups -- "$venv/bin/python" "$@"
+}
+
 # ---- update ----------------------------------------------------------------
-# Is a newer release out? The comparison is the brain's (teaport_brain.updates), the same
-# code that checks once a day for /health: run under the brain's own venv, isolated (-I),
-# so there is one copy of it and no second one in bash. Applying is not wired yet.
+# Is a newer release out, and install it. The comparison is the brain's
+# (teaport_brain.updates), the same code that checks once a day for /health: run under the
+# brain's own venv, isolated (-I), so there is one copy of it and no second one in bash.
+# Installing is teaport-update.service's (/usr/lib/teaport/update_apply.py, as root),
+# started here with plain systemctl (the package's polkit rule lets the brain's user start
+# that unit; anyone else is asked for an administrator's password), and followed through
+# its log until it ends: the engine and models (install.sh --only engine), then the brain package
+# (--only brain), each put back by itself if it does not come up, each restart waiting until
+# nobody is talking. From the box's own channel (TEAPORT_UPDATE_CHANNEL in brain.env). A
+# plugin or OpenClaw change still takes a full install.sh run; --check says so.
+UPDATE_UNIT=teaport-update.service
+UPDATE_STATE="${TEAPORT_UPDATE_STATE:-/var/lib/teaport-update}"   # update_apply.py's run.json + log
+# The unit's current invocation (empty before its first start).
+update_invocation() { systemctl show -p InvocationID --value "$UPDATE_UNIT" 2>/dev/null || true; }
+# The unit is starting or running (a oneshot is "activating" while it runs).
+update_running() {
+  case "$(systemctl show -p ActiveState --value "$UPDATE_UNIT" 2>/dev/null || true)" in
+    activating|active|reloading) return 0 ;;
+  esac
+  return 1
+}
+# update_field <name> -- one field of the last run's run.json; empty when there is none.
+update_field() {
+  python3 -I -c 'import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get(sys.argv[2])
+except (OSError, ValueError, AttributeError):
+    v = None
+print("" if v is None else v)' "$UPDATE_STATE/run.json" "$1" 2>/dev/null || true
+}
+update_log_lines() { wc -l 2>/dev/null < "$UPDATE_STATE/log" || echo 0; }
+# update_follow new <before> | join -- print the log of the update's run as it grows, until
+# that run has ended. The run is told by the invocation update_apply.py writes into run.json
+# when it starts (systemd's $INVOCATION_ID, unique to each run): `new`, one other than
+# <before>, which run.json held before this command started the unit; `join`, the one the
+# unit is running now. Never an earlier run's, whatever the clock says, and whether or not
+# systemd still has the unit loaded. A start that waits in systemd's queue (for the network,
+# say) is waited for. Interrupted, the run goes on without the terminal.
+update_job_queued() { [ -n "$(systemctl list-jobs --no-legend "$UPDATE_UNIT" 2>/dev/null || true)" ]; }
+update_follow() {
+  local mode="$1" before="${2:-}" want="" cur shown=0 lines state waited=0 mine=0
+  [ -r "$UPDATE_STATE/run.json" ] || [ ! -e "$UPDATE_STATE/run.json" ] \
+    || die "cannot read $UPDATE_STATE (the brain's user and group can) — follow it with: journalctl -u $UPDATE_UNIT -f"
+  [ "$mode" != join ] || want="$(update_invocation)"
+  trap 'printf "\nthe update goes on without this terminal; teaport update --status shows it\n"; exit 130' INT
+  while :; do
+    cur="$(update_field invocation)"
+    if [ "$mode" = join ]; then
+      [ -z "$want" ] || [ "$cur" != "$want" ] || mine=1
+    elif [ -n "$cur" ] && [ "$cur" != "$before" ]; then mine=1; fi
+    if [ "$mine" = 1 ]; then
+      lines="$(update_log_lines)"
+      # sed, not tail | head: under pipefail, head closing early fails the pipe.
+      if [ "$lines" -gt "$shown" ]; then sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"; shown="$lines"; fi
+      state="$(update_field state)"
+      if [ "$state" != running ] || ! update_running; then break; fi
+    elif ! update_running && ! update_job_queued; then
+      waited=$((waited + 1))
+      [ "$waited" -lt 10 ] || die "the update did not start — see: journalctl -u $UPDATE_UNIT"
+    fi
+    sleep 1
+  done
+  trap - INT
+  # The tail of a log written in the last second.
+  lines="$(update_log_lines)"
+  [ "$lines" -le "$shown" ] || sed -n "$((shown + 1)),${lines}p" "$UPDATE_STATE/log"
+  state="$(update_field state)"
+  case "$state" in
+    done) printf '%s\n' "$(c "$GREEN" "update: $(update_field message)")" ;;
+    running) die "the update stopped before it said how it ended — see: journalctl -u $UPDATE_UNIT" ;;
+    *) die "update failed: $(update_field message) — the full log: teaport update --status" ;;
+  esac
+}
+update_status() {
+  local as_json="$1" state
+  if [ ! -e "$UPDATE_STATE/run.json" ]; then
+    if [ "$as_json" = 1 ]; then echo '{"state": "none"}'; else echo "no update has been run on this box"; fi
+    return 0
+  fi
+  [ -r "$UPDATE_STATE/run.json" ] || die "cannot read $UPDATE_STATE (the brain's user and group can)"
+  state="$(update_field state)"
+  # A run.json that says running for a unit that is not: the run was cut off (a power cut).
+  if [ "$state" = running ] && ! update_running; then state=interrupted; fi
+  if [ "$as_json" = 1 ]; then
+    python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1])); d["state"] = sys.argv[2]; print(json.dumps(d))' "$UPDATE_STATE/run.json" "$state"
+    return 0
+  fi
+  local when; when="$(update_field started)"; when="$(date -d "@${when%.*}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+  printf 'update   %s  (started %s, channel %s)\n' "$state" "$when" "$(update_field channel)"
+  case "$state" in running) printf '  now      %s\n' "$(update_field step)" ;; esac
+  [ -z "$(update_field message)" ] || printf '  %s\n' "$(update_field message)"
+  printf '  log      %s/log  (and journalctl -u %s)\n' "$UPDATE_STATE" "$UPDATE_UNIT"
+}
 cmd_update() {
-  local venv="$PREFIX/brain" check_only=0 pass=(--prefix "$PREFIX" --etc "$ETC")
+  local venv="$PREFIX/brain" mode=apply yes=0 as_json=0 channel="" pass=(--prefix "$PREFIX" --etc "$ETC")
+  local usage="teaport update [--yes] | --check [--json] [--channel stable|beta] | --status [--json]"
   while [ $# -gt 0 ]; do
     case "$1" in
-      --check) check_only=1 ;;
-      --json) pass+=(--json) ;;
-      --channel) [ $# -ge 2 ] || die "--channel needs stable or beta"; pass+=(--channel "$2"); shift ;;
-      --channel=*) pass+=(--channel "${1#*=}") ;;
-      *) die "unknown argument: $1 (try: teaport update --check [--json] [--channel stable|beta])" ;;
+      --check) mode=check ;;
+      --status) mode=status ;;
+      --yes|-y) yes=1 ;;
+      --json) as_json=1 ;;
+      --channel) [ $# -ge 2 ] || die "--channel needs stable or beta"; channel="$2"; shift ;;
+      --channel=*) channel="${1#*=}" ;;
+      *) die "unknown argument: $1 (try: $usage)" ;;
     esac
     shift
   done
+  if [ "$mode" = status ]; then update_status "$as_json"; return; fi
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
-  "$venv/bin/python" -I -m teaport_brain.updates check ${pass[@]+"${pass[@]}"} || exit $?
-  [ "$check_only" = 1 ] && return 0
-  die "applying an update is not wired yet — for a brain change run: install.sh --only brain (installs the teaport-brain package, nothing else); for an engine release: install.sh --only engine (the engine's files and unit, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
+  if [ "$mode" = check ]; then
+    [ "$as_json" = 0 ] || pass+=(--json)
+    [ -z "$channel" ] || pass+=(--channel "$channel")
+    brain_python "$venv" -I -m teaport_brain.updates check "${pass[@]}" || exit $?
+    return 0
+  fi
+  [ -z "$channel" ] || die "--channel goes with --check: teaport update installs from the box's own channel (TEAPORT_UPDATE_CHANNEL in $ETC/brain.env)"
+  [ "$as_json" = 0 ] || die "--json goes with --check or --status"
+  if update_running; then
+    echo "an update is being installed already; following it (Ctrl-C leaves it running)"
+    update_follow join
+    return
+  fi
+  # The question is about what the unit installs, which reads it itself: the box's channel
+  # (brain.env), the default address and layout. So neither a channel or manifest address in
+  # this shell nor a moved TEAPORT_PREFIX / TEAPORT_ETC makes it describe another plan.
+  local rc=0
+  ( unset TEAPORT_MANIFEST_URL TEAPORT_UPDATE_CHANNEL
+    brain_python "$venv" -I -m teaport_brain.updates check --exit-code --prefix /opt/teaport --etc /etc/teaport ) || rc=$?
+  case "$rc" in
+    0) return 0 ;;    # nothing teaport update installs: the check said what there is
+    10) ;;
+    *) exit "$rc" ;;
+  esac
+  if [ "$yes" != 1 ]; then
+    [ -t 0 ] || die "not on a terminal, so not asking: teaport update --yes installs without a question"
+    local answer=""
+    read -r -p "Install it now? [y/N] " answer || true
+    case "$answer" in y|Y|yes|YES) ;; *) echo "nothing installed."; return 0 ;; esac
+  fi
+  # Not sudo: the package's polkit rule lets the brain's user start this unit (and only it);
+  # anyone else gets systemd's own password prompt.
+  local before; before="$(update_field invocation)"
+  systemctl start --no-block "$UPDATE_UNIT" || die "could not start $UPDATE_UNIT"
+  echo "installing (Ctrl-C leaves it running; teaport update --status shows it)"
+  update_follow new "$before"
 }
 
 # ---- licenses --------------------------------------------------------------
@@ -489,7 +639,95 @@ cmd_update() {
 cmd_licenses() {
   local venv="$PREFIX/brain"
   [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
-  "$venv/bin/python" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
+  brain_python "$venv" -I -m teaport_brain.licenses --prefix "$PREFIX" "$@"
+}
+
+# ---- key / setup-card ---------------------------------------------------------
+# Readying a box from a terminal (#283): its AI key, and its setup card. The work is the
+# brain's (teaport_brain.provision: the setup page's own save, and the setup network's own
+# name, password and QR text), run under the brain's venv, isolated (-I), as the box's run
+# user -- never as root: the key file, the trial marker and OpenClaw's store are that
+# user's, and the venv's python is not run as root. Only installing wifi-setup.env, which
+# is root's (systemd reads it for teaport-wifi-setup.service), goes through sudo.
+provision_user() {
+  local venv="$PREFIX/brain" user
+  [ -x "$venv/bin/python" ] || die "no brain at $venv — is teaport installed? (run install.sh first)"
+  [ "$(id -u)" != 0 ] || die "run this as the box's user, not as root (it uses sudo itself where it must)"
+  user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+  if [ -n "$user" ] && [ "$user" != "$(id -un)" ]; then
+    die "run this as $user, the user the brain runs as (its key file and state are $user's)"
+  fi
+}
+provision() { provision_user; brain_python "$PREFIX/brain" -I -m teaport_brain.provision "$@"; }
+
+cmd_key() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    set) ;;
+    ""|-h|--help|help)
+      cat <<'EOF'
+teaport key set [--starter] [--new-key] [--json]
+  Reads an AI key on stdin (or asks for it, not shown), checks it with the provider, and
+  saves it as the Settings and setup pages do: for the brain and, on a box with OpenClaw,
+  for OpenClaw too. Only a key that works is saved.
+  --starter   the box's trial key (OpenRouter): the box watches its credit and says when
+              it runs low, until the owner connects their own account
+  --new-key   the provider made the key moments ago: a refusal is asked again
+  exit 0 saved; 3 the provider refused the key; 2 not saved for another reason (no answer,
+  OpenClaw did not take it, not a key, a usage error); 1 could not run (wrong user, no brain)
+EOF
+      return 0 ;;
+    *) die "unknown key subcommand: $sub (try: teaport key set)" ;;
+  esac
+  provision key --etc "$ETC" "$@"
+}
+
+cmd_setup_card() {
+  local new=0 a env_file="$ETC/wifi-setup.env" text="" fresh line pass=()
+  for a in "$@"; do
+    case "$a" in
+      --new-password) new=1 ;;
+      --json|-v|--verbose) pass+=("$a") ;;
+      -h|--help)
+        cat <<'EOF'
+teaport setup-card [--new-password] [--json]
+  The setup network's name, password and the text of its QR code, as the box shows them in
+  setup mode: for a printed card. Without --new-password, the password fixed in
+  /etc/teaport/wifi-setup.env (none fixed: each setup makes a fresh one, nothing to print).
+  --new-password   make a fresh password and fix it in wifi-setup.env (uses sudo)
+EOF
+        return 0 ;;
+      *) die "unknown argument: $a (try: teaport setup-card [--new-password] [--json])" ;;
+    esac
+  done
+  provision_user
+  if [ -r "$env_file" ]; then text="$(cat "$env_file")"
+  elif [ -e "$env_file" ]; then text="$(SUDO cat "$env_file")"
+  fi
+  if [ "$new" = 1 ]; then
+    # The new text never touches a file this user owns: root reading one would read
+    # whatever the user (whom the agent runs as) had swapped in, a link to any root-only
+    # file included. It stays in memory, holds only setup settings and comments (the
+    # file is the setup unit's: nothing else belongs in it), and goes to root on stdin.
+    fresh="$(printf '%s' "$text" | provision setup-env --etc "$ETC")" \
+      || die "could not make a new setup password"
+    # A carriage return is a line end to systemd's env-file reader but not to `read`:
+    # refused, so no second line hides behind a setup setting (genuine text has none).
+    [[ "$fresh" != *$'\r'* ]] \
+      || die "$env_file's new text has a carriage return: fix the file by hand, then run this again — the password was not changed"
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+      [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?WIFI_SETUP_[A-Z0-9_]*[[:space:]]*= ]] && continue
+      die "$env_file has a line that is not a setup setting (WIFI_SETUP_...): remove it by hand, then run this again — the password was not changed"
+    done <<< "$fresh"
+    # root's, readable by the run user's group, as install.sh's env files (write_env): the
+    # setup unit (User=, EnvironmentFile=) and the configuration page both read it.
+    printf '%s\n' "$fresh" | SUDO install -D -m 0640 -o root -g "$(id -gn)" /dev/stdin "$env_file" \
+      || die "could not write $env_file: the setup password was not changed"
+    text="$fresh"; pass+=(--new)
+  fi
+  # The card is made from the text the box now has, so it shows the password it uses.
+  printf '%s' "$text" | provision card --etc "$ETC" ${pass[@]+"${pass[@]}"}
 }
 
 # ---- logs ------------------------------------------------------------------
@@ -1648,8 +1886,10 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   update) cmd_update "$@" ;;
   licenses) cmd_licenses "$@" ;;
+  key)    cmd_key "$@" ;;
+  setup-card) cmd_setup_card "$@" ;;
   logs)   cmd_logs "$@" ;;
   sip)    cmd_sip "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $cmd (try: status | doctor | update | licenses | logs | sip)" ;;
+  *) die "unknown command: $cmd (try: status | doctor | update | licenses | key | setup-card | logs | sip)" ;;
 esac

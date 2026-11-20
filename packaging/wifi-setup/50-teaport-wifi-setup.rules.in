@@ -1,20 +1,19 @@
-// teaport Wi-Fi setup (installed by install.sh): lets the teaport run user change the
-// box's Wi-Fi — scan, bring the (WPA2) setup network up and down, join and save networks —
-// without root. teaport-wifi-setup.service runs as that user (brain/teaport_brain/
-// wifi_setup.py), and so does the brain, whose config page switches networks too
-// (config_ui.py /api/wifi/*).
+// teaport Wi-Fi setup: lets the teaport run user scan for Wi-Fi networks (a fresh scan
+// needs NetworkManager's wifi.scan), and nothing else. Rendered by install.sh, and
+// rewritten by the teaport-brain package (packaging/deb/sudoers-sync) on a box where an
+// earlier one granted more.
 //
-// The trade-off: polkit sees a user, not a unit, so this is the brain user's for good,
-// and NetworkManager's actions are coarse. settings.modify.system covers every system
-// profile, not only Wi-Fi (Ethernet, VPN, DNS), and reading their saved secrets — which a
-// failed password change needs, to put the old one back. Narrowing it would take a
-// separate user for the setup unit, and the config page would lose its switch.
+// Every change to the box's networking — the setup network, joining and saving a Wi-Fi
+// network, putting the old one back — goes through /usr/lib/teaport/wifi_apply.py as root,
+// behind the sudoers line sudoers-sync writes, which takes Wi-Fi requests only and checks
+// them (brain/teaport_brain/wifi_apply.py). The run user is the one the agent runs as:
+// this rule once also gave it network-control and settings.modify.system, that is every
+// system profile (Ethernet, DNS, routes, proxies, VPN), the secrets saved in them, and
+// every device up or down. polkit sees a user, not a unit, so whatever is granted here
+// is the agent's too.
 polkit.addRule(function(action, subject) {
-    if (subject.user == "@USER@" && (
-            action.id == "org.freedesktop.NetworkManager.network-control" ||
-            action.id == "org.freedesktop.NetworkManager.wifi.scan" ||
-            action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
-            action.id == "org.freedesktop.NetworkManager.wifi.share.protected")) {
+    if (subject.user == "@USER@" &&
+            action.id == "org.freedesktop.NetworkManager.wifi.scan") {
         return polkit.Result.YES;
     }
 });

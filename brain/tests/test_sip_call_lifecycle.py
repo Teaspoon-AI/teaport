@@ -153,7 +153,10 @@ class _FakeTask:
 
 
 class _FakeGate:
+    waits = []           # call ids whose last line sip_server waited out (the can't-hear branch)
+
     async def wait_until_delivered(self, start_timeout: float = 10.0):
+        _FakeGate.waits.append(getattr(self, "call_id", None))
         return
 
 
@@ -168,6 +171,7 @@ class _FakeSession:
     resumed = {}        # call id -> the `resumed` greet() was called with
     prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
     cannot_hear = set()  # call ids whose greet() finds the STT unavailable (should_end)
+    untold = set()       # call ids whose notice (the AI disclosure) does not play out
     notices = {}        # call id -> the notice greet() was asked to say first, if any
     build_kw = {}       # call id -> what build_agent_session was given (recording=, ...)
     PREPARED = "Hello there."
@@ -179,7 +183,9 @@ class _FakeSession:
         _FakeSession.by_id[call_id] = self
         self.task = _FakeTask()
         self.followup_gate = _FakeGate()
+        self.followup_gate.call_id = call_id
         self.should_end = False
+        self.end_reason = None
 
     async def prepare_greeting(self):
         """The ring head start's out-of-band greeting (a call the brain answers)."""
@@ -190,7 +196,9 @@ class _FakeSession:
         _FakeSession.prepared[self.call_id] = prepared
         _FakeSession.notices[self.call_id] = notice
         await asyncio.sleep(self.greet_delay)
-        self.should_end = self.call_id in _FakeSession.cannot_hear
+        self.should_end = self.call_id in _FakeSession.cannot_hear | _FakeSession.untold
+        self.end_reason = ("disclosure" if self.call_id in _FakeSession.untold
+                           else "unavailable" if self.should_end else None)
         _FakeSession.greeted.append(self.call_id)
 
 
@@ -220,6 +228,8 @@ class _Harness:
         _FakeSession.resumed = {}
         _FakeSession.prepared = {}
         _FakeSession.cannot_hear = set()
+        _FakeSession.untold = set()
+        _FakeGate.waits = []
         _FakeSession.notices = {}
         _FakeSession.build_kw = {}
         self.reclaims = []

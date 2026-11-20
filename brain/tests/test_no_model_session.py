@@ -568,7 +568,9 @@ async def test_end_to_end_a_caller_hears_the_short_line_and_is_hung_up():
     from fake_engine import _WORD_S
     # Its whole length at the fake engine's pace: what the caller must hear before the
     # hangup (less a frame or two of slack).
-    full = sum(len(s.split()) * _WORD_S for s in les.NO_MODEL_CALL_TEXT.split(". "))
+    # Answered, so told it is an AI first (ai_disclosure.py), as every call is.
+    said = "You're speaking with an AI assistant. " + les.NO_MODEL_CALL_TEXT
+    full = sum(len(s.split()) * _WORD_S for s in said.split(". "))
     # A caller who waits, and one who talks from the moment the call is answered ("hello?
     # hello?"): the line must play out in full over them, not be cut and hung up on.
     for wav in (None, QUESTION_WAV):
@@ -588,7 +590,7 @@ async def test_end_to_end_a_caller_hears_the_short_line_and_is_hung_up():
                 await asyncio.to_thread(brain.wait, 15)
         assert connected, "teaport-brain never connected to the gateway"
         assert summary.get("ended_by") == "brain", f"the brain did not hang up: {summary}"
-        assert " ".join(rig.engine.tts_texts) == les.NO_MODEL_CALL_TEXT, rig.engine.tts_texts
+        assert " ".join(rig.engine.tts_texts) == said, rig.engine.tts_texts
         assert summary["bot_speech_s"] >= full - 0.1, (wav, summary["bot_speech_s"], full)
         assert rig.engine.llm_requests == []
 

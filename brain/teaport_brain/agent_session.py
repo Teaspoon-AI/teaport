@@ -66,7 +66,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
-from teaport_brain import call_recording, credit, echo_guard, goodbye
+from teaport_brain import ai_disclosure, call_recording, credit, echo_guard, goodbye
 from teaport_brain import endpoint_debug
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
@@ -225,7 +225,8 @@ _STT_RESOLVE_INTERVAL_S = 0.1
 def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
                             context_notes: bool = False, tools=(),
                             recorded: str | None = None) -> list:
-    """The context's starting messages: the shared persona system prompt, the
+    """The context's starting messages: the shared persona system prompt, the line that
+    it is an AI and says so if asked (ai_disclosure.PROMPT_LINE), the
     AGENT-FIRST directive when that mode is on (naming the session's direct `tools`), a
     reply-language directive when a non-English TTS voice/language was selected, and,
     where the front-end takes client
@@ -234,7 +235,9 @@ def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
     Used both at
     build time and for the SIP per-call reset so a reset restores the exact starting
     context."""
-    msgs = [{"role": "system", "content": system_prompt}]
+    msgs = [{"role": "system", "content": system_prompt},
+            # Every session, whatever the persona: it is an AI and says so (ai_disclosure).
+            {"role": "system", "content": ai_disclosure.PROMPT_LINE}]
     if AGENT_FIRST:
         msgs.append({"role": "system", "content": agent_first_directive(tools)})
     if lang_name:
@@ -244,6 +247,38 @@ def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
     if recorded:
         msgs.append({"role": "system", "content": recorded})
     return msgs
+
+
+class StartNotice:
+    """The conversation-start notice (#280): one fixed line, heard in full when a
+    conversation starts on the owner's surface -- a Talk connect, the room's first
+    greeting, a wake that starts a new conversation (AgentSession.say_start_notice) --
+    and not without a model (whose line says it all). Today: the room's optional AI
+    greeting (`ai_greeting`: TEAPORT_ROOM_AI_GREETING, ai_disclosure.py, each new room
+    conversation) and the trial credit's warnings (credit.MONITOR.notice; told() once
+    one has played), the two as one line when both are due."""
+
+    def __init__(self, voice_lang, phrases, settings_phrase, ai_greeting: bool = False):
+        self.voice_lang = voice_lang
+        self.phrases = phrases
+        self.settings_phrase = settings_phrase
+        self.ai_greeting = ai_greeting
+        self.msgid = None
+
+    def line(self) -> str | None:
+        self.msgid = credit.MONITOR.notice(
+            settings=settings_access.usable([self.settings_phrase]))
+        parts = [ai_disclosure.room_line(self.voice_lang())] if self.ai_greeting else []
+        if self.msgid is not None:
+            text = i18n.for_espeak(self.voice_lang())._(self.msgid)
+            if self.phrases is not None:
+                self.phrases.note_said(text)  # it quotes "open my settings": heard back, ours
+            parts.append(text)
+        return " ".join(parts) or None
+
+    def told(self) -> None:
+        if self.msgid is not None:
+            credit.MONITOR.told(self.msgid)
 
 
 class AgentSession:
@@ -317,7 +352,8 @@ class AgentSession:
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
         self.should_end = False
-        # Why it should end: "busy" (the engine's slot is held) or "unavailable".
+        # Why it should end: "busy" (the engine's slot is held), "unavailable", or
+        # "disclosure" (a call's AI disclosure was not heard in full: hang up).
         self.end_reason: str | None = None
         # On hold for a phone call (hold / resume), and what keeps it alive meanwhile.
         self.held = False
@@ -364,12 +400,15 @@ class AgentSession:
         A recorded call (self.recording, call_recording.py) starts recording here.
 
         `notice`: a line said first, heard in full, before the greeting and outside the
-        context (a recorded call's recording notice, call_recording.notice_line). The
-        caller is not listened to while it plays, so a "hello?" over it cannot cut it,
-        and the greeting is queued only once it has played (or NOTICE_MAX_SECS on):
-        queued behind it, the two could play as one span and the caller would stay
-        unheard through the greeting too. Only when the greeting is: a call that cannot
-        be heard is not recorded talking to anyone."""
+        context (a phone call's AI disclosure, with the recording notice after it on a
+        recorded call: ai_disclosure.call_notice). The caller is not listened to while it
+        plays, so a "hello?" over it cannot cut it, and the greeting is queued only once
+        it has played: queued behind it, the two could play as one span and the caller
+        would stay unheard through the greeting too. Only when the greeting is: a call
+        that cannot be heard is not recorded talking to anyone. A notice that does not
+        play to its end (NOTICE_MAX_SECS on, or cut) means the caller was not told they
+        are talking to an AI: no greeting, nothing recorded, and the session should end
+        (should_end, end_reason "disclosure": the front-end hangs up)."""
         await self._stt_resolved()
         if self.stt.stt_available is not True:
             # Say WHICH failure it was. slot_busy is True only when the engine actively
@@ -390,10 +429,14 @@ class AgentSession:
                 return
             # append_to_context=False: the pipeline talking, not the model -- never
             # an assistant message, and a marked filler for TranscriptLedger.
-            t = i18n.for_espeak(getattr(self.tts, "espeak_language", "en-us"))
-            await self.task.queue_frames([TTSSpeakFrame(
-                t._(self._BUSY_MESSAGE) if busy else t._(self._UNAVAILABLE_MESSAGE),
-                append_to_context=False)])
+            lang = getattr(self.tts, "espeak_language", "en-us")
+            t = i18n.for_espeak(lang)
+            said = t._(self._BUSY_MESSAGE) if busy else t._(self._UNAVAILABLE_MESSAGE)
+            if notice:
+                # A phone call (only a call has a notice): told it is an AI first, as
+                # every answered call is (ai_disclosure.py).
+                said = ai_disclosure.before(lang, said)
+            await self.task.queue_frames([TTSSpeakFrame(said, append_to_context=False)])
             return
         if not hello:
             return
@@ -405,15 +448,23 @@ class AgentSession:
             if rec is not None:
                 rec.arm("notice")
             heard = await self._say_notice(notice)
-            if rec is not None and not rec.started:
-                if heard:
-                    # Played to its end, but no word of it reached the recorder (a voice
-                    # without word timings): the caller has been told, so start now.
-                    await self.task.queue_frames([call_recording.start_frame()])
-                else:
+            if not heard:
+                # Not told they are talking to an AI (ai_disclosure.py): no conversation,
+                # and nothing of it kept -- a notice cut part-way may have started the
+                # recording. The caller stays unheard until the hangup (_say_notice).
+                if rec is not None:
                     rec.arm(None)
-                    logger.warning("the recording notice was not heard -- this call is "
-                                   "not recorded")
+                    if rec.started:
+                        rec.discard()
+                logger.warning("the call's notice (AI disclosure) was not heard in full "
+                               "-- ending the call instead of greeting")
+                self.should_end = True
+                self.end_reason = "disclosure"
+                return
+            if rec is not None and not rec.started:
+                # Played to its end, but no word of it reached the recorder (a voice
+                # without word timings): the caller has been told, so start now.
+                await self.task.queue_frames([call_recording.start_frame()])
         elif rec is not None:
             rec.arm("any")
         elif not resumed:
@@ -435,8 +486,11 @@ class AgentSession:
             return
         await self.task.queue_frames([LLMRunFrame()])
 
-    # How long greet() waits for the recording notice to play before greeting anyway.
-    NOTICE_MAX_SECS = 8.0
+    # How long greet() waits for the call's notice (the AI disclosure, and the recording
+    # notice on a recorded call: ~4 s of speech) to play before ending the call. Counted
+    # from when the line is queued (_hold_line, after own_line's settle), so it covers the
+    # voice's first audio and the speech, not the bring-up.
+    NOTICE_MAX_SECS = 12.0
     # The owner's recording of this call (call_recording.CallRecording); None off a call.
     recording = None
     # The conversation-start notice (build_agent_session, #280): an object whose line()
@@ -488,12 +542,15 @@ class AgentSession:
 
     async def _say_notice(self, notice: str) -> bool:
         """Play `notice` heard in full (_say_whole: the pipeline talking, not the model),
-        then listen to the caller again. True when it played to its end."""
+        then listen to the caller again -- only once it has played to its end (True): a
+        call whose notice did not is ended unheard (greet)."""
+        heard = False
         try:
-            return await self._say_whole(notice, self.NOTICE_MAX_SECS,
-                                         name="the recording notice")
+            heard = await self._say_whole(notice, self.NOTICE_MAX_SECS,
+                                          name="the call's notice")
+            return heard
         finally:
-            if self.input_mute is not None:
+            if heard and self.input_mute is not None:
                 self.input_mute.muted = False
 
     async def _stt_resolved(self) -> None:
@@ -1073,28 +1130,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # The owner's own surface: the room or Talk, not a bridge relaying someone far away,
     # never a phone call. Only there is the box's trial credit told (#280).
     owner = front_end in ("talk", "room") and via is None
-    # The conversation-start notice (#280): one fixed line, heard in full when a
-    # conversation starts on the owner's surface -- a Talk connect, the room's first
-    # greeting, a wake that starts a new conversation (AgentSession.say_start_notice) --
-    # and not without a model (whose line says it all). Today: the trial credit's
-    # warnings (credit.MONITOR.notice; told() once one has played).
-    class StartNotice:
-        def __init__(self):
-            self.msgid = None
-
-        def line(self) -> str | None:
-            self.msgid = credit.MONITOR.notice(settings=settings_access.usable([settings_phrase]))
-            if self.msgid is None:
-                return None
-            text = i18n.for_espeak(voice_lang())._(self.msgid)
-            if phrases is not None:
-                phrases.note_said(text)  # it quotes "open my settings": heard back, ours
-            return text
-
-        def told(self) -> None:
-            credit.MONITOR.told(self.msgid)
-
-    start_notice = StartNotice() if owner and llm is not None else None
+    # The conversation-start notice (StartNotice, #280), on the owner's surface only.
+    start_notice = (StartNotice(voice_lang, phrases, settings_phrase,
+                                ai_greeting=ai_disclosure.room_greeting(front_end))
+                    if owner and llm is not None else None)
     if wake_gate is not None:
         wake_gate.context = context
         wake_gate.greeting = AgentSession._GREETING
@@ -1473,6 +1512,12 @@ def build_agent_session(transport, *, voice: str | None = None,
                      if llm_error_speaker.ENABLED or llm is None else None)
 
     input_mute = InputMute()
+    if front_end == "sip":
+        # A phone call is unheard until its AI disclosure has played (ai_disclosure.py):
+        # a caller's "hello?" before greet() mutes it for the notice could otherwise
+        # start a reply ahead of the disclosure. greet() listens again once the notice
+        # has played to its end (_say_notice); a call that never gets there ends.
+        input_mute.muted = True
     pipeline = Pipeline([p for p in [
         transport.input(),
         # Front-end input-side processors (SIP's HalfDuplexInputGate); none for OpenClaw.

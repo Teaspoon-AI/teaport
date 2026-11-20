@@ -21,7 +21,7 @@ You need:
   repository, and the service runs `~/teaport-sip/build/teaport-sip`.
 - Access to the device as the user the teaport services run as.
 
-<!-- source: install.sh:3142-3143#439739d4; cli/teaport:30-32#8d57683f -->
+<!-- source: install.sh:3353-3354#439739d4; cli/teaport:37-39#8d57683f -->
 
 ## Turn on telephony
 
@@ -49,13 +49,13 @@ To configure the line, follow these steps:
    password, and enables the service. If the registration fails, the wizard
    writes nothing and telephony stays off.
 
-<!-- source: cli/teaport:513-521#27174433; cli/teaport:23,30#80224d4c; cli/teaport:1427-1436#938e530e; cli/teaport:1627-1628#fed8b523 -->
+<!-- source: cli/teaport:751-759#27174433; cli/teaport:30,37#80224d4c; cli/teaport:1665-1674#938e530e; cli/teaport:1865-1866#fed8b523 -->
 
 Run the wizard as the user the services run as. As root, add `sudo -E`: a plain
 `sudo` resets `HOME`, so the wizard writes a configuration the gateway never
 reads, and it refuses to.
 
-<!-- source: cli/teaport:944-950,965#f979126a -->
+<!-- source: cli/teaport:1182-1188,1203#f979126a -->
 
 ### Turn it on without prompts
 
@@ -73,7 +73,7 @@ Replace the following:
 - `SIP_USER`: the username the trunk assigns you.
 - `SIP_PASSWORD`: the trunk password.
 
-<!-- source: cli/teaport:1384-1391#3a2472e8 -->
+<!-- source: cli/teaport:1622-1629#3a2472e8 -->
 
 ### Use an existing gateway configuration
 
@@ -92,7 +92,7 @@ the brain answers the call, after a couple of rings. If a gateway or SIP
 front-end launched by hand is still running, the command refuses and names it:
 the service it is about to enable needs port 5060 and the socket.
 
-<!-- source: cli/teaport:1253-1256#bafef1f1; cli/teaport:1462-1472#f6ff2e6c; cli/teaport:1494-1497#e22022c1 -->
+<!-- source: cli/teaport:1491-1494#bafef1f1; cli/teaport:1700-1710#f6ff2e6c; cli/teaport:1732-1735#e22022c1 -->
 
 ### Change the trunk later
 
@@ -105,7 +105,7 @@ does not know. Before the test registration, the wizard lists by name the
 settings it keeps. To keep nothing and write a fresh template, run
 `teaport sip configure --fresh`.
 
-<!-- source: cli/teaport:530-533#c26fec26; cli/teaport:534-551#e3a362d0; cli/teaport:661-667#b5bd2dd5 -->
+<!-- source: cli/teaport:768-771#c26fec26; cli/teaport:772-789#e3a362d0; cli/teaport:899-905#b5bd2dd5 -->
 
 ## Check the line
 
@@ -117,7 +117,7 @@ in it, and the registration from this run:
 teaport sip status
 ```
 
-<!-- source: cli/teaport:1574-1601#e661c53b; cli/teaport:766-774#9fceb4c7 -->
+<!-- source: cli/teaport:1812-1839#e661c53b; cli/teaport:1004-1012#9fceb4c7 -->
 
 To follow the gateway's journal:
 
@@ -127,7 +127,7 @@ teaport logs sip -f
 
 The call's own lines are in the brain's journal, `teaport logs brain`.
 
-<!-- source: cli/teaport:12,499-503#0ac45871; brain/teaport_brain/sip_server.py:495#f51c16f8 -->
+<!-- source: cli/teaport:19,737-741#0ac45871; brain/teaport_brain/sip_server.py:497#f51c16f8 -->
 
 ## Keep the line running
 
@@ -139,7 +139,7 @@ the call at the gateway, which hands it to the restarted brain, and the caller
 hears a short "sorry, I lost you for a moment". The brain picks up a restarted
 gateway within a couple of seconds.
 
-<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
+<!-- source: systemd/teaport-sip.service.in:38,47,49#9bb6f61f; systemd/teaport-sip.service.in:18-24#ae006ccc; brain/teaport_brain/sip_server.py:16-18,45-52#a8cd7d23; brain/teaport_brain/config_schema.toml:1999-2008#52b15746 -->
 
 To restart the gateway, for example after editing its configuration by hand:
 
@@ -149,7 +149,7 @@ teaport sip restart
 
 The command waits for the trunk's `200 OK`; the brain reconnects on its own.
 
-<!-- source: cli/teaport:1539-1545,1635#a48b0483 -->
+<!-- source: cli/teaport:1777-1783,1873#a48b0483 -->
 
 The gateway cancels echo for the caller. `teaport sip aec` prints the current
 acoustic echo cancellation (AEC) setting:
@@ -166,7 +166,7 @@ teaport sip aec off
 teaport sip aec on
 ```
 
-<!-- source: cli/teaport:1547-1562,1570-1571,1634#6acaab27 -->
+<!-- source: cli/teaport:1785-1800,1808-1809,1872#6acaab27 -->
 
 To turn telephony off:
 
@@ -178,7 +178,7 @@ The command stops and disables the gateway. The configuration stays at
 `~/.config/teaport/teaport-sip.conf`; add `--purge` to remove it too. Run the
 wizard again to turn telephony back on.
 
-<!-- source: cli/teaport:1604-1611,1636#4454f6b2 -->
+<!-- source: cli/teaport:1842-1849,1874#4454f6b2 -->
 
 The configuration is the gateway's own `key=value` format: `registrar_uri`,
 `id_uri`, `username`, `password`, `uds_path`, `aec`, `auto_answer`, and more.
@@ -188,7 +188,7 @@ confirmed, because the gateway still runs the configuration it started with.
 Nothing about the line lives in `/tmp`: the configuration is in
 `~/.config/teaport`, the socket in `/run/teaport`, and the logs in journald.
 
-<!-- source: cli/teaport:30,32#1bfec8de; cli/teaport:578-597#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:530-533#c26fec26; cli/teaport:803-815#399f6773 -->
+<!-- source: cli/teaport:37,39#1bfec8de; cli/teaport:816-835#50069afa; systemd/teaport-sip.service.in:9-11,30-36#29a2dda2; cli/teaport:768-771#c26fec26; cli/teaport:1041-1053#399f6773 -->
 
 ## A call during a conversation
 
@@ -203,7 +203,7 @@ The brain answers the call, not the gateway. The delay is a setting,
 pipeline and words its greeting during the ring, so the greeting plays as
 soon as the caller is connected. See [the settings reference](/reference/settings/#sip-front-end).
 
-<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1955-1965#a986d676; cli/teaport:1468-1470#ba0dcf82 -->
+<!-- source: brain/teaport_brain/sip_server.py:27-34#aa05fcee; brain/teaport_brain/config_schema.toml:1961-1971#a986d676; cli/teaport:1706-1708#ba0dcf82 -->
 
 While the call rings, the agent asks the live conversation, in the
 conversation's language: *"Someone's calling me — Ann Smith. Should I step away
@@ -241,13 +241,13 @@ applies. The waiting time still counts from the ring, so with the question
 asked twice and nobody answering, the call is picked up about 16 to 18 seconds
 after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,595-669#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1968-1990#1d703178 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,605-679#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1974-1996#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1760-1767#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,554-557#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1766-1773#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,564-567#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
@@ -276,7 +276,7 @@ sound through the wait. A phone call plays none unless you turn the typing on
 for calls with `SIP_THINKING_SOUND`. To change the setting and apply it, see
 [Configure teaport](/guides/configuration/).
 
-<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1518-1527#d88774b0 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:4-5#9004854f; brain/teaport_brain/config_schema.toml:1524-1533#d88774b0 -->
 
 Three other settings decide the typing on calls as well:
 
@@ -287,7 +287,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1456-1458#d7433986; brain/teaport_brain/sip_server.py:876,896#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1495-1497#d7433986; brain/teaport_brain/sip_server.py:878,898#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the
@@ -296,13 +296,32 @@ there the brain doesn't hear the caller while the typing plays, the same as
 while the agent speaks. An OLED face on the device doesn't type along to a
 call.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1529-1539#82e31268; brain/teaport_brain/config_schema.toml:1917-1925#ac57e09d; brain/teaport_brain/sip_server.py:220-222,245-247#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
+<!-- source: brain/teaport_brain/thinking_sound.py:503-512#a874901e; brain/teaport_brain/config_schema.toml:1535-1545#82e31268; brain/teaport_brain/config_schema.toml:1923-1931#ac57e09d; brain/teaport_brain/sip_server.py:221-223,246-248#56c85e58; brain/teaport_brain/thinking_sound.py:19#bc22d5e4 -->
 
 Before you turn the typing on for calls, listen to it on a call. The typing is
 made at 24 kHz, and a phone line carries 8 kHz audio, which keeps little of the
 typing's click.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:87,126-127#0585ca7c; brain/teaport_brain/config_schema.toml:855#311309fd -->
+<!-- source: brain/teaport_brain/thinking_sound.py:87,126-127#0585ca7c; brain/teaport_brain/config_schema.toml:861#311309fd -->
+
+## Callers are told they're talking to an AI
+
+Every call starts with *"You're speaking with an AI assistant."* in the call's
+language, before the greeting. The agent doesn't listen until the line has
+played, so the caller can't talk over it. If the brain restarts during a call,
+the caller hears the line again. A call the device answers only to turn away,
+because it's busy or can't answer, hears the line before the reason.
+
+No setting turns this line off. A caller can't see what they're talking to, and
+the EU AI Act (Article 50) requires that they be told. Teaspoon AI ships the line
+built in. If you change the code to remove it, you are responsible for your
+modified version. If the line can't be played to the end, the call is hung up
+instead of greeted, and nothing of it is recorded.
+
+If a caller asks whether they're talking to a person, the agent says it's an AI.
+This holds in Talk and in the room too, whatever persona you give the agent.
+
+<!-- source: brain/teaport_brain/ai_disclosure.py:9-26#1e6f88ac; brain/teaport_brain/ai_disclosure.py:27-35#94f0ce3b; brain/teaport_brain/config_schema.toml:186#ad48651e -->
 
 ## Record calls
 
@@ -324,7 +343,7 @@ consent of one party to the call, California and about a dozen others need every
 other countries have their own rules. You choose the setting and are
 responsible for it; this page is not legal advice.
 
-<!-- source: brain/teaport_brain/call_recording.py:4-9#26b6c6b3; brain/teaport_brain/config_schema.toml:2007-2060#285b81c9 -->
+<!-- source: brain/teaport_brain/call_recording.py:4-9#26b6c6b3; brain/teaport_brain/config_schema.toml:2023-2076#f8d0c8d5 -->
 
 Each call's files are named by the time the call started and its call id, for
 example `20261102-141503-abc123.wav`, in `TEAPORT_CALL_RECORDING_DIR`
@@ -333,10 +352,10 @@ before the greeting; a call the brain can't hear isn't recorded. If the brain
 restarts during a call, the rest of the call goes to files beside the first ones
 (`.r1.wav`, `.r1.txt`), and the caller hears the notice again.
 
-<!-- source: brain/teaport_brain/call_recording.py:11-32,34-50#c8659672 -->
+<!-- source: brain/teaport_brain/call_recording.py:11-34,36-52#3d63b1ae -->
 
-With recording on, a call starts with *"This call is being recorded."* in the
-call's language, before the greeting. The agent doesn't listen while the notice
+With recording on, the AI disclosure is followed by *"This call is being
+recorded."* in the call's language, before the greeting. The agent doesn't listen while the notice
 plays, so the caller can't talk over it. To turn the notice off, set
 `TEAPORT_CALL_RECORDING_NOTICE=0`. Either way, the agent knows the call is
 recorded and says so if the caller asks.
@@ -346,7 +365,7 @@ deleted, and then the oldest until the directory fits in
 `TEAPORT_CALL_RECORDING_MAX_MB` (2048 by default). The check runs as each call
 starts. See [the settings reference](/reference/settings/#call-recording).
 
-<!-- source: brain/teaport_brain/call_recording.py:52-61#3af724fe -->
+<!-- source: brain/teaport_brain/call_recording.py:54-64#2a0f95c0 -->
 
 ## Test the phone path without a line
 
@@ -365,7 +384,7 @@ The brain needs nothing: its SIP front-end looks for the socket every 2 seconds,
 `TEAPORT_SIP_SOCKET`, `/run/teaport/teaport-sip.sock` by default, and takes
 calls from whatever serves it.
 
-<!-- source: systemd/teaport-brain.service.in:22#3f95ac55; brain/teaport_brain/sip_server.py:5-7,257#de2d5741; brain/teaport_brain/config_schema.toml:1993-2002#52b15746 -->
+<!-- source: systemd/teaport-brain.service.in:22#3f95ac55; brain/teaport_brain/sip_server.py:5-7,258#de2d5741; brain/teaport_brain/config_schema.toml:1999-2008#52b15746 -->
 
 To test the phone path, follow these steps:
 
@@ -429,7 +448,7 @@ To test the phone path, follow these steps:
    The front-end logs `SIP front-end: connected to the gateway at ...` when it
    connects.
 
-   <!-- source: brain/teaport_brain/sip_server.py:495#f51c16f8 -->
+   <!-- source: brain/teaport_brain/sip_server.py:497#f51c16f8 -->
 
 6. End the fake; it removes the socket when it exits. Then clean up:
 
@@ -463,7 +482,7 @@ fake refuses to bind a path that something already listens on, compares real
 paths, so a symlink such as `/var/run` does not pass, and without
 `--allow-live-path` it refuses the default path as well.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1993-2002#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
+<!-- source: brain/teaport_brain/config_schema.toml:1999-2008#52b15746; brain/tests/fake_sip_gateway.py:186-189,417-428,810-811#63009a0e -->
 
 Any 16-bit WAV works as the caller's audio; other sample rates and stereo are
 converted to the 16 kHz mono the gateway speaks. For a call that exercises a

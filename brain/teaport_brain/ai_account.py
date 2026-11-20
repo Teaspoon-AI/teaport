@@ -806,15 +806,18 @@ def forget_env_copy() -> None:
     os.environ.pop("LLM_API_KEY", None)
 
 
-async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS) -> Check:
+async def adopt(key: str, base_url: str | None, timeout: float = CHECK_TIMEOUT_SECS,
+                issued: bool = False) -> Check:
     """Check `key`, and save it only if it works (save_key): the setup-mode page's way,
-    where nobody is left to say "save anyway". A key that works on an account with no
-    credit is saved, its Check's `note` says so (check_key's `account`).
+    where nobody is left to say "save anyway", and `teaport key set`'s (provision.py). A
+    key that works on an account with no credit is saved, its Check's `note` says so
+    (check_key's `account`). `issued`: the provider made the key moments ago (check_key).
     With an environment copy it cannot drop (shadowed): SET_ELSEWHERE, nothing saved. A
     key that works but that OpenClaw did not take: UNKNOWN, with NotSaved's reason."""
     if shadowed(None) is not None:
         return Check(REFUSED, SET_ELSEWHERE)
-    result = await asyncio.to_thread(check_key, key, base_url, timeout, account=True)
+    result = await asyncio.to_thread(check_key, key, base_url, timeout, issued=issued,
+                                     account=True)
     if result.state == WORKS:
         try:
             await save_key(key, base_url)
@@ -839,11 +842,12 @@ def sign_in_after_setup(base_url: str | None, brain_env: dict | None, settings_s
             and shadowed(brain_env) != ELSEWHERE and (not key or credit.on_starter(key)))
 
 
-def adopt_blocking(key: str, base_url: str | None) -> Check:
-    """adopt() for a caller with no event loop (the setup-mode unit's thread)."""
+def adopt_blocking(key: str, base_url: str | None, issued: bool = False) -> Check:
+    """adopt() for a caller with no event loop (the setup-mode unit's thread, `teaport key
+    set`)."""
     async def run():
         try:
-            return await adopt(key, base_url)
+            return await adopt(key, base_url, issued=issued)
         finally:
             await agent_key.settle()  # a stopped CLI's end, before the loop goes
     return asyncio.run(run())

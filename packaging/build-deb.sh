@@ -48,10 +48,11 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
-# brain/, cli/, packaging/ and THIRD_PARTY_LICENSES.md are what the package is built from —
-# and only the files git sees there, tracked or untracked-not-ignored (see "source" below), so this check
-# covers everything that goes in.
-SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md)
+# brain/, cli/, packaging/, THIRD_PARTY_LICENSES.md and the one unit the package ships are
+# what the package is built from — and only the files git sees there, tracked or
+# untracked-not-ignored (see "source" below), so this check covers everything that goes in.
+# Every relative src: in nfpm.yaml must sit under one of these (test_wifi_root_env.py).
+SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md systemd/teaport-wifi-setup-net.service.in)
 dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   VERSION="$TEAPORT_DEB_VERSION"

@@ -35,6 +35,10 @@ warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+brain_tree_needed() { :; }; brain_tree_complete() { :; }   # the rebuild's marker: not here
+RUN_HOME="$HOME"
+own_dir() { mkdir -p "$1"; }   # root's on a box (own_install_trees); a test cannot chown
 # sudo can read the unreadable (as root would), or is refused (SUDO_REFUSED=1). Every
 # call is recorded in $T/sudo.log, so a test can tell when it was not asked at all.
 sudo() {
@@ -183,7 +187,7 @@ def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
 ONLY_BRAIN_STUBS = r'''
 BRAIN_DEB_CACHED=/cache/x.deb BRAIN_DEB_NEW=2.0
 systemctl() { [ "$1" = cat ] && [ "${NO_UNIT:-0}" = 0 ]; }   # the brain unit is installed
-for f in check_brain_source brain_deb_fetch brain_deb_keep sip_brain_detach brain_swap sip_brain_retire \
+for f in check_brain_source brain_deb_fetch brain_deb_keep wait_for_idle sip_brain_detach brain_swap sip_brain_retire \
          brain_retire_old_tools brain_retire_old_venvs install_busy_lamp install_dns_resilience install_arp_multihome \
          brain_deb_prune; do eval "$f() { echo STEP $f; }"; done
 '''
@@ -235,7 +239,9 @@ def test_only_brain_installs_the_package_first_and_the_rest_only_after_the_verif
     rc, out = _brain_only(tempdir("teaport-only-"))
     assert rc == 0, out
     order = [ln.split()[1] for ln in out.splitlines() if ln.startswith("STEP ")]
-    assert order == ["check_brain_source", "brain_deb_fetch", "brain_deb_keep", "sip_brain_detach",
+    # The wait for nobody talking (teaport update's runs) comes after the download and before
+    # the package is kept: a wait that gives up leaves the cache --rollback brain reads as it was.
+    assert order == ["check_brain_source", "brain_deb_fetch", "wait_for_idle", "sip_brain_detach", "brain_deb_keep",
                      "brain_swap", "sip_brain_retire", "brain_retire_old_tools", "brain_retire_old_venvs",
                      "install_busy_lamp",
                      "install_dns_resilience", "install_arp_multihome", "brain_deb_prune"], order
@@ -460,7 +466,7 @@ def _render(tmp, dry_run=False, masked=""):
               f'readlink() {{ [ "$1" = "/etc/systemd/system/{masked}" ] && echo /dev/null; }}\n'
               'render_unit teaport-brain.service.in teaport-brain.service\n'
               'render_unit teaport-engine.service.in teaport-engine.service\n')
-    return _run(tmp, script, ["write_root", "render_unit"])
+    return _run(tmp, script, ["write_root", "render_unit", "sed_value"])
 
 
 def test_a_unit_is_written_through_write_root_and_reads_back_as_anyone():
@@ -540,7 +546,7 @@ def _behind(touching):
 def _check(tmp, here, only):
     env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     script = f'{_line("BRAIN_ONLY_PATHS=")}HERE="{here}"; ONLY="{only}"; check_brain_source; echo CHECKED'
-    return _run(tmp, script, ["brain_src_fetch", "check_brain_source"], env)
+    return _run(tmp, script, ["brain_src_fetch", "check_brain_source", "git_read"], env)
 
 
 def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
@@ -562,7 +568,7 @@ def test_only_brain_is_refused_for_upstream_commits_to_what_it_installs():
         rc, out = _check(tmp, here, "brain")
         assert rc != 0, (touching, out)
         assert ("1 commit(s) behind origin/main in what --only brain installs "
-                "(systemd packaging/xvf3800 packaging/resolved install.sh)") in out, (touching, out)
+                "(systemd packaging/xvf3800 packaging/resolved packaging/install install.sh)") in out, (touching, out)
 
 
 def test_uncommitted_changes_in_any_installed_path_are_named():
@@ -679,6 +685,31 @@ def test_a_given_package_is_checked_and_kept_under_its_canonical_name():
         assert rc != 0 and why in out, out
     rc, out = _debrun(tmp, f'BRAIN_DEB_SRC="{tmp}/in/missing.deb"; brain_deb_fetch')
     assert rc != 0 and "is not a file" in out, out
+
+
+def test_an_update_installs_no_older_brain_than_the_installed_one():
+    # teaport update sets TEAPORT_NEWER_ONLY=1: the run user picks the channel, and the
+    # other one may name an older release, one a newer has fixed.
+    tmp = tempdir("teaport-deb-")
+    deb = _deb(pathlib.Path(tmp, "in/old.deb"), "0.1.0")
+    real_cmp = 'dpkg() { case "$1" in --print-architecture) echo arm64 ;; *) command dpkg "$@" ;; esac; }\n'
+    script = real_cmp + f'BRAIN_DEB_SRC="{deb}"; brain_deb_fetch; echo "NEW $BRAIN_DEB_NEW"'
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1.1", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "an update installs no older brain" in out and "--rollback brain" in out, out
+    # A half-configured package (a brain the run user kept from coming up) counts too.
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1.1", "STATUS": "half-configured", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "an update installs no older brain" in out, out
+    # The same version, a newer one, nothing installed, or a run that is not an update.
+    for env in ({"INSTALLED": "0.1.0", "TEAPORT_NEWER_ONLY": "1"}, {"INSTALLED": "0.1.0~dev1", "TEAPORT_NEWER_ONLY": "1"},
+                {"INSTALLED": "0.1.1"}, {}):
+        rc, out = _debrun(tmp, script, env=env)
+        assert rc == 0 and "NEW 0.1.0" in out, (env, out)
+    # An update runs from the package, so dpkg has one: a version it cannot say, or one it
+    # cannot order, stops the run rather than slipping past.
+    rc, out = _debrun(tmp, script, env={"TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "cannot read the teaport-brain version" in out, out
+    rc, out = _debrun(tmp, script, env={"INSTALLED": "0.1:", "TEAPORT_NEWER_ONLY": "1"})
+    assert rc != 0 and "cannot compare" in out, out
 
 
 def test_without_a_package_the_manifest_names_one_or_the_run_says_how_to_give_one():
@@ -1116,7 +1147,7 @@ def test_postinst_links_the_old_venv_path_and_a_sudoers_failure_does_not_fail_th
                                        ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
-    assert "sudoers line was not written" in p.stderr
+    assert "sudoers lines for the config page and Wi-Fi, or the update's polkit rule, were not written" in p.stderr
     assert "shadows" not in p.stderr   # no old CLI: nothing to say
     old_cli.write_text("#!/bin/sh\n")
     p = subprocess.run(["sh", str(script), "configure"], capture_output=True, text=True)
@@ -1135,14 +1166,24 @@ def test_postrm_takes_the_link_on_remove_and_the_sudoers_line_on_purge_and_nothi
     opt = pathlib.Path(tmp, "opt/teaport")
     opt.mkdir(parents=True)
     sudoers = pathlib.Path(tmp, "teaport-config")
-    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers))])
+    rule = pathlib.Path(tmp, "50-teaport-update.rules")
+    dropins = pathlib.Path(tmp, "wifi-setup.d")
+    script = _script(tmp, "postrm", [("/opt/teaport", str(opt)), ("/etc/sudoers.d/teaport-config", str(sudoers)),
+                                      ("/etc/polkit-1/rules.d/50-teaport-update.rules", str(rule)),
+                                      ("/etc/systemd/system/teaport-wifi-setup.service.d", str(dropins)),
+                                      ("/run/systemd/system", str(pathlib.Path(tmp, "no-systemd")))])
+    # Every path the script removes is under tmp: none of the real box's (a CI runner with
+    # polkit refuses the rm, and a root one would really remove it).
+    assert not re.search(r"rm -f /etc/", script.read_text()), script.read_text()
 
     def run(action, link_to="brain"):
         if os.path.lexists(opt / "venv"):
             (opt / "venv").unlink()
         os.symlink(str(opt / link_to), opt / "venv")
         sudoers.write_text("line\n")
+        rule.write_text("rule\n")
         assert subprocess.run(["sh", str(script), action]).returncode == 0
+        assert rule.exists() == (action != "purge"), action   # the update's grant goes with the purge
         return os.path.lexists(opt / "venv"), sudoers.exists()
     assert run("upgrade") == (True, True)
     assert run("remove") == (False, True)

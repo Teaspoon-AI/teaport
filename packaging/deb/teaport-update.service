@@ -1,0 +1,22 @@
+# teaport-update.service -- install the newer release of the box's channel (#60's updater,
+# the apply step): /usr/lib/teaport/update_apply.py, as root. `teaport update` starts it
+# (and, later, the brain when the owner says yes), through the polkit rule sudoers-sync
+# writes for it, which lets the run user start this unit and nothing else. The unit takes no
+# arguments: what it installs is read from the release manifest.
+#
+# Static (no [Install]): it runs when started, never at boot. It belongs to no other unit,
+# so the restarts it makes (the engine, the brain) do not stop it. A second start while it
+# runs is no second run (a oneshot that is activating).
+[Unit]
+Description=teaport update: install the newer release (teaport update)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/lib/teaport/update_apply.py
+# /var/lib/teaport-update, root's: the run's state and log (update_apply.py).
+StateDirectory=teaport-update
+StateDirectoryMode=0755
+# A download of a few GB, then a wait for nobody to be talking (TEAPORT_WAIT_IDLE_SECS).
+TimeoutStartSec=infinity

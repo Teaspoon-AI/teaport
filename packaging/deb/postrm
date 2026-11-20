@@ -1,14 +1,21 @@
 #!/bin/sh
 # postrm for teaport-brain (#60). Removing the package takes the tree with it, so what
 # pointed into the tree goes too: the /opt/teaport/venv link that postinst made, and on
-# purge the config page's sudoers line (it names a helper the package shipped).
+# purge the run user's grants (the sudoers line and the polkit rule name what the package shipped).
 set -e
 case "$1" in
   remove|purge)
     if [ -L /opt/teaport/venv ] && [ "$(readlink /opt/teaport/venv)" = /opt/teaport/brain ]; then
       rm -f /opt/teaport/venv
     fi
+    # postinst's Wi-Fi drop-ins: one Requires= a unit this package carried, the other is for its helper.
+    rm -f /etc/systemd/system/teaport-wifi-setup.service.d/60-teaport-no-root-steps.conf
+    rm -f /etc/systemd/system/teaport-wifi-setup.service.d/61-teaport-wifi-helper.conf
     ;;
 esac
-if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config; fi
+if [ "$1" = purge ]; then rm -f /etc/sudoers.d/teaport-config /etc/polkit-1/rules.d/50-teaport-update.rules; fi
+# The update's unit went with the package; systemd forgets it at a reload.
+case "$1" in
+  remove|purge) if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi ;;
+esac
 exit 0

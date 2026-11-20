@@ -198,20 +198,31 @@ def setup_ssid(mac: str, override: str = "", quiet: bool = False) -> str:
 PASSWORD_SYMBOLS = frozenset("-_.@!#&* ")
 
 
+def valid_password(password: str) -> bool:
+    """A flash-time password this unit uses as given: 8 to 63 characters (WPA2), every one
+    an ASCII letter, a digit or one of PASSWORD_SYMBOLS, so the voice can spell it."""
+    return 8 <= len(password) <= 63 and all(
+        (c.isascii() and c.isalnum()) or c in PASSWORD_SYMBOLS for c in password)
+
+
+def new_password() -> str:
+    """A fresh password from the system's CSPRNG (secrets): GROUPS groups of GROUP_LEN
+    characters of PASSWORD_ALPHABET, joined by "-" (also what `teaport setup-card
+    --new-password` writes for a printed insert, provision.py)."""
+    return "-".join("".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(GROUP_LEN))
+                    for _ in range(GROUPS))
+
+
 def setup_password(fixed: str = "") -> str:
-    """The flash-time password if valid -- 8 to 63 characters (WPA2), every one an ASCII
-    letter, a digit or one of PASSWORD_SYMBOLS, so the voice can spell it -- else a fresh
-    one from the system's CSPRNG (secrets): GROUPS groups of GROUP_LEN characters of
-    PASSWORD_ALPHABET, joined by "-"."""
+    """The flash-time password if valid (valid_password), else a fresh one
+    (new_password)."""
     fixed = fixed.strip()
     if fixed:
-        if 8 <= len(fixed) <= 63 and all(
-                (c.isascii() and c.isalnum()) or c in PASSWORD_SYMBOLS for c in fixed):
+        if valid_password(fixed):
             return fixed
         log("WIFI_SETUP_PASSWORD is not 8-63 letters, digits and - _ . @ ! # & * or space "
             "— using a random one")
-    return "-".join("".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(GROUP_LEN))
-                    for _ in range(GROUPS))
+    return new_password()
 
 
 # ------------------------------------------------------------------ status for the brain
@@ -820,7 +831,9 @@ class Setup:
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
-                self.created = None  # kept: it is the box's network now
+                if self.created:     # kept: it is the box's network now, and not deletable
+                    self.nm.keep(self.created)
+                self.created = None
                 account = self._adopt_key()
                 self.status.set("connected", target=target,
                                 **({"account": account} if account else {}))
