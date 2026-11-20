@@ -264,7 +264,7 @@ ends), the no-inference result, and the interruption.
   reaction — an order nobody answered expires or is replaced (`FExpire`, `FReplace`;
   both reachable under `turnAware`) — so the liveness question the follow-up had
   (`EventuallyDelivered`, never established here) is not asked of it; the consult's is
-  `Owed.tla`'s `OwedResolves`. A host note folded into a user turn's request
+  `Owed.tla`'s `OwedResolvesOrWaits`. A host note folded into a user turn's request
   (`_fold` → `_post_order` at the read) replaces an unread order the same way and is
   not a separate action.
 - **What the model says** is reduced to "answered from the order in text or not": the
@@ -297,13 +297,15 @@ telling of it is cut before the caller heard it (#204); how it is filed is
 
 The brain speaks unprompted at most twice per record. It asks one **run** when the answer
 lands, and one **re-offer** at a long lull (`TEAPORT_REOFFER_AFTER_QUIET_S`, 10 s) once
-the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
+the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16. And not at all
+while the caller's "wait" stands: a turn that was only a stop is held, and from there
+until their next turn the brain says nothing of its own (`Hold`, below).
 
 ### Actions and the code they become
 
 | action | code |
 |---|---|
-| `Land` | `tools._consult_and_land` → `Owed.land` (the tools hold the session's `Owed`; `Owed.dispatch` registered the consult and folds a duplicate into it): the placeholder tool result is rewritten to the cleaned outcome (`owed.clean_outcome`; the rewrite moved from the old `speak_followup`) -- or, when the consult lands before its placeholder is in the context, held for it (`Owed._rewrite`, `Place`) -- and the landing run is asked unless `FollowupGate.caller_request_pending` (their turn is open, `_user`, or a commit passed `TurnCommitMark` and the LLM has not rendered it, `request_rendered`); then the re-offer is armed instead |
+| `Land` | `tools._consult_and_land` → `Owed.land` (the tools hold the session's `Owed`; `Owed.dispatch` registered the consult and folds a duplicate into it): the placeholder tool result is rewritten to the cleaned outcome (`owed.clean_outcome`; the rewrite moved from the old `speak_followup`) -- or, when the consult lands before its placeholder is in the context, held for it (`Owed._rewrite`, `Place`) -- and the landing run is asked unless `FollowupGate.caller_request_pending` (their turn is open, `_user`, or a commit passed `TurnCommitMark` and the LLM has not rendered it, `request_rendered`); then the re-offer is armed instead. While the caller's wait stands (`Owed._waits`, `cwait`) neither: nothing is asked or armed until their next turn |
 | `Place` | the assistant aggregator takes the consult's placeholder (`tools._openclaw_agent_consult`'s `result_callback`, `FunctionCallResultFrame`) and writes it over `IN_PROGRESS`, whether or not the consult has landed |
 | `Placed` | a landing that came first replaces the placeholder, in a step of its own: `Owed.placed`, the placeholder's `on_context_updated` task (`tools.placeholder_properties`). Every render also places it first (`Owed.view` -> `Owed.place_landed`; `RenderTr` in `RunGo` and `Issue`), since the run a landing asks can render before that task has run. One written over `IN_PROGRESS` is held on until it has replaced the placeholder itself (#386; `rewriteOnce` is the code before, `noRenderPlace` the hook alone) |
 | `Ask` | `FollowupGate.ask(keys, purpose, context)`: the run's own slot (`_run`), beside the post-tool answer's `_held_answer`. A re-offer counts at its ask (`Record.reoffers`), so a held-then-dropped one is one |
@@ -313,10 +315,11 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 | `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate keeps the ids of the calls out (`_calls_out`, `gtool`): an id is added by its `FunctionCallInProgressFrame` unless it has already settled or been cancelled (`Mark`: the frame is uninterruptible and can come after the barge-in, `staleFlag`), and removed by its result or its `FunctionCallCancelFrame`. A call out keeps the window shut although a line before it ended `_turn` (`tend`, `endClearsTool`) |
 | `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
 | `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
-| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer and ends a wait) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame`. A reply about a record (`Record.about`) is judged on what was heard of the record so far (`Record.heard`): played through, by the gist judge (`Owed._played` -> `services.BoundedOpenAILLMService.judge_gist`, asked as its stream ended: `Owed.reply_text`, fed by `TranscriptLedger.on_reply_text`; `PtVerdicts`), or the backstop at its second (`Record.told`); cut with a heard prefix and its whole text, by both judges (`Owed._cut` -> `judge_gist` + `judge_cut`, `CutVerdicts`): the settle completes when the verdicts land (`Owed._apply`, on the live book), the reply pending till then. A failure's replies go to the failure judge (`Owed._failed`: `FailVerdicts`, and for a cut `WholeVerdicts` first -- is its whole text a telling at all?); one it gives no verdict on counts with the cut tellings (`Owed._unproven`, `Unjudged`), and the second ends the record |
 | `Lull` | `Owed._lull_loop`: every reply settled, every due decline check read, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing). Words that cut a telling of an owed record (`dw`) are in the context from here, after the caller messages counted at the cut (`Record.decline`, set in `Owed.settle`) |
+| `Hold` | a turn whose words are only a stop, held at its commit: `PauseAwareMinWordsStrategy.hold_bare_stop` (asked by `CutReplyFence.holds`) leaves the aggregation unwritten, so nothing is committed or asked, and `on_held` → `Owed.caller_waits` disarms the re-offer and sets the wait (`_waits`), which `Owed._arm` and `Owed.land` read until the next `caller_turn` |
 | `Decline` | `Owed.declines_read`, awaited by every reader -- `Owed.view` (a commit's, a post-tool answer's or a run's render, on the context it renders) and the lull -- after the settles: the decline check (`Owed._ask_decline` -> `judge_decline`, bounded by `SETTLE_WAIT_S`) on the caller's messages after those counted when the cut reply was rendered (`Reply.callers`). No words yet leave it due: the next words committed are read. A speculative reply's render reads none, and none is adopted while a check is due (`Owed.decline_due`, `BoundedOpenAILLMService.get_chat_completions`): the commit renders itself. `Checked` is that wait |
 
 ### What the code adds
@@ -470,7 +473,10 @@ whether the **rule** closes on it.
 | `NoNoteAfterDecline` | once the caller has declined the rest in the words that cut its telling, no request carries its note and no run goes for it (#231) |
 | `NoStaleResult` | no request is rendered with the consult's placeholder ("nothing has come back yet") after it has landed: the tool result says what the note says (#386) |
 | `BoundedTellings` | at most three tellings by requests carrying the note: cut or played through, each counts, and the third one's end closes or drops it (#231: five in five minutes) |
-| `OwedResolves` | `owed ~> (closed ∨ declined ∨ dropped ∨ sessionEnd ∨ reoffered)`, where `reoffered` is a terminal for unprompted speech only: the note keeps rendering, so a caller who asks gets the answer |
+| `QuietWhileWaiting` | while the caller's "wait" stands (their last turn was only a stop, held, and no turn has started since), no run of ours waits at the door or goes |
+| `TurnRearms` | `turn ∧ owed ⇒ missed`: a caller's turn arms the re-offer of the record it finds owed, the turn after a held one too |
+| `OwedResolvesOrWaits` | `owed ~> (closed ∨ declined ∨ dropped ∨ sessionEnd ∨ reoffered ∨ waiting)`, where `reoffered` is a terminal for unprompted speech only (the note keeps rendering, so a caller who asks gets the answer) and `waiting` is the caller's own "wait", for as long as they say nothing: from every owed state, so once they speak again it must resolve from there |
+| `OwedResolves` | the same without `waiting`: the claim before the held turn was in the model. It no longer holds, by design (`ow_hold_unconditional`) |
 
 ### Rows
 
@@ -480,10 +486,13 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 16 safety properties | 763,388 states (`MENTION` on) |
-| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 552,314 states |
+| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 18 safety properties | 1,122,692 states (`MENTION` on) |
+| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolvesOrWaits` | 769,670 states |
+| `ow_hold_unconditional` | the same, against the liveness claimed before the held turn was modelled | ✗ `OwedResolves` | the landing run is cut, before any of it played, by a turn that is only a stop; the turn's start armed the re-offer and the hold disarms it: owed, with nothing more to come unless the caller speaks (10 steps). Kept so the unconditional claim cannot come back |
+| `ow_holdArmed` | the hold leaves the re-offer armed (`holdArmed`): the code before 5aaf9a28 for every record, and until the 2026-11-19 audit for a cut sync answer's record made after the hold (`ORIGIN = "cut"`) | ✗ `QuietWhileWaiting` | a sync answer's telling is cut by a turn that is only a stop; the record the cut makes is armed, and the lull re-offers it into the wait (12 steps) |
+| `ow_holdLandRuns` | a consult that lands while the wait stands asks its run (`holdLandRuns`, the code before the audit) | ✗ `QuietWhileWaiting` | a held turn, then the landing: the run is asked (6 steps). Landing inside the held turn, the same consult stayed quiet |
 | `ow_asWritten_closed` | DESIGN §3 as written (`RUNCLOSE = "uncut"`) | ✗ `ClosedOnEvidence` | the landing run tells one item of two and plays through; "uncut run" closes it |
-| `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolves` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
+| `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolvesOrWaits` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
 | `ow_fraction` | today's ≥ 1/3 of the words | ✗ `ClosedOnEvidence` | the run is cut after a lead-in or partway into the items, and the fraction closes it (#203) |
 | `ow_countSettle` | two uncut noted replies close (X2) | ✗ `ClosedOnEvidence` | the caller's turn is open at landing; a noted reply tells one item, another defers; both play through and the count closes |
 | `ow_singleWord` | no common-word list, no 2-term minimum | ✗ `ClosedOnEvidence` | a noted reply defers ("Sure, take your time.") and its common words close it |
@@ -499,46 +508,46 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_turnLevel` | a turn-level window (today's `wait_until_idle`) | ✗ `NoRunUnderSpeech` | the caller starts talking, the answer lands, the run goes before their words make a turn (#197) |
 | `ow_vadLevel` | a VAD-level window | ✗ `NoRunMidTurn` | the caller's reply is a sync tool call; the run goes between the call and its answer |
 | `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
-| `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
+| `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolvesOrWaits` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
 | `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
-| `ow_failure` | `OUTCOME = "failure"` (one item: what the failure states), the design since #380 (`RUNCLOSE = "judge"`): a noted reply heard to its end closes it on the failure judge's HEARD, or with no verdict if it is the record's own run (any other reply with no verdict counts, and the second ends it); vague replies that tell nothing of it (`MENTION`) included | holds, every safety property | 293,648 states |
+| `ow_failure` | `OUTCOME = "failure"` (one item: what the failure states), the design since #380 (`RUNCLOSE = "judge"`): a noted reply heard to its end closes it on the failure judge's HEARD, or with no verdict if it is the record's own run (any other reply with no verdict counts, and the second ends it); vague replies that tell nothing of it (`MENTION`) included | holds, every safety property | 433,826 states |
 | `ow_noRenderPlace` | a held landing placed only by the placeholder's `on_context_updated` task, not by the render | ✗ `NoStaleResult` | the consult fails before its placeholder is in; the placeholder comes in, and the landing run renders before the task has placed the failure (4 steps): why `Owed.view` calls `place_landed` |
 | `ow_rewriteOnce` | the landing rewrites the tool result once (the code before #386), a failure | ✗ `NoStaleResult` | the consult fails before its placeholder is in the context; the rewrite finds nothing, the placeholder comes in, and the landing run is rendered with "nothing has come back yet" beside a note saying it failed (4 steps). Live 2026-11-09: "I don't have those results yet" for lookups that had timed out |
-| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 221,024 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolvesOrWaits` | 312,542 states |
 | `ow_failure_aboutVague` | a failure closed by a reply ABOUT it by its words (`RUNCLOSE = "about"`, the code before #380), with vague replies (`MENTION`) | ✗ `ClosedOnEvidence` | a noted reply says only "I don't have the bookshop results yet" -- it names the request -- and plays to its end; the record closes, the caller never told it failed (10 states) |
 | `ow_failure_judgeWrong` | the failure judge answers HEARD on a vague reply (`gistWrong` under `"judge"`): the measured residual, 0/30 on the eval's cases and 7/37 on the model's own tellings | ✗ `ClosedOnEvidence` | the landing run says only that there is nothing yet, judged HEARD (5 states) |
 | `ow_failure_noBackstop` | a failure's reply with no verdict counts for nothing (`noBackstop` under `"judge"`, the code before the 2026-11-19 audit), with `NOVERDICT` | ✗ `RetellOnce` | the caller's turn tells it and is cut after its last word, no verdict; the next turn tells it again and plays through, no verdict; the lull's re-offer tells it a third time (19 steps). `BoundedTellings` falls too |
 | `ow_failure_nvCutFree` | only a reply played through with no verdict counts, not one cut (the audit's first draft), with `NOVERDICT` | ✗ `BoundedTellings` | the run is cut; then every caller turn's reply tells it and is cut, with no verdict that it was a telling: a fourth telling begins (23 steps) |
 | `ow_failure_splitCount` | a failure's unjudged replies played through counted apart from its cut tellings, as an answer's two counts are, with `NOVERDICT` | ✗ `RetellOnce` | the caller's turn tells it and is cut after its last word (one cut); the next tells it again and plays through, no verdict (one played through); the re-offer tells it a third time (18 steps) |
 | `ow_failure_noVerdict` | `NOVERDICT` on a failure: the judge gives no verdict in time, and the second telling nobody could confirm ends the record | ✗ `ClosedOnEvidence` | the run is cut before what happened; the caller's reply is about something else and plays through, no verdict: the second on the count, closed unheard (13 steps). The accepted cost, as an answer's: the note stops, the tool result stays |
-| `ow_failure_noVerdict_rest` | `NOVERDICT` on a failure, with partial and silent runs and `MENTION`: `RetellOnce`, `BoundedTellings` and every other property but the ones a missing verdict leaves stale meanwhile -- `NoStaleNote`, `NoRunAfterHeard` and `NoRepeatRecital` (heard, and owed until the second), `NoNoteAfterDecline` (a cut reply nobody judged has no words read) | holds | 1,368,236 states |
+| `ow_failure_noVerdict_rest` | `NOVERDICT` on a failure, with partial and silent runs and `MENTION`: `RetellOnce`, `BoundedTellings` and every other property but the ones a missing verdict leaves stale meanwhile -- `NoStaleNote`, `NoRunAfterHeard` and `NoRepeatRecital` (heard, and owed until the second), `NoNoteAfterDecline` (a cut reply nobody judged has no words read) | holds | 2,144,288 states |
 | `ow_failure_ptOwes` | `PTOWES` on a failure: an explicit OWED on a full telling is believed, and nothing bounds it | ✗ `RetellOnce` | the run tells it and plays through, judged OWED; the caller's turn tells it again, OWED; the re-offer a third time (15 steps). Measured: 0/22 and 0/84 false OWED. Counted as a missing verdict is, an OWED would close a failure on two vague replies the judge read rightly |
-| `ow_failure_ptOwes_rest` | `PTOWES` on a failure: what a false OWED cannot break -- `ClosedOnEvidence`, the note, the door, `OneReoffer`, `DeclinedOnEvidence`. `BoundedTellings`, the stale-note properties and `NoNoteAfterDecline` fall with `RetellOnce` | holds | 3,008,660 states |
+| `ow_failure_ptOwes_rest` | `PTOWES` on a failure: what a false OWED cannot break -- `ClosedOnEvidence`, the note, the door, `OneReoffer`, `DeclinedOnEvidence`. `BoundedTellings`, the stale-note properties and `NoNoteAfterDecline` fall with `RetellOnce` | holds | 4,109,066 states |
 | `ow_failNotAbout` | a failure record with no terms (`owed.py` 9349e35 until the formal audit's C1): a telling that names nothing of the request is about it only when it is the record's own run | ✗ `NoStaleNote` | the failure lands mid-turn; the caller's reply tells it in its own words ("a billing problem, want me to open your settings?") and plays through; the record stays owed, and the lull's re-offer says NOT heard (11 steps) |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
-| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 860,210 states |
+| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 1,252,618 states |
 | `ow_judgeWrong` | the cut judge answers HEARD with part of the answer unheard | ✗ `ClosedOnEvidence` | the run is cut after a lead-in; HEARD closes it (7 steps). The measured residual: 1/145 false closes by majority vote on 241 live cuts |
 | `ow_prefixLexical` | a cut decided by the lexical rule on the heard prefix (a8fa2ba) | ✗ `ClosedOnEvidence` | the run is cut after each item's content words, before its facts ("words"): two terms an item close it (10 steps). Measured: 89/145 false closes on the same cuts |
 | `ow_judgeOwes` | `OWES`: the judge answers OWED, or not within `SETTLE_WAIT_S`, though all was heard | ✗ `NoRunAfterHeard` | the run is cut after its last fact; OWED keeps the record owed and the lull re-offers it (10 steps). The residual: 14/96 false owes, at the trailing edge |
-| `ow_judgeOwes_rest` | `OWES`, every other property (`RetellOnce` included since the 2026-11-05 audit) but the repeat and the stale note (`NoStaleNote` falls in 10 steps there: the note says unheard while the re-offer is owed) | holds | 999,488 states |
+| `ow_judgeOwes_rest` | `OWES`, every other property (`RetellOnce` included since the 2026-11-05 audit) but the repeat and the stale note (`NoStaleNote` falls in 10 steps there: the note says unheard while the re-offer is owed) | holds | 1,540,786 states |
 | `ow_gist_lexical` | `CLOSE = "lexical"` with `LEXMISS`: the coverage rule as #204 shipped it, on a full telling it reads as not covering | ✗ `RetellOnce` | the run tells it all and plays through; the record stays owed, the re-offer tells it again and is cut, the caller's next turn tells it a third time (14 steps). Live: a one-fact answer told in the caller's words is one term of seven (2026-10-23 14:06, five tellings) |
 | `ow_gist_noBackstop` | the gist judge with `PTOWES` and no backstop | ✗ `RetellOnce` | the run tells it all, judged OWED; the caller's turn tells it again, judged OWED; the re-offer tells it a third time (15 steps) |
 | `ow_gist_oneReply` | the judges read the one reply, not what was heard of the record | ✗ `RetellOnce` | the run tells it all, judged OWED (`PTOWES`); the re-offer re-tells it and the caller cuts in before its facts (they heard it already); that cut is OWED on its own prefix, and the next turn tells it a third time (14 steps) |
 | `ow_gist_ptOwes` | `PTOWES`: the gist judge answers OWED on a full telling | ✗ `NoStaleNote` | the run tells it all and is judged OWED; the re-offer's request says NOT heard (7 steps). Measured: 2-4/29 false owes by majority of 10 |
-| `ow_gist_ptOwes_rest` | `PTOWES` on an answer, with partial and silent runs and `MENTION`: every property but the one re-telling and its stale note | holds, `RetellOnce` included: by the backstop, which an answer has and a failure's OWED does not (`ow_failure_ptOwes`) | 1,079,672 states |
+| `ow_gist_ptOwes_rest` | `PTOWES` on an answer, with partial and silent runs and `MENTION`: every property but the one re-telling and its stale note | holds, `RetellOnce` included: by the backstop, which an answer has and a failure's OWED does not (`ow_failure_ptOwes`) | 1,624,628 states |
 | `ow_gist_noVerdict` | `NOVERDICT`: no verdict on a reply about the record played through closes it (the user's choice, 2026-10-23) | ✗ `ClosedOnEvidence` | the caller's turn carries the note and tells part of it; no verdict, closed (10 steps). The accepted cost: the note stops; the result stays in the context |
-| `ow_gist_noVerdict_rest` | `NOVERDICT`, every other property | holds | 945,422 states |
+| `ow_gist_noVerdict_rest` | `NOVERDICT`, every other property | holds | 1,345,796 states |
 | `ow_gist_wrong` | the gist judge answers HEARD on a part or a mention | ✗ `ClosedOnEvidence` | the run tells one item of two; HEARD closes it (6 steps). Measured: 0/25 false closes by majority |
 | `ow_gist_twice` | `TWICE`: the reply after one that gave no answer gives none again | ✗ `ClosedOnEvidence` | the run tells part; the re-offer tells part again; the backstop closes it (10 steps). The note was in view both times (X1: 18/20 answer) |
 | `ow_noDecline` | the words that cut a telling are not read (before #231) | ✗ `NoNoteAfterDecline` | the run is cut by "that's all I needed"; the commit's request carries the note |
 | `ow_declineAfter` | the decline check beside the render, not before it | ✗ `NoNoteAfterDecline` | the same: the reply to the dismissal renders before the check answers |
 | `ow_declineMiss` | `DECMISS`: the check answers WANTED, or not in time, on a dismissal | ✗ `NoNoteAfterDecline` | the dismissal is read as WANTED and the next request carries the note. Measured: 35/660 one call each |
-| `ow_declineMiss_rest` | `DECMISS`, every other property | holds, `BoundedTellings` included | 1,016,444 states |
+| `ow_declineMiss_rest` | `DECMISS`, every other property | holds, `BoundedTellings` included | 1,494,656 states |
 | `ow_declineWrong` | the check answers DECLINED on words that wanted the rest | ✗ `DeclinedOnEvidence` | "wait, what was that?" read as DECLINED; the record ends unheard. Measured: 10/770 one call each |
 | `ow_cutsUncounted` | a cut telling counts toward nothing (before #231) | ✗ `BoundedTellings` | every caller turn's reply carries the note, tells it and is cut before its facts; a fourth telling begins |
 | `ow_cutRecord` | `ORIGIN = "cut"`: a sync answer's record made at the cut of its first telling (the issue's own cases), every safety property | holds | |
-| `ow_cutRecord_live` | `ORIGIN = "cut"`, `OwedResolves` under `FairSpec` | holds | |
+| `ow_cutRecord_live` | `ORIGIN = "cut"`, `OwedResolvesOrWaits` under `FairSpec` | holds | |
 | `ow_cutRecordUnread` | the record made at a cut has nothing due (the first fix's gap, found in review) | ✗ `NoNoteAfterDecline` | "that's all I needed" cuts a web_search answer; the next request carries its note |
 
 `NoRedundantLookup` is a rate the model shows, not something the design guarantees.
@@ -700,6 +709,51 @@ was asked for (`Owed.view`): a landing run whose note listed an older owed answe
 told that one in its place (2026-10-24 03:02). A caller's own turn carries every owed
 record.
 
+### The held turn (the audit of 2026-11-19)
+
+Since 5aaf9a28 a caller turn whose words are only a stop ("Okay, wait.") is held at its
+commit: nothing goes into the context and nothing is asked (`barge_pause.py`, A BARE
+STOP), and `Owed.caller_waits` disarms the re-offer that turn's start armed. The model
+had no such step, and its liveness claim -- `OwedResolves` "holds without assuming the
+caller ever speaks" -- was no longer true of the code: a consult lands while the bot is
+speaking (its run waits at the door), the caller says "Okay, wait." over the reply (the
+turn's start drops the run and arms the re-offer), the commit is held (no request
+carries the note, and the re-offer is disarmed), and the record is owed with no run and
+no lull until they speak again.
+
+That silence is the design: they asked the box to wait, and a telling of its own ten
+seconds later is what "wait" was said to stop. So the model has the turn (`Hold`) and
+the wait it leaves standing (`cwait`, until their next turn starts), and says what
+holds with it:
+
+- `OwedResolvesOrWaits`: from every owed state the record resolves, the session ends,
+  the re-offer is spent, or the caller asked to wait and has not spoken since.
+  `ow_hold_unconditional` keeps the old claim failing.
+- `QuietWhileWaiting`: while the wait stands, no run of ours waits at the door or goes.
+- `TurnRearms`: a caller's turn arms the re-offer of the record it finds owed -- their
+  next turn after a wait too, and its request carries the note (`NoteWhileOwed`). No
+  held record is left that their speaking again cannot get told.
+
+`QuietWhileWaiting` found two places where the code's quiet depended on which of two
+things came first:
+
+- `ow_holdArmed`. The hold disarmed what was armed when it ran. A sync answer cut by
+  "Okay, wait." is made a record when its verdicts land (`Owed._cut_answer`, from
+  `_apply`), which can be after the hold; armed there, it was re-offered ten seconds
+  into the wait. Nothing arms the re-offer while the wait stands now (`Owed._arm`).
+- `ow_holdLandRuns`. A consult that landed inside the held turn stayed quiet (a caller
+  request was pending, so no run, and the hold then disarmed the re-offer); one that
+  landed a moment after the hold asked its run and spoke. `Land` asks no run while the
+  wait stands (`Owed.land`): the caller's next turn carries the note.
+
+For a caller: after "Okay, wait." the box neither announces an answer that lands nor
+re-offers one until they say something, and whatever they say next is answered with the
+note in view.
+
+Which turns are held -- words that are only a stop, in a turn that cut a reply, never
+while the incoming-call question is open -- is `barge_pause.py`'s, and is not modelled:
+any turn may be held here, which only adds behaviours.
+
 ### What the model changed in the design
 
 The model was written to lead the design, and it found these:
@@ -827,9 +881,10 @@ answers what it is asked, audio plays out, the settle feed runs, a waiting run g
 its window is open, and the release timer fires. The caller's VAD stop and commit are
 fair too, since nobody talks forever and `MaxSpeech` bounds them anyway. `Lull` is fair
 because it is time passing on a quiet line. These are **not** fair: the consult landing,
-the caller starting to speak or opening a turn, the hold cap, and the session ending. So
-`OwedResolves` holds without assuming the caller ever speaks, or that a session ever
-ends.
+the caller starting to speak or opening a turn, a turn being only a stop (`Hold`), the
+hold cap, and the session ending. So `OwedResolvesOrWaits` holds without assuming that a
+session ever ends, or that the caller ever speaks -- except after their own "wait": a
+record owed then stays owed until they do (`ow_hold_unconditional`).
 
 ### Known limits of this model
 
