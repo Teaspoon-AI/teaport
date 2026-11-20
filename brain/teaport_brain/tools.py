@@ -84,7 +84,7 @@ from teaport_brain import openclaw_client as oc
 from teaport_brain.owed import CANCELLED_NOTE
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
-from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
+from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES
 from teaport_brain.settings import setting
 
 # Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
@@ -1333,7 +1333,10 @@ async def _list_voices(params: FunctionCallParams, tts=None):
             getattr(tts, "espeak_language", ""), getattr(tts, "espeak_language", "?")),
         "voices_by_language": {LANG_NAMES.get(k, k): v
                                for k, v in ENGINE_VOICES.items()},
-        "note": "Japanese voices use a lower-quality phonemizer.",
+        "voice_names": VOICE_NAMES,
+        "note": ("Japanese voices use a lower-quality phonemizer. A voice listed in "
+                 "voice_names is called by that name when you talk about it: say the "
+                 "name, never the id."),
     })
 
 
@@ -1347,7 +1350,9 @@ async def _switch_voice(params: FunctionCallParams, tts=None):
         return
     result = tts.set_voice(voice)
     if result.get("ok"):
-        result["note"] = (f"You now speak with {voice}. From now on reply only in "
+        name = VOICE_NAMES.get(voice)
+        said = f"{name} ({voice}; call it {name}, never by the id)" if name else voice
+        result["note"] = (f"You now speak with {said}. From now on reply only in "
                           f"{result['language_name']}.")
         logger.info(f"switch_voice: {voice} ({result['language_name']})")
     await params.result_callback(result)

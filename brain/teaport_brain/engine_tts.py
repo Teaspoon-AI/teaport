@@ -338,6 +338,16 @@ ENGINE_VOICES = {
             "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"],
 }
 
+# Names a voice is called by in conversation, where its id would be read out as letters.
+# Mandarin only for now: in a Mandarin reply the model spoke "zf_xiaobei" as a garbled
+# run of letter sounds and the caller could not tell the voices apart (teaport#415).
+# These are the Azure neural voices the packs are named after (the Kokoro voice list
+# gives no names); to confirm with a native speaker.
+VOICE_NAMES = {
+    "zf_xiaobei": "晓北", "zf_xiaoni": "晓妮", "zf_xiaoxiao": "晓晓", "zf_xiaoyi": "晓伊",
+    "zm_yunjian": "云健", "zm_yunxi": "云希", "zm_yunxia": "云夏", "zm_yunyang": "云扬",
+}
+
 LANG_NAMES = {
     "en-us": "English (US)", "en-gb": "English (UK)", "es": "Spanish",
     "fr-fr": "French", "hi": "Hindi", "it": "Italian", "ja": "Japanese",
