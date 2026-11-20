@@ -36,7 +36,7 @@
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
-# THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
 # from the manifest's beside the live ones, and checks them as a full run does (ldd, and
 # cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
 # rollback (with any model it replaces), moves the new files in, renders
@@ -555,9 +555,10 @@ setup_logs() {
 }
 
 # --- engine: staged, swapped in whole, one rollback away ---------------------------------
-# The engine is a binary and three files of its own release (the manifest's g2p_dict note:
+# The engine is a binary and the files of its own release (the manifest's g2p_dict note:
 # "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
-# from <exe_dir>/g2p/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# from <exe_dir>/g2p/, from 1.7 on the AI watermark's weights it reads from
+# <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
 # models go with it here too: a release that changes one changes what the binary loads.
 # phase_engine used to download each over the live one in turn, so a run that failed half
 # way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
@@ -599,7 +600,7 @@ ENGINE_STAGE="$PREFIX/engine.staged"
 ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
 ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
 ENGINE_KEEP=2
-ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
 ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
 ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
 ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
@@ -622,6 +623,21 @@ engine_fetch() {
   fi
   download "$url" "$dest" "$sha"
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
+}
+
+# engine_release_marks <release> — whether that engine release puts the AI watermark on its
+# speech, and so cannot be installed without engine.watermark: 1.7 on (the first release cut
+# from teagram-engine main@bd5974a or later). One that is not a dotted number (a
+# placeholder, "unknown", empty) counts as marking: the check fails closed.
+# manifest/check.py holds the same line (WATERMARK_FROM); keep the two in step.
+ENGINE_WATERMARK_FROM=1.7
+engine_release_marks() {
+  python3 -I - "$1" "$ENGINE_WATERMARK_FROM" <<'PY'
+import re, sys
+rel, first = sys.argv[1], sys.argv[2]
+num = lambda v: tuple(int(x) for x in v.split("."))
+sys.exit(0 if not re.fullmatch(r"[0-9]+(\.[0-9]+)*", rel) or num(rel) >= num(first) else 1)
+PY
 }
 
 # engine_describe <binary> — what the installed manifest says <binary> is. Sets
@@ -931,6 +947,26 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     engine_fetch "$pos_url" bin/g2p/kokoro_pos.bin "$pos_sha"
   fi
+  # The AI watermark's weights (perth_implicit.v2.bin: the embedder of Resemble AI's Perth
+  # implicit watermarker, MIT, converted by teagram-engine tools/wm_convert.py; attribution
+  # in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 every TTS output carries
+  # Perth's imperceptible watermark, the machine-readable mark EU AI Act Art. 50(2) asks of
+  # synthetic audio (teagram-engine #125). The engine probes
+  # <exe_dir>/watermark/perth_implicit.v2.bin; without it, it speaks UNMARKED with one
+  # banner on stderr, or with VOX_REQUIRE_WATERMARK=1 (engine.env) refuses to serve.
+  # Fail-fast like the dict for a release that marks; a release before 1.7 has no use for it.
+  local wm_url wm_sha wm_rel
+  wm_rel="$(mget engine.release 2>/dev/null)" || wm_rel=""
+  wm_url="$(mget engine.watermark.url 2>/dev/null)" || wm_url=""
+  wm_sha="$(mget engine.watermark.sha256 2>/dev/null)" || wm_sha=""
+  if [ -n "$wm_url" ] && [ -n "$wm_sha" ]; then
+    engine_fetch "$wm_url" bin/watermark/perth_implicit.v2.bin "$wm_sha"
+  elif engine_release_marks "$wm_rel"; then
+    local wm_msg="manifest has no engine.watermark (url+sha256) for engine ${wm_rel:-?} — a box installed without it speaks synthetic audio with no AI watermark; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$wm_msg"; else die "$wm_msg"; fi
+  else
+    log "engine $wm_rel predates the AI watermark: no watermark weights to install"
+  fi
   # THIRD_PARTY_NOTICES.txt — the MIT/BSD/Apache-2.0 attributions (misaki, Marlin, Voxtral,
   # Kokoro, civetweb, fvad, ggml, …) for the engine binary and the dict above, per the engine
   # repo's own check-third-party gate. Three docs (this repo's THIRD_PARTY_LICENSES.md, this
@@ -1059,6 +1095,16 @@ engine_verify() {
   line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
   if contains "POS tagger unavailable" "$line"; then
     warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
+  fi
+  # From 1.7 the engine says whether it marks its speech (an older one says nothing).
+  # VOX_REQUIRE_WATERMARK=1 makes one without the weights exit, which fails above; this
+  # catches the same engine in an engine.env that lost the key.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep 'AI watermark' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$line"; then
+    warn "the engine is running WITHOUT the AI watermark (its speech goes out unmarked): $line"; return 1
+  fi
+  if contains "AI watermark off" "$line"; then
+    warn "the AI watermark is turned off in engine.env (VOX_TTS_WATERMARK=0): its speech goes out unmarked"
   fi
   log "teaport-engine is listening on :$port and stayed up"
 }
@@ -2463,8 +2509,11 @@ engine_env_lines() {
   # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
   # validated at (its batched decode is bit-identical to the unbatched one only there;
   # at 240 it scored a point worse, and --reprime's measurements are all at 480).
+  # VOX_REQUIRE_WATERMARK: refuse to serve if the AI watermark is not loaded (its weights
+  # missing, or VOX_TTS_WATERMARK=0) rather than speak unmarked (see phase_engine). Engines
+  # before 1.7 ignore it.
   ENGINE_ENV=("KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192"
-              "VOX_REQUIRE_DICT_G2P=1")
+              "VOX_REQUIRE_DICT_G2P=1" "VOX_REQUIRE_WATERMARK=1")
 }
 
 # box_id — four hex digits that tell boxes apart: the end of the Wi-Fi MAC, the same digits
@@ -3528,6 +3577,12 @@ phase_verify() {
   local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
   if contains "POS tagger unavailable" "$pos_log"; then
     warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
+  fi
+  # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK gone
+  # from engine.env, or it would not be listening) it speaks with no AI watermark.
+  local wm_log; wm_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'AI watermark' | tail -1 || true)"
+  if contains "AI watermark unavailable" "$wm_log" || contains "AI watermark off" "$wm_log"; then
+    warn "engine is running WITHOUT the AI watermark (its speech goes out unmarked): $wm_log"; ok=0
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }

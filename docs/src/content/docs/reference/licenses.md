@@ -24,7 +24,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:65-70,106-120#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:94,602,947#228177a9; packaging/nfpm.yaml:65-70,106-121#873f7aec -->
+<!-- source: packaging/nfpm.yaml:65-70,106-120#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:94,603,983#d68294c9; packaging/nfpm.yaml:65-70,106-121#873f7aec -->
 
 ## See the licenses on the device
 

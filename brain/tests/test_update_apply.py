@@ -575,6 +575,9 @@ def test_every_file_in_the_engines_data_directories_is_carried_over():
     (prefix / "bin/g2p/sub/x.dict").write_text("x\n")
     (prefix / "bin/g2p/.hidden").write_text("h\n")
     (prefix / "bin/g2p/kokoro_zh.v2.dict.part").write_text("half\n")      # a download in progress
+    (prefix / "bin/watermark").mkdir()
+    (prefix / "bin/watermark/perth_implicit.v2.bin").write_text("wm\n")    # the AI watermark's weights
+    (prefix / "bin/watermark/perth_implicit.v3.bin").write_text("wm3\n")   # not named in ENGINE
     (prefix / "models/voxtral").mkdir(parents=True)
     (prefix / "models/voxtral/consolidated.safetensors").write_text("model\n")
     (prefix / "models/voxtral/extra.bin").write_text("extra\n")
@@ -586,6 +589,8 @@ def test_every_file_in_the_engines_data_directories_is_carried_over():
     assert not os.stat(prefix / "bin/g2p/kokoro_zh.v1.dict").st_mode & 0o022   # made root's mode
     assert (prefix / "models/voxtral/extra.bin").read_text() == "extra\n"
     assert (prefix / "bin/g2p/kokoro_g2p.v2.dict").read_text() == "en\n"
+    assert (prefix / "bin/watermark/perth_implicit.v2.bin").read_text() == "wm\n"
+    assert (prefix / "bin/watermark/perth_implicit.v3.bin").read_text() == "wm3\n"
     for gone in ("bin/g2p/kokoro_ja.v1.dict", "bin/g2p/pipe", "bin/g2p/sub", "bin/g2p/.hidden",
                  "bin/g2p/kokoro_zh.v2.dict.part", "bin/voxtral.rollback-377508d"):
         assert not os.path.lexists(prefix / gone), gone
@@ -867,6 +872,7 @@ def test_a_fresh_box_gets_root_trees_and_the_marker():
     prefix, state = os.path.join(tmp, "opt"), os.path.join(tmp, "state")
     assert layout.migrate(prefix, state, "teaport-brain", owner) == 0
     assert layout.done(prefix, state, owner) and os.path.isdir(os.path.join(prefix, "bin/g2p"))
+    assert os.path.isdir(os.path.join(prefix, "bin/watermark"))
     assert layout.main(["migrate", prefix, state]) == 2
 
 
