@@ -34,7 +34,9 @@ description: |-
 # pool links (numba comes in with resampy). libgomp is the one of these a minimal
 # Ubuntu install lacks. Then the interpreter the venv was built on (pyvenv.cfg home =
 # /usr/bin), the system python3 that runs the root-owned config helper, and curl for
-# the CLI, and sudo (visudo checks the config page's sudoers line before it is installed).
+# the CLI, sudo (visudo checks the config page's sudoers line before it is installed), git
+# (the update fetches the release's installer, as the one-line installer does), and polkitd
+# (the rule that lets the run user start the update).
 # libpam-modules-bin for mkhomedir_helper, which the owner's login helper (login_apply.py)
 # runs to finish an account a create left without its home directory; Ubuntu installs it
 # everywhere (priority required), the line says the package needs it.
@@ -46,6 +48,8 @@ depends:
   - sudo
   - libpam-modules-bin
   - curl
+  - git
+  - polkitd
   - libc6
   - libgcc-s1
   - libstdc++6
@@ -128,7 +132,23 @@ contents:
       owner: root
       group: root
 
-  # The one writer of the config page's sudoers line (see the script): run by postinst
+  # teaport update's apply step (#60's updater): the root unit `teaport update` starts, and
+  # the script it runs with the SYSTEM python, outside the venv it replaces.
+  - src: packaging/deb/update_apply.py
+    dst: /usr/lib/teaport/update_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
+  - src: packaging/deb/teaport-update.service
+    dst: /usr/lib/systemd/system/teaport-update.service
+    file_info:
+      mode: 0o644
+      owner: root
+      group: root
+
+  # The one writer of the run user's grants, sudoers and polkit (see the script): run by postinst
   # and by install.sh once it has rendered the unit that names the run user.
   - src: packaging/deb/sudoers-sync
     dst: /usr/lib/teaport/sudoers-sync

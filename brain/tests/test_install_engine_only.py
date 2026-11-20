@@ -37,6 +37,9 @@ die()  { printf 'DIE %s\n' "$*"; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*"; else "$@"; fi; }
+as_user() { "$@"; }   # not root here: as install.sh's own when the run user runs it
+brain_tree_needed() { :; }; brain_tree_complete() { :; }   # the rebuild's marker: not here
+RUN_HOME="$HOME"
 # GNU sha256sum's two forms, on any system (macOS's has no --status).
 _sha() { python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
 sha256sum() {
@@ -53,17 +56,25 @@ sudo() {
     *) return 1 ;;
   esac
 }
-# SUDO: recorded; the writes land (tee, write_root's install), ownership is skipped (a user
-# cannot chown to root, and no test checks it), systemctl is only recorded.
+# SUDO: recorded; the writes land (the install trees are root's, so every engine write is
+# SUDO's), ownership is skipped (a user cannot chown to root, and no test checks it),
+# systemctl is only recorded.
 SUDO() {
   printf '%s\n' "$*" >> "$T/sudo.log"
   if [ "$DRY_RUN" = 1 ]; then printf 'DRY sudo %s\n' "$*"; return 0; fi
   case "$1" in
     tee) [ ! -e "$2" ] || chmod u+rw "$2"; command tee "$2" ;;   # root writes through the mode
-    install) mkdir -p "$(dirname "${@: -1}")"; cat > "${@: -1}" ;;
-    mkdir|rm|touch) "$@" ;;
-    *) : ;;
+    install) _install "${@:2}" ;;
+    chown|systemctl|journalctl|apt-get|udevadm) : ;;
+    *) "$@" ;;
   esac
+}
+# install(1) as root uses it: [-D] [-m M] [-o U] [-g G] SRC DEST, SRC /dev/stdin or a file.
+_install() {
+  local args=() a
+  while [ $# -gt 0 ]; do case "$1" in -m|-o|-g) shift ;; -D|-d) ;; *) args+=("$1") ;; esac; shift; done
+  mkdir -p "$(dirname "${args[1]}")"
+  if [ "${args[0]}" = /dev/stdin ]; then cat > "${args[1]}"; else command cp "${args[0]}" "${args[1]}"; fi
 }
 '''
 
@@ -85,10 +96,11 @@ def _line(prefix: str) -> str:
 LAYOUT = "".join(_line(p) for p in ("ENGINE_STAGE=", "ENGINE_ROLLBACKS=", "ENGINE_SWAP_MARK=", "ENGINE_KEEP=",
                                     "ENGINE_FILES=", "ENGINE_MODELS="))
 LAYOUT += 'ENGINE_UNIT="$T/etc/systemd/teaport-engine.service" ENGINE_CHANGED="" ENGINE_KEPT=""\n'
+LAYOUT += 'ENGINE_RECORD="$T/state/engine.release"\n'
 ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe", "engine_copies",
               "engine_swap_abort", "engine_swap_recover",
               "engine_keep_live", "engine_swap_in", "engine_restore", "engine_rollback_target",
-              "engine_prune", "manifest_take_py", "manifest_take"]
+              "engine_prune", "manifest_take_py", "manifest_take", "engine_record"]
 
 
 def _run(tmp, script, fns=(), env=None):
@@ -471,8 +483,13 @@ def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
         _write(old / rel, f"old {rel.rsplit('/', 1)[-1]}\n")
     _write(old / "engine.json", json.dumps({"engine": {
         "release": "1.5", "assets": {"l4t38-cu13": {"sha256": _sha("old voxtral\n")}}}}))
+    _write(old / "engine.release", "1.5\n")             # the record install.sh kept with it
+    record = pathlib.Path(tmp, "state/engine.release")
+    _write(record, "1.6\n")
     rc, out = _rollback(tmp)
     assert rc == 0 and "done — engine rolled back to 000001-20261001T000000Z-1.5" in out and "RESTART" in out, out
+    # teaport update's engine floor (update_apply.box_engine) follows the rollback.
+    assert record.read_text() == "1.5\n", record.read_text()
     assert set(_live(tmp).values()) == {"old"}, _live(tmp)
     unit = pathlib.Path(tmp, "etc/systemd/teaport-engine.service")
     assert unit.read_text() == "unit old\n", unit.read_text()
@@ -485,7 +502,23 @@ def test_rollback_puts_the_previous_engine_back_and_a_second_one_undoes_it():
     rc, out = _rollback(tmp)
     assert rc == 0 and set(_live(tmp).values()) == {"new"} and unit.read_text() == "unit new\n", out
     assert json.loads(pathlib.Path(tmp, "opt/manifest.json").read_text())["engine"]["release"] == "1.6"
+    assert record.read_text() == "1.6\n", record.read_text()   # kept with the copy, put back with it
     assert [c.rsplit("-", 1)[-1] for c in _copies(tmp)] == ["1.5"], _copies(tmp)
+    # A copy kept before there was a record: no floor until the next engine install.
+    (copy,) = _copies(tmp)
+    pathlib.Path(tmp, "opt/engine.rollback", copy, "engine.release").unlink()
+    rc, out = _rollback(tmp)
+    assert rc == 0 and not record.exists(), out
+
+
+def test_every_engine_install_writes_roots_record_of_its_release():
+    # teaport update's engine floor reads it (update_apply.box_engine): a full run writes it
+    # beside the manifest, --only engine once the engine has come up (main_engine_only).
+    full = _fn("phase_engine")
+    assert ('SUDO install -m 0644 "$MF" "$PREFIX/manifest.json"\n    engine_record "$(mget engine.release)"'
+            in full), full
+    only = _fn("main_engine_only")
+    assert 'manifest_take "$MF" engine models\n  engine_record "$(mget engine.release)"' in only, only
 
 
 def test_rollback_with_nothing_kept_refuses():
@@ -591,7 +624,8 @@ def test_nothing_changed_is_checked_not_restarted():
 def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_order():
     stubs = ''.join(f'{f}() {{ echo "STEP {f}"; }}\n' for f in
                     ("check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "engine_libs_check",
-                     "phase_engine", "detect_agent", "env_add_missing", "engine_swap", "manifest_take"))
+                     "phase_engine", "detect_agent", "env_add_missing", "wait_for_idle", "engine_swap",
+                     "manifest_take", "engine_record"))
     stubs += 'mget() { echo 1.6; }\nengine_env_lines() { ENGINE_ENV=(A=1); }\nMANIFEST_URL=mf MF="$T/mf.json" HERE="$T/src"\n'
     for installed, dry in ((False, 0), (False, 1), (True, 0)):
         tmp = tempdir("teaport-eng-main-")
@@ -606,7 +640,7 @@ def test_main_engine_only_refuses_a_box_with_no_engine_and_runs_its_steps_in_ord
             continue
         assert rc == 0, out
         want = ["check_brain_source", "fetch_manifest", "eula_gate", "l4t_gate", "phase_engine",
-                "detect_agent", "env_add_missing", "engine_swap", "manifest_take"]
+                "detect_agent", "wait_for_idle", "env_add_missing", "engine_swap", "manifest_take", "engine_record"]
         if not dry:
             want.insert(4, "engine_libs_check")   # a dry run only says it would check
         assert steps == want, (installed, dry, out)
@@ -818,7 +852,7 @@ def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
 # --- one installer at a time -----------------------------------------------------------------
 
 def _lock_script(tmp):
-    body = (STUBS + "".join(_fn(f) for f in ("installer_lock",)) +
+    body = (STUBS + "".join(_fn(f) for f in ("installer_lock", "own_dir")) +
             f'STATE="{tmp}/state"\n' + _line("INSTALL_LOCK=") +
             'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; ARGS=("$@")\n'
             'installer_lock; echo "LOCKED RUN ${TEAPORT_INSTALL_LOCKED:-no} $*"\n')
@@ -830,7 +864,8 @@ def test_a_second_run_stops_at_once_while_one_holds_the_lock():
         raise appliance.Unavailable("no flock(1) here (util-linux); the appliance and CI have it")
     tmp = tempdir("teaport-eng-lock-")
     script = _lock_script(tmp)
-    env = {**os.environ, "T": str(tmp)}
+    pathlib.Path(tmp, "state").mkdir(exist_ok=True)
+    env = {**os.environ, "T": str(tmp), "TEAPORT_INSTALL_LOCK": str(pathlib.Path(tmp, "state/install.lock"))}
     p = subprocess.run(["bash", str(script), "--only", "engine"], capture_output=True, text=True, env=env)
     assert p.returncode == 0 and "LOCKED RUN 1 --only engine" in p.stdout, p.stdout + p.stderr
     lock = pathlib.Path(tmp, "state/install.lock")
@@ -941,7 +976,7 @@ def _behind(touching):
 def _check(tmp, here):
     script = (f'{_line("BRAIN_ONLY_PATHS=")}{_line("ENGINE_ONLY_PATHS=")}BRAIN_SRC="" ALLOW_STALE_SOURCE=0 '
               f'HERE="{here}"; check_brain_source; echo CHECKED')
-    return _run(tmp, script, ["brain_src_fetch", "check_brain_source"],
+    return _run(tmp, script, ["brain_src_fetch", "check_brain_source", "git_read"],
                 {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
 
 
@@ -954,7 +989,7 @@ def test_only_engine_is_refused_only_for_upstream_commits_to_what_it_installs():
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here)
         assert rc != 0 and ("1 commit(s) behind origin/main in what --only engine installs "
-                            "(systemd/teaport-engine.service.in install.sh)") in out, (touching, out)
+                            "(systemd/teaport-engine.service.in packaging/install install.sh)") in out, (touching, out)
 
 
 def test_every_checkout_path_only_engine_reads_is_in_its_freshness_check():

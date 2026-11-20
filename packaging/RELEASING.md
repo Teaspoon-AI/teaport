@@ -10,9 +10,10 @@ What a release is, end to end:
                       ->  manifest PR (url + sha256)  ->  merge publishes the manifest
 
 `install.sh` reads `manifest/stable.json` from get.teaspoon.tech, so a package a box can
-install by itself exists only once its manifest entry is merged *and* published. (`teaport
-update` does not announce a new brain package yet: it still compares `brain.tag`. That
-changes with the updater's apply step.)
+install by itself exists only once its manifest entry is merged *and* published. From then
+on `teaport update` offers it to every box on the channel whose installed package is older
+(it reads the version from the `.deb`'s file name, so keep the name as below), and installs
+it with the installer at `brain.repo`/`brain.tag`.
 
 ## Before the tag
 
@@ -98,7 +99,7 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 
 ```json
 "brain": {
-  "repo": "Teaspoon-AI/teaport", "tag": "main",
+  "repo": "Teaspoon-AI/teaport", "tag": "brain-vX.Y.Z",
   "deb": {
     "url": "https://get.teaspoon.tech/dl/brain/teaport-brain_X.Y.Z_arm64.deb",
     "sha256": "<the .sha256 file's hash>"
@@ -106,12 +107,25 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 }
 ```
 
+- [ ] `brain.tag` is the release tag, not `main`: `teaport update` runs that tag's
+      `install.sh` as root, and refuses a branch (it moves) and any installer without
+      `UPDATE_PROTOCOL=1`. The Discord bridge is cloned from the same tag.
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.
 - [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
       manifest without one fails the check. The beta channel's `TODO` passes only under
       `--placeholders-ok`.
+- [ ] A channel never names an older brain or engine than a box on it may have:
+      `teaport update` refuses such a release outright (`update_apply.not_older`), so a
+      box that took a beta and is moved to stable gets nothing until stable catches up.
+      Engine releases are ordered as `dpkg --compare-versions` orders them: a dev or
+      test engine is named with `~` (`1.7~dev1` sorts before `1.7`), never `-` or `+`
+      (`1.7-dev` sorts after `1.7`, and would hold a box back from the release).
+- [ ] A model change ships with a new `engine.release`. Model sha256s have no order, so
+      the engine release is the only thing that tells a newer set of models from an older
+      one; a channel that changes `models` under the same engine can take a box's models
+      back.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

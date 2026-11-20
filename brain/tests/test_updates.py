@@ -4,7 +4,12 @@
 # What has to hold:
 #   - A component the channel's manifest names differently from the installed one is
 #     "changed"; one it has not released (TODO, empty, absent) never is, and neither
-#     is one that is the same.
+#     is one that is the same. The brain is the package: dpkg's version against the one in
+#     brain.deb's file name, changed only when the channel's is newer (Debian's order, as
+#     dpkg has it), or when the box has no package.
+#   - What `teaport update` would do: the engine step for an engine or model change, then
+#     the brain step; anything else is a full install.sh run (manual). --exit-code says
+#     whether there is a step; the installer comes from brain.repo at brain.tag.
 #   - The channel is the setting, else the one the installed manifest came from, else
 #     stable; TEAPORT_MANIFEST_URL replaces the address.
 #   - A look that fails keeps the last answer, marked not fresh; a restart does not forget
@@ -35,26 +40,37 @@ from tempdirs import tempdir  # noqa: E402
 from teaport_brain import updates  # noqa: E402
 
 
-def _manifest(engine="1.6", brain="v1", plugin="0.1.0", openclaw="2026.9.7", sha="aa",
+def _manifest(engine="1.6", brain="0.1.0", plugin="0.1.0", openclaw="2026.9.7", sha="aa",
               channel="stable", version="1.0.0"):
+    deb = {"url": f"https://get.teaspoon.tech/dl/brain/teaport-brain_{brain}_arm64.deb",
+           "sha256": "dd"}
     return {"version": version, "channel": channel,
-            "engine": {"release": engine}, "brain": {"repo": "x/y", "tag": brain},
+            "engine": {"release": engine},
+            "brain": {"repo": "x/y", "tag": "main", "deb": deb},
             "plugin": {"npm": "p", "version": plugin},
             "openclaw": {"version": openclaw, "node": "24"},
             "models": {"kokoro": {"sha256": sha}, "voxtral": {"sha256": "bb"}}}
 
 
+# The installed brain package, for the tests that are not about it.
+BRAIN = "0.1.0"
+
+
+def _compare(installed, latest, brain=BRAIN):
+    return updates.compare(installed, latest, brain)
+
+
 def test_a_component_the_channel_names_differently_is_changed():
-    got = updates.compare(_manifest(), _manifest(engine="1.7", sha="cc"))
+    got = _compare(_manifest(), _manifest(engine="1.7", sha="cc"))
     assert got["available"] and got["changed"] == ["engine", "models"], got
     assert got["components"]["engine"] == {"installed": "1.6", "latest": "1.7", "changed": True}
     assert not got["components"]["brain"]["changed"]
-    same = updates.compare(_manifest(), _manifest())
+    same = _compare(_manifest(), _manifest())
     assert not same["available"] and same["changed"] == [], same
 
 
 def test_a_new_version_name_alone_is_not_an_update():
-    got = updates.compare(_manifest(), _manifest(version="9.9.9"))
+    got = _compare(_manifest(), _manifest(version="9.9.9"))
     assert not got["available"] and got["changed"] == [], got
     assert got["components"]["version"] == {"installed": "1.0.0", "latest": "9.9.9",
                                             "changed": False}, got
@@ -63,31 +79,126 @@ def test_a_new_version_name_alone_is_not_an_update():
 def test_what_the_channel_has_not_released_is_not_an_update():
     latest = _manifest(engine="TODO", brain="", plugin="0.2.0")
     del latest["openclaw"]
-    got = updates.compare(_manifest(), latest)
+    got = _compare(_manifest(), latest)
     assert got["changed"] == ["plugin"], got
     assert got["components"]["engine"]["latest"] is None, got
     beta = _manifest()
     for part in ("engine", "brain", "plugin", "openclaw"):
         beta[part] = {k: "TODO" for k in beta[part]}
     beta["models"] = {"kokoro": {"sha256": "TODO"}}
-    assert not updates.compare(_manifest(), beta)["available"]
+    assert not _compare(_manifest(), beta)["available"]
+
+
+def test_a_release_older_than_the_brain_on_the_box_offers_nothing():
+    # The other channel may name an older release: its engine and models are that
+    # release's too, and teaport update runs nothing from it (update_apply.not_older).
+    older = _manifest(engine="1.5", sha="00", brain="0.0.9")
+    got = updates.compare(_manifest(), older, BRAIN, floor=BRAIN)
+    assert got["older"] and not got["available"] and got["steps"] == [] and got["changed"] == [], got
+    assert not any(row["changed"] for row in got["components"].values())
+    # A half-configured brain (installed_brain None) still sets the floor.
+    assert updates.compare(_manifest(), older, None, floor=BRAIN)["older"]
+    # A channel that names no brain package cannot be told from an older one.
+    nodeb = _manifest(engine="1.7")
+    del nodeb["brain"]["deb"]
+    assert updates.compare(_manifest(), nodeb, BRAIN, floor=BRAIN)["older"]
+    # The same release, or a newer one: as before.
+    assert not updates.compare(_manifest(), _manifest(engine="1.7"), BRAIN, floor=BRAIN)["older"]
+    assert updates.compare(_manifest(), _manifest(engine="1.7"), BRAIN, floor=BRAIN)["steps"] == ["engine"]
+    # Said as such, not as "up to date".
+    text = updates.render({"channel": "beta", "url": "u", **got})
+    assert "names an older release than this box has" in text and "up to date" not in text, text
+    assert "  brain     0.1.0  !=  0.0.9" in text, text   # different, not "==", and not offered
+    # No brain package on the box at all: no brain floor.
+    assert not updates.compare(_manifest(), _manifest(brain="0.0.9"), None, floor=None)["older"]
+
+
+def test_two_channels_with_one_brain_do_not_take_the_engine_back():
+    # Beta tests an engine with the stable brain: stable then names an older engine.
+    beta, stable = _manifest(engine="1.7"), _manifest(engine="1.6")
+    got = updates.compare(beta, stable, BRAIN, floor=BRAIN)
+    assert got["older"] and not got["available"] and got["steps"] == [], got
+    # An engine release dpkg cannot order against the box's is not offered either.
+    assert updates.compare(_manifest(), _manifest(engine="next"), BRAIN, floor=BRAIN)["older"]
+    # A newer engine is an update; an installed record that is not a version sets no floor.
+    assert updates.compare(stable, beta, BRAIN, floor=BRAIN)["steps"] == ["engine"]
+    assert not updates.compare(_manifest(engine="dev"), stable, BRAIN, floor=BRAIN)["older"]
+
+
+def test_the_floor_counts_a_brain_in_any_state_that_leaves_its_files():
+    real = updates.subprocess.run
+    try:
+        for out, installed, floor in (("installed 0.1.1", "0.1.1", "0.1.1"), ("half-configured 0.1.1", None, "0.1.1"),
+                                      ("unpacked 0.1.1", None, "0.1.1"), ("triggers-pending 0.1.1", None, "0.1.1"),
+                                      ("config-files 0.1.1", None, None), ("not-installed ", None, None)):
+            updates.subprocess.run = lambda *a, _out=out, **k: type("P", (), {"returncode": 0, "stdout": _out})()
+            assert (updates.installed_brain(), updates.box_brain()) == (installed, floor), out
+    finally:
+        updates.subprocess.run = real
 
 
 def test_a_placeholder_model_hash_does_not_hide_a_real_change_in_another():
     latest = _manifest()
     latest["models"] = {"kokoro": {"sha256": "TODO"}, "voxtral": {"sha256": "cc"}}
-    got = updates.compare(_manifest(), latest)
+    got = _compare(_manifest(), latest)
     assert got["changed"] == ["models"], got
     latest["models"]["voxtral"]["sha256"] = "bb"
-    assert not updates.compare(_manifest(), latest)["available"]
+    assert not _compare(_manifest(), latest)["available"]
 
 
 def test_a_component_the_box_has_no_record_of_is_changed():
     old = _manifest()
     del old["plugin"]
-    got = updates.compare(old, _manifest())
+    got = _compare(old, _manifest())
     assert got["changed"] == ["plugin"], got
-    assert updates.compare({}, _manifest())["available"]
+    assert _compare({}, _manifest())["available"]
+
+
+def test_the_brain_is_the_package_and_only_a_newer_one_is_an_update():
+    got = _compare(_manifest(), _manifest(brain="0.1.1"), brain="0.1.0")
+    assert got["changed"] == ["brain"], got
+    assert got["components"]["brain"] == {"installed": "0.1.0", "latest": "0.1.1", "changed": True}
+    # A dev build of the next release is newer than the release: nothing older is offered,
+    # and neither is the same one.
+    assert not _compare(_manifest(), _manifest(brain="0.1.0"), brain="0.1.1~dev904+g38f7fac2")["available"]
+    assert not _compare(_manifest(), _manifest(brain="0.1.0"), brain="0.1.0")["available"]
+    assert _compare(_manifest(), _manifest(brain="0.1.1"), brain="0.1.1~dev3+gabc")["changed"] == ["brain"]
+    # No package on the box (the pre-package venvs): the channel's is an update.
+    assert _compare(_manifest(), _manifest(), brain=None)["changed"] == ["brain"]
+    # A manifest with no package, or a placeholder, or a file not named as a package is.
+    latest = _manifest()
+    for deb in (None, "TODO", {"url": "TODO", "sha256": "TODO"},
+                {"url": "https://get.teaspoon.tech/dl/brain/brain.deb"}):
+        latest["brain"]["deb"] = deb
+        assert not _compare(_manifest(), latest, brain=None)["available"], deb
+
+
+def test_versions_are_ordered_as_dpkg_orders_them():
+    order = ["0.1.0~dev1", "0.1.0", "0.1.0+fix", "0.1.1~dev2+gabc", "0.1.1~dev10+gabc", "0.1.1",
+             "0.1.1-1", "0.1.1-1a", "0.1.1-2", "0.1.10", "0.2", "1:0.0.1"]
+    for i, a in enumerate(order):
+        for j, b in enumerate(order):
+            want = (i > j) - (i < j)
+            assert updates.version_cmp(a, b) == want, (a, b, updates.version_cmp(a, b))
+    assert updates.version_cmp("0.1", "0.1.0") == -1 and updates.version_cmp("1.0a", "1.0+") == -1
+
+
+def test_what_teaport_update_would_do():
+    plan = updates.plan
+    assert plan([]) == {"steps": [], "manual": []}
+    assert plan(["models"]) == {"steps": ["engine"], "manual": []}
+    # The engine first, whatever the order changed lists them in; the rest is manual.
+    assert plan(["brain", "plugin", "engine", "openclaw"]) == {
+        "steps": ["engine", "brain"], "manual": ["plugin", "openclaw"]}
+    got = _compare(_manifest(), _manifest(plugin="0.2.0", brain="0.2.0"))
+    assert got["steps"] == ["brain"] and got["manual"] == ["plugin"], got
+    # Where the installer comes from: a plain repo and ref, or nothing.
+    assert updates.source(_manifest()) == {"repo": "x/y", "tag": "main"}
+    for repo, tag in (("TODO", "main"), ("x/y", "TODO"), ("x/y/z", "main"), ("x/y", "-u"),
+                      ("x y/z", "main"), ("x/y", "a b"), (None, "main")):
+        m = _manifest()
+        m["brain"]["repo"], m["brain"]["tag"] = repo, tag
+        assert updates.source(m) is None, (repo, tag)
 
 
 def test_the_channel_and_the_address():
@@ -105,13 +216,16 @@ def test_a_look_reads_the_channels_manifest_and_names_it():
     def fetch(url):
         seen.append(url)
         return _manifest(engine="1.7")
-    got = updates.check("beta", fetch=fetch, installed=_manifest(), clock=lambda: 5.0, env={})
+    got = updates.check("beta", fetch=fetch, installed=_manifest(), clock=lambda: 5.0, env={},
+                        brain=lambda: BRAIN)
     assert seen == ["https://get.teaspoon.tech/manifest/beta.json"], seen
     assert got["channel"] == "beta" and got["checked"] == 5.0 and got["fresh"]
     assert got["changed"] == ["engine"], got
     # No setting: the channel the installed manifest came from.
-    got = updates.check("", fetch=fetch, installed=_manifest(channel="beta"), env={})
+    got = updates.check("", fetch=fetch, installed=_manifest(channel="beta"), env={},
+                        brain=lambda: BRAIN)
     assert got["channel"] == "beta", got
+    assert got["steps"] == ["engine"] and got["source"] == {"repo": "x/y", "tag": "main"}, got
 
 
 
@@ -162,8 +276,8 @@ def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
     updates.PREFIX = updates.ETC = d
     with open(os.path.join(d, "manifest.json"), "w") as f:
         json.dump(_manifest(), f)
-    real = updates.CHECK_SECS
-    updates.CHECK_SECS = 86400.0
+    real = updates.CHECK_SECS, updates.installed_brain
+    updates.CHECK_SECS, updates.installed_brain = 86400.0, lambda: BRAIN
     try:
         answers = [_manifest(engine="1.7"), OSError("offline")]
 
@@ -177,6 +291,7 @@ def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
         assert asyncio.run(mon.refresh()) is True
         st = mon.status()
         assert st["state"] == "available" and st["changed"] == ["engine"] and st["fresh"], st
+        assert st["steps"] == ["engine"] and st["manual"] == [], st
         assert st["channel"] == "stable" and st["checked"] == 7.0, st
         # The next look fails: the last answer stands, not fresh.
         assert asyncio.run(mon.refresh()) is False
@@ -197,7 +312,7 @@ def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
         assert updates.Monitor(path=path).status() == {"state": "off"}
         asyncio.run(asyncio.wait_for(updates.Monitor(fetch=lambda u: 1 / 0, path=path).run(), 1))
     finally:
-        updates.CHECK_SECS = real
+        updates.CHECK_SECS, updates.installed_brain = real
         updates.PREFIX, updates.ETC = saved_dirs
 
 
@@ -209,6 +324,8 @@ def test_main_prints_the_status_and_says_why_it_cannot():
     env = {"TEAPORT_MANIFEST_URL": latest}
     saved = {k: os.environ.get(k) for k in env}
     saved_dirs = (updates.PREFIX, updates.ETC)
+    saved_brain = updates.installed_brain
+    updates.installed_brain = lambda: BRAIN
     os.environ.update(env)
 
     def run(*argv):
@@ -226,6 +343,15 @@ def test_main_prints_the_status_and_says_why_it_cannot():
         assert rc == 0 and got["changed"] == ["engine"] and got["channel"] == "stable", out
         rc, out, err = run("check")
         assert rc == 0 and "engine" in out and "1.6  ->  1.7" in out and "changed: engine" in out, out
+        assert "teaport update installs: engine" in out and "full install.sh" not in out, out
+        # --exit-code: 10 when there is a step to run, 0 when only a full run would do.
+        assert run("check", "--exit-code")[0] == updates.EXIT_STEPS
+        with open(latest, "w") as f:
+            json.dump(_manifest(plugin="0.2.0"), f)
+        rc, out, err = run("check", "--exit-code")
+        assert rc == 0 and "needs a full install.sh run: plugin" in out and "teaport update installs" not in out, out
+        with open(latest, "w") as f:
+            json.dump(_manifest(engine="1.7"), f)
         # The channel from brain.env, as the CLI is not run under the brain's environment.
         with open(os.path.join(d, "brain.env"), "w") as f:
             f.write("TEAPORT_UPDATE_CHANNEL=beta\n")
@@ -238,6 +364,7 @@ def test_main_prints_the_status_and_says_why_it_cannot():
         assert rc == 1 and "cannot read the release manifest" in err, (rc, err)
     finally:
         updates.PREFIX, updates.ETC = saved_dirs
+        updates.installed_brain = saved_brain
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -259,6 +386,7 @@ def test_status_shows_the_release_line():
     new = {"state": "available", "channel": "beta", "fresh": False, "changed": ["engine", "plugin"]}
     got = line({"ok": True, "update": new})
     assert got.startswith("a new release is out on beta: engine, plugin") and "last check failed" in got, got
+    assert got.endswith("-- teaport update"), got
 
 
 if __name__ == "__main__":

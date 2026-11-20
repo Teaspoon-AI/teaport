@@ -35,10 +35,13 @@ that runs as root takes its environment from them.
 
 <!-- source: systemd/teaport-wifi-setup-net.service.in:9-13#e760f30b; brain/teaport_brain/config_apply.py:37-41#cd855526 -->
 
-The only other right the run user has is to scan for Wi-Fi networks, through a polkit
-rule.
+The run user's only other rights come through polkit: it can scan for Wi-Fi networks,
+and it can start `teaport-update.service`, the root unit that `teaport update` starts.
+That unit takes no arguments and reads from the release manifest what to install, so
+the run user decides when an update runs, never what it installs. An update doesn't
+need the run user to have `sudo`.
 
-<!-- source: packaging/wifi-setup/50-teaport-wifi-setup.rules.in:9-19#a6b65275 -->
+<!-- source: packaging/wifi-setup/50-teaport-wifi-setup.rules.in:9-19#a6b65275; packaging/deb/sudoers-sync:12-17#2bf6c0cf; packaging/deb/sudoers-sync:59-74#dd65fc86 -->
 
 ## The owner's login
 

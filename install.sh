@@ -67,6 +67,13 @@
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
+#   TEAPORT_USER           whose appliance it is (default: who runs this). Run as root for
+#                          another user, the run user's part of the work is done as them (as_user)
+#   TEAPORT_NEWER_ONLY=1   --only brain installs no package older than the installed one
+#                          (set by teaport update's teaport-update.service)
+#   TEAPORT_WAIT_IDLE_SECS before --only brain/engine restart anything, wait up to this long
+#                          for nobody to be talking to the box (default 0: no wait; set by
+#                          teaport update's teaport-update.service)
 #   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
 #   TEAPORT_HOST           the front door's name (default teaport.local, or teaport-<id>.local
 #                          when another box already answers to teaport.local)
@@ -78,12 +85,22 @@
 #
 set -euo pipefail
 
+# teaport update (packaging/deb/update_apply.py) runs a release's installer as root only when
+# it says this: it keeps the install trees root's and takes the run user's home as data.
+# shellcheck disable=SC2034  # read by update_apply.py, not here
+UPDATE_PROTOCOL=1
+
 MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
 ETC="${TEAPORT_ETC:-/etc/teaport}"
 STATE="${TEAPORT_STATE:-/var/lib/teaport}"
-SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
 RUN_USER="${TEAPORT_USER:-$(id -un)}"
+# The run user's home: where their agent's config lives (NemoClaw, OpenClaw), their secrets
+# and the SIP gateway's build. Never this script's own $HOME: run as root for them
+# (teaport update), $HOME stays root's, so no tool root runs here reads its configuration
+# from a home the run user writes (a ~/.curlrc, a Python user site, a ~/.gitconfig).
+RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"; RUN_HOME="${RUN_HOME:-$HOME}"
+SECRETS="${TEAPORT_SECRETS_DIR:-$RUN_HOME/.config/teaport}"
 ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-0}"
 ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_DEB_SRC="${TEAPORT_BRAIN_DEB:-}"
@@ -116,16 +133,36 @@ done
 case "$ONLY" in ''|brain|engine) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain, engine)" ;; esac
 case "$ROLLBACK" in ''|brain|engine) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain, engine)" ;; esac
 [ -z "$ONLY" ] || [ -z "$ROLLBACK" ] || usage_err "--only and --rollback are separate runs"
+# The run user's name goes into units, sudoers and polkit rules: a plain login name only.
+case "$RUN_USER" in ''|-*|*[!A-Za-z0-9._-]*) usage_err "TEAPORT_USER: not a plain user name: '$RUN_USER'" ;; esac
 
 # --- output helpers ----------------------------------------------------------
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 todo() { printf '\033[1;35mTODO:\033[0m %s\n' "$*"; }
-# run: execute a command, or just print it under --dry-run.
-run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"; else "$@"; fi; }
-# SUDO: privileged op (root when not already root). Honors --dry-run via run().
-SUDO() { if [ "$(id -u)" = 0 ]; then run "$@"; else run sudo "$@"; fi; }
+# run: execute a command as the run user (as_user), or just print it under --dry-run.
+run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"; else as_user "$@"; fi; }
+# SUDO: privileged op (root when not already root). Honors --dry-run as run() does.
+SUDO() {
+  if [ "$(id -u)" != 0 ]; then run sudo "$@"
+  elif [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*"
+  else "$@"; fi
+}
+# as_user <cmd...> -- <cmd> as the run user. A run as root for another user (TEAPORT_USER:
+# the updater's teaport-update.service, or sudo with TEAPORT_USER set) does the run user's
+# part of the work as them, exactly as a run by that user would: what lands in their home
+# (the secrets directory) and the Discord bridge's npm tree are theirs. The install trees
+# are root's (own_install_trees), and every write there is SUDO's, in any run. ldd goes
+# through here too: it can run the program it is asked about. setpriv, not runuser: no PAM
+# session per command.
+as_user() {
+  if [ "$(id -u)" = 0 ] && [ "$RUN_USER" != root ]; then
+    setpriv --reuid="$RUN_USER" --regid="$(id -g "$RUN_USER")" --init-groups -- "$@"
+  else
+    "$@"
+  fi
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 # contains <needle> <haystack> — substring test that replaces `cmd | grep -q needle`.
 # Under `set -o pipefail` that idiom is a trap: grep -q exits at the first match, the writer
@@ -154,7 +191,9 @@ read_env_file() {
 # starts and leaves running (a gateway, say) inherits nothing, so the lock ends with the
 # run. The lock file is root's (0644), which every user can open to lock. A dry run takes
 # no lock; it says when a real run would stop.
-INSTALL_LOCK="$STATE/install.lock"
+# In /run, root's (and never part of $STATE, which own_install_trees may rebuild while the
+# lock is held). TEAPORT_INSTALL_LOCK moves it, for tests.
+INSTALL_LOCK="${TEAPORT_INSTALL_LOCK:-/run/teaport-install.lock}"
 installer_lock() {
   local me="$HERE/${BASH_SOURCE[0]##*/}" rc=0
   [ -z "${TEAPORT_INSTALL_LOCKED:-}" ] || return 0   # the child: flock(1) holds it for us
@@ -165,10 +204,52 @@ installer_lock() {
     return 0
   fi
   if [ ! -f "$me" ]; then warn "not run from a file, so not locked: nothing stops a second install.sh from running beside this one"; return 0; fi
-  if [ ! -e "$INSTALL_LOCK" ]; then SUDO mkdir -p "$STATE"; SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
+  if [ -L "$INSTALL_LOCK" ] || { [ -e "$INSTALL_LOCK" ] && [ ! -f "$INSTALL_LOCK" ]; }; then SUDO rm -f "$INSTALL_LOCK"; fi
+  if [ ! -e "$INSTALL_LOCK" ]; then SUDO touch "$INSTALL_LOCK"; SUDO chmod 0644 "$INSTALL_LOCK"; fi
   TEAPORT_INSTALL_LOCKED=1 flock -n -o -E 75 "$INSTALL_LOCK" bash "$me" ${ARGS[@]+"${ARGS[@]}"} || rc=$?
   if [ "$rc" = 75 ]; then die "another install.sh is running on this box (it holds $INSTALL_LOCK) — let it finish, then run this again"; fi
   exit "$rc"
+}
+
+# --- root owns the install ------------------------------------------------------
+# /opt/teaport ($PREFIX) and /var/lib/teaport ($STATE) are root's, and so is everything an
+# install keeps in them; the units run as the run user and only read there. `teaport
+# update` runs this installer as root, and the run user may start that without a password
+# (the polkit rule packaging/deb/sudoers-sync writes): a tree they could write would let
+# them aim its root writes anywhere. Installers before this one gave both trees to the run
+# user, and a tree that was theirs cannot be made root's in place (an ACL, an open handle,
+# a plant would survive), so own_install_trees has packaging/install/root_layout.py
+# REBUILD them once, from what can be checked, and swap them in (the script says what it
+# carries over and why). From then on its marker, $PREFIX/.root-layout, makes this a check.
+# own_dir <dir> -- the directory itself root's and 0755 (never a symlink: its parent is root's).
+own_dir() {
+  if [ -L "$1" ]; then die "$1 is a symlink — the installer's trees must be directories; remove it and run again"; fi
+  SUDO mkdir -p "$1"; SUDO chown root:root "$1"; SUDO chmod 0755 "$1"
+}
+BRAIN_TREE_INCOMPLETE=0   # the rebuild left brain package files out; an install of the package puts them back
+own_install_trees() {
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] make sure %s and %s are root'"'"'s (rebuilt once, on a box an older installer set up)\n' "$PREFIX" "$STATE"; return 0; fi
+  sudo_ready "make sure the install trees are root's"
+  local rc=0
+  SUDO python3 -I "$HERE/packaging/install/root_layout.py" migrate "$PREFIX" "$STATE" "$BRAIN_PKG" || rc=$?
+  case "$rc" in
+    0) ;;
+    3) BRAIN_TREE_INCOMPLETE=1 ;;
+    *) die "could not make $PREFIX and $STATE root's (packaging/install/root_layout.py) — nothing was installed" ;;
+  esac
+}
+# brain_tree_complete -- the brain package was installed: its tree is whole again, which the
+# rebuild's marker records (root_layout.py's COMPLETE).
+brain_tree_complete() {
+  [ "$DRY_RUN" != 1 ] || return 0
+  printf "rebuilt as root's\n" | SUDO tee "$PREFIX/.root-layout" >/dev/null || true
+  BRAIN_TREE_INCOMPLETE=0
+}
+# brain_tree_needed <what> -- stop a run that would restart the brain on a tree the rebuild
+# could not bring over whole.
+brain_tree_needed() {
+  [ "$BRAIN_TREE_INCOMPLETE" = 1 ] || return 0
+  die "the brain's files are not all in place since $PREFIX was rebuilt as root's — run install.sh --only brain first (it puts them back), then $1 again"
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -177,12 +258,12 @@ fetch_manifest() {
   MF="$(mktemp)"
   case "$MANIFEST_URL" in
     /*|file://*) cp "${MANIFEST_URL#file://}" "$MF" ;;
-    *) curl -fsSL --retry 3 -o "$MF" "$MANIFEST_URL" || die "cannot fetch manifest: $MANIFEST_URL" ;;
+    *) curl -q -fsSL --retry 3 -o "$MF" "$MANIFEST_URL" || die "cannot fetch manifest: $MANIFEST_URL" ;;
   esac
-  python3 -c "import json;json.load(open('$MF'))" 2>/dev/null || die "manifest is not valid JSON"
+  python3 -I -c "import json;json.load(open('$MF'))" 2>/dev/null || die "manifest is not valid JSON"
 }
 # mget <dotted.key.path> — read a string leaf out of the manifest (python3 = always present).
-mget() { python3 - "$MF" "$1" <<'PY'
+mget() { python3 -I - "$MF" "$1" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for k in sys.argv[2].split("."):
@@ -202,12 +283,12 @@ download() {
     log "have $(basename "$dest") (sha ok)"; return
   fi
   log "download $(basename "$dest")"
-  run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
+  SUDO curl -q -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
   if [ "$DRY_RUN" != 1 ]; then
     # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
     # stage is kept across runs, #158), and fail the same way each time.
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
-    mv "$dest.part" "$dest"
+    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
+    SUDO mv "$dest.part" "$dest"
   fi
 }
 
@@ -226,7 +307,7 @@ eula_gate() {
 
   # Idempotent re-run: this license version is already accepted -> no prompt.
   if [ -f "$receipt" ]; then
-    local prev; prev="$(python3 -c "import json;print(json.load(open('$receipt')).get('version',''))" 2>/dev/null || true)"
+    local prev; prev="$(python3 -I -c "import json;print(json.load(open('$receipt')).get('version',''))" 2>/dev/null || true)"
     if [ "$prev" = "$ver" ]; then log "engine license v$ver already accepted"; return; fi
     [ -n "$prev" ] && warn "engine license changed (accepted: v$prev, current: v$ver) — re-acceptance required"
   fi
@@ -241,7 +322,7 @@ eula_gate() {
 
   # Fetch + verify the text. Fail closed: a license you cannot read cannot be accepted.
   local txt; txt="$(mktemp)"
-  curl -fsSL --retry 3 -o "$txt" "$url" || die "cannot fetch the engine license: $url"
+  curl -q -fsSL --retry 3 -o "$txt" "$url" || die "cannot fetch the engine license: $url"
   if [ -n "$sha" ] && [ "$sha" != TODO ]; then
     echo "$sha  $txt" | sha256sum -c --status || die "engine license text failed sha256 verification"
   fi
@@ -263,11 +344,11 @@ eula_gate() {
   fi
 
   # Record the acceptance + keep the exact accepted text (both sides get a durable record).
-  SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
-  cp "$txt" "$STATE/EULA-v$ver.txt"
+  own_dir "$STATE"
+  SUDO install -m 0644 "$txt" "$STATE/EULA-v$ver.txt"
   local actual_sha; actual_sha="$(sha256sum "$txt" | cut -d' ' -f1)"
   printf '{"version":"%s","sha256":"%s","date":"%s","user":"%s","method":"%s"}\n' \
-    "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" > "$receipt"
+    "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" | SUDO tee "$receipt" >/dev/null
   log "engine license v$ver accepted (recorded in $receipt)"
 }
 
@@ -315,7 +396,7 @@ phase_preflight() {
   # 403, a proxy's 429) — deserves the early warning, because it is exactly the blocked-network
   # case that otherwise surfaces at the first download.
   if [ "$DRY_RUN" != 1 ]; then
-    local code; code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://get.teaspoon.tech 2>/dev/null || true)"
+    local code; code="$(curl -q -sS -o /dev/null -w '%{http_code}' --max-time 8 https://get.teaspoon.tech 2>/dev/null || true)"
     case "$code" in
       2*|3*|404) ;;
       *) warn "get.teaspoon.tech is not serving normally (HTTP ${code:-no response} — downloads will fail)" ;;
@@ -531,13 +612,13 @@ engine_fetch() {
   local url="$1" rel="$2" sha="$3" dest="$ENGINE_STAGE/$2"
   if [ -f "$PREFIX/$rel" ] && echo "$sha  $PREFIX/$rel" | sha256sum -c --status 2>/dev/null; then
     log "have ${rel##*/} (sha ok)"
-    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part" "$dest.sha256"; fi
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then SUDO rm -f "$dest" "$dest.part" "$dest.sha256"; fi
     return 0
   fi
-  run mkdir -p "$(dirname "$dest")"
+  SUDO mkdir -p "$(dirname "$dest")"
   if [ "$(cat "$dest.sha256" 2>/dev/null || true)" != "$sha" ]; then
-    if [ -e "$dest" ] || [ -e "$dest.part" ]; then run rm -f "$dest" "$dest.part"; fi
-    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" > "$dest.sha256"; fi
+    if [ -e "$dest" ] || [ -e "$dest.part" ]; then SUDO rm -f "$dest" "$dest.part"; fi
+    if [ "$DRY_RUN" != 1 ]; then printf '%s\n' "$sha" | SUDO tee "$dest.sha256" >/dev/null; fi
   fi
   download "$url" "$dest" "$sha"
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
@@ -548,7 +629,7 @@ engine_fetch() {
 # deploy's, say), and ENGINE_ENTRY, the manifest's engine entry for it as JSON, kept with a
 # rollback copy so that `teaport update` names the right release after a rollback.
 ENGINE_RELEASE="" ENGINE_ENTRY=""
-engine_entry_py() { python3 - "$@" <<'PY'
+engine_entry_py() { python3 -I - "$@" <<'PY'
 import json, sys
 try:
     e = json.load(open(sys.argv[1])).get("engine") or {}
@@ -596,23 +677,26 @@ engine_keep_live() {
   fi
   fail="could not keep the live engine for a rollback in $snap (disk full?) — nothing was swapped"
   log "keeping the live engine ($ENGINE_RELEASE) for --rollback engine: $snap"
-  rm -rf "$snap.partial"
-  mkdir -p "$snap.partial" || die "$fail"
+  SUDO rm -rf "$snap.partial"
+  SUDO mkdir -p "$snap.partial" || die "$fail"
   for rel in "${ENGINE_FILES[@]}" "${ENGINE_MODELS[@]}"; do
     [ -f "$PREFIX/$rel" ] || continue
-    mkdir -p "$(dirname "$snap.partial/$rel")" || { rm -rf "$snap.partial"; die "$fail"; }
+    SUDO mkdir -p "$(dirname "$snap.partial/$rel")" || { SUDO rm -rf "$snap.partial"; die "$fail"; }
     if contains " $rel " "$replacing"; then
-      ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
-        || { rm -rf "$snap.partial"; die "$fail"; }
+      SUDO ln "$PREFIX/$rel" "$snap.partial/$rel" 2>/dev/null || SUDO cp -p "$PREFIX/$rel" "$snap.partial/$rel" \
+        || { SUDO rm -rf "$snap.partial"; die "$fail"; }
     elif contains " $rel " " ${ENGINE_FILES[*]} "; then
-      cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { rm -rf "$snap.partial"; die "$fail"; }
+      SUDO cp -p "$PREFIX/$rel" "$snap.partial/$rel" || { SUDO rm -rf "$snap.partial"; die "$fail"; }
     fi
   done
   if [ -f "$ENGINE_UNIT" ]; then
-    cp "$ENGINE_UNIT" "$snap.partial/teaport-engine.service" || { rm -rf "$snap.partial"; die "$fail"; }
+    SUDO tee "$snap.partial/teaport-engine.service" < "$ENGINE_UNIT" >/dev/null || { SUDO rm -rf "$snap.partial"; die "$fail"; }
   fi
-  printf '%s\n' "$ENGINE_ENTRY" > "$snap.partial/engine.json" || { rm -rf "$snap.partial"; die "$fail"; }
-  mv "$snap.partial" "$snap"
+  printf '%s\n' "$ENGINE_ENTRY" | SUDO tee "$snap.partial/engine.json" >/dev/null || { SUDO rm -rf "$snap.partial"; die "$fail"; }
+  if SUDO test -f "$ENGINE_RECORD"; then
+    SUDO cp "$ENGINE_RECORD" "$snap.partial/engine.release" || { SUDO rm -rf "$snap.partial"; die "$fail"; }
+  fi
+  SUDO mv "$snap.partial" "$snap"
   ENGINE_KEPT="$snap"
 }
 
@@ -626,20 +710,20 @@ engine_swap_in() {
   local rel
   if [ -z "$ENGINE_CHANGED" ]; then
     log "engine files: the live ones are the manifest's"
-    if [ -e "$ENGINE_STAGE" ]; then run rm -rf "$ENGINE_STAGE"; fi
+    if [ -e "$ENGINE_STAGE" ]; then SUDO rm -rf "$ENGINE_STAGE"; fi
     return 0
   fi
   engine_keep_live "$ENGINE_CHANGED"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] move the new%s into %s\n' "$ENGINE_CHANGED" "$PREFIX"; return 0; fi
-  printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK" || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
+  printf '%s\n' "$ENGINE_KEPT" | SUDO tee "$ENGINE_SWAP_MARK" >/dev/null || die "cannot write $ENGINE_SWAP_MARK — nothing was swapped"
   trap 'engine_swap_abort "the run was stopped while it moved the engine files in"' INT TERM HUP
   for rel in $ENGINE_CHANGED; do
-    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
+    { SUDO mkdir -p "$(dirname "$PREFIX/$rel")" && SUDO mv -f "$ENGINE_STAGE/$rel" "$PREFIX/$rel"; } \
       || engine_swap_abort "could not move $rel into place"
   done
   trap - INT TERM HUP
-  rm -f "$ENGINE_SWAP_MARK"
-  rm -rf "$ENGINE_STAGE"
+  SUDO rm -f "$ENGINE_SWAP_MARK"
+  SUDO rm -rf "$ENGINE_STAGE"
   log "engine files live:$ENGINE_CHANGED"
   engine_prune
 }
@@ -651,7 +735,7 @@ engine_swap_abort() {
   if [ -n "$ENGINE_KEPT" ] && [ -f "$ENGINE_KEPT/bin/voxtral" ]; then
     warn "$1 — putting the engine before this run back (${ENGINE_KEPT##*/})"
     engine_restore "$ENGINE_KEPT"
-    rm -f "$ENGINE_SWAP_MARK"
+    SUDO rm -f "$ENGINE_SWAP_MARK"
     die "$1; the engine is back as it was before this run — run this again"
   fi
   die "$1; the engine files may be a mix of two releases — run this again to finish"
@@ -665,7 +749,9 @@ engine_swap_recover() {
   local kept
   [ -f "$ENGINE_SWAP_MARK" ] || return 0
   kept="$(cat "$ENGINE_SWAP_MARK" 2>/dev/null || true)"
-  case "$kept" in "$ENGINE_ROLLBACKS"/*) ;; *) kept="" ;; esac   # only ever one of ours
+  # Only ever one of ours: a direct child of $ENGINE_ROLLBACKS named as engine_keep_live names them.
+  case "$kept" in "$ENGINE_ROLLBACKS"/[0-9][0-9][0-9][0-9][0-9][0-9]-*) ;; *) kept="" ;; esac
+  case "$kept" in "$ENGINE_ROLLBACKS"/*/*|*..*) kept="" ;; esac
   if [ "$DRY_RUN" = 1 ]; then
     warn "an engine swap was stopped half way ($ENGINE_SWAP_MARK): a real run puts ${kept:+${kept##*/}, }the engine before it, back first"
     return 0
@@ -676,7 +762,7 @@ engine_swap_recover() {
   else
     warn "an engine swap was stopped half way, and nothing was kept from before it: this run replaces what is live"
   fi
-  rm -f "$ENGINE_SWAP_MARK"
+  SUDO rm -f "$ENGINE_SWAP_MARK"
 }
 
 # engine_restore <copy> — rename a rollback copy's files back over the live ones (its models
@@ -694,14 +780,15 @@ engine_restore() {
     [ -f "$snap/$rel" ] || continue
     # The copy keeps a file as a hard link (engine_keep_live): one a stopped swap never
     # replaced is still the live file, and GNU mv refuses to move a file onto itself.
-    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then rm -f "$snap/$rel"; continue; fi
-    { mkdir -p "$(dirname "$PREFIX/$rel")" && mv -f "$snap/$rel" "$PREFIX/$rel"; } \
+    if [ "$snap/$rel" -ef "$PREFIX/$rel" ]; then SUDO rm -f "$snap/$rel"; continue; fi
+    { SUDO mkdir -p "$(dirname "$PREFIX/$rel")" && SUDO mv -f "$snap/$rel" "$PREFIX/$rel"; } \
       || die "could not move $rel back from $snap — the engine files may be a mix of two releases (what is left to move back is in $snap)"
     if contains " $rel " " ${ENGINE_MODELS[*]} "; then models="$models ${rel##*/}"; fi
   done
   if [ -f "$snap/teaport-engine.service" ]; then write_root "$ENGINE_UNIT" "$(cat "$snap/teaport-engine.service")"; fi
   if [ -f "$snap/engine.json" ]; then manifest_take "$snap/engine.json" engine; fi
-  rm -rf "$snap"
+  engine_record "$(SUDO head -n 1 "$snap/engine.release" 2>/dev/null || true)"
+  SUDO rm -rf "$snap"
   log "engine files back from ${snap##*/}${models:+, with the model(s)$models}"
 }
 
@@ -729,16 +816,29 @@ engine_prune() {
       *) if [ -f "$d/bin/voxtral" ] && [ "$n" -lt "$ENGINE_KEEP" ]; then n=$((n + 1)); continue; fi ;;
     esac
     log "removing old engine rollback copy $d"
-    run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
+    SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
   done < <(engine_copies)
+}
+
+# engine_record <release> — what teaport update's engine floor reads (update_apply.py
+# box_engine): the release this installer itself put live, written by root from the release
+# manifest it fetched and checked (phase_engine), or put back with a rollback copy
+# (engine_restore; "" when the copy had none: no floor until the next engine install). Not
+# $PREFIX/manifest.json: an older installer let the run user write that, and the rebuild
+# (root_layout.py) carries it over as it was; this file it does not carry.
+ENGINE_RECORD="$STATE/engine.release"
+engine_record() {
+  if [ -n "$1" ]; then write_root "$ENGINE_RECORD" "$1"
+  elif [ "$DRY_RUN" != 1 ]; then SUDO rm -f "$ENGINE_RECORD"
+  fi
 }
 
 # manifest_take <from.json> <key...> — set those top-level keys of the installed manifest
 # ($PREFIX/manifest.json, what `teaport update` compares) to <from.json>'s, and leave the
 # rest as it is: --only engine installs the engine and checks the models, not the brain or
 # the plugin a new manifest may also name; a rollback puts back one engine entry.
-manifest_take_py() { python3 - "$@" <<'PY'
-import json, os, sys
+manifest_take_py() { SUDO python3 -I - "$@" <<'PY'
+import json, os, sys, tempfile
 dest, src, keys = sys.argv[1], sys.argv[2], sys.argv[3:]
 try:
     d = json.load(open(dest))
@@ -748,10 +848,13 @@ s = json.load(open(src))
 for k in keys:
     if k in s:
         d[k] = s[k]
-with open(dest + ".tmp", "w") as f:
+# A fresh name (O_EXCL), never a fixed one a symlink could stand in for.
+fd, tmp = tempfile.mkstemp(prefix=".manifest.", dir=os.path.dirname(dest))
+with os.fdopen(fd, "w") as f:
     json.dump(d, f, indent=2)
     f.write("\n")
-os.replace(dest + ".tmp", dest)
+os.chmod(tmp, 0o644)
+os.replace(tmp, dest)
 PY
 }
 manifest_take() {
@@ -766,8 +869,8 @@ manifest_take() {
 # when adding one here. models.voxtral.aux is optional (a missing aux file is skipped).
 phase_engine() {
   log "engine + models -> $PREFIX"
+  # Root's (own_install_trees, at the start of the run); the engine reads them as the run user.
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
-  SUDO chown -R "$RUN_USER" "$PREFIX"
   # The engine's own files and its models are staged, not downloaded over the live ones
   # (engine_fetch), and go live together once all of them have verified (engine_swap_in,
   # below). A swap a power cut stopped is put right first (engine_swap_recover).
@@ -779,13 +882,13 @@ phase_engine() {
   if contains " bin/voxtral " "$ENGINE_CHANGED "; then
     bin="$ENGINE_STAGE/bin/voxtral"; kept="; nothing was swapped: the live engine is untouched"
   fi
-  run chmod +x "$bin"
+  SUDO chmod 0755 "$bin"
   # The preflight gate accepts R38 *and* R39 on the claim that this CUDA-13 binary resolves its
   # deps on both (see ASSET_KEY). Check the claim instead of trusting the label: an unresolved
   # .so is a crisp message here rather than a crash-looping unit after the ~15GB of models
   # below. phase_sysdeps already installed libopenblas0, so a miss now is a real ABI gap.
   if [ "$DRY_RUN" != 1 ]; then
-    local unresolved; unresolved="$(ldd "$bin" 2>/dev/null | grep 'not found' || true)"
+    local unresolved; unresolved="$(as_user ldd "$bin" 2>/dev/null | grep 'not found' || true)"
     if [ -n "$unresolved" ]; then
       die "engine binary has unresolved libraries on this L4T (R${L4T_RELEASE:-?}):
 $unresolved
@@ -851,12 +954,13 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   if [ "$ONLY" != engine ]; then engine_swap_in; fi
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
   for aux in tekken.json params.json; do
-    local u; u="$(python3 -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
+    local u; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
     [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" ""
   done
   # --only engine records what it installed once the engine has come up on it (main_engine_only).
   if [ "$ONLY" != engine ]; then
-    run cp "$MF" "$PREFIX/manifest.json" 2>/dev/null || SUDO cp "$MF" "$PREFIX/manifest.json"
+    SUDO install -m 0644 "$MF" "$PREFIX/manifest.json"
+    engine_record "$(mget engine.release)"
   fi
 }
 
@@ -867,6 +971,50 @@ sudo_ready() {
   if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
     sudo -v || die "sudo is needed to $1 — nothing was swapped"
   fi
+}
+
+# wait_for_idle -- with TEAPORT_WAIT_IDLE_SECS set (teaport update's runs), the restart that
+# would cut a conversation waits until nobody is talking to the box: the brain's
+# /talk/status "live" (a call, a Talk session, a room conversation; a sleeping room mic is
+# not one), asked with brain.env's token. Up to that long, then the run stops with nothing
+# swapped; what it downloaded is kept, so the next try is quick. Only the restart waits:
+# the downloads before it go on meanwhile. A brain that does not answer has no conversation
+# to cut; one that answers but cannot be read is said, and does not hold the update.
+WAIT_IDLE_SECS="${TEAPORT_WAIT_IDLE_SECS:-0}"
+WAIT_IDLE_POLL_SECS=10
+wait_for_idle() {
+  case "$WAIT_IDLE_SECS" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$WAIT_IDLE_SECS" -gt 0 ] && [ "$DRY_RUN" != 1 ] || return 0
+  local envtxt port token body code live said=0 deadline=$((SECONDS + WAIT_IDLE_SECS))
+  envtxt="$(read_env_file "$ETC/brain.env" --lenient)"
+  port="$(sed -n 's/^BRAIN_PORT=//p' <<<"$envtxt" | tail -1)"; port="${port//[\"\']/}"; port="${port:-$BRAIN_PORT}"
+  case "$port" in ''|*[!0-9]*) port="$BRAIN_PORT" ;; esac   # a port, never a host to send the token to
+  token="$(sed -n 's/^GATEWAY_TOKEN=//p' <<<"$envtxt" | tail -1)"; token="${token//[\"\' ]/}"
+  body="$(mktemp)"
+  while :; do
+    # The token on curl's stdin (-K -), not its command line, where every user can read it.
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "${token//\\/}" \
+      | curl -q -s -K - -o "$body" -w '%{http_code}' --max-time 5 "http://127.0.0.1:$port/talk/status" 2>/dev/null)" || true
+    if [ "$code" = 000 ] || [ -z "$code" ]; then rm -f "$body"; return 0; fi
+    if [ "$code" != 200 ]; then
+      warn "cannot tell whether anyone is talking to the box (the brain's /talk/status answered $code) — going ahead"
+      rm -f "$body"; return 0
+    fi
+    live="$(python3 -I -c 'import json,sys; print(1 if json.load(open(sys.argv[1])).get("live") else 0)' "$body" 2>/dev/null || echo 0)"
+    if [ "$live" != 1 ]; then
+      [ "$said" = 0 ] || log "nobody is talking now — going ahead"
+      rm -f "$body"; return 0
+    fi
+    if [ "$said" = 0 ]; then
+      log "someone is talking to the box — waiting for the conversation to end before restarting (up to $((WAIT_IDLE_SECS / 60)) min)"
+      said=1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      rm -f "$body"
+      die "someone was still talking to the box after $((WAIT_IDLE_SECS / 60)) min — nothing was swapped in; what was downloaded is kept, so the next try is quick"
+    fi
+    sleep "$WAIT_IDLE_POLL_SECS"
+  done
 }
 
 # engine_verify — did the engine come up, and STAY up? It must listen on its port (ENGINE_PORT
@@ -1015,11 +1163,11 @@ engine_swap() {
 # sip_brain_detach's and migrate_brain_dropins' unit edits. The price: a commit that
 # touches install.sh for the engine or SIP alone also asks for a git pull first.
 # Keep in step with those functions (test_install_brain_only.py checks the paths).
-BRAIN_ONLY_PATHS=(systemd packaging/xvf3800 packaging/resolved install.sh)
+BRAIN_ONLY_PATHS=(systemd packaging/xvf3800 packaging/resolved packaging/install install.sh)
 # The same for --only engine: the engine's unit template (render_unit) and install.sh, which
 # holds how the engine is installed and the engine.env keys it adds. The engine itself
 # comes from the manifest, not the checkout. (test_install_engine_only.py checks the paths.)
-ENGINE_ONLY_PATHS=(systemd/teaport-engine.service.in install.sh)
+ENGINE_ONLY_PATHS=(systemd/teaport-engine.service.in packaging/install install.sh)
 # brain_src_fetch -- fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command --
@@ -1031,16 +1179,19 @@ brain_src_fetch() {
   fi
   env GIT_TERMINAL_PROMPT=0 "${ssh[@]}" timeout 30 git -C "$HERE" fetch --quiet 2>/dev/null
 }
+# git_read <args> -- git on the checkout, never configured by anything but the checkout
+# itself: no global or system config, and no fsmonitor (a command `git status` would run).
+git_read() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.fsmonitor=false "$@"; }
 check_brain_source() {
   have git && [ -e "$HERE/.git" ] || return 0
   local up behind
   # A checkout git refuses to read (a "dubious ownership" refusal, say, under `su -`) must
   # say so: returning quietly would skip the freshness check with nothing on screen.
-  if ! git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
-    warn "git cannot read $HERE as this user — its freshness is NOT checked: $(git -C "$HERE" rev-parse --git-dir 2>&1 | head -1)"
+  if ! git_read -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
+    warn "git cannot read $HERE as this user — its freshness is NOT checked: $(git_read -C "$HERE" rev-parse --git-dir 2>&1 | head -1)"
     return 0
   fi
-  up="$(git -C "$HERE" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
+  up="$(git_read -C "$HERE" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
   # --dry-run touches nothing, .git included: judge against the last fetch.
   if [ "$DRY_RUN" = 1 ]; then :
   elif [ "$(id -u)" = 0 ]; then warn "running as root: not fetching $up into $HERE — checking against its last fetch"
@@ -1054,7 +1205,7 @@ check_brain_source() {
   local scope=() what="" paths=("${BRAIN_ONLY_PATHS[@]}")
   if [ "$ONLY" = engine ]; then paths=("${ENGINE_ONLY_PATHS[@]}"); fi
   if [ -n "$ONLY" ]; then scope=(-- "${paths[@]}"); what=" in what --only $ONLY installs (${paths[*]})"; fi
-  behind="$(git -C "$HERE" rev-list --count "HEAD..$up" "${scope[@]}" 2>/dev/null)" || behind=0
+  behind="$(git_read -C "$HERE" rev-list --count "HEAD..$up" "${scope[@]}" 2>/dev/null)" || behind=0
   if [ "$behind" -gt 0 ]; then
     local msg="this checkout ($HERE) is $behind commit(s) behind $up$what — it would install older code than $up holds. git pull first"
     if [ "$ALLOW_STALE_SOURCE" = 1 ]; then warn "$msg (installing anyway: TEAPORT_ALLOW_STALE_SOURCE=1)"
@@ -1063,7 +1214,7 @@ check_brain_source() {
   fi
   local p dirty=""
   for p in "${paths[@]}"; do
-    if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- "$p" 2>/dev/null)" ]; then dirty="$dirty $p"; fi
+    if [ -n "$(git_read -C "$HERE" --no-optional-locks status --porcelain -- "$p" 2>/dev/null)" ]; then dirty="$dirty $p"; fi
   done
   if [ -n "$dirty" ]; then warn "uncommitted changes in $HERE are used too:$dirty"; fi
 }
@@ -1121,7 +1272,7 @@ brain_verify() {
   if contains teaport-brain.service "$*"; then
     local deadline=$((SECONDS + 90))
     while [ "$SECONDS" -lt "$deadline" ]; do
-      if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null; then up=1; break; fi
+      if curl -q -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null; then up=1; break; fi
       sleep 2
     done
     [ "$up" = 1 ] || { warn "teaport-brain did not answer http://127.0.0.1:$port/health within 90 s"; return 1; }
@@ -1160,13 +1311,12 @@ brain_restart() {
 # --- the brain: the teaport-brain .deb (#60) -----------------------------------------
 # The brain is a package, built in CI from brain/uv.lock against the system python3.12
 # (packaging/build-deb.sh) and installed here with apt: /opt/teaport/brain (the venv),
-# /usr/bin/teaport, /usr/lib/teaport/{config_apply.py,wifi_apply.py,login_apply.py,sudoers-sync}
-# (the root helpers and the one writer of their sudoers lines). Nothing is built on
+# /usr/bin/teaport, /usr/lib/teaport/{config_apply.py,sudoers-sync}. Nothing is built on
 # the box. Where the .deb comes from:
 #   TEAPORT_BRAIN_DEB=<file>   a package you have (CI's brain-deb artifact, or one built
 #                              with packaging/build-deb.sh on a build host)
 #   the manifest's brain.deb   {url, sha256}: downloaded and verified
-# Installing it is the whole update: its postinst writes the root helpers' sudoers lines,
+# Installing it is the whole update: its postinst writes the config page's sudoers line,
 # links the old /opt/teaport/venv path, and restarts the brain's units; teaport-brain is
 # Type=notify, so a brain that never becomes ready fails the install.
 #
@@ -1184,7 +1334,7 @@ BRAIN_DEB_CACHED=""   # its copy in $BRAIN_DEBS (brain_deb_keep)
 BRAIN_DEB_SHA=""      # its sha256 when the manifest names it (the root copy is checked against it)
 BRAIN_DEB_DOWNLOADED=0  # 1 when BRAIN_DEB is a download of ours: removed once kept
 BRAIN_DEB_ADDED=0     # 1 when this run put BRAIN_DEB_CACHED in the cache (it was not there before)
-SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the root helpers' lines (packaging/deb/sudoers-sync)
+SUDOERS_FILE=/etc/sudoers.d/teaport-config   # the config page's line (packaging/deb/sudoers-sync)
 # Where the pre-package installer put the CLI and the config helper (retired once the
 # package's are in place: /usr/local/bin precedes /usr/bin on PATH).
 OLD_TOOLS_DIR=/usr/local/lib/teaport
@@ -1196,11 +1346,12 @@ brain_installed_version() {
   { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } | awk '$1=="installed"{print $2; exit}'
 }
 # The package's version in any state that leaves files on the box, a half-configured one
-# included (a postinst that failed): what --rollback and the cache pruning must not treat as
-# gone. brain_installed_version is only a package that is fully there.
+# included (a postinst that failed), and one waiting on triggers: what --rollback, the cache
+# pruning and TEAPORT_NEWER_ONLY must not treat as gone. brain_installed_version is only a
+# package that is fully there.
 brain_package_version() {
   { dpkg-query -W -f='${db:Status-Status} ${Version}\n' "$BRAIN_PKG" 2>/dev/null || true; } \
-    | awk '$1=="installed"||$1=="half-configured"||$1=="unpacked"||$1=="half-installed"{print $2; exit}'
+    | awk 'NF==2 && $1!="not-installed" && $1!="config-files"{print $2; exit}'
 }
 brain_deb_path() { printf '%s/%s_%s_%s.deb\n' "$BRAIN_DEBS" "$BRAIN_PKG" "$1" "$(brain_deb_arch)"; }
 
@@ -1223,8 +1374,7 @@ brain_deb_fetch() {
       fi
       die "the release manifest names no brain package (brain.deb.url, brain.deb.sha256). Take one from CI (the brain-deb artifact) or build it with packaging/build-deb.sh on a build host, then: TEAPORT_BRAIN_DEB=/path/to/teaport-brain_<version>_$(brain_deb_arch).deb ./install.sh"
     fi
-    SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
-    run mkdir -p "$STATE/brain-deb"
+    own_dir "$STATE"; SUDO mkdir -p "$STATE/brain-deb"
     BRAIN_DEB="$STATE/brain-deb/$(basename "$url")"
     BRAIN_DEB_SHA="$(printf '%s' "$sha" | tr 'A-F' 'a-f')" BRAIN_DEB_DOWNLOADED=1
     download "$url" "$BRAIN_DEB" "$sha"
@@ -1234,6 +1384,23 @@ brain_deb_fetch() {
   fi
   brain_deb_verify "$BRAIN_DEB"
   BRAIN_DEB_NEW="$(dpkg-deb -f "$BRAIN_DEB" Version)"
+  # teaport update (TEAPORT_NEWER_ONLY=1): never an older package than the one on the box.
+  # The run user picks the channel, and the other one may name an older release, one a
+  # newer has fixed; going back is --rollback brain, by hand. Any state that leaves files
+  # counts: the brain runs as the run user, who can keep it from coming up, and a
+  # half-configured package must not hide its version.
+  # It runs only from teaport-update.service, which the package ships, so a version dpkg
+  # cannot say, or one it cannot order, stops the run rather than slipping past.
+  if [ "${TEAPORT_NEWER_ONLY:-0}" = 1 ]; then
+    local cur rc=0; cur="$(brain_package_version)"
+    [ -n "$cur" ] || die "cannot read the $BRAIN_PKG version on this box (dpkg-query) — an update installs no brain it cannot compare"
+    dpkg --compare-versions "$BRAIN_DEB_NEW" lt "$cur" || rc=$?
+    case "$rc" in
+      1) ;;
+      0) die "the release names $BRAIN_PKG $BRAIN_DEB_NEW, older than the installed $cur — an update installs no older brain (go back with install.sh --rollback brain)" ;;
+      *) die "cannot compare $BRAIN_PKG $BRAIN_DEB_NEW with the installed $cur — an update installs no brain it cannot compare" ;;
+    esac
+  fi
 }
 
 # brain_deb_verify <file> -- dies unless <file> is a $BRAIN_PKG package for this machine.
@@ -1243,11 +1410,10 @@ brain_deb_verify() {
 }
 
 # brain_deb_keep -- BRAIN_DEB into $BRAIN_DEBS under its canonical name; sets
-# BRAIN_DEB_CACHED. The download directory belongs to the run user (the brain, and what
-# its agent runs), so the file apt installs as root is a root-owned COPY, and it is the
-# copy that is checked: its sha256 against the manifest's, its package fields against the
-# ones read from the original. Nothing the run user does to the original afterwards reaches
-# the install.
+# BRAIN_DEB_CACHED. The file apt installs as root is a root-owned COPY, and it is the copy
+# that is checked: its sha256 against the manifest's, its package fields against the ones
+# read from the original. The download is root's too ($STATE), but TEAPORT_BRAIN_DEB can
+# name a file anyone wrote: nothing done to the original afterwards reaches the install.
 brain_deb_keep() {
   BRAIN_DEB_CACHED="$(brain_deb_path "$BRAIN_DEB_NEW")"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] keep %s as %s\n' "$BRAIN_DEB" "$BRAIN_DEB_CACHED"; return 0; fi
@@ -1263,7 +1429,7 @@ brain_deb_keep() {
     if [ "$ok" != 1 ]; then SUDO rm -f "$tmp"; die "$BRAIN_DEB did not check out when it was copied to $BRAIN_DEBS — nothing was installed"; fi
     SUDO mv -f "$tmp" "$BRAIN_DEB_CACHED"
   fi
-  if [ "$BRAIN_DEB_DOWNLOADED" = 1 ]; then rm -f "$BRAIN_DEB" || true; fi
+  if [ "$BRAIN_DEB_DOWNLOADED" = 1 ]; then SUDO rm -f "$BRAIN_DEB" || true; fi
 }
 
 # brain_deb_apply <file> -- apt installs <file>, over any version (--allow-downgrades: a
@@ -1286,12 +1452,13 @@ brain_deb_prune() {
   done < <(ls -1t "$BRAIN_DEBS/${BRAIN_PKG}"_*.deb 2>/dev/null || true)
 }
 
-# brain_sudoers -- the root helpers' sudoers lines, for $RUN_USER. The package's postinst
+# brain_sudoers -- the run user's grants (the config page's sudoers line, the update's
+# polkit rule), for $RUN_USER. The package's postinst
 # writes it too, from the brain unit's User=; this is for a first install, where the unit
 # did not exist yet when the package was configured. One writer: the package's own script.
 brain_sudoers() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] /usr/lib/teaport/sudoers-sync %s\n' "$RUN_USER"; return 0; fi
-  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page, Wi-Fi and the owner's login were not written (/usr/lib/teaport/sudoers-sync failed)"
+  SUDO /usr/lib/teaport/sudoers-sync "$RUN_USER" || warn "the sudoers lines for the config page, Wi-Fi and the owner's login, or the update's polkit rule, were not written (/usr/lib/teaport/sudoers-sync failed)"
 }
 
 # brain_retire_old_tools -- the pre-package installer's CLI and config helper, once the
@@ -1396,6 +1563,7 @@ brain_swap() {
   sudo_ready "install the brain package and restart its units"
   log "teaport-brain ${prev:-(none)} -> $BRAIN_DEB_NEW"
   if brain_deb_apply "$deb" && brain_render_units; then
+    brain_tree_complete
     brain_sudoers
     brain_units
     # shellcheck disable=SC2086
@@ -1429,7 +1597,7 @@ brain_swap() {
   fi
   warn "the brain did not come back on $BRAIN_DEB_NEW — putting ${prev} back"
   sip_brain_restore
-  brain_deb_apply "$prevdeb" || true
+  if brain_deb_apply "$prevdeb"; then brain_tree_complete; fi
   brain_units
   # shellcheck disable=SC2086
   set -- $SWAP_JUDGE
@@ -1446,6 +1614,8 @@ brain_swap() {
     if [ "$BRAIN_DEB_DOWNLOADED" != 1 ]; then from=" ($BRAIN_DEB stays)"; fi
     die "rolled back: the brain is running on $prev again. $BRAIN_DEB_NEW failed and is no longer kept in $BRAIN_DEBS$from — see: $journal"
   fi
+  # The package that failed is no rollback target, whatever happened after it.
+  if [ "$deb" != "$prevdeb" ]; then SUDO rm -f "$deb" || true; fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }
 
@@ -1458,6 +1628,7 @@ phase_brain() {
   brain_deb_keep
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] apt-get install %s\n' "$BRAIN_DEB_CACHED"; return 0; fi
   brain_deb_apply "$BRAIN_DEB_CACHED" || die "installing $BRAIN_DEB_CACHED failed — see: journalctl -u teaport-brain -n 50; dpkg -s $BRAIN_PKG"
+  brain_tree_complete
 }
 
 # The phone busy lamp (brain/teaport_brain/xvf_led.py): the brain turns a ReSpeaker
@@ -1614,18 +1785,22 @@ AGENT_MODE=""
 # resolved once so the brain (brain.env) and the plugin config share the same token.
 SANDBOX=""; NEMOCLAW=""; GATEWAY_TOKEN=""; OPENCLAW=""
 detect_sandbox() {
-  local sj="$HOME/.nemoclaw/sandboxes.json"
-  { have nemoclaw || [ -x "$HOME/.local/bin/nemoclaw" ]; } || return 0
+  local sj="$RUN_HOME/.nemoclaw/sandboxes.json"
+  { have nemoclaw || [ -x "$RUN_HOME/.local/bin/nemoclaw" ]; } || return 0
   [ -f "$sj" ] || return 0
   # sandboxes.json = {defaultSandbox, sandboxes:{<name>:...}} — prefer the default.
-  SANDBOX="$(python3 -c "import json;d=json.load(open('$sj'));print(d.get('defaultSandbox') or (list(d.get('sandboxes',{})) or [''])[0])" 2>/dev/null || true)"
+  # A timeout: the file is the run user's, and a special file there must not hold the run.
+  SANDBOX="$(timeout 10 python3 -I -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("defaultSandbox") or (list(d.get("sandboxes",{})) or [""])[0])' "$sj" 2>/dev/null || true)"
+  # A name from a file the run user writes, which goes into units root writes (render_unit):
+  # a plain sandbox name, or none.
+  case "$SANDBOX" in *[!A-Za-z0-9._-]*|-*) warn "ignoring the NemoClaw sandbox name in $sj: not a plain name"; SANDBOX="" ;; esac
 }
 # A host OpenClaw counts only once it has written its config — `openclaw` on PATH with no
 # ~/.openclaw/openclaw.json means it was installed but never set up, and `config patch`
 # would be writing into a config the user has not chosen the shape of yet.
 detect_openclaw() {
   have openclaw || return 0
-  [ -f "$HOME/.openclaw/openclaw.json" ] || return 0
+  [ -f "$RUN_HOME/.openclaw/openclaw.json" ] || return 0
   OPENCLAW="$(command -v openclaw)"
 }
 detect_agent() {
@@ -1635,7 +1810,7 @@ detect_agent() {
   [ -n "$OPENCLAW" ] && AGENT_MODE=openclaw
   return 0
 }
-resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$HOME/.local/bin/nemoclaw")"; }
+resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$RUN_HOME/.local/bin/nemoclaw")"; }
 # openclaw_spec — what to `npm install -g`: the OpenClaw release this one is tested with
 # (manifest openclaw.version), or plain openclaw from a manifest that names none.
 openclaw_spec() {
@@ -1871,7 +2046,7 @@ JSON
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] write %s/openclaw_token from openclaw.json gateway.auth.token (mode 600)\n' "$SECRETS"
   else
-    local octok; octok="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json')).get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)"
+    local octok; octok="$(timeout 10 python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1])).get("gateway",{}).get("auth",{}).get("token",""))' "$RUN_HOME/.openclaw/openclaw.json" 2>/dev/null || true)"
     if [ -n "$octok" ]; then
       mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
       printf '%s' "$octok" > "$SECRETS/openclaw_token"; chmod 600 "$SECRETS/openclaw_token"
@@ -2060,6 +2235,13 @@ fi
 REGENERATE_CA="${TEAPORT_REGENERATE_CA:-0}"
 # The name of the box's own certificate authority, as devices list it (resolve_frontdoor).
 FRONTDOOR_CA_NAME=""
+# sed_value <value> -- <value> for the replacement of a s#...#...# command, with \, # and &
+# taken literally. render_unit checks first that each value is one line (a newline would add
+# a line to the unit): a die in here would only end the command substitution.
+sed_value() {
+  local v="${1//\\/\\\\}"; v="${v//#/\\#}"; v="${v//&/\\&}"
+  printf '%s' "$v"
+}
 render_unit() {  # render_unit <template.in> <dest-name>
   local tpl="$HERE/systemd/$1" out="$2"
   [ -f "$tpl" ] || die "missing unit template: $tpl"
@@ -2071,14 +2253,21 @@ render_unit() {  # render_unit <template.in> <dest-name>
   # in its own repo/build tree (NOT $PREFIX); @SIP_CONF@ is the credentials .conf the CLI
   # (`teaport sip configure`) writes into the secrets dir and both SIP units gate on
   # (ConditionPathExists); @SIP_UDS@ is the AF_UNIX socket the gateway and brain meet on.
-  local sip_gateway="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
+  local sip_gateway="${TEAPORT_SIP_GATEWAY:-$RUN_HOME/teaport-sip/build/teaport-sip}"
   local sip_conf="$SECRETS/teaport-sip.conf"
   local sip_uds="${TEAPORT_SIP_UDS:-/run/teaport/teaport-sip.sock}"
-  local body; body="$(sed -e "s#@USER@#$RUN_USER#g" -e "s#@PREFIX@#$PREFIX#g" -e "s#@ETC@#$ETC#g" \
-                          -e "s#@NEMOCLAW@#$nemoclaw_bin#g" -e "s#@SANDBOX@#$SANDBOX#g" \
-                          -e "s#@NODE@#$node_bin#g" \
-                          -e "s#@SIP_GATEWAY@#$sip_gateway#g" -e "s#@SIP_CONF@#$sip_conf#g" \
-                          -e "s#@SIP_UDS@#$sip_uds#g" "$tpl")"
+  # Each value is one line, escaped for sed's replacement (\, # and &): some come from the
+  # run user's home (the sandbox, the gateway path), and root writes the unit.
+  local v
+  for v in "$RUN_USER" "$PREFIX" "$ETC" "$nemoclaw_bin" "$SANDBOX" "$node_bin" "$sip_gateway" "$sip_conf" "$sip_uds"; do
+    case "$v" in *$'\n'*|*$'\r'*) die "a value for $out spans lines: $(printf '%q' "$v")" ;; esac
+  done
+  local body; body="$(sed -e "s#@USER@#$(sed_value "$RUN_USER")#g" -e "s#@PREFIX@#$(sed_value "$PREFIX")#g" \
+                          -e "s#@ETC@#$(sed_value "$ETC")#g" \
+                          -e "s#@NEMOCLAW@#$(sed_value "$nemoclaw_bin")#g" -e "s#@SANDBOX@#$(sed_value "$SANDBOX")#g" \
+                          -e "s#@NODE@#$(sed_value "$node_bin")#g" \
+                          -e "s#@SIP_GATEWAY@#$(sed_value "$sip_gateway")#g" -e "s#@SIP_CONF@#$(sed_value "$sip_conf")#g" \
+                          -e "s#@SIP_UDS@#$(sed_value "$sip_uds")#g" "$tpl")"
   # Through write_root, so the unit is root's and 0644 whatever sudo's umask (#199). systemd
   # reads a 0600 unit as root all the same, but `systemctl cat` reads it as whoever runs it,
   # and that is how the CLI (installed) and --only brain tell an installed unit from none.
@@ -2714,14 +2903,14 @@ install_caddy_apt() {
     # Dearmored into a temp and installed from there (it is binary: no write_root), so the
     # key is there only when the whole fetch worked.
     tmp="$(mktemp)"
-    if ! curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor > "$tmp"; then
+    if ! curl -q -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | SUDO gpg --dearmor > "$tmp"; then
       rm -f "$tmp"; die "cannot fetch the Caddy repo key"
     fi
     SUDO install -D -m 0644 -o root -g root "$tmp" "$CADDY_KEYRING" || { rm -f "$tmp"; die "cannot install the Caddy repo key"; }
     rm -f "$tmp"
   fi
   if [ ! -f "$CADDY_APT_LIST" ]; then
-    repo="$(curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt')" || die "cannot fetch the Caddy repo list"
+    repo="$(curl -q -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt')" || die "cannot fetch the Caddy repo list"
     write_root "$CADDY_APT_LIST" "$repo" || die "cannot write the Caddy repo list"
   fi
   # The modes are set again on every run, not only when the files are written: a run before
@@ -2788,7 +2977,7 @@ phase_frontdoor() {
   if [ "$DRY_RUN" = 1 ]; then return 0; fi
   local ca_ok=0 i
   for i in $(seq 1 10); do
-    if curl -fsS -o /dev/null -H "Host: $FRONTDOOR_HOST" http://127.0.0.1/teaport-ca.crt 2>/dev/null; then ca_ok=1; break; fi
+    if curl -q -fsS -o /dev/null -H "Host: $FRONTDOOR_HOST" http://127.0.0.1/teaport-ca.crt 2>/dev/null; then ca_ok=1; break; fi
     sleep 1
   done
   if [ "$ca_ok" = 1 ]; then
@@ -2839,14 +3028,14 @@ phase_bridge() {
   [ -z "$src" ] && [ -d "$HERE/bridge/discord" ] && src="$HERE/bridge/discord"
   if [ -z "$src" ]; then
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
-    work="$STATE/bridge-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
+    work="$STATE/bridge-src"; own_dir "$STATE"
     # Same re-run == repair fix as resolve_brain_src: `git clone` dies on a non-empty destination.
     # This clone is pure staging too — index.js/env.js/package.json are copied out below.
-    if [ -e "$work" ]; then run rm -rf "$work"; fi
-    run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
+    if [ -e "$work" ] || [ -L "$work" ]; then SUDO rm -rf "$work"; fi
+    SUDO git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
     src="$work/bridge/discord"
   fi
-  SUDO mkdir -p "$PREFIX/bridge"; SUDO chown -R "$RUN_USER" "$PREFIX/bridge"
+  SUDO mkdir -p "$PREFIX/bridge"; SUDO chown -R -h -P "$RUN_USER" "$PREFIX/bridge"
   run cp "$src/index.js" "$src/env.js" "$src/package.json" "$PREFIX/bridge/"
   # --omit=dev; the host toolchain builds @discordjs/opus from source (JetPack ships gcc/make/python3).
   run npm install --omit=dev --no-audit --no-fund --prefix "$PREFIX/bridge"
@@ -3423,11 +3612,16 @@ main_brain_only() {
   fi
   check_brain_source
   brain_deb_fetch
-  brain_deb_keep
+  wait_for_idle
   # Before the swap, never after: the new brain is the phone line's front-end itself, and
   # the old SIP brain must not be left running beside it. Its unit goes only once the swap
   # is verified; a rollback puts it back (see sip_brain_detach).
   sip_brain_detach
+  # Kept right before the swap, nothing in between: a run that stops earlier (a wait that
+  # gives up, a drop-in that cannot move) leaves the cache --rollback brain picks from as it
+  # was, and the download stays in $STATE for the next try. brain_swap takes a package that
+  # fails back out of the cache itself.
+  brain_deb_keep
   brain_swap "$BRAIN_DEB_CACHED" --auto-rollback
   sip_brain_retire
   brain_retire_old_tools
@@ -3470,6 +3664,7 @@ main_rollback_brain() {
 # nothing else (see the header). An engine must already be installed: this updates one.
 main_engine_only() {
   log "teaport installer — engine only  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  brain_tree_needed "--only engine"   # the engine's restart takes the brain with it
   if [ ! -f "$PREFIX/bin/voxtral" ] || ! systemctl cat teaport-engine.service >/dev/null 2>&1; then
     local msg="no installed engine here ($PREFIX/bin/voxtral, teaport-engine.service) — --only engine updates one; run install.sh without --only first"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
@@ -3502,10 +3697,13 @@ main_engine_only() {
   # on the agent, as in phase_services.
   detect_agent
   engine_env_lines
+  # Before anything changes: a wait that gives up leaves engine.env as it was too.
+  wait_for_idle
   log "engine.env: only the keys it lacks are added; a value already there stays"
   env_add_missing "$ETC/engine.env" "${ENGINE_ENV[@]}"
   engine_swap
   manifest_take "$MF" engine models
+  engine_record "$(mget engine.release)"
   log "done — engine $(mget engine.release 2>/dev/null || echo '?') from $MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
   if [ -n "$ENGINE_KEPT" ] || [ "$DRY_RUN" = 1 ]; then printf '  undo:    install.sh --rollback engine\n'; fi
   printf '  check:   teaport doctor\n'
@@ -3517,6 +3715,7 @@ main_engine_only() {
 # brain): a failure is said, and the next --rollback is how to go back.
 main_rollback_engine() {
   log "teaport installer — engine rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  brain_tree_needed "--rollback engine"
   local target="" rel replacing=""
   # A swap that was stopped half way: putting back the engine before it IS the rollback.
   if [ -f "$ENGINE_SWAP_MARK" ]; then
@@ -3527,7 +3726,6 @@ main_rollback_engine() {
   log "rolling the engine back to ${target##*/}"
   if [ "$DRY_RUN" != 1 ]; then sudo_ready "roll the engine back"; fi
   # Renames into bin/, models/ and $PREFIX: theirs to own, as phase_engine leaves them.
-  SUDO chown "$RUN_USER" "$PREFIX"; SUDO chown -R "$RUN_USER" "$PREFIX/bin" "$PREFIX/models" "$ENGINE_ROLLBACKS"
   if [ -f "$ENGINE_SWAP_MARK" ]; then
     engine_swap_recover
   else
@@ -3537,9 +3735,9 @@ main_rollback_engine() {
     engine_keep_live "$replacing"
     # The renames back are one per file, as in a swap: marked the same way, so a run stopped
     # among them is put back whole (to the engine kept just now) by the next one.
-    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" > "$ENGINE_SWAP_MARK"; fi
+    if [ "$DRY_RUN" != 1 ] && [ -n "$ENGINE_KEPT" ]; then printf '%s\n' "$ENGINE_KEPT" | SUDO tee "$ENGINE_SWAP_MARK" >/dev/null; fi
     engine_restore "$target"
-    if [ "$DRY_RUN" != 1 ]; then rm -f "$ENGINE_SWAP_MARK"; fi
+    if [ "$DRY_RUN" != 1 ]; then SUDO rm -f "$ENGINE_SWAP_MARK"; fi
   fi
   SUDO systemctl daemon-reload
   if [ "$DRY_RUN" = 1 ]; then
@@ -3554,6 +3752,7 @@ main_rollback_engine() {
 
 main() {
   installer_lock
+  own_install_trees
   if [ "$ROLLBACK" = brain ]; then main_rollback_brain; return; fi
   if [ "$ROLLBACK" = engine ]; then main_rollback_engine; return; fi
   if [ "$ONLY" = brain ]; then main_brain_only; return; fi

@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2830#358d1a73 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2846#908e95f4 -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -289,6 +289,16 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 | `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |
 | `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` (`""` = off) | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
+## AI disclosure
+
+This setting decides whether the device tells people in the room it is an AI. Phone callers are always told.
+
+In `/etc/teaport/brain.env`. Every phone call starts with "You're speaking with an AI assistant." in the call's language, before the greeting. No setting turns that off: a caller cannot see what they are talking to, and the EU AI Act (Article 50) requires that they be told. A call where the line cannot be played is hung up. In the room and in Talk it is plain that you are talking to a device or an app, so nothing is said unless you turn on the room greeting, TEAPORT_ROOM_AI_GREETING. On every path, if someone asks whether they are talking to a person, the assistant says it is an AI. Read by teaport-brain.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_ROOM_AI_GREETING` | **off** | Start each new conversation at the device with "I'm an AI assistant." in the voice's language, before the greeting. Turn it on where people who did not set the box up talk to it, such as a front desk or a shop: a visitor might not realize it is an AI. It is said when a conversation starts with the wake word alone; words straight after the wake word are answered right away. |
+
 ## Call recording
 
 These settings decide whether phone calls are recorded, whether callers are told, and how long recordings are kept.
@@ -298,7 +308,7 @@ In `/etc/teaport/brain.env`. Off by default. Recording-consent law differs by pl
 | Setting | Default | Description |
 |---|---|---|
 | `TEAPORT_CALL_RECORDING` | `off` | Record phone calls. audio: both sides of the call as one stereo file. transcript: the caller's and the assistant's lines, with times; a reply the caller cut is written as far as they heard it. both: the two. off: nothing of a call is kept. One of `off`, `audio`, `transcript`, `both`. Recording-consent law differs by place, and you are responsible for this choice. Keep TEAPORT_CALL_RECORDING_NOTICE on so callers are told. |
-| `TEAPORT_CALL_RECORDING_NOTICE` | **on** | Start each recorded call with "This call is being recorded." in the call's language, before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks. |
+| `TEAPORT_CALL_RECORDING_NOTICE` | **on** | Start each recorded call with "This call is being recorded." in the call's language, right after the AI disclosure and before the greeting. The assistant is told the call is recorded either way, and says so if the caller asks. |
 | `TEAPORT_CALL_RECORDING_DIR` | `~/teaport-recordings` | Where call recordings are kept, one file per call and kind, named by the call's start time and call id. |
 | `TEAPORT_CALL_RECORDING_KEEP_DAYS` | **30** days (≥ 0) | Delete recordings older than this, checked as each call starts. 0 keeps them however old. |
 | `TEAPORT_CALL_RECORDING_MAX_MB` | **2048** MB (≥ 0) | Past this much, the oldest recordings are deleted, checked as each call starts. 0: no cap. Audio is about 4 MB a minute; a transcript, a few kB. |

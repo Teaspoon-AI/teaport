@@ -463,6 +463,10 @@ async def test_sip_end_to_end_a_call_during_an_awake_room_hears_busy_and_is_hung
             pass
         frames = [d for d in audio if d[:1] == bytes([MSG_AUDIO_OUT])]
         assert frames and all(len(d) == 1 + BYTES_PER_FRAME for d in frames)
+        # Answered, so told it is an AI first (ai_disclosure.py), as every call is.
+        lines = [key[2] for key in arb._BUSY_PCM]
+        assert lines == ["You're speaking with an AI assistant. "
+                         + arb.busy_line(arb.ROOM, "en-us")], lines
         assert not room.task.cancelled and arb.ARBITER.holder.kind == arb.ROOM
     finally:
         arb.tts_for, sip_server.SipConnection.send_control = saved
