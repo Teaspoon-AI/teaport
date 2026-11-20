@@ -998,7 +998,7 @@ async def check_an_upstream_context_frame_is_answered_by_the_llm():
 
     If it goes: a run of ours is never answered (pipecat passes it on up and nothing
     asks the model), or it is answered on another context; the record stays owed with
-    nothing said, which OwedResolves leaves to the lull alone."""
+    nothing said, which OwedResolvesOrWaits leaves to the lull alone."""
     from dataclasses import dataclass as _dataclass
     from types import SimpleNamespace as NS
 
