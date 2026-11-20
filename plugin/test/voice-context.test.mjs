@@ -222,7 +222,7 @@ test("index.js registers the route behind gateway auth and serves it from the SD
       "export const resolveRealtimeVoiceAgentContextInstructions = async ({ agentId, maxChars }) =>\n" +
       "  `Agent context for ${agentId} within ${maxChars}.`;\n",
     "agent-scope-runtime":
-      "export const resolveSessionAgentIdStrict = ({ config, agentId }) => agentId ?? config.agents.list[0].id;\n",
+      "export const resolveSessionAgentIdStrict = ({ config, agentId }) => agentId ?? Object.keys(config.agents.entries)[0];\n",
     "realtime-voice": `export const REALTIME_VOICE_AGENT_CONSULT_TOOL = ${JSON.stringify(CONSULT)};\n`,
   };
   const exports = {};
@@ -243,7 +243,7 @@ test("index.js registers the route behind gateway auth and serves it from the SD
   entry.register({
     registrationMode: "full",
     logger: { info: () => {}, warn: () => {} },
-    runtime: { version: "2026.9.7", config: { current: () => ({ agents: { list: [{ id: "voice" }] } }) } },
+    runtime: { version: "2026.10.5", config: { current: () => ({ agents: { entries: { voice: {} } } }) } },
     registerRealtimeVoiceProvider: () => {},
     registerGatewayMethod: () => {},
     registerHttpRoute: (route) => routes.push(route),
@@ -260,6 +260,6 @@ test("index.js registers the route behind gateway auth and serves it from the SD
     agentId: "voice",
     instructions: "Agent context for voice within 6000.",
     tools: [CONSULT],
-    openclawVersion: "2026.9.7",
+    openclawVersion: "2026.10.5",
   });
 });

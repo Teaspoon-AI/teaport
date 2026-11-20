@@ -39,12 +39,12 @@ Choose **one** of the two agents. If both are present, the installer uses NemoCl
 ### Option A — OpenClaw on the device
 
 OpenClaw runs on Node.js. JetPack 7.2 does not include Node.js. Install Node.js 24 and
-the OpenClaw release this teaport release is tested with, 2026.9.7:
+the OpenClaw release this teaport release is tested with, 2026.10.5:
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt-get install -y nodejs
-sudo npm install -g openclaw@2026.9.7
+sudo npm install -g openclaw@2026.10.5
 ```
 
 The installer warns when the OpenClaw on the device is another release.
