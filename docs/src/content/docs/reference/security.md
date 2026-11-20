@@ -17,7 +17,7 @@ root, in `/usr/lib/teaport/`. It runs on the system Python, never the brain's ow
 environment. The `teaport-brain` package installs the helpers, and
 `/usr/lib/teaport/sudoers-sync` writes their rules into `/etc/sudoers.d/teaport-config`.
 
-<!-- source: packaging/deb/sudoers-sync:5-11#e895c837; packaging/deb/sudoers-sync:82-99#589be1a9; packaging/nfpm.yaml:86,95,104#54fe789f -->
+<!-- source: packaging/deb/sudoers-sync:5-11#e895c837; packaging/deb/sudoers-sync:82-105#e1a1abd8; packaging/nfpm.yaml:86,95,104#54fe789f -->
 
 | Helper | What the run user can ask it to do |
 | --- | --- |
@@ -96,13 +96,14 @@ for when it doesn't. The helper leaves no core dump that could hold the password
 
 The password goes from the setup page or the settings to the helper, and from the
 helper to `chpasswd` on standard input. It is never written to a log, the journal,
-the Wi-Fi setup status file, an error message, or a command line. The helper's `sudo`
-rule says `NOLOG_INPUT`, so even where `sudo` logs what its commands read, it doesn't
-keep the password. On its way it is held in a wrapper that hides it from an error report
+the Wi-Fi setup status file, an error message, or a command line. Where `sudo` can log what its commands read
+(classic `sudo`, with input logging on), the helper's `sudo` rule says `NOLOG_INPUT`, so
+`sudo` doesn't keep the password. `sudo-rs`, which newer Ubuntu releases use, has no such
+logging and doesn't accept the tag, so the rule leaves it out there. On its way it is held in a wrapper that hides it from an error report
 that prints variables. A password is at
 least 12 characters and at most 256 bytes, without control or invisible characters.
 
-<!-- source: brain/teaport_brain/login_apply.py:43-49#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:89-91,95#42394c18; brain/teaport_brain/login_apply.py:93-97#831554ec; brain/teaport_brain/login_apply.py:137-148#020cf4bc -->
+<!-- source: brain/teaport_brain/login_apply.py:43-49#5f5b4325; brain/teaport_brain/owner_login.py:6-13#c2bc1e2d; brain/teaport_brain/root_helper.py:16-38#8e6425a9; packaging/deb/sudoers-sync:89-101#b51d41a8; brain/teaport_brain/login_apply.py:93-97#831554ec; brain/teaport_brain/login_apply.py:137-148#020cf4bc -->
 
 The setup page's form can create the administrator account, so the page answers only
 under its own names: the setup network's address and its `.local` name. A request for

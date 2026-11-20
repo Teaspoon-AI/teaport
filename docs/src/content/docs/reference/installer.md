@@ -253,7 +253,7 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the three `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:65-160#eb432db8; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:101-104#835838b5 -->
+<!-- source: packaging/nfpm.yaml:65-160#eb432db8; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:107-110#835838b5 -->
 
 `sudoers-sync` writes one rule per helper into `/etc/sudoers.d/teaport-config`. Each rule lets the user that runs the brain run that one script as root, with the system Python, and nothing else:
 
@@ -263,9 +263,9 @@ USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/wifi_apply.py *
 USER ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 /usr/lib/teaport/login_apply.py *
 ```
 
-The login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's new password, which `sudo` must not keep where its input logging is on. The package runs `sudoers-sync` after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
+Where the installed `sudo` is classic `sudo`, the login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's new password, which `sudo` must not keep where its input logging is on. With `sudo-rs`, which has no input logging and doesn't accept the tag, the rule is `USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/login_apply.py *`. The package runs `sudoers-sync` after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
 
-<!-- source: packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:82-99#589be1a9 -->
+<!-- source: packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:82-105#e1a1abd8 -->
 
 **`/var/lib/teaport-owner/`**
 
