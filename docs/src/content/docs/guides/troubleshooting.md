@@ -106,6 +106,21 @@ robotic espeak prosody. The dictionary check is necessary, so keep it.
 1. Wait until the manifest is republished with the entry, and then run the
    installer again. See [The speech sounds robotic](#the-speech-sounds-robotic).
 
+### `manifest has no engine.watermark`
+
+**Cause** The release manifest names an engine release from 1.7 on, which marks
+its speech with an AI watermark, but carries no `engine.watermark` entry with
+its URL and sha256. A device installed without the watermark weights speaks
+without the machine-readable mark that identifies its speech as AI-generated.
+The watermark check is necessary, so keep it.
+
+<!-- source: install.sh:633,954-966#b620437e -->
+
+**Fix**
+
+1. Wait until the manifest is republished with the entry, and then run the
+   installer again.
+
 ### `sha256 mismatch`
 
 **Cause** A downloaded file does not agree with the checksum in the manifest.
@@ -446,6 +461,44 @@ until a new engine is published.
 `doctor` tests that `espeak-ng` exists. `espeak-ng` is the fallback, not the
 dictionary. A device with correct speech and a device with robotic speech both
 pass. Use the journal command in step 1.
+:::
+
+## The engine stops at startup: `refusing to serve without the watermark`
+
+**Cause** From engine 1.7, the engine puts an imperceptible AI watermark into
+everything it says. It reads the watermark weights from
+`/opt/teaport/bin/watermark/perth_implicit.v2.bin`. The installer writes
+`VOX_REQUIRE_WATERMARK=1` into `/etc/teaport/engine.env`, so an engine that
+can't load the watermark stops instead of speaking without it. It also stops
+when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
+`VOX_REQUIRE_WATERMARK=0` instead, the engine starts and speaks without the
+watermark, and the installer's checks report `running WITHOUT the AI
+watermark`.
+
+<!-- source: install.sh:954-956,2517-2521,3589-3591,1107-1109#41f37ed9 -->
+
+**Fix**
+
+1. Check the engine's journal:
+
+   ```bash
+   sudo journalctl -u teaport-engine | grep -E 'AI watermark|refusing to serve'
+   ```
+
+   `AI watermark unavailable` means the weights file is absent or damaged.
+   `AI watermark off` means `engine.env` sets `VOX_TTS_WATERMARK=0`.
+2. If the weights file is absent or damaged, run the installer again to get it.
+3. If `engine.env` sets `VOX_TTS_WATERMARK=0`, remove that line, and then
+   restart the engine:
+
+   ```bash
+   sudo systemctl restart teaport-engine
+   ```
+
+:::note[The published engine has no watermark]
+The engine that `teaport update` installs today is 1.6, which has no
+watermark and ignores `VOX_REQUIRE_WATERMARK`. This section applies from engine
+1.7.
 :::
 
 ## Speech recognition is slow

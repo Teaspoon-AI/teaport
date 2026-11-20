@@ -9,7 +9,8 @@
 # names an artifact not yet in the bucket (or since re-uploaded with other bytes), or
 # names a tag nobody can clone, breaks every fresh install. This checks all of it
 # against the public URLs:
-#   - every entry in REQUIRED is present with a url and a sha256;
+#   - every entry in REQUIRED (and engine.watermark from engine 1.7 on) is present with
+#     a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
 #   - a url with no sha256 (models.voxtral.aux in a manifest without aux_sha256) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
@@ -67,9 +68,29 @@ REQUIRED = (
     "models.voxtral",
     "models.kokoro",
 )
+# engine.watermark (the AI watermark's weights) is required from the first engine release
+# that marks its speech on: install.sh's engine_release_marks, which counts a release that
+# is not a dotted number as marking. Keep WATERMARK_FROM in step with its
+# ENGINE_WATERMARK_FROM.
+WATERMARK_FROM = "1.7"
 # The {repo, tag} entries install.sh clones (brain: the Discord bridge's source).
 REQUIRED_REPOS = ("brain",)
 NPM_REGISTRY = "https://registry.npmjs.org"
+
+
+def release_marks(release):
+    """Whether that engine release puts the AI watermark on its speech (install.sh's
+    engine_release_marks): from WATERMARK_FROM on, and anything not a dotted number."""
+    if not isinstance(release, str) or not re.fullmatch(r"[0-9]+(\.[0-9]+)*", release):
+        return True
+    num = lambda v: tuple(int(x) for x in v.split("."))
+    return num(release) >= num(WATERMARK_FROM)
+
+
+def required(manifest):
+    """The url + sha256 entries install.sh cannot install this manifest without."""
+    marks = release_marks(lookup(manifest, "engine.release"))
+    return REQUIRED + (("engine.watermark",) if marks else ())
 
 
 def lookup(manifest, dotted):
@@ -214,7 +235,7 @@ def check(manifest_path, placeholders_ok):
         if not placeholders_ok:
             problems.append(f"{where}: placeholder ({value})")
 
-    for where in REQUIRED:
+    for where in required(manifest):
         node = lookup(manifest, where)
         if not isinstance(node, dict) or not node.get("url") or not node.get("sha256"):
             problems.append(f"{where}: missing, or without a url and a sha256 "
