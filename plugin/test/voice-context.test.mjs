@@ -240,6 +240,7 @@ test("index.js registers the route behind gateway auth and serves it from the SD
   for (const f of files) copyFileSync(join(here, f), join(dir, f));
   const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
   const routes = [];
+  const hooks = [];
   entry.register({
     registrationMode: "full",
     logger: { info: () => {}, warn: () => {} },
@@ -247,7 +248,11 @@ test("index.js registers the route behind gateway auth and serves it from the SD
     registerRealtimeVoiceProvider: () => {},
     registerGatewayMethod: () => {},
     registerHttpRoute: (route) => routes.push(route),
+    on: (name, handler) => hooks.push([name, handler]),
   });
+  // The docs hint (docs-hint.js) rides on before_prompt_build; with the wiki off it adds nothing.
+  assert.deepEqual(hooks.map(([name]) => name), ["before_prompt_build"]);
+  assert.equal(hooks[0][1](), undefined);
   assert.equal(routes.length, 1);
   const [route] = routes;
   assert.equal(route.path, "/teaport/voice-context");

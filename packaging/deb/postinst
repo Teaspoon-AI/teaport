@@ -96,3 +96,15 @@ for unit in teaport-brain.service teaport-local-audio.service teaport-wifi-setup
   systemctl cat "$unit" >/dev/null 2>&1 || continue
   systemctl try-restart "$unit"
 done
+
+# The teaport docs in the host OpenClaw's memory wiki (docs-wiki-sync): refreshed to this
+# version's, as the run user, where an install put them there; anywhere else it does nothing.
+# Last, and never a failure: the brain is already up, and the docs are not part of the voice.
+user="$(systemctl show -p User --value teaport-brain.service 2>/dev/null || true)"
+home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)"
+if [ -n "$user" ] && [ "$user" != root ] && [ -d "$home" ] && command -v runuser >/dev/null; then
+  runuser -u "$user" -- env HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin \
+    timeout 300 /usr/lib/teaport/docs-wiki-sync --if-present \
+    || echo "teaport-brain: the teaport docs in OpenClaw's memory wiki were not refreshed (/usr/lib/teaport/docs-wiki-sync)" >&2
+fi
+exit 0

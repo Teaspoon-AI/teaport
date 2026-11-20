@@ -37,6 +37,7 @@ import { createHash } from "node:crypto";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { TalkSessions, contextMethods } from "./context.js";
+import { docsHintHandler } from "./docs-hint.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
 import { VOICE_CONTEXT_PATH, realtimeVoiceRunControl, voiceContextHandler } from "./voice-context.js";
 
@@ -129,6 +130,14 @@ export default definePluginEntry({
       for (const [method, handler] of Object.entries(contextMethods(sessions))) {
         api.registerGatewayMethod(method, handler, { scope: "operator.talk" });
       }
+    }
+    // Where teaport's own docs are, for the agent (docs-hint.js): a static system-prompt
+    // paragraph while the memory wiki that holds them is enabled.
+    if (typeof api.on === "function") {
+      api.on(
+        "before_prompt_build",
+        docsHintHandler({ config: () => api.runtime?.config?.current?.(), log: api.logger }),
+      );
     }
     // The voice context for the brain's room mic and phone line (voice-context.js): what
     // OpenClaw tells a voice surface, built with the SDK, served over the gateway's HTTP

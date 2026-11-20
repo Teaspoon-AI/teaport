@@ -1894,14 +1894,55 @@ resolve_gateway_token() {
 #     way to pair a phone. Pointing it at Caddy is what makes the QR resolvable.
 # wss, not ws: OpenClaw hands a cleartext LAN pairing only a read+talk profile, so a phone
 # paired over ws:// silently comes up without operator scope.
+#
+# teaport-realtime hooks.allowConversationAccess — OpenClaw lets a non-bundled plugin register
+# before_prompt_build only with it. The teaport plugin uses that hook for one static
+# system-prompt paragraph saying where the teaport docs are (plugin/docs-hint.js); it reads
+# nothing from the conversation.
 write_talk_patch() {
   cat > "$1" <<JSON
 { "talk": { "realtime": {
   "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "agent-consult",
   "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } },
-  "plugins": { "entries": { "device-pair": {
-  "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } } } } }
+  "plugins": { "entries": {
+  "device-pair": { "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } },
+  "teaport-realtime": { "hooks": { "allowConversationAccess": true } } } } }
 JSON
+}
+
+# The user docs the brain package ships (packaging/nfpm.yaml), for the host OpenClaw's agent:
+# they go into OpenClaw's memory wiki, one page per section (docs-wiki-sync, which the
+# package also ships and re-runs on every upgrade, so the pages follow the installed version).
+# The wiki, not memory.search.extraPaths: a plain memory_search never searches the wiki, so
+# the docs cannot push the owner's own memories out of recall. The teaport plugin tells the
+# agent the docs are there (plugin/docs-hint.js).
+TEAPORT_DOCS_DIR=/usr/share/teaport/docs
+DOCS_WIKI_SYNC=/usr/lib/teaport/docs-wiki-sync
+
+# add_docs_to_openclaw_wiki — enable the bundled memory-wiki plugin, create its vault when
+# there is none, and write the docs into it. Before the gateway (re)start that follows in
+# agent_openclaw, which loads the plugin. Enabling an enabled plugin and initialising an
+# existing vault change nothing; an owner's own wiki pages are never touched. Any failure
+# here is said and the install goes on: the docs are a help, not a part of the voice.
+add_docs_to_openclaw_wiki() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw plugins enable memory-wiki; openclaw wiki init; %s (teaport docs -> memory wiki)\n' "$DOCS_WIKI_SYNC"
+    return 0
+  fi
+  if [ ! -d "$TEAPORT_DOCS_DIR" ] || [ ! -x "$DOCS_WIKI_SYNC" ]; then
+    warn "no teaport docs at $TEAPORT_DOCS_DIR (a brain package from before they shipped): the agent will not have them"
+    return 0
+  fi
+  # An owner who turned the wiki off keeps it off (unset reads as a failure: not false).
+  if [ "$("$OPENCLAW" config get plugins.entries.memory-wiki.enabled --json 2>/dev/null || true)" = false ]; then
+    log "OpenClaw's memory wiki is turned off: the teaport docs were not added (openclaw plugins enable memory-wiki, then reinstall)"
+    return 0
+  fi
+  if ! "$OPENCLAW" plugins enable memory-wiki >/dev/null || ! "$OPENCLAW" wiki init >/dev/null; then
+    warn "could not set up OpenClaw's memory wiki: the teaport docs were not added"
+    return 0
+  fi
+  OPENCLAW="$OPENCLAW" "$DOCS_WIKI_SYNC" --docs "$TEAPORT_DOCS_DIR" || warn "the teaport docs were not written into OpenClaw's memory wiki ($DOCS_WIKI_SYNC)"
 }
 
 # The published plugin, when there is no local source to pack.
@@ -1976,17 +2017,22 @@ agent_openclaw() {
   # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
   local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
 
+  # --accept-capabilities: OpenClaw (2026.9.x) installs and enables a third-party plugin only
+  # once its declared capabilities are accepted, and asks again when an update declares more
+  # (the docs hint's before_prompt_build hook did). Without a terminal it refuses outright
+  # ("requires capability consent. The plugin was not installed."). Ours, so accepted here.
   local tgz; tgz="$(plugin_tgz)"
   if [ -n "$tgz" ]; then
-    run "$OPENCLAW" plugins install "$tgz" --force
+    run "$OPENCLAW" plugins install "$tgz" --force --accept-capabilities
   else
-    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin
+    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin --accept-capabilities
   fi
-  run "$OPENCLAW" plugins enable teaport-realtime
+  run "$OPENCLAW" plugins enable teaport-realtime --accept-capabilities
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime hooks.allowConversationAccess=true (docs hint)\n'
     printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
@@ -2019,6 +2065,7 @@ JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
   fi
+  add_docs_to_openclaw_wiki
 
   # `openclaw gateway install` installs AND starts the unit. Calling `gateway start` after
   # it restarts the service, killing that first process mid startup-migration and orphaning
@@ -2078,11 +2125,11 @@ agent_nemoclaw() {
   local tgz; tgz="$(plugin_tgz)"
   if [ -n "$tgz" ]; then
     run "$NEMOCLAW" "$SANDBOX" upload "$tgz" "$tgz"
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force --accept-capabilities
   else
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin --accept-capabilities
   fi
-  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime
+  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime --accept-capabilities   # see agent_openclaw
 
   # 2. talk.realtime + device-pair — one validated merge (openclaw config patch). The token
   #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
@@ -2090,6 +2137,7 @@ agent_nemoclaw() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime hooks.allowConversationAccess=true (docs hint)\n'
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
     printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
