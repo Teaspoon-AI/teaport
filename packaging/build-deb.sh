@@ -6,6 +6,8 @@
 #   TEAPORT_DEB_BUILD=12 packaging/build-deb.sh      dev build: <BASE_VERSION>~dev12+g<sha>
 #   TEAPORT_DEB_VERSION=0.1.1 packaging/build-deb.sh release build: must equal BASE_VERSION,
 #                                                    HEAD must be tag brain-v0.1.1, tree clean
+#   TEAPORT_DEB_VERSION=0.1.1-rc2 packaging/build-deb.sh  release candidate: version 0.1.1~rc2,
+#                                                    HEAD must be tag brain-v0.1.1-rc2, tree clean
 #
 # The same script CI's brain-deb job runs, so a local build is the package CI would
 # make from the same commit. The .deb lands in dist/ (TEAPORT_DEB_OUT overrides).
@@ -21,7 +23,10 @@
 # Versions: BASE_VERSION below is the NEXT brain release. Dev builds are
 # <BASE_VERSION>~dev<n>+g<sha>, and `~` sorts before the release, so installing the
 # release over any of its dev builds is an upgrade. A brain-v<X.Y.Z> tag builds X.Y.Z,
-# which must equal BASE_VERSION; bump BASE_VERSION right after tagging.
+# which must equal BASE_VERSION; bump BASE_VERSION right after tagging. A release
+# candidate's tag brain-v<X.Y.Z>-rc<N> builds X.Y.Z~rc<N> (X.Y.Z = BASE_VERSION, which
+# stays): dev builds < rc1 < rc2 < X.Y.Z, so each candidate, and then the release,
+# installs over what came before as an upgrade.
 #
 # uv and nfpm are pinned by version and sha256, like every other tool this repo fetches:
 # one already on PATH is used only at exactly the pinned version, otherwise the release
@@ -55,13 +60,17 @@ rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
 SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md docs/src/content/docs systemd/teaport-wifi-setup-net.service.in)
 dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
-  VERSION="$TEAPORT_DEB_VERSION"
-  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "TEAPORT_DEB_VERSION must be X.Y.Z (got '$VERSION')"
-  [ "$VERSION" = "$BASE_VERSION" ] || die "release $VERSION is not BASE_VERSION $BASE_VERSION (packaging/build-deb.sh) — dev builds of this tree were versioned below $BASE_VERSION, so bump BASE_VERSION to the release being cut"
+  given="$TEAPORT_DEB_VERSION"
+  [[ "$given" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(-rc([1-9][0-9]*))?$ ]] \
+    || die "TEAPORT_DEB_VERSION must be X.Y.Z or X.Y.Z-rcN (got '$given')"
+  base="${BASH_REMATCH[1]}"; rc="${BASH_REMATCH[3]}"
+  [ "$base" = "$BASE_VERSION" ] || die "release $given is not BASE_VERSION $BASE_VERSION (packaging/build-deb.sh) — dev builds of this tree were versioned below $BASE_VERSION, so bump BASE_VERSION to the release being cut"
+  # Debian's ~ sorts before anything: X.Y.Z~rcN is above X.Y.Z~devM and below X.Y.Z.
+  VERSION="$base${rc:+~rc$rc}"
   # A release version carries no +g<sha> or .dirty, so nothing in it would tell two
   # different X.Y.Z packages apart, and apt treats them as the same package. Build it
   # only from the tagged commit, unmodified.
-  tag="brain-v$VERSION"
+  tag="brain-v$given"
   tagged="$(git -C "$REPO" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null)" \
     || die "release $VERSION needs the tag $tag, and this checkout has no such tag"
   [ "$tagged" = "$(git -C "$REPO" rev-parse HEAD)" ] \
@@ -74,6 +83,8 @@ else
   VERSION="$BASE_VERSION~dev$build+g$rev"
   [ -z "$dirty" ] || VERSION="$VERSION.dirty"
 fi
+# The version a build here would have, and nothing else (tests; checking a tag before CI).
+if [ "${TEAPORT_DEB_PRINT_VERSION:-}" = 1 ]; then printf '%s\n' "$VERSION"; exit 0; fi
 
 case "$(uname -m)" in
   aarch64) ARCH=arm64; UV_TRIPLE=aarch64-unknown-linux-gnu; NFPM_ARCH=arm64
