@@ -1929,22 +1929,49 @@ DOCS_WIKI_SYNC=/usr/lib/teaport/docs-wiki-sync
 add_docs_to_openclaw_wiki() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw plugins enable memory-wiki; openclaw wiki init; %s (teaport docs -> memory wiki)\n' "$DOCS_WIKI_SYNC"
+    printf '  [dry-run] openclaw config patch: plugins.teaport-realtime config.docsInWiki=<whether the docs went in> (docs hint)\n'
     return 0
   fi
+  local ok=false
   if [ ! -d "$TEAPORT_DOCS_DIR" ] || [ ! -x "$DOCS_WIKI_SYNC" ]; then
     warn "no teaport docs at $TEAPORT_DOCS_DIR (a brain package from before they shipped): the agent will not have them"
-    return 0
-  fi
   # An owner who turned the wiki off keeps it off (unset reads as a failure: not false).
-  if [ "$("$OPENCLAW" config get plugins.entries.memory-wiki.enabled --json 2>/dev/null || true)" = false ]; then
+  elif [ "$("$OPENCLAW" config get plugins.entries.memory-wiki.enabled --json 2>/dev/null || true)" = false ]; then
     log "OpenClaw's memory wiki is turned off: the teaport docs were not added (openclaw plugins enable memory-wiki, then reinstall)"
-    return 0
-  fi
-  if ! "$OPENCLAW" plugins enable memory-wiki >/dev/null || ! "$OPENCLAW" wiki init >/dev/null; then
+  elif ! "$OPENCLAW" plugins enable memory-wiki >/dev/null || ! "$OPENCLAW" wiki init >/dev/null; then
     warn "could not set up OpenClaw's memory wiki: the teaport docs were not added"
-    return 0
+  else
+    write_openclaw_cli_record
+    if OPENCLAW="$OPENCLAW" "$DOCS_WIKI_SYNC" --docs "$TEAPORT_DOCS_DIR"; then
+      ok=true
+    else
+      warn "the teaport docs were not written into OpenClaw's memory wiki ($DOCS_WIKI_SYNC)"
+    fi
   fi
-  OPENCLAW="$OPENCLAW" "$DOCS_WIKI_SYNC" --docs "$TEAPORT_DOCS_DIR" || warn "the teaport docs were not written into OpenClaw's memory wiki ($DOCS_WIKI_SYNC)"
+  # The plugin's docs hint goes out only where the docs are (plugin/docs-hint.js): told here,
+  # every install, so a wiki turned off or a sync that failed takes the hint away too.
+  local patch; patch="$(mktemp)"
+  printf '{ "plugins": { "entries": { "teaport-realtime": { "config": { "docsInWiki": %s } } } } }\n' "$ok" > "$patch"
+  "$OPENCLAW" config patch --file "$patch" >/dev/null \
+    || warn "could not tell the teaport plugin whether the docs are in the wiki: its docs hint stays as it was"
+  rm -f "$patch"
+}
+
+# write_openclaw_cli_record — the openclaw this install used, for the package's postinst: it
+# re-runs docs-wiki-sync on every upgrade with a plain PATH, where an OpenClaw installed
+# under nvm or ~/.npm-global (and the node beside it) is not found. In the run user's own
+# config dir, read only by docs-wiki-sync running as that user. OpenClaw's state and config
+# locations go with it when this install had them set.
+write_openclaw_cli_record() {
+  local node dirs; node="$(command -v node 2>/dev/null || true)"
+  dirs="$(dirname "$OPENCLAW")"
+  [ -n "$node" ] && [ "$(dirname "$node")" != "$dirs" ] && dirs="$dirs:$(dirname "$node")"
+  { mkdir -p "$SECRETS" && chmod 700 "$SECRETS" && {
+      printf 'cli=%s\npath=%s\n' "$OPENCLAW" "$dirs"
+      if [ -n "${OPENCLAW_STATE_DIR:-}" ]; then printf 'OPENCLAW_STATE_DIR=%s\n' "$OPENCLAW_STATE_DIR"; fi
+      if [ -n "${OPENCLAW_CONFIG_PATH:-}" ]; then printf 'OPENCLAW_CONFIG_PATH=%s\n' "$OPENCLAW_CONFIG_PATH"; fi
+    } > "$SECRETS/openclaw-cli"; } \
+    || warn "could not record the openclaw path in $SECRETS: package upgrades may not refresh the docs"
 }
 
 # Memory embeddings for a host OpenClaw: semantic memory_search (paraphrases, other languages)
@@ -1957,69 +1984,99 @@ add_docs_to_openclaw_wiki() {
 # there, never from anywhere else.
 MEMORY_EMBED_MODEL="${TEAPORT_MEMORY_EMBED_MODEL:-baai/bge-m3}"
 
-# write_memory_embed_patch OUT PROVIDERS LLM_URL KEYFILE — the memory.search patch, from what
-# is there: PROVIDERS is OpenClaw's models.providers (`config get --json`, keys redacted; ""
-# when unset), LLM_URL the brain's endpoint, KEYFILE the brain's key. An OpenClaw provider
-# on openrouter.ai is used by its id, so OpenClaw resolves its own key (a literal, a profile);
-# else, when the brain's endpoint is OpenRouter, an openai-compatible entry with the brain's
-# key. Exits 3, writing nothing, when there is no OpenRouter to use. The patch is written
-# mode 600: it can hold a key.
+# write_memory_embed_patch OUT CURRENT PROVIDERS LLM_URL KEYFILE — the memory.search patch,
+# from what is there: CURRENT is OpenClaw's memory.search and PROVIDERS its models.providers
+# (`config get --json`, keys redacted; "" when unset), LLM_URL the brain's endpoint, KEYFILE
+# the brain's key. Prints the provider id, and exits
+#   0  a new setting: an OpenClaw provider on openrouter.ai by its id, so OpenClaw resolves
+#      its own key (a literal, a profile); else, when the brain's endpoint is OpenRouter, an
+#      openai-compatible entry with the brain's key;
+#   3  nothing written: no OpenRouter to use;
+#   4  nothing written: the owner's provider (any setting this installer did not write);
+#   5  the key of the setting an earlier install wrote, refreshed to the brain's current one
+#      (a rotated key would otherwise leave memory search failing closed for good).
+# The patch is written mode 600: it can hold a key.
 write_memory_embed_patch() {
   ( umask 077; python3 -I - "$@" "$MEMORY_EMBED_MODEL" <<'PY'
 import json, sys, urllib.parse
-out, providers, llm_url, keyfile, model = sys.argv[1:6]
+out, current, providers, llm_url, keyfile, model = sys.argv[1:7]
+OR_URL = "https://openrouter.ai/api/v1"
 def openrouter(url):
-    host = urllib.parse.urlsplit(url or "").hostname or ""
+    host = urllib.parse.urlsplit(url if isinstance(url, str) else "").hostname or ""
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
-try:
-    providers = json.loads(providers) if providers.strip() else {}
-except ValueError:
-    providers = {}
+def parse(text):
+    try:
+        v = json.loads(text) if text.strip() else {}
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+def brain_key():
+    if not openrouter(llm_url):
+        return ""
+    try:
+        return open(keyfile).read().strip()
+    except OSError:
+        return ""
+def write(search):
+    with open(out, "w") as f:
+        json.dump({"memory": {"search": search}}, f)
+current, providers = parse(current), parse(providers)
+if current.get("provider"):
+    remote = current.get("remote") if isinstance(current.get("remote"), dict) else {}
+    ours = (current["provider"] == "openai-compatible" and remote.get("baseUrl") == OR_URL
+            and current.get("model") == model)
+    key = brain_key() if ours else ""
+    print(current["provider"])
+    if not key:
+        sys.exit(4)
+    write({"remote": {"apiKey": key}})
+    sys.exit(5)
 search = None
-for pid, p in sorted((providers or {}).items()):
+for pid, p in sorted(providers.items()):
     if isinstance(p, dict) and openrouter(p.get("baseUrl")):
         search = {"provider": pid, "model": model}
         break
-if search is None and openrouter(llm_url):
-    try:
-        key = open(keyfile).read().strip()
-    except OSError:
-        key = ""
-    if key:
-        search = {"provider": "openai-compatible", "model": model,
-                  "remote": {"baseUrl": "https://openrouter.ai/api/v1", "apiKey": key}}
+key = brain_key()
+if search is None and key:
+    search = {"provider": "openai-compatible", "model": model,
+              "remote": {"baseUrl": OR_URL, "apiKey": key}}
 if search is None:
     sys.exit(3)
-with open(out, "w") as f:
-    json.dump({"memory": {"search": search}}, f)
+write(search)
 print(search["provider"])
 PY
   )
 }
 
-# phase_agent_memory — after phase_credentials (the brain's endpoint and key are settled
-# there): give a host OpenClaw's memory_search the embedding model, then rebuild its index
-# (a changed provider pauses vector search until then). An index that cannot be built takes
-# the setting back out. Any failure is said and the install goes on.
-phase_agent_memory() {
-  [ "$AGENT_MODE" = openclaw ] || return 0
+# openclaw_memory_embeddings — give a host OpenClaw's memory_search the embedding model,
+# then rebuild its index (a changed provider pauses vector search until then). Called by
+# agent_openclaw before its one gateway (re)start: OpenClaw applies a memory.search change
+# by restarting the gateway, and after that start it would be a second restart, mid startup.
+# Needs the brain's endpoint and key, so phase_credentials runs before phase_agent. An index
+# that cannot be built takes the setting back out. Any failure is said and the install goes on.
+openclaw_memory_embeddings() {
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
+    printf '  [dry-run] openclaw config patch: memory.search provider=<OpenRouter> model=%s (when unset; key refreshed when ours); openclaw memory index --force\n' "$MEMORY_EMBED_MODEL"
     return 0
   fi
-  local cur
-  if cur="$("$OPENCLAW" config get memory.search.provider --json 2>/dev/null)"; then
-    log "OpenClaw memory search keeps its provider ($cur)"
-    return 0
-  fi
-  local providers patch rc=0 pid
+  local current providers patch rc=0 pid
+  current="$("$OPENCLAW" config get memory.search --json 2>/dev/null || true)"
   providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
   patch="$(mktemp)"
-  pid="$(write_memory_embed_patch "$patch" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key")" || rc=$?
-  if [ "$rc" = 3 ]; then
-    log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
-    rm -f "$patch"; return 0
-  elif [ "$rc" != 0 ] || ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
+  pid="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key")" || rc=$?
+  case "$rc" in
+    3) log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
+       rm -f "$patch"; return 0 ;;
+    4) log "OpenClaw memory search keeps its provider ($pid)"
+       rm -f "$patch"; return 0 ;;
+    5) if "$OPENCLAW" config patch --file "$patch" >/dev/null; then
+         log "OpenClaw memory search: $MEMORY_EMBED_MODEL via OpenRouter, with the brain's current key"
+       else
+         warn "could not refresh the OpenRouter key of OpenClaw's memory search"
+       fi
+       rm -f "$patch"; return 0 ;;
+  esac
+  if [ "$rc" != 0 ] || ! "$OPENCLAW" config patch --file "$patch" >/dev/null; then
     warn "OpenClaw memory search was not given an embedding model"
     rm -f "$patch"; return 0
   fi
@@ -2102,23 +2159,36 @@ cap_openclaw_heap() {
   log "OpenClaw gateway heap limit -> ${OPENCLAW_HEAP_MIB} MiB ($unit)"
 }
 
+# plugin_consent_flag OPENCLAW... — "--accept-capabilities" when this OpenClaw has it, else
+# nothing. OpenClaw (2026.9.x) installs and enables a third-party plugin only once its
+# declared capabilities are accepted, and asks again when an update declares more (the docs
+# hint's before_prompt_build hook did); without a terminal it refuses outright ("requires
+# capability consent. The plugin was not installed."). Ours, so accepted. An OpenClaw from
+# before the consent (2026.7.x) refuses the flag as an unknown option, which under set -e
+# would end the install: so it is passed only where the help lists it. The arguments are
+# the command that runs openclaw (the host's, or the sandbox's through nemoclaw exec).
+plugin_consent_flag() {
+  if [ "$DRY_RUN" = 1 ]; then printf -- '--accept-capabilities\n'; return 0; fi   # as on the pinned release
+  # Read whole, then matched: grep -q on a pipe would stop at the first match, and under
+  # pipefail the help's SIGPIPE would read as "not there".
+  local help; help="$(timeout 60 "$@" plugins install --help </dev/null 2>/dev/null || true)"
+  case "$help" in *--accept-capabilities*) printf -- '--accept-capabilities\n' ;; esac
+}
+
 agent_openclaw() {
   resolve_gateway_token
   log "host OpenClaw — installing the plugin + wiring talk.realtime"
   # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
   local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
 
-  # --accept-capabilities: OpenClaw (2026.9.x) installs and enables a third-party plugin only
-  # once its declared capabilities are accepted, and asks again when an update declares more
-  # (the docs hint's before_prompt_build hook did). Without a terminal it refuses outright
-  # ("requires capability consent. The plugin was not installed."). Ours, so accepted here.
-  local tgz; tgz="$(plugin_tgz)"
+  local tgz caps; tgz="$(plugin_tgz)"
+  caps="$(plugin_consent_flag "$OPENCLAW")"
   if [ -n "$tgz" ]; then
-    run "$OPENCLAW" plugins install "$tgz" --force --accept-capabilities
+    run "$OPENCLAW" plugins install "$tgz" --force ${caps:+"$caps"}
   else
-    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin --accept-capabilities
+    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin ${caps:+"$caps"}
   fi
-  run "$OPENCLAW" plugins enable teaport-realtime --accept-capabilities
+  run "$OPENCLAW" plugins enable teaport-realtime ${caps:+"$caps"}
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=agent-consult url=%s (+token)\n' "$brain_ws"
@@ -2157,6 +2227,7 @@ JSON
     rm -f "$patch"
   fi
   add_docs_to_openclaw_wiki
+  openclaw_memory_embeddings
 
   # `openclaw gateway install` installs AND starts the unit. Calling `gateway start` after
   # it restarts the service, killing that first process mid startup-migration and orphaning
@@ -2213,14 +2284,15 @@ agent_nemoclaw() {
   # 1. Plugin into the sandbox. Published -> npm spec; otherwise npm-pack a tgz (honors the
   #    files allowlist), upload it, and `openclaw plugins install <tgz>` copies it into
   #    .openclaw/extensions/ — the pack itself is shared with the host path (plugin_tgz).
-  local tgz; tgz="$(plugin_tgz)"
+  local tgz caps; tgz="$(plugin_tgz)"
+  caps="$(plugin_consent_flag "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw)"   # see plugin_consent_flag
   if [ -n "$tgz" ]; then
     run "$NEMOCLAW" "$SANDBOX" upload "$tgz" "$tgz"
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force --accept-capabilities
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force ${caps:+"$caps"}
   else
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin --accept-capabilities
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin ${caps:+"$caps"}
   fi
-  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime --accept-capabilities   # see agent_openclaw
+  run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime ${caps:+"$caps"}
 
   # 2. talk.realtime + device-pair — one validated merge (openclaw config patch). The token
   #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
@@ -3916,9 +3988,8 @@ main() {
   install_busy_lamp
   install_dns_resilience
   install_arp_multihome
+  phase_credentials   # before phase_agent: a host OpenClaw's memory embeddings use the brain's key
   phase_agent
-  phase_credentials
-  phase_agent_memory   # needs the brain's LLM endpoint and key (phase_credentials)
   phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them
   phase_services
   phase_frontdoor

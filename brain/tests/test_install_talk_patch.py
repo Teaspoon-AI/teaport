@@ -58,9 +58,9 @@ def test_the_talk_patch_lets_the_teaport_plugin_add_its_docs_hint():
 
 def _add_docs(enabled_get="", fail=(), docs=True, sync_rc=0):
     """Run add_docs_to_openclaw_wiki against a stub openclaw and a stub docs-wiki-sync.
-    Returns (rc, log, openclaw calls, sync calls)."""
+    Returns (rc, log, openclaw calls, sync calls, openclaw path, config patches, tmp dir)."""
     t = pathlib.Path(tempdir())
-    calls, synced = t / "calls", t / "synced"
+    calls, synced, patches = t / "calls", t / "synced", t / "patches"
     if docs:
         (t / "docs").mkdir()
     oc = t / "openclaw"
@@ -69,6 +69,7 @@ def _add_docs(enabled_get="", fail=(), docs=True, sync_rc=0):
                   f'echo "$*" >> "{calls}"\n'
                   f'for f in {fails}; do [ "$1 $2" = "$f" ] && exit 1; done\n'
                   f'if [ "$1 $2" = "config get" ]; then [ -n {json.dumps(enabled_get)} ] && {{ printf %s {json.dumps(enabled_get)}; exit 0; }}; exit 1; fi\n'
+                  f'if [ "$1 $2" = "config patch" ]; then cat "$4" >> "{patches}"; fi\n'
                   "exit 0\n")
     sync = t / "docs-wiki-sync"
     sync.write_text(f'#!/bin/bash\necho "OPENCLAW=$OPENCLAW $*" >> "{synced}"\nexit {sync_rc}\n')
@@ -77,36 +78,83 @@ def _add_docs(enabled_get="", fail=(), docs=True, sync_rc=0):
     script = ("set -euo pipefail\nDRY_RUN=0\n"
               + "".join(ln + "\n" for ln in INSTALL.read_text().splitlines()
                         if ln.startswith(("log() ", "warn() ")))
-              + _fn("add_docs_to_openclaw_wiki")
-              + f'TEAPORT_DOCS_DIR="{t}/docs" DOCS_WIKI_SYNC="{sync}" OPENCLAW="{oc}"\nadd_docs_to_openclaw_wiki\n')
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+              + _fn("add_docs_to_openclaw_wiki") + _fn("write_openclaw_cli_record")
+              + f'TEAPORT_DOCS_DIR="{t}/docs" DOCS_WIKI_SYNC="{sync}" OPENCLAW="{oc}" SECRETS="{t}/secrets"\n'
+              + "add_docs_to_openclaw_wiki\n")
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env={**os.environ, "TMPDIR": str(t), "OPENCLAW_STATE_DIR": "/srv/oc-state"})
     read = lambda f: f.read_text().splitlines() if f.exists() else []
-    return p.returncode, p.stdout + p.stderr, read(calls), read(synced), str(oc)
+    docs_in_wiki = [json.loads(x)["plugins"]["entries"]["teaport-realtime"]["config"]["docsInWiki"]
+                    for x in read(patches) if x.strip()]
+    return p.returncode, p.stdout + p.stderr, read(calls), read(synced), str(oc), docs_in_wiki, t
 
 
 def test_the_install_enables_the_wiki_and_writes_the_docs_into_it():
-    rc, log, calls, synced, oc = _add_docs()
+    rc, log, calls, synced, oc, hint, t = _add_docs()
     assert rc == 0, log
     docs = str(pathlib.Path(oc).parent / "docs")
-    assert calls == ["config get plugins.entries.memory-wiki.enabled --json",
-                     "plugins enable memory-wiki", "wiki init"], calls
+    assert calls[:3] == ["config get plugins.entries.memory-wiki.enabled --json",
+                         "plugins enable memory-wiki", "wiki init"], calls
     assert synced == [f"OPENCLAW={oc} --docs {docs}"], synced   # install.sh's openclaw and docs
-    rc, log, calls, synced, _ = _add_docs(enabled_get="true")
+    assert hint == [True], hint   # the plugin's docs hint goes on
+    assert not [f for f in t.iterdir() if f.name.startswith("tmp")], "the patch file was left behind"
+    rc, log, calls, synced, *_ = _add_docs(enabled_get="true")
     assert rc == 0 and len(synced) == 1, log
 
 
+def test_the_openclaw_it_used_is_recorded_for_the_package_upgrades():
+    # postinst runs docs-wiki-sync with a plain PATH: the record says which openclaw (and
+    # where its node and state are) for an OpenClaw installed under nvm or ~/.npm-global.
+    rc, log, calls, synced, oc, hint, t = _add_docs()
+    rec = (t / "secrets/openclaw-cli").read_text().splitlines()
+    assert rec[0] == f"cli={oc}" and rec[1].startswith(f"path={t}"), rec
+    assert "OPENCLAW_STATE_DIR=/srv/oc-state" in rec, rec
+    assert oct((t / "secrets").stat().st_mode & 0o777) == "0o700"
+
+
 def test_an_owner_who_turned_the_wiki_off_keeps_it_off():
-    rc, log, calls, synced, _ = _add_docs(enabled_get="false")
+    rc, log, calls, synced, _, hint, _ = _add_docs(enabled_get="false")
     assert rc == 0 and synced == [] and "plugins enable memory-wiki" not in calls, (log, calls)
     assert "turned off" in log, log
+    assert hint == [False], hint   # and the hint is taken away
 
 
 def test_a_docs_failure_is_said_and_never_fails_the_install():
     for kw in ({"docs": False}, {"fail": ("plugins enable",)}, {"fail": ("wiki init",)}, {"sync_rc": 1}):
-        rc, log, calls, synced, _ = _add_docs(**kw)
+        rc, log, calls, synced, _, hint, _ = _add_docs(**kw)
         assert rc == 0 and "warn:" in log, (kw, log)
+        assert hint == [False], (kw, hint)   # no docs, no hint pointing at them
         if kw.get("fail") or not kw.get("docs", True):
             assert synced == [], (kw, synced)
+    # A config patch that fails is said too.
+    rc, log, *_ = _add_docs(fail=("config patch",))
+    assert rc == 0 and "docs hint stays as it was" in log, log
+
+
+def _consent(help_text, dry=0):
+    t = pathlib.Path(tempdir())
+    oc = t / "openclaw"
+    oc.write_text(f"#!/bin/bash\ncat <<'EOF'\n{help_text}\nEOF\n")
+    oc.chmod(0o755)
+    script = (f"set -euo pipefail\nDRY_RUN={dry}\n" + _fn("plugin_consent_flag")
+              + f'printf "[%s]" "$(plugin_consent_flag "{oc}")"\n')
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout
+
+
+def test_the_consent_flag_only_where_openclaw_has_it():
+    # A long help, the flag early in it: read whole, never cut short by a pipe.
+    long_help = "\n".join(["Usage: openclaw plugins install [options] <spec>",
+                           "  --accept-capabilities  accept the plugin's declared capabilities"]
+                          + [f"  --option-{i}  something" for i in range(5000)])
+    assert _consent(long_help) == "[--accept-capabilities]"
+    assert _consent("Usage: openclaw plugins install [options] <spec>\n  --force") == "[]"   # 2026.7.x
+    assert _consent("", dry=1) == "[--accept-capabilities]"
+    text = INSTALL.read_text()
+    assert not [ln for ln in text.splitlines()   # never passed blind
+                if "plugins " in ln and "--accept-capabilities" in ln and "help" not in ln], text
+    assert text.count('${caps:+"$caps"}') == 6, text.count('${caps:+"$caps"}')
 
 
 def test_the_brain_package_ships_the_docs_and_the_script_install_sh_runs():

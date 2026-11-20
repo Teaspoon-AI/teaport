@@ -5,8 +5,12 @@
 // "teaport docs: <page> — <section>" (packaging/deb/docs-wiki-sync). A plain memory_search
 // never searches the wiki (only corpus=wiki or corpus=all do), which keeps the docs out of
 // the owner's personal recall, but it also means that without a hint the agent has no
-// reason to look there. The hint is sent only while the memory-wiki plugin is enabled:
-// with the wiki off it would point at nothing.
+// reason to look there. The hint is sent only where the docs are: install.sh sets this
+// plugin's config.docsInWiki after it wrote them (and clears it when it could not), and the
+// wiki must still be there for the agent: plugins on, memory-wiki enabled and not denied (or
+// left out of an allow list), and one shared vault (with one vault per agent the installer
+// adds nothing). Anywhere else the hint would point at nothing, and the agent would say the
+// docs do not cover the question.
 //
 // before_prompt_build's appendSystemContext, not prependContext: the text is static, so
 // providers can cache it and no turn pays for it twice. A non-bundled plugin needs
@@ -26,10 +30,25 @@ export const DOCS_HINT = [
   "own memories.",
 ].join("\n");
 
-/** Whether the memory-wiki plugin is enabled in this OpenClaw config. */
+/** Whether the memory-wiki plugin is enabled in this OpenClaw config, and allowed to load. */
 export function wikiEnabled(config) {
-  const entry = config?.plugins?.entries?.["memory-wiki"];
-  return entry?.enabled === true;
+  const plugins = config?.plugins;
+  if (plugins?.enabled === false) return false;
+  if (Array.isArray(plugins?.deny) && plugins.deny.includes("memory-wiki")) return false;
+  if (Array.isArray(plugins?.allow) && plugins.allow.length > 0 && !plugins.allow.includes("memory-wiki")) {
+    return false;
+  }
+  return plugins?.entries?.["memory-wiki"]?.enabled === true;
+}
+
+/** Whether the teaport docs are in this OpenClaw's memory wiki, for the agent to search. */
+export function docsInWiki(config) {
+  const entries = config?.plugins?.entries;
+  return (
+    wikiEnabled(config) &&
+    entries?.["teaport-realtime"]?.config?.docsInWiki === true &&
+    entries?.["memory-wiki"]?.config?.vault?.scope !== "agent"
+  );
 }
 
 /**
@@ -45,6 +64,6 @@ export function docsHintHandler({ config, log } = {}) {
       log?.debug?.(`teaport docs hint: no config (${err?.message ?? err})`);
       return undefined;
     }
-    return wikiEnabled(cfg) ? { appendSystemContext: DOCS_HINT } : undefined;
+    return docsInWiki(cfg) ? { appendSystemContext: DOCS_HINT } : undefined;
   };
 }

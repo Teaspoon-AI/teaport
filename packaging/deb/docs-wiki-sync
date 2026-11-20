@@ -15,7 +15,15 @@ pages; it also takes ~10 s per file and leaves a renamed page behind.
 
 Our pages are sources/teaport-docs-*.md carrying sourceType "teaport-docs": each run writes
 the current set, rewrites only what changed, and removes ours that the docs no longer have.
-Nothing else in the vault is touched.
+Nothing else in the vault is touched. updatedAt (the docs file's mtime, which every build
+of the package resets) is not a change on its own. After a compile succeeds, a digest of the
+set goes into .teaport-docs-compiled at the vault's root; a run that finds it missing or
+different compiles, so a compile that failed (or never ran) is retried even when the pages
+on disk already match.
+
+Which openclaw: $OPENCLAW, else the one install.sh recorded in ~/.config/teaport/openclaw-cli
+(postinst runs this with a plain PATH, and an OpenClaw under nvm or ~/.npm-global is not on
+it), else PATH and the usual places.
 
 Run as the OpenClaw user, with the system python:
   * by install.sh (agent_openclaw), after it enables memory-wiki and inits the vault;
@@ -41,6 +49,11 @@ TITLE_PREFIX = "teaport docs: "
 # The CLI is a Node program that loads its plugins at start; a compile of the docs took ~12 s
 # on an Orin.
 CLI_TIMEOUT = 180
+# What install.sh recorded of the openclaw it used (write_openclaw_cli_record): the run user's
+# own file, read by the run user's own process.
+CLI_RECORD = pathlib.Path.home() / ".config/teaport/openclaw-cli"
+CLI_RECORD_ENV = ("OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH")
+COMPILED = ".teaport-docs-compiled"
 
 
 def say(msg):
@@ -135,13 +148,25 @@ def ours(path):
     return frontmatter(head)[0].get("sourceType") == SOURCE_TYPE
 
 
+UPDATED_AT = re.compile(r"^updatedAt: .*\n", re.M)
+
+
 MANAGED = re.compile(r"\n*(?:## [^\n]*\n)?<!-- openclaw:wiki:([a-z-]+):start -->.*?<!-- openclaw:wiki:\1:end -->\n?", re.S)
 
 
 def unmanaged(text):
-    """A page without the blocks `wiki compile` maintains in it (## Related, ...): what we
-    wrote. A page differs from ours only when this does."""
-    return MANAGED.sub("", text).rstrip("\n") + "\n"
+    """A page without the blocks `wiki compile` maintains in it (## Related, ...) and without
+    updatedAt: what we wrote, less the date. A page differs from ours only when this does."""
+    return UPDATED_AT.sub("", MANAGED.sub("", text), count=1).rstrip("\n") + "\n"
+
+
+def digest(want):
+    """The set of pages as compiled: names and content, less updatedAt."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in sorted(want):
+        h.update(name.encode() + b"\0" + unmanaged(want[name]).encode() + b"\0")
+    return h.hexdigest()
 
 
 def sync(sources, want):
@@ -166,10 +191,31 @@ def sync(sources, want):
     return changed
 
 
+def cli_record():
+    """{key: value} of install.sh's record (cli=, path=, OPENCLAW_STATE_DIR=, ...), or {}."""
+    try:
+        text = CLI_RECORD.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}
+    return dict(ln.split("=", 1) for ln in text.splitlines() if "=" in ln)
+
+
 def openclaw():
-    """$OPENCLAW (install.sh passes the one it found), else the one on PATH or in the usual places."""
+    """$OPENCLAW (install.sh passes the one it found), else the recorded one, else the one on
+    PATH or in the usual places. A recorded one also brings its PATH entries (node beside an
+    nvm openclaw) and OpenClaw's state and config locations, where the environment has none."""
     if os.environ.get("OPENCLAW") and os.access(os.environ["OPENCLAW"], os.X_OK):
         return os.environ["OPENCLAW"]
+    rec = cli_record()
+    if rec.get("cli") and os.access(rec["cli"], os.X_OK):
+        if rec.get("path"):
+            os.environ["PATH"] = rec["path"] + os.pathsep + os.environ.get("PATH", "")
+        for k in CLI_RECORD_ENV:
+            if rec.get(k) and not os.environ.get(k):
+                os.environ[k] = rec[k]
+        return rec["cli"]
+    if rec.get("cli"):
+        say(f"the openclaw install.sh used ({rec['cli']}) is gone; looking on PATH")
     found = shutil.which("openclaw")
     if found:
         return found
@@ -225,11 +271,17 @@ def main(argv):
         return 0
     want = pages(docs)
     changed = sync(sources, want)
-    if changed:
+    marker, done = vault / COMPILED, digest(want)
+    try:
+        compiled = marker.read_text().strip() == done
+    except OSError:
+        compiled = False
+    if changed or not compiled:
         p = cli(oc, "wiki", "compile")
         if p.returncode != 0:
             say(f"openclaw wiki compile failed: {(p.stderr or p.stdout).strip()[-400:]}")
             return 1
+        marker.write_text(done + "\n", encoding="utf-8")
     print(f"teaport docs in the memory wiki: {len(want)} pages, {changed} changed ({sources})")
     return 0
 

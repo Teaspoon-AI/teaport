@@ -177,7 +177,10 @@ A plain `memory_search` never searches the wiki, which keeps the docs out of the
 owner's personal recall, so the plugin tells the agent they are there: a
 `before_prompt_build` hook appends one static paragraph to the system prompt
 (`docs-hint.js`, `appendSystemContext`, so providers can cache it). The hint is
-sent only while the `memory-wiki` plugin is enabled.
+sent only where the docs are: `install.sh` sets this plugin's `config.docsInWiki`
+after it wrote them (and clears it when it could not), and the wiki must still be
+reachable: plugins on, `memory-wiki` enabled and not denied or left out of
+`plugins.allow`, and one shared vault (`vault.scope` not `agent`).
 
 OpenClaw runs `before_prompt_build` for a non-bundled plugin only with
 `plugins.entries.teaport-realtime.hooks.allowConversationAccess: true`, which

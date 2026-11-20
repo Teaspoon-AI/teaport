@@ -115,6 +115,9 @@ def test_the_vault_gets_our_pages_and_keeps_everyone_elses():
     page.write_text(page.read_text() + "\n## Related\n<!-- openclaw:wiki:related:start -->\n"
                     "- No related pages yet.\n<!-- openclaw:wiki:related:end -->\n")
     assert sync_mod.sync(sources, want) == 0
+    # A new package (new mtimes, so a new updatedAt) with the same docs is not a change.
+    newer = {n: c.replace('updatedAt: "', 'updatedAt: "2099-') for n, c in want.items()}
+    assert newer != want and sync_mod.sync(sources, newer) == 0
     # A section removed from the docs goes; theirs stays.
     del want["teaport-docs-guides-widget-check-it-2.md"]
     assert sync_mod.sync(sources, want) == 1
@@ -122,23 +125,32 @@ def test_the_vault_gets_our_pages_and_keeps_everyone_elses():
     assert theirs.exists() and other.exists()
 
 
-def _run(tmp, *args, status=None, compile_rc=0, docs=None):
-    """Run the script with a stub openclaw. status None = `wiki status` fails (plugin off)."""
+def _run(tmp, *args, status=None, compile_rc=0, docs=None, record=None, env_oc=True):
+    """Run the script with a stub openclaw. status None = `wiki status` fails (plugin off).
+    record: the text of ~/.config/teaport/openclaw-cli; env_oc False: no $OPENCLAW."""
     tmp = pathlib.Path(tmp)
     calls = tmp / "calls"
     oc = tmp / "openclaw"
+    home = tmp / "home"
+    (home / ".config/teaport").mkdir(parents=True, exist_ok=True)
+    if record is not None:
+        (home / ".config/teaport/openclaw-cli").write_text(record.replace("{oc}", str(oc)))
     st = json.dumps(status) if status is not None else ""
     oc.write_text("#!/bin/bash\n"
                   f'echo "$*" >> "{calls}"\n'
                   f'if [ "$1 $2" = "wiki status" ]; then [ -n {json.dumps(st)} ] || exit 1; printf "%s\\n" {json.dumps(st)}; exit 0; fi\n'
-                  f'if [ "$1 $2" = "wiki compile" ]; then exit {compile_rc}; fi\n'
+                  f'if [ "$1 $2" = "wiki status" ]; then :; fi\n'
+                  f'if [ "$1 $2" = "wiki compile" ]; then echo "STATE=$OPENCLAW_STATE_DIR" >> "{calls}.env"; exit {compile_rc}; fi\n'
                   "exit 0\n")
     oc.chmod(0o755)
     argv = [sys.executable, "-I", str(SCRIPT), *args]
     if docs is not None:
         argv += ["--docs", str(docs)]
-    p = subprocess.run(argv, capture_output=True, text=True,
-                       env={**os.environ, "OPENCLAW": str(oc), "PATH": "/usr/bin:/bin"})
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENCLAW")}
+    env.update({"PATH": "/usr/bin:/bin", "HOME": str(home)})
+    if env_oc:
+        env["OPENCLAW"] = str(oc)
+    p = subprocess.run(argv, capture_output=True, text=True, env=env)
     return p.returncode, p.stdout + p.stderr, (calls.read_text().splitlines() if calls.exists() else [])
 
 
@@ -160,6 +172,37 @@ def test_the_cli_writes_the_pages_and_compiles_only_on_a_change():
     (docs / "guides/widget.md").write_text(PAGE + "\n## More\n\nNew.\n")
     rc, out, _ = _run(tmp, status=_status(sources.parent), compile_rc=1, docs=docs)
     assert rc == 1 and "compile failed" in out, out
+
+
+def test_a_failed_compile_is_retried_on_the_next_run():
+    tmp = tempdir()
+    docs = _docs(tmp, {"guides/widget.md": PAGE})
+    sources = _vault(tmp)
+    rc, out, _ = _run(tmp, status=_status(sources.parent), compile_rc=1, docs=docs)
+    assert rc == 1 and "compile failed" in out, out
+    # The pages are on disk and match, but the vault was never compiled with them.
+    pathlib.Path(tmp, "calls").unlink()
+    rc, out, calls = _run(tmp, "--if-present", status=_status(sources.parent), docs=docs)
+    assert rc == 0 and calls[-1] == "wiki compile" and "0 changed" in out, (out, calls)
+    pathlib.Path(tmp, "calls").unlink()
+    rc, out, calls = _run(tmp, "--if-present", status=_status(sources.parent), docs=docs)
+    assert rc == 0 and calls == ["wiki status --json"], (out, calls)   # now compiled: nothing
+
+
+def test_the_openclaw_install_sh_recorded_is_found_without_path_or_env():
+    # postinst: a plain PATH, no $OPENCLAW. The record names the CLI and OpenClaw's state.
+    tmp = tempdir()
+    docs = _docs(tmp, {"guides/widget.md": PAGE})
+    sources = _vault(tmp)
+    rec = "cli={oc}\npath=/opt/node/bin\nOPENCLAW_STATE_DIR=/srv/oc-state\n"
+    rc, out, calls = _run(tmp, status=_status(sources.parent), docs=docs, record=rec, env_oc=False)
+    assert rc == 0 and calls == ["wiki status --json", "wiki compile"], (out, calls)
+    assert pathlib.Path(tmp, "calls.env").read_text() == "STATE=/srv/oc-state\n"
+    # A recorded CLI that is gone is said, and the search goes on (here: nothing found).
+    pathlib.Path(tmp, "calls").unlink()
+    rc, out, calls = _run(tmp, "--if-present", status=_status(sources.parent), docs=docs,
+                          record="cli=/nonexistent/openclaw\n", env_oc=False)
+    assert rc == 0 and calls == [] and "is gone" in out, (out, calls)
 
 
 def test_if_present_only_refreshes_what_an_install_put_there():
