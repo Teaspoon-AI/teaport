@@ -14,7 +14,7 @@ This page walks you through installing teaport on a Jetson Orin Nano Dev Kit (8 
 - A **phone or laptop with a browser** on the same network. Its microphone and speaker carry the audio. Nothing to plug in: the device is already powered and on the network.
 - About **15 GB** of free disk space for the engine and its models. The installer warns when it finds less.
 
-<!-- source: install.sh:585-591,596-602,616-617,2388-2428#e7a81f24 -->
+<!-- source: install.sh:585-591,596-602,616-617,2392-2432#e7a81f24 -->
 
 ## Install JetPack 7.2
 
@@ -34,7 +34,7 @@ recommended.
 
 Choose **one** of the two agents. If both are present, the installer uses NemoClaw.
 
-<!-- source: install.sh:2009-2011#5ef59d03 -->
+<!-- source: install.sh:2013-2015#5ef59d03 -->
 
 ### Option A — OpenClaw on the device
 
@@ -49,7 +49,7 @@ sudo npm install -g openclaw@2026.9.7
 
 The installer warns when the OpenClaw on the device is another release.
 
-<!-- source: manifest/stable.json:72-73#e907cb5f; install.sh:2054-2079#c117c11e -->
+<!-- source: manifest/stable.json:76-77#e907cb5f; install.sh:2058-2083#c117c11e -->
 
 Give OpenClaw a minimal configuration and start its gateway:
 
@@ -79,7 +79,7 @@ openclaw gateway status
 
 The line `Runtime:` must say `running`, and `Connectivity probe:` must say `ok`. The gateway listens on `127.0.0.1:18789`; the installer fronts it with Caddy.
 
-<!-- source: install.sh:2230,2440#9ad55e01 -->
+<!-- source: install.sh:2234,2444#9ad55e01 -->
 
 ### Option B — NemoClaw
 
@@ -91,11 +91,11 @@ bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)
 
 Run NemoClaw as your own user. Do not use `sudo`. The installer looks for `~/.nemoclaw/sandboxes.json` in your home folder. If NemoClaw installs into another user's home folder, the installer does not find it.
 
-<!-- source: install.sh:2013-2020#ef800633 -->
+<!-- source: install.sh:2017-2024#ef800633 -->
 
 You can skip both. The installer then finishes in voice-only mode. To add an agent later, install OpenClaw or NemoClaw and run the installer again.
 
-<!-- source: install.sh:2154-2162#8627897c -->
+<!-- source: install.sh:2158-2166#8627897c -->
 
 ## Install teaport
 
@@ -124,7 +124,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:74-77,120-123,414-438,547-557,2370-2383,2406-2428#6129d30a -->
+<!-- source: install.sh:74-77,120-123,414-438,547-557,2374-2387,2410-2432#6129d30a -->
 
 :::caution[OpenRouter needs the full model name]
 OpenRouter names a model with its maker, `openai/gpt-oss-120b`. The bare `gpt-oss-120b`
@@ -143,13 +143,13 @@ naming the version its title shows, and `TEAPORT_LLM_BASE_URL`, `TEAPORT_LLM_MOD
 and `TEAPORT_LLM_API_KEY` preset the LLM answers. The flags and variables are in
 [Installer reference](/reference/installer/).
 
-<!-- source: install.sh:74-77,120-123,2388-2391#dca982f1 -->
+<!-- source: install.sh:74-77,120-123,2392-2395#dca982f1 -->
 
 You can run the installer again at any time. A re-run repairs the existing installation; it
 does not create a second one. It keeps settings that you added to `/etc/teaport/brain.env`
 yourself.
 
-<!-- source: install.sh:5,111,2514,2539-2566#49c391aa -->
+<!-- source: install.sh:5,111,2518,2543-2570#49c391aa -->
 
 The installer does these tasks:
 
@@ -163,8 +163,8 @@ The installer does these tasks:
   its Wi-Fi address, the same name as its Wi-Fi setup network.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:110,637,1855,2301,2314,3739,4012,4018,2445,3008#61f62288; manifest/stable.json:13-29#db7e6194 -->
-<!-- source: install.sh:2703-2714,2752-2802#8432a535; install.sh:2707-2718,2734-2737,2752-2806#160490d8 -->
+<!-- source: install.sh:110,637,1859,2305,2318,3743,4016,4022,2449,3012#61f62288; manifest/stable.json:13-29#db7e6194 -->
+<!-- source: install.sh:2707-2718,2756-2806#8432a535; install.sh:2711-2722,2738-2741,2756-2810#160490d8 -->
 
 ## Optional components
 
@@ -180,7 +180,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:79,82,3712#2f2e05c5; cli/teaport:420#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:79,82,3716#2f2e05c5; cli/teaport:420#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -226,7 +226,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:3789-3790#561957fe -->
+<!-- source: install.sh:3793-3794#561957fe -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -243,7 +243,7 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:3794-3796,2275-2283#bc669734; install.sh:3793-3795,2274-2282#1e4a9d3e -->
+<!-- source: install.sh:3798-3800,2279-2287#bc669734; install.sh:3797-3799,2278-2286#1e4a9d3e -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
@@ -289,8 +289,8 @@ installer was given your own certificate (see
 [Use your own certificate](/reference/installer/#use-your-own-certificate)), there is
 nothing to trust, and the page leaves the step out.
 
-<!-- source: install.sh:2974-2978#3c1e6011 -->
-<!-- source: install.sh:2752-2802#a3eb07c3; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2; install.sh:2734-2737,2752-2806#49197cea -->
+<!-- source: install.sh:2978-2982#3c1e6011 -->
+<!-- source: install.sh:2756-2806#a3eb07c3; brain/teaport_brain/pairing.py:132-135,911-914#5e7da7f2; install.sh:2738-2741,2756-2810#49197cea -->
 
 ## What's next
 

@@ -11,7 +11,7 @@
 # against the public URLs:
 #   - every entry in REQUIRED is present with a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
-#   - a url with no sha256 (models.voxtral.aux) must answer;
+#   - a url with no sha256 (models.voxtral.aux in a manifest without aux_sha256) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
@@ -94,11 +94,15 @@ def entries(node, path=""):
             if key.startswith("_") or key in ("url", "sha256"):
                 continue
             sub = f"{path}.{key}" if path else key
+            if key == "aux_sha256":
+                continue   # read with aux, below
             if key == "aux" and isinstance(value, dict):
-                # models.voxtral.aux: {filename: url}, no hash (install.sh downloads as-is).
+                # models.voxtral.aux: {filename: url}, its hashes beside it in aux_sha256
+                # (an older manifest has none: install.sh downloads them as-is).
+                hashes = node.get("aux_sha256") if isinstance(node.get("aux_sha256"), dict) else {}
                 for name, url in value.items():
                     if isinstance(url, str):
-                        yield f"{sub}.{name}", url, None
+                        yield f"{sub}.{name}", url, hashes.get(name)
                     else:
                         yield f"{sub}.{name}", None, f"url is not a string: {url!r}"
             else:

@@ -451,7 +451,7 @@ print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$o
   rm -f "$out"
   case "$code" in
     200) [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
-    409|404) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
+    409|404|400) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
     403) die "the license server refuses this box's acceptance of the engine license${why:+: $why}" ;;
     *) warn "cannot get a download token from $1/token now (HTTP $code${why:+: $why})"; return 2 ;;
   esac
@@ -1181,10 +1181,14 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   # itself, right before its restart, so that it can check the result and put the previous
   # engine back, models included (engine_swap).
   if [ "$ONLY" != engine ]; then engine_swap_in; fi
-  # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
+  # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*),
+  # with their sha256 in aux_sha256: one in place is not downloaded again (and asks the
+  # license server for no token).
   for aux in tekken.json params.json; do
-    local u; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
-    [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" ""
+    local u s; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
+    s="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux_sha256',{}).get('$aux',''))")"
+    [ "$s" != TODO ] || s=""
+    [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" "$s"
   done
   # --only engine records what it installed once the engine has come up on it (main_engine_only).
   if [ "$ONLY" != engine ]; then

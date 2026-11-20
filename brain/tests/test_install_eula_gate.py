@@ -203,6 +203,9 @@ def test_the_server_asking_again_means_accepting_again():
                    FAKE_ACCEPT='200 {"acceptance_id": "acc-second-one", "token": "tok-2"}', **WHO)
     assert rc == 0 and "TOKEN=tok-2" in out, out
     assert _receipt(tmp_path)["acceptance_id"] == "acc-second-one"
+    # 400: a receipt whose id the server cannot take (edited, cut short) is accepted again too.
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='400 {"message": "acceptance_id: the id"}', ACCEPT_EULA="1.0", **WHO)
+    assert rc == 0 and "asks for the engine license to be accepted again" in out and "TOKEN=tok-first" in out, out
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN='403 {"message": "this acceptance was revoked"}')
     assert rc == 1 and "refuses this box's acceptance of the engine license: this acceptance was revoked" in out, out
 

@@ -52,6 +52,10 @@
       "aux": {
         "params.json": "https://get.teaspoon.tech/dl/models/voxtral/params.json",
         "tekken.json": "https://get.teaspoon.tech/dl/models/voxtral/tekken.json"
+      },
+      "aux_sha256": {
+        "params.json": "2ace010ebf7f0b62c60747d91c6d140e3c7238632d3e9c63d60a2bd2065ea301",
+        "tekken.json": "8434af1d39eba99f0ef46cf1450bf1a63fa941a26933a1ef5dbbf4adf0d00e44"
       }
     }
   },
