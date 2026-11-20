@@ -89,8 +89,10 @@ def _script(tmp, body, **env):
              'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_NAME="${ACCEPT_NAME:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
              'ACCEPT_LICENSE_ID="${ACCEPT_LICENSE_ID:-}"\n')
     # TMPDIR: the functions' own mktemp files (the manifest, the license text) land in the
-    # test's dir, removed with it.
-    e = {**os.environ, "T": str(tmp), "TMPDIR": str(tmp), "LICENSE_TEXT": LICENSE,
+    # test's dir, removed with it. ACCEPT_*: only what a test passes (GitHub's runner images
+    # set ACCEPT_EULA=Y for their own tools).
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith("ACCEPT_")}
+    e = {**inherited, "T": str(tmp), "TMPDIR": str(tmp), "LICENSE_TEXT": LICENSE,
          "FAKE_ACCEPT": '200 {"acceptance_id": "acc-0123456789", "token": "tok-first", "expires_at": "x"}',
          "FAKE_TOKEN": '200 {"token": "tok-again", "expires_at": "x"}', **env}
     return head + body, e
