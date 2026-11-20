@@ -69,7 +69,7 @@ The command prints `running`, `done`, `failed`, or `interrupted`, for a run that
 
 The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helpers that the configuration page, Wi-Fi setup, and the owner's login run as root.
 
-<!-- source: install.sh:1311-1314#cee553a8; packaging/nfpm.yaml:65-108#c48d03ff -->
+<!-- source: install.sh:1362-1365#cee553a8; packaging/nfpm.yaml:65-108#c48d03ff -->
 
 From a checkout of the teaport repository, update the source and install the package the release manifest names:
 

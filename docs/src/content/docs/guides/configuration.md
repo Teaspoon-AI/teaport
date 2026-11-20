@@ -15,7 +15,7 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files. On a device that ships ready to set up, sign in as `teaport`, the login you created during setup; see [Create your login in the settings](#create-your-login-in-the-settings) if you have none yet.
 
-<!-- source: brain/teaport_brain/config_ui.py:19-26#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2802#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:19-26#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:2856#31d4462b -->
 
 ## Change a setting in the configuration page
 
