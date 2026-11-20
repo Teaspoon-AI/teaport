@@ -33,7 +33,7 @@ bucket_name = "teaport-get"
 [[d1_databases]]
 binding = "DB"
 database_name = "teaport-gate"
-database_id = "TODO"
+database_id = "b0da844a-354c-4907-bdcc-11b94c7630db"
 migrations_dir = "migrations"
 
 # /api/accept and /api/token: 20 requests a minute per IP address.
