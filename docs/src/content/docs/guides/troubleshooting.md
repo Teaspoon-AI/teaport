@@ -678,7 +678,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:818-824#b2285852 -->
+<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:820-826#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -746,6 +746,91 @@ device.
 
 Tests confirm it: 16% of a standard test set peaks below −30 dBFS, and
 24 of 2600 files returned an empty result.
+
+## You can't sign in to the device
+
+### There is no login yet
+
+**Cause** A device that ships ready to set up has no login until you create one. On a
+Teaspoon AI device, the service account, the user the brain runs as, has no password
+and no SSH key, so nobody can sign in before then. A device that you installed yourself
+has the login of the user you installed it as, and never offers this step.
+
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f; brain/teaport_brain/static/config.html:820#106e56e9 -->
+
+**Fix**
+
+1. Say "open my settings" at the device, and open the settings on your phone. While no
+   login exists, a **Create your login** card is at the top.
+2. Create the login there, as
+   [Create your login in the settings](/guides/configuration/#create-your-login-in-the-settings)
+   shows. In setup mode, the setup page offers the same step, as
+   [Create your login](/guides/wifi-setup/#create-your-login) shows.
+3. Sign in as `teaport`, with SSH or at the device itself.
+
+If neither the settings nor the setup page shows the step, one of these is true:
+
+- A login already exists. Sign in as `teaport`, or see
+  [The device already has a login](#the-device-already-has-a-login).
+- The helper that creates the login isn't installed or can't run, for example because
+  its `sudo` rule is missing from `/etc/sudoers.d/teaport-config`. The pages then show no
+  step rather than one that can't work. Installing the brain package again writes the
+  rule; see [Update teaport](/guides/updating/). On a Teaspoon AI device without a login,
+  ask the seller of the device.
+- A group named `teaport`, or a home folder `/home/teaport`, exists without the
+  account, for example after the account was removed by hand. The login's account can't
+  be made over it, so the helper refuses, and the pages show no step. The device then
+  needs a reflash, as
+  [The device already has a login](#the-device-already-has-a-login) describes, or the
+  seller of the device can do it.
+
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f -->
+
+<!-- source: brain/teaport_brain/owner_login.py:99-103#3acb30a5; packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:101#d4ce799b -->
+
+### The device already has a login
+
+**Cause** The device creates its login one time only. Someone created it before you,
+on the setup page or in the settings, or a `teaport` account is there that the device
+doesn't recognize as an unfinished one of its own: one with a password already set, or
+with SSH keys in its home folder. For as long as the device has no login, not only
+until it is set up, software running on the device, such as a compromised agent, could
+create it first. The setup page and the settings run as that same service account, so
+software that was compromised before you typed your password could also have read it.
+
+<!-- source: brain/teaport_brain/login_apply.py:34-41#01fb9b96; brain/teaport_brain/login_apply.py:303-310#c7e4a1ad -->
+
+**Fix**
+
+- If you created the login, sign in as `teaport` with the password you chose.
+- If a try to create it stopped partway, for example because the device restarted, the
+  next try usually finishes it. If the device still says that it already has a login, or
+  the step never comes back, the device can't finish that try by itself: reflash it and
+  install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
+- If you didn't create it, you can't know who did or what they changed. Don't keep
+  private data on the device. Reflash it and install teaport again, as
+  [Prepare the Jetson](/getting-started/prepare-the-jetson/) and
+  [Install teaport](/getting-started/installation/) describe, or ask the seller of the
+  device to do it.
+
+### Sign in at the device itself
+
+**Cause** The device is not on your network, or SSH does not answer, so you can't reach
+it from a computer.
+
+**Fix**
+
+1. Connect a USB keyboard and a display to the device. The device starts to a text
+   console, with a sign-in prompt.
+2. Sign in as `teaport` with your login's password. On a device you installed yourself,
+   sign in as the user you installed teaport as.
+3. Run `teaport status` to see what is wrong. Administrator commands, such as
+   `sudo systemctl restart teaport-brain`, ask for the same password.
+
+<!-- source: brain/teaport_brain/login_apply.py:84-87#d31172cc; brain/teaport_brain/login_apply.py:238-242#57a7a7ce -->
 
 ## Where the logs are
 

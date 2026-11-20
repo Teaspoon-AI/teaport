@@ -151,6 +151,7 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'Architecture', slug: 'reference/architecture' },
+						{ label: 'Security model', slug: 'reference/security' },
 						{ label: 'teaport CLI reference', slug: 'reference/cli' },
 						{ label: 'Installer reference', slug: 'reference/installer' },
 						{ label: 'Settings reference', slug: 'reference/settings' },

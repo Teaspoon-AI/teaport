@@ -86,6 +86,17 @@ def _status(mod):
 
 # --- the helper ----------------------------------------------------------------------
 
+def _sudo_is_rs() -> bool:
+    """This machine's sudo is sudo-rs (sudoers-sync leaves NOLOG_INPUT out for it)."""
+    out = ""
+    for tool in ("sudo", "visudo"):
+        try:
+            out += subprocess.run([tool, "--version"], capture_output=True, text=True).stdout
+        except OSError:
+            pass
+    return "sudo-rs" in out
+
+
 def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     tmp = tempdir("teaport-apply-")
     mod = _helper(_state(tmp))
@@ -1128,18 +1139,20 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
     assert 'STATE = "/var/lib/teaport-update"' in helper   # the unit's StateDirectory, root's
     assert "\n  - polkitd\n" in recipe
     # sudoers-sync: the polkit rule names the unit, the verb and the user; sudoers has only
-    # the two helpers' lines (the config page's, the Wi-Fi's).
+    # the three helpers' lines (the config page's, the Wi-Fi's, the owner's login's, #421).
     tmp = tempdir("teaport-sudoers-")
     text = (ROOT / "packaging/deb/sudoers-sync").read_text()
     text = text.replace("f=/etc/sudoers.d/teaport-config", f"f={tmp}/out")
     text = text.replace("helper=/usr/lib/teaport/config_apply.py", f"helper={tmp}/helper")
     text = text.replace("wifi=/usr/lib/teaport/wifi_apply.py", f"wifi={tmp}/wifi")
+    text = text.replace("login=/usr/lib/teaport/login_apply.py", f"login={tmp}/login")
     text = text.replace("update_rules=/etc/polkit-1/rules.d/50-teaport-update.rules", f"update_rules={tmp}/rules.d/50-teaport-update.rules")
     text = text.replace("wifi_rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules", f"wifi_rules={tmp}/no-wifi-setup.rules")
     assert "/etc/polkit-1" not in text.split("set -eu", 1)[1], "a path left pointing at the real box"
     text = text.replace("install -m 0440 -o root -g root", "install -m 0440").replace("install -m 0644 -o root -g root", "install -m 0644")
     pathlib.Path(tmp, "helper").write_text("")
     pathlib.Path(tmp, "wifi").write_text("")
+    pathlib.Path(tmp, "login").write_text("")
     pathlib.Path(tmp, "rules.d").mkdir()
     pathlib.Path(tmp, "s").write_text(text)
     p = subprocess.run(["sh", f"{tmp}/s", "bob"], capture_output=True, text=True)
@@ -1148,7 +1161,9 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
     assert p.returncode == 0, p.stderr
     lines = [ln for ln in pathlib.Path(tmp, "out").read_text().splitlines() if not ln.startswith("#")]
     assert lines == ["bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/helper *",
-                     "bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/wifi *"], lines
+                     "bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/wifi *",
+                     "bob ALL=(root) NOPASSWD:" + ("" if _sudo_is_rs() else "NOLOG_INPUT:")
+                     + " /usr/bin/python3 " + f"{tmp}/login *"], lines   # the tag: classic sudo only
     rule = pathlib.Path(tmp, "rules.d/50-teaport-update.rules").read_text()
     for want in ('action.id == "org.freedesktop.systemd1.manage-units"', 'action.lookup("unit") == "teaport-update.service"',
                  'action.lookup("verb") == "start"', 'subject.user == "bob"', "return polkit.Result.YES"):

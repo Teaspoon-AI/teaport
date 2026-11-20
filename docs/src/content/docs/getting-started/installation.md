@@ -151,7 +151,7 @@ The installer does these tasks:
 
 - It downloads the engine, release 1.6, with its models and the pronunciation dictionary
   into `/opt/teaport`.
-- It installs the brain: the `teaport-brain` package, which carries the Python 3.12 environment, the `teaport` command, and the configuration helper.
+- It installs the brain: the `teaport-brain` package, which carries the Python 3.12 environment, the `teaport` command, and the helpers that run as root.
 - It installs the plugin into your agent and connects the agent to the brain.
 - It installs the Caddy reverse proxy and Avahi, and serves the browser page at
   `https://teaport.local`. If another device on the network already uses that name,

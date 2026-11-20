@@ -13,20 +13,18 @@
 #
 import base64
 import functools
-import json
 import os
 import socket
-import subprocess
 
-from teaport_brain import wifi_apply
+from teaport_brain import root_helper, wifi_apply
 from teaport_brain.i18n import N_
+from teaport_brain.root_helper import SYSTEM_PYTHON  # noqa: F401
 from teaport_brain.wifi_apply import AP_ADDRESS, AP_CONNECTION, AP_PREFIX, CONNECT_WAIT_SECS  # noqa: F401
 from teaport_brain.wifi_apply import split_terse, terse_fields as _terse_fields  # noqa: F401
 
 # The root-owned copy the sudoers line names (packaging/deb/sudoers-sync), on the system
 # python: never the venv's interpreter, nor this tree's copy of the file.
 HELPER = "/usr/lib/teaport/wifi_apply.py"
-SYSTEM_PYTHON = "/usr/bin/python3"
 # A join can take two connection attempts and two scans; the helper's own nmcli calls
 # each have their timeout.
 HELPER_SECS = 300
@@ -81,36 +79,9 @@ def _reachable(host: str, dev: str) -> bool:
 
 def sudo_helper(verb: str, req: dict) -> dict:
     """wifi_apply <verb> under sudo, the request on stdin: its reply, or {"ok": False,
-    "err": ...} when it could not run or refused."""
-    try:
-        p = subprocess.Popen(["sudo", "-n", SYSTEM_PYTHON, HELPER, verb], stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    except OSError as e:
-        return {"ok": False, "err": str(e)}
-    try:
-        out, err = p.communicate(json.dumps(req), timeout=HELPER_SECS)
-    except subprocess.TimeoutExpired:
-        p.kill()
-        p.communicate()
-        return {"ok": False, "err": "the Wi-Fi helper timed out"}
-    except BaseException:
-        # A stop (wifi_setup's Stopped): the helper had the unit's SIGTERM too and is
-        # putting back what it began. Wait for that, so the caller's own clean-up (the old
-        # network back up) does not race it.
-        try:
-            p.wait(timeout=HELPER_STOP_SECS)
-        except BaseException:
-            p.kill()
-        raise
-    try:
-        reply = json.loads(out)
-    except ValueError:
-        reply = None
-    if not isinstance(reply, dict):
-        return {"ok": False, "err": (err.strip() or f"the Wi-Fi helper exited {p.returncode}")[-300:]}
-    if "refused" in reply:
-        return {"ok": False, "err": str(reply["refused"])}
-    return reply
+    "err": ...} when it could not run or refused (root_helper.call)."""
+    return root_helper.call(HELPER, verb, req, timeout=HELPER_SECS,
+                            stop_secs=HELPER_STOP_SECS, name="the Wi-Fi helper")
 
 
 class NM:
@@ -312,6 +283,8 @@ background:var(--btn-bg);color:var(--btn-fg);font:inherit;font-weight:700;cursor
 details.acct{margin:22px 0 0;padding:10px 14px;border:1px solid var(--border-strong);
 border-radius:var(--radius);background:var(--surface)}details.acct summary{cursor:pointer;font-weight:600}
 details.acct p{margin:8px 0 0}
+.login{margin:26px 0 0}.login h2{font-size:20px;line-height:1.3;margin:0 0 4px}
+.login p{margin:0}.login p.hint{margin:8px 0 0;color:var(--faint);font-size:14px}
 .show{display:flex;gap:8px;align-items:center;color:var(--muted);margin-top:8px}
 /* The phone's own fonts, per script: the page sets lang, and a Han character must be
    drawn in the Japanese, Chinese or Korean form its reader expects (one code point,
