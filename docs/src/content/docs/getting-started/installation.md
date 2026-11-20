@@ -49,7 +49,7 @@ sudo npm install -g openclaw@2026.10.5
 
 The installer warns when the OpenClaw on the device is another release.
 
-<!-- source: manifest/stable.json:64-65#e907cb5f; install.sh:1825-1850#c117c11e -->
+<!-- source: manifest/stable.json:64-65#3c72090e; install.sh:1825-1850#c117c11e -->
 
 Give OpenClaw a minimal configuration and start its gateway:
 
