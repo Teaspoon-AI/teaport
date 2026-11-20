@@ -318,9 +318,9 @@ until their next turn the brain says nothing of its own (`Hold`, below).
 | `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer and ends a wait) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame`. A reply about a record (`Record.about`) is judged on what was heard of the record so far (`Record.heard`): played through, by the gist judge (`Owed._played` -> `services.BoundedOpenAILLMService.judge_gist`, asked as its stream ended: `Owed.reply_text`, fed by `TranscriptLedger.on_reply_text`; `PtVerdicts`), or the backstop at its second (`Record.told`); cut with a heard prefix and its whole text, by both judges (`Owed._cut` -> `judge_gist` + `judge_cut`, `CutVerdicts`): the settle completes when the verdicts land (`Owed._apply`, on the live book), the reply pending till then. A failure's replies go to the failure judge (`Owed._failed`: `FailVerdicts`, and for a cut `WholeVerdicts` first -- is its whole text a telling at all?); one it gives no verdict on counts with the cut tellings (`Owed._unproven`, `Unjudged`), and the second ends the record |
 | `Lull` | `Owed._lull_loop`: every reply settled, every due decline check read, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
-| `Commit` | the user aggregator's commit (an empty final commits nothing). Words that cut a telling of an owed record (`dw`) are in the context from here, after the caller messages counted at the cut (`Record.decline`, set in `Owed.settle`) |
+| `Commit` | the user aggregator's commit (an empty final commits nothing). Words that cut a telling of an owed record (`dw`) are in the context from here, after the caller messages counted at the cut (`Record.decline`, set by `Owed._cut_telling`: at the settle for an answer, and for a failure in `Owed._apply`, once the failure judge has found the cut reply a telling) |
 | `Hold` | a turn whose words are only a stop, held at its commit: `PauseAwareMinWordsStrategy.hold_bare_stop` (asked by `CutReplyFence.holds`) leaves the aggregation unwritten, so nothing is committed or asked, and `on_held` → `Owed.caller_waits` disarms the re-offer and sets the wait (`_waits`), which `Owed._arm` and `Owed.land` read until the next `caller_turn` |
-| `Decline` | `Owed.declines_read`, awaited by every reader -- `Owed.view` (a commit's, a post-tool answer's or a run's render, on the context it renders) and the lull -- after the settles: the decline check (`Owed._ask_decline` -> `judge_decline`, bounded by `SETTLE_WAIT_S`) on the caller's messages after those counted when the cut reply was rendered (`Reply.callers`). No words yet leave it due: the next words committed are read. A speculative reply's render reads none, and none is adopted while a check is due (`Owed.decline_due`, `BoundedOpenAILLMService.get_chat_completions`): the commit renders itself. `Checked` is that wait |
+| `Decline` | `Owed.declines_read`, awaited by every reader -- `Owed.view` (a commit's, a post-tool answer's or a run's render, on the context it renders) and the lull -- after the settles: the decline check (`Owed._ask_decline` -> `judge_decline`, bounded by `SETTLE_WAIT_S`) on the caller's messages after those counted when the cut reply was rendered (`Reply.callers`). No words yet leave it due: the next words committed are read. A speculative reply's render reads none, and none is adopted while a check is due (`Owed.decline_due`, `BoundedOpenAILLMService._request`): the commit renders itself. `Checked` is that wait |
 
 ### What the code adds
 
@@ -370,10 +370,11 @@ Each is outside what the model checks, and each errs toward owed or toward silen
 
 - **Several records.** At most `MAX_RENDERED` (3) owed records render; a fourth evicts the
   oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
-  would break `ClosedOnEvidence`. One run renders every owed record, so a second ask
-  joins the waiting run. Consult and sync records share the book (the model holds one
-  of either kind); every record is made through `Owed._owe` (land, a cut sync answer, a
-  wake's restore).
+  would break `ClosedOnEvidence`. One run waits at the door at a time: a second ask
+  joins it, and its note carries the records of its keys only (`Owed.view`; a caller's
+  own turn carries every owed record). Consult and sync records share the book (the
+  model holds one of either kind); every record is made through `Owed._owe` (land, a
+  cut sync answer, a wake's restore).
 - **The cut judge's wait.** A cut that needs a verdict keeps its reply pending until the
   verdict lands -- measured p50 0.34 s, p90 0.58 s, max 2 s -- each call bounded by
   `SETTLE_WAIT_S` (2 s), past which it is no verdict and errs owed. The call starts at the
@@ -426,7 +427,7 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   the re-offer line last (where rounds 4 and 5 measured it).
 - **The heard quote.** A cut reply that carried the note and closed nothing has its
   pts-exact heard text quoted ("They heard only …") when it was a run of ours or shares
-  a non-common token with the record (`Owed._about`: the #203 session would otherwise
+  a non-common token with the record (`Record.about`: the #203 session would otherwise
   have quoted a clarifying question, `test_owed_corpus.py`). The re-offer's note never
   quotes (the confirmation round: 9/40 stay silent after "hold on" with the quote, 18/40
   without). The status line is not in the model.

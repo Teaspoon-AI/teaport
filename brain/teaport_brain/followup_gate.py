@@ -855,7 +855,7 @@ class FollowupGate(FrameProcessor):
     def ask(self, keys, purpose: str, context) -> None:
         """gate.ask (Owed.tla Ask): a run of ours for the owed records `keys`, "run" or
         "reoffer", on `context`. One run waits at a time: one already waiting takes the
-        new keys too (it renders every owed record anyway)."""
+        new keys too (its note carries the records of its keys: owed.Owed.view)."""
         keys = list(keys)
         if self._run is not None:
             old_keys, old_purpose, _, task = self._run

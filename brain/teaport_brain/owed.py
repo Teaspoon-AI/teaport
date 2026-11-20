@@ -388,11 +388,12 @@ STAY_SILENT_SCHEMA = FunctionSchema(
 
 # What a consult that produced no answer is recorded as: the tool result's status and
 # the record's outcome, in plain words the model can say (#80: each kind says what
-# actually happened). A failure's terms are its statement's own, without the hedge and
-# the settings hint (Record.make): a reply about it heard to its end closes it (Owed.tla
-# RUNCLOSE = "about"). The hedge is for an action that may have gone through; until #387
-# it said "ask them to check rather than saying it failed", which every lookup read as
-# "don't say it failed" (measured above, with the failure's own lines).
+# actually happened). A failure has no terms (_terms): whether a reply tells it is the
+# failure judge's to read (Owed._failed; Owed.tla RUNCLOSE = "judge"), shown its statement
+# without the hedge and the settings hint (failure_core). The hedge is for an action that
+# may have gone through; until #387 it said "ask them to check rather than saying it
+# failed", which every lookup read as "don't say it failed" (measured above, with the
+# failure's own lines).
 _ACTION_HEDGE = (" If it was to send, post or change something, it may have gone through "
                  "anyway: say so, and ask them to check. A lookup has nothing to check.")
 
@@ -444,8 +445,8 @@ def failure_outcome(failure, detail="", settings: bool = False) -> tuple[str, st
 
 def failure_core(outcome: str) -> str:
     """A failure's own statement (failure_outcome): its outcome without the hedge and the
-    settings hint, which are instructions riding with it, not what happened. Its terms
-    (_terms) and what the failure judge is shown."""
+    settings hint, which are instructions riding with it, not what happened. What the
+    failure judge is shown (a failure has no terms: _terms)."""
     return outcome.replace(_ACTION_HEDGE, "").replace(BILLING_SETTINGS_HINT, "").strip()
 
 
