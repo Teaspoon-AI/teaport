@@ -12,8 +12,9 @@
 #   - The TTS holds a response's LLMFullResponseEndFrame and re-pushes the SAME frame
 #     once the response's context has drained (tts_service._maybe_reset_word_timestamps).
 #     Its second sighting, below the TTS, tells the ledger which response a context
-#     spoke and that its synthesis is over. The engine TTS pushes no TTSStoppedFrame
-#     at all (push_stop_frames is False), so this is the only completion signal live.
+#     spoke and that its synthesis is over. (When this was written the engine TTS
+#     pushed no TTSStoppedFrame; since PR #13's merge it does -- push_stop_frames=True --
+#     and the ledger reads both.)
 #   - Untagged audio is the transport's own rebuild of every chunk it played (first
 #     sighted below it). The thinking sound's typing is not TTS audio at all (a plain
 #     OutputAudioRawFrame, never bot speech) and takes no part.
@@ -144,6 +145,15 @@ def word(s, pts_s, ctx, ifs=False):
     f.context_id = ctx
     f.includes_inter_frame_spaces = ifs
     return f
+
+
+def forced(text, pts_s, ctx, t):
+    """The text pipecat's TTS force-completes for a context that ends with text it gave
+    no word timings for -- all of a reply the engine yielded no audio for: one word
+    frame ahead of the context's stop frame, stamped at the last word before it (0
+    after an interruption or at a session's start). It waits at the output transport
+    for that pts like any word."""
+    return (word(text, pts_s, ctx), t, BELOW)
 
 
 def response(text, t0, step=0.05):
@@ -846,7 +856,8 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
     f2, end2 = response(R2, 0.3)
     L = await feed(ledger(), f1 + [
         (started("A"), 0.2, BELOW),
-        (TTSStoppedFrame(context_id="A"), 0.25, BELOW),   # every clause failed
+        forced(R1, 0.0, "A", 0.25),                       # every clause failed
+        (TTSStoppedFrame(context_id="A"), 0.25, BELOW),
         drained(end1, 0.25),
     ] + f2 + [
         (started("B"), 0.5, BELOW),
@@ -858,6 +869,10 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
         *siblings(BotStoppedSpeakingFrame, 1.55),
     ])
     assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (R2, True)]
+    # Charted heard 0 with NO heard text, though its text frame's pts has long passed
+    # (audit 2026-11-19: read by the pts alone the whole reply was "heard", and the
+    # corrector wrote it back as said: LedgerPlayout.tla, lp_failed_heardPts).
+    assert bot(L)[0].heard_text == "" and bot(L)[0].committed, bot(L)[0]
     left = said(L, R1, R2)
     assert R2 in left, "the reply the caller heard was deleted"
     assert left == [R2], f"the failed reply's unheard text was kept: {left}"
@@ -874,12 +889,18 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
         *siblings(BotStartedSpeakingFrame, 0.25),
     ] + f1 + [
         (started("B"), 0.4, BELOW),
-        (TTSStoppedFrame(context_id="B"), 0.45, BELOW),   # every clause failed
+        forced(R1, 2.0, "B", 0.45),                       # every clause failed
+        (TTSStoppedFrame(context_id="B"), 0.45, BELOW),
         drained(end1, 0.45),
+    ])
+    # Its text waits at the transport behind the reply that is playing: no message yet.
+    assert [(u.text, u.committed) for u in bot(L)] == [(R1, False)], bot(L)
+    await feed(L, [
         (copy(2.0), 2.25, AFTER),
         *siblings(BotStoppedSpeakingFrame, 2.25),
     ])
     assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (ANSWER, True)]
+    assert all(u.committed for u in bot(L)), "its text came out once the audio ahead played"
     assert said(L, ANSWER, R1) == [ANSWER], "the failed reply's unheard text was kept"
 
     # 3. A reply that played, then a barge-in before the next one's first audio: the
@@ -903,39 +924,86 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
 
 
 async def test_m_a_cut_reply_is_reconciled_on_its_own_message_not_a_newer_one():
-    """A reply plays; the next is synthesized whole behind it (its context ended, so the
-    TTS force-completed its text and pipecat committed it) but not a chunk of it has
-    played when the caller barges in. The newest message is the queued reply's, and the
-    corrector anchored every cut on the newest it could see: the first reply's heard
-    prefix overwrote the queued reply's text, the queued reply's own cut then removed
-    that, and the first reply kept its FULL text -- the context said the caller heard
-    all of it (LedgerPlayout.tla, HeardPrefixOnOwn, lp_guarded). Each cut now finds its
-    own message before any is rewritten: as many spoken messages back from the newest as
+    """A reply plays; the next is synthesized whole behind it, and the caller barges in
+    before a chunk of that one has played. Two shapes, by what pipecat committed:
+
+    The queued reply's first words are OUT: the transport releases each word frame at
+    its pts, a caption lead ahead of its audio, so in the last moments of the reply
+    ahead the queued one already has a message. It is the newest, and the corrector
+    anchored every cut on the newest it could see: the first reply's heard prefix
+    overwrote the queued reply's words, the queued reply's own cut then removed that,
+    and the first reply kept its FULL text -- the context said the caller heard all of
+    it (LedgerPlayout.tla, HeardPrefixOnOwn, lp_guarded). Each cut now finds its own
+    message before any is rewritten: as many spoken messages back from the newest as
     its batch has committed replies newer than it (Utterance.turn_seq, .committed).
-    The same with a failed reply in place of the queued one, charted at its stop."""
+
+    Its words are NOT out (test_m_a_reply_queued_whole... below): then it has no message."""
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response(R2, 0.1)
+    lead = CAPTION_LEAD_SECS
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),              # A plays 0.25 .. 2.25
+    ] + f1 + [
+        (started("B"), 0.4, BELOW),
+        (word("It", 2.25 - lead, "B"), 0.45, BELOW),           # B's words, from A's end
+        (word("is", 2.45 - lead, "B"), 0.45, BELOW),
+        at(audio(1.0, "B"), 0.45),                             # queued behind A's
+        (TTSStoppedFrame(context_id="B"), 0.45, BELOW),
+        drained(end1, 0.45),
+        (InterruptionFrame(), 2.25 - lead + 0.01),             # "It" is out; A still plays
+    ])
+    utts = {u.text: u for u in bot(L)}
+    assert utts[R2].heard_fraction == 0 and utts[R2].heard_text == "" and utts[R2].committed
+    assert 0 < utts[ANSWER].heard_fraction < 0.99, round(utts[ANSWER].heard_fraction, 2)
+    left = said(L, ANSWER, "It")
+    assert len(left) == 1 and left[0] != ANSWER and ANSWER.startswith(left[0]), (
+        f"the cut reply must keep only what was heard, and the unheard one go: {left}")
+
+
+async def test_m_a_reply_queued_whole_behind_the_one_cut_has_no_message_to_correct():
+    """Audit 2026-11-19 (LedgerPlayout.tla, lp_said_synth). The caller barges in a second
+    into a reply with the next synthesized whole behind it. Every word of the queued
+    reply is still waiting at the output transport, which drops them at the
+    interruption: pipecat committed nothing for it. The ledger called it committed all
+    the same ("its synthesis is over"), so the corrector, counting one committed reply
+    newer than the cut one and finding one message, left the cut reply as it was -- and
+    then took the queued reply's own cut, heard nothing, to the newest message: the
+    reply the caller had been listening to, deleted. The same with a reply the engine
+    failed behind the one playing: its force-completed text is stamped at that one's
+    last word, and dropped with the rest."""
     for failed in (False, True):
         f0, end0 = response(ANSWER, 0.0)
-        f1, end1 = response(R1, 0.1)
+        f1, end1 = response(R2, 0.1)
         L = await feed(ledger(), f0 + [
             (started("A"), 0.2, BELOW),
             at(audio(2.0, "A"), 0.2),
             (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
             drained(end0, 0.2),
-            *siblings(BotStartedSpeakingFrame, 0.25),
+            *siblings(BotStartedSpeakingFrame, 0.25),          # A plays 0.25 .. 2.25
         ] + f1 + [
             (started("B"), 0.4, BELOW),
-            *([] if failed else [at(audio(3.0, "B"), 0.45)]),   # queued behind A's
+            *([forced(R2, 2.0, "B", 0.45)] if failed else
+              [(word("It", 2.05, "B"), 0.45, BELOW), (word("is", 2.25, "B"), 0.45, BELOW),
+               at(audio(1.0, "B"), 0.45)]),                    # queued behind A's
             (TTSStoppedFrame(context_id="B"), 0.45, BELOW),
             drained(end1, 0.45),
             (InterruptionFrame(), 1.25),                       # a second into ANSWER
         ])
         utts = {u.text: u for u in bot(L)}
-        assert utts[R1].heard_fraction == 0 and 0 < utts[ANSWER].heard_fraction < 0.99, (
-            failed, [(u.text[:20], round(u.heard_fraction, 2)) for u in bot(L)])
-        left = said(L, ANSWER, R1)
+        assert utts[R2].heard_fraction == 0 and not utts[R2].committed, (failed, utts[R2])
+        assert utts[ANSWER].committed and 0 < utts[ANSWER].heard_fraction < 0.99, failed
+        left = said(L, ANSWER)                    # all pipecat committed: the cut reply
         assert len(left) == 1 and left[0] != ANSWER and ANSWER.startswith(left[0]), (
-            f"failed={failed}: the cut reply must keep only what was heard, and the "
-            f"unheard one go: {left}")
+            f"failed={failed}: the reply the caller was hearing must keep what they "
+            f"heard of it: {left}")
+        # ...and the failed one stays uncommitted: no later window close brings out
+        # what the interruption dropped.
+        await feed(L, [*siblings(BotStoppedSpeakingFrame, 3.0)])
+        assert not utts[R2].committed, failed
 
 
 async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():

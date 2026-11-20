@@ -355,7 +355,11 @@ class HeardContextCorrector(FrameProcessor):
         `committed`, so the cut reply's message is as many spoken messages back from
         the newest as its batch has committed replies newer than it. Position also
         means order: the cut reply must be committed first, which
-        endpointing.CutReplyFence ensures.
+        endpointing.CutReplyFence ensures. `committed` is the ledger's word, and has
+        to be the fact: called committed with every word of it still waiting at the
+        output transport (a reply synthesized whole behind the one cut), a queued
+        reply's cut was taken to the played reply's message and deleted it
+        (LedgerPlayout.tla, SaidIsCommitted, lp_said_synth; TranscriptLedger._text_out).
 
         The newest message alone, the first rule, deleted or rewrote another reply's
         (brain/formal/LedgerPlayout.tla, CutAnchorsOwn, NoPlayedReplyDeleted): a reply
