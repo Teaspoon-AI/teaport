@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2846#908e95f4 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2858#64fcef5d -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -361,6 +361,7 @@ In `/etc/teaport/engine.env`.
 | `ENGINE_DELAY` | **480** | --delay to the engine binary. *Set by the installer.* |
 | `TTS_CTX` | **192** | --tts-ctx to the engine binary. *Set by the installer.* |
 | `VOX_REQUIRE_DICT_G2P` | `1` | Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody. One of `1`. *Set by the installer.* |
+| `VOX_REQUIRE_WATERMARK` | `1` | Refuse to serve if the AI watermark is not loaded (its weights missing from /opt/teaport/bin/watermark/, or VOX_TTS_WATERMARK=0), rather than speak without the machine-readable mark synthetic audio must carry. Engines before 1.7 ignore it. One of `1`. *Set by the installer.* |
 
 ## SIP gateway
 
