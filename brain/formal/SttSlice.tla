@@ -41,7 +41,11 @@
 (* open words that end before its position; a delta goes to the oldest     *)
 (* turn not yet final that it ends before -- or that it starts before (or  *)
 (* ends less than M past) and whose preview vouched for it -- else to the  *)
-(* open turn (shown as an interim); a preview makes its turn's provisional *)
+(* open turn (shown as an interim); a word that goes to a turn whose       *)
+(* preview lacked it is no longer expected by the first later turn whose   *)
+(* preview had it next (Spent; stt.py _spend_later), so the first word a   *)
+(* turn expects is the next of them to come; a preview makes its turn's    *)
+(* provisional                                                             *)
 (* text (the words in hand that end before it, then the preview's), or a   *)
 (* peek's; a report makes every turn final, oldest first, whose preview    *)
 (* has come and whose position the end bound has passed -- while its      *)
@@ -127,8 +131,17 @@
 (*         "kept"     -- as shipped: the settled turn keeps its stretch's   *)
 (*                       late words, and its vouching for the trim, until   *)
 (*                       the bounds pass it (Kept; stt.py _early); a late   *)
-(*                       word below a settled turn is a later turn's that   *)
-(*                       vouched for it.                                    *)
+(*                       word below a settled turn is the oldest turn's at  *)
+(*                       the FRONT of whose vouched words it is             *)
+(*                       (LateTakers; stt.py _front_vouched).               *)
+(*         "first"    -- before audit S1: a late word is asked only of the  *)
+(*                       first turn that vouches for anything (fails        *)
+(*                       NoDeliveredOpen: that turn waits on another word,  *)
+(*                       and the turn after it delivered this one).         *)
+(*         "waitSpend" -- before audit S1: a word a kept turn takes that    *)
+(*                       its preview lacked stays at the front of the later *)
+(*                       turn that vouched for it (fails NoDeliveredOpen:   *)
+(*                       it hides that turn's next word).                   *)
 (*                                                                          *)
 (* Every queue-appending action is bounded: Len(chan) < QLen, commits <=    *)
 (* MaxCommits, pos <= MaxPos, stops <= MaxStops, one watch.                 *)
@@ -191,7 +204,9 @@ brain == <<commits, turns, open, seen, speaking, stops, peekIdx, atStop, split,
 CONSTANT HEARD   \* "off" | "shipped" | "endOnly" | "final"
 \* AN EARLY SETTLE (EARLY; stt.py _final_overdue's backstop and the pause cap's
 \* close_held): its own constant, apart from DESIGN.
-CONSTANT EARLY   \* "off" | "shipped" | "kept"
+CONSTANT EARLY   \* "off" | "shipped" | "kept" | "first" | "waitSpend"
+\* Whether a turn settled early is kept (_early): as shipped, and its two mutations.
+Keeps == EARLY \in {"kept", "first", "waitSpend"}
 VARIABLES
     watchAt,     \* the pauser's watch out: the voice end it was placed at, or 0
     heardAt,     \* the watch the STT answered (SpeechHeardFrame): its voice end, or 0
@@ -396,19 +411,45 @@ Close ==
     /\ atStop' = 0
     /\ UNCHANGED <<engine, chan, seen, speaking, stops, lateInterim>>
 
+MinOf(X) == CHOOSE k \in X : \A j \in X : k <= j
+
 \* A turn settled early and kept ("kept", stt.py _early: at the settle, its provisional
 \* had gone out with words its preview vouched for, unsent then): until the bounds pass
-\* it, the words of its stretch are still its own.
-Kept(t) == t.kept /\ ~Bounded(t, seen)
+\* it, the words of its stretch are still its own -- or until the decoder is D past it
+\* (_prune_early: by then every word of it has been sent, and has come).
+Kept(t) == t.kept /\ ~Bounded(t, seen) /\ ~Overdue(t, seen)
+\* The turns whose preview may still vouch for a word: those kept, then those waiting on
+\* their final -- oldest first, as the turns are in position order (stt.py: _early, then
+\* _turns).
+Vouching(k) == Kept(turns[k]) \/ ~turns[k].final
+\* The front of what a turn's preview still vouches for: the earliest word of it not in
+\* yet (stt.py's expect is the preview's words in order, the ones that came taken out),
+\* or 0. The engine sends words in order, so the next word of it to come is this one.
+FrontOf(X) == IF X = {} THEN 0 ELSE CHOOSE i \in X : \A j \in X : i <= j
+Front(t) == FrontOf(t.expect)
 \* Where the last turn settled stands: a late word below it goes to the open turn
 \* (_slice_delta's _final_through), unless a kept turn takes it.
 FinalThrough == LET F == {k \in 1..Len(turns) : turns[k].final}
                 IN IF F = {} THEN 0 ELSE turns[CHOOSE k \in F : \A j \in F : j <= k].at
 
+\* A late word, ending below a settled turn and no kept turn's by its stretch: a turn
+\* whose preview vouched for it delivered it, and it is that turn's, spent
+\* (_front_vouched) -- the oldest turn at the FRONT of whose vouched words it is. The
+\* front only: the code matches a word by its text, and a late "a" must not claim a
+\* later "about". "first" (before audit S1): only the first turn that vouches for
+\* anything is asked, so a turn before the right one that waits on another word hides it.
+LateTakers(i) ==
+    CASE EARLY = "first" ->
+            LET V == {k \in 1..Len(turns) : Vouching(k) /\ turns[k].expect /= {}}
+            IN IF V /= {} /\ Front(turns[MinOf(V)]) = i THEN {MinOf(V)} ELSE {}
+      [] Keeps -> {k \in 1..Len(turns) : Vouching(k) /\ Front(turns[k]) = i}
+      [] OTHER -> {}
+
 \* The turns a delta for word i may go to, oldest first: _slice_delta's rule -- ends
 \* before it, or vouched for -- or ("arrival") any turn whose preview has not come. A
 \* settled turn takes none: a late word goes to the open turn -- unless the turn was
-\* settled early and still vouches for it (Kept).
+\* settled early and kept (a word of its stretch, or one past it that it vouched for:
+\* _early_taker), or a turn vouched for it at its front (LateTakers).
 Takers(i) == CASE DESIGN = "arrival"   -> {k \in 1..Len(turns) : ~turns[k].previewed}
                [] DESIGN = "endMargin" -> {k \in 1..Len(turns) :
                                              ~turns[k].final /\ E[i] < turns[k].at + M}
@@ -416,35 +457,50 @@ Takers(i) == CASE DESIGN = "arrival"   -> {k \in 1..Len(turns) : ~turns[k].previ
                     LET kept == {k \in 1..Len(turns) :
                                    Kept(turns[k])
                                    /\ \/ Lo(turns, k) <= E[i] /\ E[i] < turns[k].at
-                                      \/ Vouched(turns[k], i)}
+                                      \/ turns[k].at <= E[i] /\ Vouched(turns[k], i)}
                     IN IF kept /= {} THEN kept
-                       ELSE IF E[i] < FinalThrough
-                            THEN IF EARLY = "kept"   \* a later turn that vouched for it
-                                 THEN {k \in 1..Len(turns) : ~turns[k].final
-                                                             /\ i \in turns[k].expect}
-                                 ELSE {}
+                       ELSE IF E[i] < FinalThrough THEN LateTakers(i)
                        ELSE {k \in 1..Len(turns) :
                                ~turns[k].final
                                /\ (E[i] < turns[k].at \/ Vouched(turns[k], i))}
-MinOf(X) == CHOOSE k \in X : \A j \in X : k <= j
-
 \* An interim of word i is late if a closed turn's position is past its end.
 Late(i) == \E k \in 1..Len(turns) : E[i] < turns[k].at
+
+\* _spend_later: word i went to turn k, whose preview did not have it. A later turn's
+\* that did (asked while the word was unsent) will not be sent it: the first turn after k
+\* with the word at the front of what it expects stops expecting it -- which keeps a
+\* turn's front the next word of its to come (LateTakers) -- or, no turn's having it, the
+\* peek's preview held for its adoption loses it. "waitSpend" (before audit S1): only a
+\* word a waiting turn took is spent, not one a kept turn took by its stretch.
+Spends(k, i) == i \notin turns[k].expect /\ ~(EARLY = "waitSpend" /\ turns[k].final)
+Spent(k, i) == IF Spends(k, i)
+               THEN {j \in (k + 1)..Len(turns) : Vouching(j) /\ Front(turns[j]) = i}
+               ELSE {}
+PeekSpent(k, i) ==
+    /\ Spends(k, i) /\ Spent(k, i) = {}
+    /\ peekIdx /= 0 /\ commits[peekIdx].previewed /\ FrontOf(commits[peekIdx].pv) = i
 
 RecvDelta ==
     /\ chan /= <<>> /\ Head(chan)[1] = "delta"
     /\ LET i == Head(chan)[2]
            K == Takers(i)
        IN IF K /= {}
-          THEN /\ turns' = [turns EXCEPT ![MinOf(K)].words = @ \cup {i},
-                                         ![MinOf(K)].expect = @ \ {i}]
-               /\ open' = open
-               /\ lateInterim' = (lateInterim \/ DESIGN = "interimAll")
+          THEN LET k == MinOf(K)
+                   J == Spent(k, i)
+                   ts == [turns EXCEPT ![k].words = @ \cup {i}, ![k].expect = @ \ {i}]
+               IN /\ turns' = IF J = {} THEN ts
+                              ELSE [ts EXCEPT ![MinOf(J)].expect = @ \ {i}]
+                  /\ commits' = IF PeekSpent(k, i)
+                                THEN [commits EXCEPT ![peekIdx].pv = @ \ {i}]
+                                ELSE commits
+                  /\ open' = open
+                  /\ lateInterim' = (lateInterim \/ DESIGN = "interimAll")
           ELSE /\ turns' = turns
+               /\ commits' = commits
                /\ open' = open \cup {i}
                /\ lateInterim' = (lateInterim \/ Late(i))
     /\ chan' = Tail(chan)
-    /\ UNCHANGED <<engine, commits, seen, speaking, stops, peekIdx, atStop, split>>
+    /\ UNCHANGED <<engine, seen, speaking, stops, peekIdx, atStop, split>>
 
 \* _past_earlier: the words a turn before `at`, previewed and not final, still expects --
 \* a later preview's are that turn's ("noTrim": asked again). The code drops each word
@@ -527,7 +583,7 @@ EarlySettle ==
           /\ \A j \in 1..(k - 1) : turns[j].final
           /\ turns' = [turns EXCEPT ![k].final = TRUE, ![k].fwords = turns[k].words,
                                     ![k].timedOut = TRUE,
-                                    ![k].kept = (EARLY = "kept" /\ turns[k].expect /= {}
+                                    ![k].kept = (Keeps /\ turns[k].expect /= {}
                                                  /\ ~turns[k].deferred
                                                  /\ turns[k].asked /= {})]
     /\ UNCHANGED <<engine, chan, commits, open, seen, speaking, stops, peekIdx, atStop,
