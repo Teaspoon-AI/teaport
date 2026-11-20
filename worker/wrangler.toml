@@ -2,8 +2,8 @@
 #
 #   npx wrangler d1 create teaport-gate            # once: put its id in database_id below
 #   npx wrangler d1 migrations apply teaport-gate --remote
-#   npx wrangler secret put TOKEN_KEY              # once: 32+ random bytes, e.g. openssl rand -base64 48
-#   npx wrangler secret put CHECK_TOKEN            # once: the same value as the repo's DL_CHECK_TOKEN secret
+#   npx wrangler secret put TOKEN_KEY              # once: openssl rand -hex 32
+#   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
 #   npx wrangler deploy
 #
 # The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated

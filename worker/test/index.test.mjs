@@ -251,6 +251,12 @@ test("the check token downloads, logged as ci; other paths and methods are refus
   assert.equal((await call("GET", "/manifest/stable.json")).status, 404);
 });
 
+test("a check token in base64, with + / and =, is taken whole", async () => {
+  env.CHECK_TOKEN = "q+Lw/9Zx3v==";
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("q+Lw/9Zx3v==") })).status, 200);
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("q+Lw/9Zx3v") })).status, 401);
+});
+
 test("parseRange takes one bytes= range and serves anything else whole", () => {
   assert.deepEqual(parseRange("bytes=0-4", 20), { offset: 0, length: 5 });
   assert.deepEqual(parseRange("bytes=5-", 20), { offset: 5, length: 15 });

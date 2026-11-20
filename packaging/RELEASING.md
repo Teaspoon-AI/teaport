@@ -126,6 +126,12 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       the engine release is the only thing that tells a newer set of models from an older
       one; a channel that changes `models` under the same engine can take a box's models
       back.
+- [ ] The engine's files and models (every URL under the manifest's `access.gated`:
+      `dl/engine/`, `dl/models/`) go to the private bucket `teaport-engine-dist`, never
+      `teaport-get`. The download gate Worker (`worker/`) serves them only after the
+      engine license is accepted; a copy in `teaport-get` would be public. Its
+      `THIRD_PARTY_NOTICES.txt` goes to `teaport-get` under `dl/notices/`, public on
+      purpose.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

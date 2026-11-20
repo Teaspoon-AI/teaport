@@ -324,21 +324,41 @@ download() {
   if [ -f "$dest" ] && [ -n "$sha" ] && echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
     log "have $(basename "$dest") (sha ok)"; return
   fi
+  if [ "$DRY_RUN" = 1 ]; then
+    log "download $(basename "$dest")"
+    SUDO curl -q -fL --retry 3 -C - -o "$dest.part" "$url"
+    return
+  fi
+  # A .part a stopped run left whole (curl had finished, the check had not): asking for the
+  # bytes after its end is refused (416), so it is taken as it is.
+  if [ -n "$sha" ] && [ -f "$dest.part" ] && echo "$sha  $dest.part" | sha256sum -c --status 2>/dev/null; then
+    SUDO mv "$dest.part" "$dest"; log "have $(basename "$dest") (sha ok)"; return
+  fi
   log "download $(basename "$dest")"
-  if gated "$url"; then
-    # The token goes in on curl's stdin, never its arguments: those show in ps.
-    [ -n "$DL_TOKEN" ] || [ "$DRY_RUN" = 1 ] || die "no download token for $url: the engine license gate did not run"
-    printf 'Authorization: Bearer %s\n' "$DL_TOKEN" | SUDO curl -q -fL --retry 3 -H @- -C - -o "$dest.part" "$url" \
-      || die "download failed or refused: $url (a token lasts a day: run the installer again)"
-  else
-    SUDO curl -q -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
-  fi
-  if [ "$DRY_RUN" != 1 ]; then
-    # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
-    # stage is kept across runs, #158), and fail the same way each time.
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
-    SUDO mv "$dest.part" "$dest"
-  fi
+  if gated "$url" && [ -z "$DL_TOKEN" ]; then dl_token "$url"; fi
+  local code rc attempt
+  for attempt in 1 2; do
+    rc=0
+    if gated "$url"; then
+      # The token goes in on curl's stdin, never its arguments: those show in ps.
+      code="$(printf 'Authorization: Bearer %s\n' "$DL_TOKEN" \
+                | SUDO curl -q -fL --retry 3 -H @- -C - -w '%{http_code}' -o "$dest.part" "$url")" || rc=$?
+    else
+      code="$(SUDO curl -q -fL --retry 3 -C - -w '%{http_code}' -o "$dest.part" "$url")" || rc=$?
+    fi
+    [ "$rc" != 0 ] || break
+    # 416: the .part is as long as the file or longer, yet not it (checked above), so no
+    # resume can finish it: start again, once.
+    if [ "$code" = 416 ] && [ "$attempt" = 1 ]; then SUDO rm -f "$dest.part"; continue; fi
+    case "$code" in
+      401|403) die "download refused (HTTP $code): $url — run the installer again (a download token lasts a day)" ;;
+      *) die "download failed${code:+ (HTTP $code)} (is get.teaspoon.tech live?): $url" ;;
+    esac
+  done
+  # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
+  # stage is kept across runs, #158), and fail the same way each time.
+  [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
+  SUDO mv "$dest.part" "$dest"
 }
 
 # --- EULA --------------------------------------------------------------------
@@ -419,18 +439,32 @@ eula_identity() {
 
 # eula_token <api> <acceptance id> — a new download token for an acceptance recorded
 # earlier (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
-# license changed, or it has no such acceptance): accept again. Dies when it cannot ask.
+# license changed, or it has no such acceptance): accept again; 2 when it cannot be asked
+# now (no answer, busy, failing). Dies for a revoked acceptance. The id gets tokens until
+# the license changes, so it goes to python in its environment, never its arguments.
 eula_token() {
-  local out code; out="$(mktemp)"
-  code="$(api_post "$1/token" "$(python3 -I -c 'import json,sys; print(json.dumps({"acceptance_id": sys.argv[1]}))' "$2")" "$out")"
+  local out code why; out="$(mktemp)"
+  code="$(api_post "$1/token" "$(TEAPORT_ACCEPTANCE_ID="$2" python3 -I -c 'import json,os
+print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$out")"
+  why="$(api_field "$out" message)"
+  if [ "$code" = 200 ]; then DL_TOKEN="$(api_field "$out" token)"; fi
+  rm -f "$out"
   case "$code" in
-    200) DL_TOKEN="$(api_field "$out" token)"; rm -f "$out"
-         [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
-    409|404) warn "the license server asks for the engine license to be accepted again: $(api_field "$out" message)"
-             rm -f "$out"; return 1 ;;
-    *) local why; why="$(api_field "$out" message)"; rm -f "$out"
-       die "cannot get a download token from $1/token (HTTP $code${why:+: $why})" ;;
+    200) [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
+    409|404) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
+    403) die "the license server refuses this box's acceptance of the engine license${why:+: $why}" ;;
+    *) warn "cannot get a download token from $1/token now (HTTP $code${why:+: $why})"; return 2 ;;
   esac
+}
+
+# dl_token <url> — the download token, got when the first gated download needs it: the
+# license server could not be asked when eula_gate ran (EULA_API, EULA_ID).
+EULA_API="" EULA_ID=""
+dl_token() {
+  [ -n "$EULA_API" ] && [ -n "$EULA_ID" ] || die "no download token for $1: the engine license gate did not run"
+  local rc=0
+  eula_token "$EULA_API" "$EULA_ID" || rc=$?
+  [ "$rc" = 0 ] || die "cannot download $1 without a token from the license server: run the installer again"
 }
 
 # eula_record <api> <version> <sha256> <method> — record this acceptance with Teaspoon AI:
@@ -438,14 +472,15 @@ eula_token() {
 ACCEPTANCE_ID=""
 eula_record() {
   local out code body why
-  body="$(python3 -I -c 'import json,sys
-a = sys.argv[1:]
-d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3], "name": a[4],
-     "email": a[5], "use": a[6], "device_id": a[8]}
-if a[6] == "licensed":
-    d["license_id"] = a[7]
-print(json.dumps(d))' "$(mget channel 2>/dev/null || echo stable)" "$2" "$3" "$4" "$ACCEPT_NAME" "$ACCEPT_EMAIL" \
-        "$ACCEPT_USE" "$ACCEPT_LICENSE_ID" "$(device_id)")"
+  # Who accepts goes to python in its environment, not its arguments (ps shows those).
+  body="$(TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" \
+          python3 -I -c 'import json,os,sys
+a, e = sys.argv[1:], os.environ
+d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3], "name": e["TEAPORT_NAME"],
+     "email": e["TEAPORT_EMAIL"], "use": a[4], "device_id": a[5]}
+if a[4] == "licensed":
+    d["license_id"] = e["TEAPORT_LICENSE_ID"]
+print(json.dumps(d))' "$(mget channel 2>/dev/null || echo stable)" "$2" "$3" "$4" "$ACCEPT_USE" "$(device_id)")"
   out="$(mktemp)"
   code="$(api_post "$1/accept" "$body" "$out")"
   why="$(api_field "$out" message)"
@@ -471,7 +506,13 @@ eula_gate() {
       if [ "$DRY_RUN" = 1 ]; then
         printf '  [dry-run] engine license v%s already accepted: get a download token from %s\n' "$ver" "$api"; return
       fi
-      if eula_token "$api" "$id"; then log "engine license v$ver already accepted"; return; fi
+      local rc=0
+      eula_token "$api" "$id" || rc=$?
+      # 2: the server cannot be asked now. Nothing may need downloading (a repair); the
+      # first download that does asks again (dl_token).
+      if [ "$rc" = 0 ] || [ "$rc" = 2 ]; then
+        EULA_API="$api" EULA_ID="$id"; log "engine license v$ver already accepted"; return
+      fi
     else
       warn "this box's acceptance of engine license v$ver is not recorded with Teaspoon AI — accept it again"
     fi
@@ -524,15 +565,16 @@ eula_gate() {
   # The receipt is root's and 0600: its acceptance id gets download tokens.
   own_dir "$STATE"
   SUDO install -m 0644 "$txt" "$STATE/EULA-v$ver.txt"
-  local rec; rec="$(python3 -I -c 'import json,sys
-a = sys.argv[1:]
+  local rec; rec="$(TEAPORT_ACCEPTANCE_ID="$ACCEPTANCE_ID" TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" \
+    TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" python3 -I -c 'import json,os,sys
+a, e = sys.argv[1:], os.environ
 d = {"version": a[0], "sha256": a[1], "date": a[2], "user": a[3], "method": a[4]}
-if a[5]:
-    d.update(acceptance_id=a[5], recorded_with=a[6], name=a[7], email=a[8], use=a[9])
-    if a[9] == "licensed":
-        d["license_id"] = a[10]
-print(json.dumps(d))' "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" "$ACCEPTANCE_ID" "$api" \
-    "$ACCEPT_NAME" "$ACCEPT_EMAIL" "$ACCEPT_USE" "$ACCEPT_LICENSE_ID")"
+if e["TEAPORT_ACCEPTANCE_ID"]:
+    d.update(acceptance_id=e["TEAPORT_ACCEPTANCE_ID"], recorded_with=a[5], name=e["TEAPORT_NAME"],
+             email=e["TEAPORT_EMAIL"], use=a[6])
+    if a[6] == "licensed":
+        d["license_id"] = e["TEAPORT_LICENSE_ID"]
+print(json.dumps(d))' "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" "$api" "$ACCEPT_USE")"
   # 0600 before the id is written into it: tee keeps the mode of the file it truncates.
   SUDO install -m 0600 /dev/null "$EULA_RECEIPT"
   printf '%s\n' "$rec" | SUDO tee "$EULA_RECEIPT" >/dev/null

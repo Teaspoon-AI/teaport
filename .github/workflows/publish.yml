@@ -68,7 +68,14 @@ jobs:
         # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
         env:
           DL_CHECK_TOKEN: ${{ github.event_name != 'pull_request' && secrets.DL_CHECK_TOKEN || '' }}
+          EVENT: ${{ github.event_name }}
         run: |
+          # Without the token the gated files are checked only for refusing a download: a
+          # pull request's run. Any other run must compare them, so it needs the secret.
+          if [ "$EVENT" != pull_request ] && [ -z "$DL_CHECK_TOKEN" ]; then
+            echo "::error::DL_CHECK_TOKEN is not set: the gated engine files cannot be checked (see the header)"
+            exit 1
+          fi
           python3 manifest/check.py manifest/stable.json
           python3 manifest/check.py --placeholders-ok manifest/beta.json
 

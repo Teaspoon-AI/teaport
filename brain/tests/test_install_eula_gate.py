@@ -55,8 +55,13 @@ curl() {
       [ "$status" = 000 ] && return 7
       printf '%s' "${reply#* }" > "$out"; printf '%s' "$status" ;;
     */eula/*) printf '%s' "$LICENSE_TEXT" > "$out" ;;
-    *) local h=""; [ "$header_stdin" = 1 ] && h="$(cat)"
-       printf '%s|%s\n' "$url" "$h" >> "$T/dl.log"; printf 'bytes of %s' "$url" > "$out" ;;
+    *) local h="" n status; [ "$header_stdin" = 1 ] && h="$(cat)"
+       printf '%s|%s\n' "$url" "$h" >> "$T/dl.log"
+       # FAKE_DL: the status of each download in turn ("416 200"), 200 when it runs out.
+       n="$(wc -l < "$T/dl.log")"; status="$(echo "${FAKE_DL:-}" | cut -d' ' -f"$n")"; status="${status:-200}"
+       [ -z "$code_fmt" ] || printf '%s' "$status"
+       [ "$status" = 200 ] || return 22
+       printf 'bytes of %s' "$url" > "$out" ;;
   esac
 }
 own_dir() { mkdir -p "$1"; }
@@ -64,7 +69,7 @@ less() { cat "$@"; }
 '''
 
 FNS = ("fetch_manifest", "mget", "gated", "download", "receipt_get", "api_post", "api_field",
-       "device_id", "eula_identity", "eula_token", "eula_record", "eula_gate")
+       "device_id", "eula_identity", "eula_token", "dl_token", "eula_record", "eula_gate")
 
 
 def _manifest(tmp, access=True, version="1.0"):
@@ -80,7 +85,7 @@ def _manifest(tmp, access=True, version="1.0"):
 def _script(tmp, body, **env):
     head = STUBS + FAKE_CURL + "".join(_fn(f) for f in FNS)
     head += ('STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
-             'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"\n'
+             'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID=""\n'
              'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_NAME="${ACCEPT_NAME:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
              'ACCEPT_LICENSE_ID="${ACCEPT_LICENSE_ID:-}"\n')
     # TMPDIR: the functions' own mktemp files (the manifest, the license text) land in the
@@ -198,8 +203,8 @@ def test_the_server_asking_again_means_accepting_again():
                    FAKE_ACCEPT='200 {"acceptance_id": "acc-second-one", "token": "tok-2"}', **WHO)
     assert rc == 0 and "TOKEN=tok-2" in out, out
     assert _receipt(tmp_path)["acceptance_id"] == "acc-second-one"
-    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='503 {"message": "down"}')
-    assert rc == 1 and "cannot get a download token" in out and "(HTTP 503: down)" in out, out
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='403 {"message": "this acceptance was revoked"}')
+    assert rc == 1 and "refuses this box's acceptance of the engine license: this acceptance was revoked" in out, out
 
 
 def test_a_receipt_never_recorded_with_teaspoon_ai_is_accepted_again():
@@ -296,6 +301,56 @@ def test_the_parser_wants_a_version_and_values():
         assert p.returncode == 2 and want in p.stderr, (args, p.stderr)
     p = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True)
     assert "--accept-eula=<version> --name <name> --email <email>" in p.stdout, p.stdout
+
+
+
+def test_a_server_that_cannot_be_asked_now_stops_only_a_download_that_needs_it():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    assert _run(tmp_path, GATE, ACCEPT_EULA="1.0", **WHO)[0] == 0
+    down = '503 {"message": "down"}'
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN=down)   # a repair with everything in place
+    assert rc == 0 and "cannot get a download token" in out and "(HTTP 503: down)" in out and "TOKEN=\n" in out, out
+    get = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n'
+    rc, out = _run(tmp_path, get, FAKE_TOKEN=down)
+    assert rc == 1 and "cannot download https://get.teaspoon.tech/dl/engine/e without a token" in out, out
+    assert [w for w, _ in _api(tmp_path)][-2:] == ["token", "token"]   # asked again at the download
+    pathlib.Path(tmp_path, "api.log").unlink()
+    rc, out = _run(tmp_path, GATE + 'FAKE_TOKEN=\'200 {"token": "tok-later"}\'\n'
+                   + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n', FAKE_TOKEN=down)
+    assert rc == 0 and "GOT" in out, out
+    assert pathlib.Path(tmp_path, "dl.log").read_text().splitlines()[-1].endswith("Bearer tok-later")
+
+
+def test_a_part_left_whole_is_taken_and_one_past_the_end_starts_again():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    url = "https://get.teaspoon.tech/dl/engine/e"
+    whole = f"bytes of {url}"
+    sha = hashlib.sha256(whole.encode()).hexdigest()
+    body = f'fetch_manifest; DL_TOKEN=tok\ndownload {url} "$T/e" {sha}\necho DONE\n'
+    (tmp_path / "e.part").write_text(whole)                       # curl finished, the check did not
+    rc, out = _run(tmp_path, body)
+    assert rc == 0 and "DONE" in out and not (tmp_path / "dl.log").exists(), out
+    assert (tmp_path / "e").read_text() == whole
+    (tmp_path / "e").unlink()
+    (tmp_path / "e.part").write_text(whole + " and more")          # longer than the file
+    rc, out = _run(tmp_path, body, FAKE_DL="416 200")
+    assert rc == 0 and "DONE" in out and (tmp_path / "e").read_text() == whole, out
+    assert len((tmp_path / "dl.log").read_text().splitlines()) == 2
+    (tmp_path / "e").unlink(); (tmp_path / "dl.log").unlink()
+    rc, out = _run(tmp_path, body, FAKE_DL="416 416")
+    assert rc == 1 and "download failed (HTTP 416)" in out, out
+    (tmp_path / "dl.log").unlink()
+    rc, out = _run(tmp_path, body, FAKE_DL="401")
+    assert rc == 1 and f"download refused (HTTP 401): {url}" in out, out
+
+
+def test_the_acceptance_id_and_who_accepted_never_reach_a_command_line():
+    for fn in ("eula_token", "eula_record", "eula_gate"):
+        body = _fn(fn)
+        for secret in ('"$2")', '"$ACCEPTANCE_ID" "', '"$ACCEPT_NAME" "', '"$ACCEPT_EMAIL" "'):
+            assert secret not in body.replace('TEAPORT_ACCEPTANCE_ID="$2"', ""), (fn, secret)
 
 
 if __name__ == "__main__":

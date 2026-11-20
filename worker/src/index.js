@@ -246,7 +246,7 @@ const DENIED = "This file downloads only after the Teaport Engine License is acc
 
 // Who may download: "ci" for CHECK_TOKEN, an acceptance id, or a Response refusing.
 async function authorize(request, env, now) {
-  const m = /^Bearer ([A-Za-z0-9._-]{1,2048})$/.exec(request.headers.get("authorization") ?? "");
+  const m = /^Bearer ([A-Za-z0-9._~+/-]{1,2048}=*)$/.exec(request.headers.get("authorization") ?? "");   // RFC 6750 token68
   if (!m) return fail(401, "license_not_accepted", DENIED, { "www-authenticate": "Bearer" });
   if (env.CHECK_TOKEN && await sameSecret(m[1], env.CHECK_TOKEN)) return "ci";
   const claims = await readToken(env, m[1], now);

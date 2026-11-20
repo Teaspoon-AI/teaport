@@ -538,6 +538,8 @@ def test_the_trees_an_older_installer_gave_away_are_rebuilt_not_taken_over():
         assert not os.path.lexists(brain / gone), gone
     # $STATE: the license records and the notes; no download, no stray name.
     assert sorted(os.listdir(state)) == [".root-layout", "EULA-v1.0.txt", "eula-accepted.json", "journald.applied"], os.listdir(state)
+    # The license receipt stays root's alone: it holds the acceptance's id (eula_gate).
+    assert os.stat(state / "eula-accepted.json").st_mode & 0o777 == 0o600
     # No ACL anywhere in the new trees.
     if acl:
         out = subprocess.run(["getfacl", "-Rsp", str(prefix), str(state)], capture_output=True, text=True).stdout
