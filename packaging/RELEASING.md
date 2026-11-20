@@ -129,6 +129,31 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 
+## Release candidates
+
+A candidate is the next release, tested on spare boxes and the beta channel before
+it gets its final number. Tag `brain-vX.Y.Z-rcN` (N from 1, no leading zero) on main,
+where X.Y.Z is `BASE_VERSION`. CI builds version **`X.Y.Z~rcN`**:
+`teaport-brain_X.Y.Z~rcN_arm64.deb`.
+
+```sh
+git tag brain-vX.Y.Z-rcN <commit>   # on main
+git push origin brain-vX.Y.Z-rcN
+TEAPORT_DEB_PRINT_VERSION=1 TEAPORT_DEB_VERSION=X.Y.Z-rcN packaging/build-deb.sh  # at the tag: prints X.Y.Z~rcN
+```
+
+- Debian's `~` sorts before anything, so the order is
+  dev builds (`X.Y.Z~devM+g…`) < `X.Y.Z~rc1` < `X.Y.Z~rc2` < `X.Y.Z`. Each candidate,
+  and then the release, installs over the one before it as an upgrade, and
+  `teaport update` and `update_apply.not_older` order them the same way.
+- `BASE_VERSION` stays X.Y.Z through the candidates. Bump it only after the final
+  `brain-vX.Y.Z` tag.
+- Test a candidate the same way as a release (above). A candidate goes on the
+  **beta** channel only: `manifest/beta.json` gets its `brain` entry, with `tag` set to
+  the candidate's tag. Stable never names a candidate.
+- Upload it under its own name, as above. Like a release, a candidate's file is never
+  overwritten: a fix is the next candidate.
+
 ## After
 
 - [ ] From a box, with no `TEAPORT_BRAIN_DEB`: `./install.sh --only brain --dry-run` prints
