@@ -63,7 +63,7 @@ from teaport_brain.gateway_serializer import (
     TeaportGatewaySerializer,
 )
 from teaport_brain.captions import sends_every_final
-from teaport_brain.engine_tts import pacing_status
+from teaport_brain.engine_tts import pacing_status, prefetch_served_voices
 from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import freeze_startup_objects, turn_reclaim
@@ -675,6 +675,9 @@ async def _lifespan(_app):
     # OpenClaw's restart for a key it was given, and the first look at whether it already
     # has the brain's (agent_key.py, #281): only while nothing is live -- a call asking for
     # the engine counts as live already.
+    # The voices the engine's model holds (engine_tts.served_voices), asked here so no
+    # session blocks on the question: a few seconds' asks until the engine is up.
+    voices = asyncio.create_task(prefetch_served_voices())
     restarter = asyncio.create_task(agent_key.RESTARTER.run(
         live=lambda: arb.ARBITER.anything_live() or arb.ARBITER.status()["call"],
         listeners=arb.ARBITER.listeners, brain=ai_account.brain_key))
@@ -683,7 +686,7 @@ async def _lifespan(_app):
     finally:
         for name, t in (("busy lamp", lamp), ("first-boot watcher", watcher),
                         ("credit monitor", monitor), ("update check", updater),
-                        ("browser idle stop", browser),
+                        ("browser idle stop", browser), ("engine voice list", voices),
                         ("agent key restarter", restarter)):
             err = await cancel_and_wait(t)
             if err is not None:  # it had ended on its own, with this

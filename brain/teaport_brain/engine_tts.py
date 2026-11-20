@@ -357,25 +357,47 @@ VOICE_NAMES = {
 # model lacks is accepted by switch_voice and then refused by the engine on every
 # request: the rest of the session mute. Asked once; an answer is kept for the process
 # (the model changes only with an engine install, which restarts the brain too), a
-# failure is not, so the next session asks again.
+# failure is not, so the next session asks again. The brain asks at startup, off the
+# event loop (prefetch_served_voices), so a session normally finds the answer kept and
+# never makes the blocking call itself.
 _ENGINE_HTTP = "http" + _ENGINE_WS[2:] if _ENGINE_WS.startswith("ws") else _ENGINE_WS
 _served_voices = None
 
 
-def served_voices(timeout: float = 1.0):
+def served_voices(timeout: float = 1.0, quiet: bool = False):
     """The voice ids the engine's model holds (a frozenset), or None when the engine
-    could not be asked or gave no list (then nothing is withheld: as before)."""
+    could not be asked or gave no list (then nothing is withheld: as before). A list
+    naming none of ENGINE_VOICES (not a teaport engine's) counts as no list: kept, it
+    would offer no voice at all. `quiet`: a failure is logged at debug only."""
     global _served_voices
     if _served_voices is None:
         try:
             with urllib.request.urlopen(_ENGINE_HTTP + "/v1/audio/voices",
                                         timeout=timeout) as r:
                 voices = json.load(r).get("voices")
-            if isinstance(voices, list) and voices:
-                _served_voices = frozenset(str(v) for v in voices)
+            served = (frozenset(v for v in voices if isinstance(v, str))
+                      if isinstance(voices, list) else frozenset())
+            if any(v in served for vs in ENGINE_VOICES.values() for v in vs):
+                _served_voices = served
+                withheld = sorted(v for vs in ENGINE_VOICES.values() for v in vs
+                                  if v not in served)
+                logger.info(f"engine voices: {len(served)}"
+                            + (f"; not in its model: {', '.join(withheld)}" if withheld else ""))
+            else:
+                raise ValueError(f"no known voice in {str(voices)[:80]}")
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"engine voice list unavailable, offering every voice: {e!r}")
+            (logger.debug if quiet else logger.warning)(
+                f"engine voice list unavailable, offering every voice: {e!r}")
     return _served_voices
+
+
+async def prefetch_served_voices(tries: int = 24, every_s: float = 5.0) -> None:
+    """Ask the engine for its voices at brain startup, off the event loop, until it
+    answers (the engine can come up after the brain): `tries` asks `every_s` apart."""
+    for i in range(tries):
+        if await asyncio.to_thread(served_voices, 1.0, i < tries - 1) is not None:
+            return
+        await asyncio.sleep(every_s)
 
 
 def offered_voices(served=None) -> dict:

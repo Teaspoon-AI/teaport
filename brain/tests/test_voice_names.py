@@ -126,6 +126,27 @@ def test_an_engine_that_cannot_be_asked_withholds_nothing():
         assert set(enum) == ALL
 
 
+def test_a_list_naming_no_known_voice_is_no_answer():
+    """A server that is not a teaport engine (voice objects, other names) must not
+    leave the enum empty: it counts as unanswered, so every voice is offered."""
+    import io
+    import json as _json
+    saved, ask = engine_tts._served_voices, engine_tts.urllib.request.urlopen
+    try:
+        for body in ({"voices": [{"id": "x"}]}, {"voices": ["alloy", "nova"]}, {"voices": []}):
+            engine_tts._served_voices = None
+            engine_tts.urllib.request.urlopen = (
+                lambda *a, _b=body, **k: io.BytesIO(_json.dumps(_b).encode()))
+            assert engine_tts.served_voices(quiet=True) is None, body
+            assert engine_tts.offered_voices() == ENGINE_VOICES
+        engine_tts._served_voices = None
+        engine_tts.urllib.request.urlopen = (
+            lambda *a, **k: io.BytesIO(_json.dumps({"voices": sorted(OLD_MODEL)}).encode()))
+        assert engine_tts.served_voices() == OLD_MODEL
+    finally:
+        engine_tts._served_voices, engine_tts.urllib.request.urlopen = saved, ask
+
+
 def test_a_language_the_model_lacks_entirely_is_dropped():
     assert "cmn" not in engine_tts.offered_voices(frozenset({"af_heart"}))
 
