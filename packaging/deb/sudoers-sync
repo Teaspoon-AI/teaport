@@ -87,12 +87,18 @@ printf '%s\n' \
   "# takes Wi-Fi requests only. See wifi_apply.py." \
   "$user ALL=(root) NOPASSWD: /usr/bin/python3 $wifi *" > "$tmp"
 # The owner's login helper (#421), its own line in the same file. NOLOG_INPUT: its stdin is
-# the owner's new password, which sudo's I/O logging (log_input), where a box has it on,
-# would otherwise keep.
+# the owner's new password, which classic sudo's I/O logging (log_input), where a box has
+# it on, would otherwise keep. Only for classic sudo: sudo-rs has no I/O logging, so the
+# tag would protect nothing, and its visudo refuses the tag outright ("this tag is ignored
+# by sudo-rs") -- which would fail the check below and drop every line here.
+login_tags="NOLOG_INPUT:"
+case "$( { sudo --version; visudo --version; } 2>/dev/null)" in
+  *sudo-rs*) login_tags="" ;;
+esac
 printf '%s\n' \
   "# teaport: the setup page and Settings create the owner's login through this one, once," \
   "# on a box provisioning marked for it. See login_apply.py." \
-  "$user ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 $login *" >> "$tmp"
+  "$user ALL=(root) NOPASSWD:$login_tags /usr/bin/python3 $login *" >> "$tmp"
 if ! { [ -f "$f" ] && cmp -s "$tmp" "$f"; }; then
   visudo -cf "$tmp" >/dev/null || { echo "sudoers-sync: the generated lines do not pass visudo; $f left as it was" >&2; exit 1; }
   install -m 0440 -o root -g root "$tmp" "$f"

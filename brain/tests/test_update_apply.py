@@ -86,6 +86,17 @@ def _status(mod):
 
 # --- the helper ----------------------------------------------------------------------
 
+def _sudo_is_rs() -> bool:
+    """This machine's sudo is sudo-rs (sudoers-sync leaves NOLOG_INPUT out for it)."""
+    out = ""
+    for tool in ("sudo", "visudo"):
+        try:
+            out += subprocess.run([tool, "--version"], capture_output=True, text=True).stdout
+        except OSError:
+            pass
+    return "sudo-rs" in out
+
+
 def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     tmp = tempdir("teaport-apply-")
     mod = _helper(_state(tmp))
@@ -1145,7 +1156,8 @@ def test_the_package_ships_the_helper_its_unit_and_the_polkit_rule_that_starts_i
     lines = [ln for ln in pathlib.Path(tmp, "out").read_text().splitlines() if not ln.startswith("#")]
     assert lines == ["bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/helper *",
                      "bob ALL=(root) NOPASSWD: /usr/bin/python3 " + f"{tmp}/wifi *",
-                     "bob ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 " + f"{tmp}/login *"], lines
+                     "bob ALL=(root) NOPASSWD:" + ("" if _sudo_is_rs() else "NOLOG_INPUT:")
+                     + " /usr/bin/python3 " + f"{tmp}/login *"], lines   # the tag: classic sudo only
     rule = pathlib.Path(tmp, "rules.d/50-teaport-update.rules").read_text()
     for want in ('action.id == "org.freedesktop.systemd1.manage-units"', 'action.lookup("unit") == "teaport-update.service"',
                  'action.lookup("verb") == "start"', 'subject.user == "bob"', "return polkit.Result.YES"):
