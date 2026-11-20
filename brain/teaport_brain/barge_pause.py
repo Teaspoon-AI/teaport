@@ -815,6 +815,12 @@ def is_stop_utterance(text: str, stop_words=STOP_WORDS) -> bool:
 #
 #   * Whole turns only: the commit's words, every segment of the turn. "Wait, what time
 #     is it?" is a turn; so is "Okay, wait." followed, in the same turn, by the question.
+#     And the turn, not one commit of it: a stop that FOLLOWS, in the same turn, words
+#     the model was already asked on (a turn committed on its first words while the
+#     caller talks on, its finalize refused: the rest commits at their VAD stop) is not
+#     held unless the fence dropped that reply for it -- held, the stop was discarded
+#     and the reply it was said over played on (formal/ReplyWait.tla, HOLD;
+#     rw_holdAnyCommit).
 #   * Only a turn that cut something: it began over the audible bot (or its speech
 #     did -- the VAD's start, or the onset test where it is speech, before the bot went
 #     quiet: words said over the reply's last syllables, their final after it; speech
@@ -934,6 +940,17 @@ def is_bare_stop(text: str, stop_words=STOP_WORDS) -> bool:
 #     the TTS: an empty answer, one with no text the TTS would speak, a tool round that
 #     asks for none). Nothing is in flight to cut, and words joined to the turn would go
 #     unanswered;
+#   * and it never begins for a turn already answered when it stops. A turn can stop
+#     AFTER its reply: the stop strategy concluding while the VAD still hears the caller
+#     commits the turn (the model is asked) and pipecat refuses the finalize, so the
+#     turn stays open until their VAD stop -- by when the reply may be playing, have
+#     played, or have ended unspoken. Awaited from that stop, a reply that had played
+#     kept the wait open for 10 s after it: the caller's next unheard word joined a turn
+#     already answered, and a "Wait." said to the finished reply began "in the wait", so
+#     it read as a turn that cut something and was held, nothing asked (2026-11-19
+#     audit; formal/ReplyWait.tla, WaitOnlyInFlight, rw_waitAtStop). The cut fence tells
+#     the strategy of each commit (hold_bare_stop), so it knows when the open turn has
+#     the model asked, and whether anything has answered that since (_answered);
 #   * REPLY_WAIT_S (10 s) after the commit: a reply that never comes, one that ends
 #     unspoken in a way the tap does not see (a synthesis that fails), and a consult
 #     with nothing said for that long -- else a caller the VAD missed, minutes on, would
@@ -1046,6 +1063,12 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         self._speech_at = None
         self._turn_cut = False
         self._held = False
+        # THE WAIT, for a turn that stops after its reply: the open turn has a commit the
+        # model was asked on (hold_bare_stop passed it), and that commit -- the latest
+        # such -- has been answered since, the turn still open (the bot audible, or the
+        # reply ended unspoken). formal/ReplyWait.tla: sAsked, sAnswered.
+        self._turn_asked = False
+        self._answered = False
         # speculate.Speculator, where the session has one: a held turn's speculation
         # stands down (agent_session). () -> None: told of each hold (owed.Owed.caller_waits).
         self.speculator = None
@@ -1084,6 +1107,13 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             logger.info(f"{self}: the reply to the last turn ended unspoken ({why}) -- "
                         "words heard after it are a turn again (#22)")
         self._reply_due = self._tail_open = False
+        self._answer()
+
+    def _answer(self):
+        """Something has answered the open turn's asked commit -- the bot audible, or the
+        reply ended unspoken: its stop, when it comes, awaits no reply (THE WAIT)."""
+        if self._turn_open and self._turn_asked:
+            self._answered = True
 
     def _waiting(self) -> bool:
         """The reply to the last turn is still to come: THE WAIT."""
@@ -1114,6 +1144,7 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             # The wait is over, a tail's segment with it: from here every word is
             # counted as one over the bot (THE WAIT).
             self._audible, self._reply_due, self._tail_open = True, False, False
+            self._answer()
             self._unspoke()
         elif isinstance(frame, (BotStoppedSpeakingFrame, InterruptionFrame)):
             if self._audible:
@@ -1137,12 +1168,16 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
                               and self._speech_at < self._quiet_at))
         await super().handle_user_turn_started()
         self._turn_open, self._turn_words, self._held = True, False, False
+        self._turn_asked = self._answered = False
         self._reply_due = self._tail_open = False
 
     async def handle_user_turn_stopped(self):
         await super().handle_user_turn_stopped()
         self._turn_open = False
-        self._reply_due, self._due_at = self._turn_words, time.monotonic()
+        # Awaited only if nothing has answered the turn's last asked commit yet: this
+        # stop may be a refused finalize's, re-applied after the reply began (THE WAIT).
+        self._reply_due = self._turn_words and not self._answered
+        self._due_at = time.monotonic()
 
     async def hold_bare_stop(self, text: str, dropped: bool = False) -> bool:
         """CutReplyFence.holds: whether the commit of `text` is held (A BARE STOP) --
@@ -1151,11 +1186,10 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         caller's words go on record as taken (TakenWords), a speculation asked on them
         stands down, and no reply is awaited (THE WAIT), so the caller's next words are
         a turn of their own, not a tail of these."""
-        if not ((dropped or self._turn_cut) and is_bare_stop(text, self._stop_words)):
-            return False
-        if self.never_holds is not None and self.never_holds():
-            logger.info(f"{self}: {quoted(text.strip())} is only a stop, but the incoming-call "
-                        "question is open -- it is the answer, the model's to pass on")
+        if not self._holds(text, dropped):
+            # Passed on: the model is asked on these words, and nothing has answered
+            # them yet (THE WAIT; a later commit of this turn is no bare stop of its own).
+            self._turn_asked, self._answered = True, False
             return False
         # No reply is awaited: the turn's words are gone, as a taken final's are (_note),
         # whether its stop comes before this commit or after it (a commit on the stop
@@ -1171,6 +1205,19 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             self.on_held()
         if self.taken_words is not None:
             await self.taken_words.took(text, "held: only a stop, which nothing answers")
+        return True
+
+    def _holds(self, text: str, dropped: bool) -> bool:
+        """Whether hold_bare_stop holds this commit: only a stop, in a turn that cut a
+        reply and has had the model asked on nothing yet -- or one the fence dropped an
+        unplayed reply for -- and not while the incoming-call question is open."""
+        if not ((dropped or (self._turn_cut and not self._turn_asked))
+                and is_bare_stop(text, self._stop_words)):
+            return False
+        if self.never_holds is not None and self.never_holds():
+            logger.info(f"{self}: {quoted(text.strip())} is only a stop, but the incoming-call "
+                        "question is open -- it is the answer, the model's to pass on")
+            return False
         return True
 
     def deliberately_silent(self) -> bool:

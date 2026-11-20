@@ -70,9 +70,11 @@ from test_zero_length_final import (  # noqa: E402
     QUESTION,
     SR,
     STARTUP_S,
+    CommitNow,
     InFlightLLM,
     Rig,
     Session,
+    final,
 )
 from turn_harness import running_controller  # noqa: E402
 
@@ -82,7 +84,11 @@ from teaport_brain.barge_pause import (  # noqa: E402
     PauseAwareMinWordsStrategy,
     is_bare_stop,
 )
-from teaport_brain.endpointing import CutReplyFence, SegmentDoneFrame  # noqa: E402
+from teaport_brain.endpointing import (  # noqa: E402
+    CutReplyFence,
+    SegmentDoneFrame,
+    keep_barge_in_reachable,
+)
 from teaport_brain.taken_turn import TakenWords  # noqa: E402
 
 STOP = "Okay, wait."
@@ -255,6 +261,96 @@ async def test_a_stop_with_nothing_to_cut_is_the_models():
         assert rig.starts() == 2, rig.events
         assert not await rig.start.hold_bare_stop("Stop.")
         assert not rig.start.deliberately_silent()
+
+
+async def _answered_turn(rig, stop):
+    """A first turn, committed and stopped (CommitNow concludes when told to), and its
+    reply playing."""
+    await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await rig.audio(0.3)
+    await rig.feed(InterimTranscriptionFrame(QUESTION, "u", "t"))
+    await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+    await rig.feed(final(QUESTION, 1))
+    assert not await rig.start.hold_bare_stop(QUESTION)
+    await stop.commit()
+    assert rig.events == ["start", "stop"], rig.events
+    await rig.feed(BotStartedSpeakingFrame())
+
+
+async def test_a_stop_after_a_reply_that_played_under_an_open_turn_is_the_models():
+    """Audit 2026-11-19 (formal/ReplyWait.tla, rw_waitAtStop_held). A turn committed
+    while the caller talks on stays open (its finalize refused) until their VAD stop,
+    and its reply can play before that stop. The stop then opened the reply's wait for a
+    reply that had played, so a "Wait." said to the finished reply began "in the wait":
+    read as a turn that cut something, it was held, and nothing was asked. Nothing was
+    cut: it is the model's, as after any reply that has ended."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.feed(InterimTranscriptionFrame(QUESTION, "u", "t"))
+        await rig.feed(final(QUESTION, None))
+        assert not await rig.start.hold_bare_stop(QUESTION)   # the commit, at the fence
+        await stop.commit()                                   # refused: they talk on
+        await rig.feed(BotStartedSpeakingFrame())             # the reply, the turn open
+        await rig.feed(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        assert rig.events == ["start", "stop"], rig.events
+        await rig.feed(BotStoppedSpeakingFrame())             # it has played
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(0.3)
+        await rig.feed(InterimTranscriptionFrame("Wait", "u", "t"))
+        assert rig.starts() == 2, rig.events
+        assert not await rig.start.hold_bare_stop("Wait."), (
+            "a stop said to a reply that had finished was held")
+        assert not rig.start.deliberately_silent()
+
+
+async def test_a_stop_after_words_the_model_was_asked_on_in_the_same_turn_is_not_held():
+    """Audit 2026-11-19 (formal/ReplyWait.tla, HOLD; rw_holdAnyCommit). A turn that cut
+    a reply is committed on "What about Tuesday?" while the caller talks on; they add
+    "Wait.", which commits alone at their VAD stop. The turn is not a bare stop -- the
+    model has been asked on its question -- and with no fence drop (Talk, the room)
+    nothing was cut for this commit: held, the stop was discarded and the reply to the
+    question played on. It is passed on. Where the fence dropped that reply for it
+    (`dropped`), it is held, as before."""
+    for dropped in (False, True):
+        stop = CommitNow()
+        rig = Rig(stop=stop)
+        keep_barge_in_reachable(rig.controller)
+        async with running_controller(rig.controller):
+            await _answered_turn(rig, stop)                   # its reply plays
+            await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.audio(0.3)
+            await rig.feed(InterimTranscriptionFrame("What about Tuesday", "u", "t"))
+            assert rig.starts() == 2, rig.events              # a turn that cut the reply
+            await rig.feed(final("What about Tuesday?", None))
+            assert not await rig.start.hold_bare_stop("What about Tuesday?")
+            await stop.commit()                               # refused: they talk on
+            await rig.feed(final("Wait.", None))
+            held = await rig.start.hold_bare_stop("Wait.", dropped)
+            assert held is dropped, (
+                f"dropped={dropped}: a stop after words already asked on, in one turn")
+
+
+async def test_a_held_stop_then_the_question_in_the_same_turn_is_asked():
+    """The other order, unchanged: "Okay, wait." is held at its commit, the caller goes
+    on in the same turn, and the question that follows is the model's."""
+    stop = CommitNow()
+    rig = Rig(stop=stop)
+    keep_barge_in_reachable(rig.controller)
+    async with running_controller(rig.controller):
+        await _answered_turn(rig, stop)
+        await rig.feed(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(0.3)
+        await rig.feed(InterimTranscriptionFrame("Okay wait", "u", "t"))
+        assert rig.starts() == 2, rig.events
+        assert await rig.start.hold_bare_stop(STOP)
+        await stop.commit()                                   # refused: they talk on
+        await rig.feed(final("What time is it?", None))
+        assert not await rig.start.hold_bare_stop("What time is it?")
+        await rig.feed(final("Wait.", None))                  # and a stop after THAT
+        assert not await rig.start.hold_bare_stop("Wait.")
 
 
 async def test_a_stop_said_over_the_replys_last_words_is_held():
