@@ -242,21 +242,27 @@ def test_it_runs_with_the_credentials_known():
     assert "phase_agent_memory" not in main
 
 
-def _agent(state, fail=""):
+def _agent(state, fail="", start_then_fail=False):
     """agent_openclaw with every step it calls stubbed: (rc, log, the ordered calls). state:
-    the gateway unit's ActiveState; fail: an openclaw subcommand ("plugins install") that fails."""
+    the gateway unit's ActiveState at the start (systemctl stop/start change it); fail: an
+    openclaw subcommand ("plugins install") that fails; start_then_fail: `gateway start`
+    starts the unit and then fails (slow to report ready), else a failing one starts nothing."""
     t = pathlib.Path(tempdir())
     calls = t / "calls"
     bin_ = t / "bin"
     bin_.mkdir()
+    st = t / "state"
+    st.write_text(state + "\n")
     for name, body in (("systemctl", f'echo "systemctl $*" >> "{calls}"\n'
-                                     f'if [ "$2" = show ]; then echo {state}; fi\nexit 0\n'),
+                                     f'case "$2" in show) cat "{st}";; stop) echo inactive > "{st}";; start) echo active > "{st}";; esac\n'
+                                     'exit 0\n'),
                        ("loginctl", "echo Linger=yes\n")):
         (bin_ / name).write_text("#!/bin/bash\n" + body)
         (bin_ / name).chmod(0o755)
     oc = t / "openclaw"
     oc.write_text(f'#!/bin/bash\necho "openclaw $*" >> "{calls}"\n'
-                  f'[ "$1 $2" = {json.dumps(fail)} ] && exit 7\nexit 0\n')
+                  + (f'[ "$1 $2" = "gateway start" ] && echo active > "{st}"\n' if start_then_fail or not fail else "")
+                  + f'[ "$1 $2" = {json.dumps(fail)} ] && exit 7\nexit 0\n')
     oc.chmod(0o755)
     stubs = "".join(f'{fn}() {{ echo "{fn}" >> "{calls}"; }}\n' for fn in (
         "resolve_gateway_token", "write_talk_patch", "add_docs_to_openclaw_wiki",
@@ -293,12 +299,24 @@ def test_a_running_gateway_is_stopped_for_the_changes_and_started_once():
     assert rc == 0 and not [c for c in calls if " stop " in c] and "openclaw gateway restart" in calls, calls
 
 
-def test_a_gateway_slow_to_report_ready_is_said_not_a_failed_install():
-    # `gateway start` waits for the gateway to report ready (45 s); slower is said, and the
-    # install goes on (the token, the services, the front door).
+def test_a_failed_gateway_start_is_said_and_never_leaves_it_stopped():
+    # `gateway start` waits for the gateway to report ready (45 s): slower, it has started it,
+    # so that is said and the install goes on (the token, the services, the front door).
+    rc, log, calls = _agent("active", fail="gateway start", start_then_fail=True)
+    assert rc == 0 and "did not start or report ready" in log, log
+    assert "systemctl --user start openclaw-gateway.service" not in calls, calls
+    # It can also refuse before starting anything (a state dir of its own, a config it finds
+    # invalid): then systemd starts the unit as it is, and the install goes on.
     rc, log, calls = _agent("active", fail="gateway start")
-    assert rc == 0 and "did not report ready" in log, log
-    assert "systemctl --user start openclaw-gateway.service" not in calls, calls   # trap cleared, not fired
+    assert rc == 0 and "did not start or report ready" in log, log
+    assert calls.index("openclaw gateway start") < calls.index("systemctl --user start openclaw-gateway.service"), calls
+
+
+def test_verify_checks_a_host_gateway_is_listening():
+    # Caddy listens on :443 whether or not the gateway behind it is up.
+    verify = _fn("phase_verify")
+    assert 'if [ "$AGENT_MODE" = openclaw ]; then' in verify and ':$GATEWAY_PORT ' in verify, verify
+    assert "OpenClaw gateway :$GATEWAY_PORT not listening" in verify and "ok=0" in verify.split("not listening — Talk")[1][:80]
 
 
 def test_a_run_that_stops_on_the_way_starts_the_gateway_again():

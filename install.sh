@@ -2357,10 +2357,18 @@ JSON
     cap_openclaw_heap || true
     if [ -n "$gw_stopped" ]; then
       # OpenClaw's own start, not systemctl's: it repairs a unit whose --port or program no
-      # longer matches the config (gateway.port was just set) and waits for it to be up. A
-      # gateway slower than that wait (45 s) is said, not taken for a failed install.
-      "$OPENCLAW" gateway start \
-        || warn "the OpenClaw gateway did not report ready in time: check it with openclaw gateway status --deep"
+      # longer matches the config (gateway.port was just set) and waits for it to be up. It
+      # fails both when the gateway is slower than that wait (45 s; started, so it is said and
+      # the install goes on) and when it refuses before starting anything (a state dir of
+      # its own, a config it finds invalid): then systemd starts the unit as it is, as the
+      # EXIT trap would, and phase_verify checks the gateway's port.
+      if ! "$OPENCLAW" gateway start; then
+        case "$(systemctl --user show -p ActiveState --value openclaw-gateway.service 2>/dev/null || true)" in
+          active|activating) ;;
+          *) systemctl --user start openclaw-gateway.service || true ;;
+        esac
+        warn "openclaw gateway start failed (it did not start or report ready): check it with openclaw gateway status --deep"
+      fi
       trap - EXIT
     else
       "$OPENCLAW" gateway restart
@@ -3859,6 +3867,13 @@ phase_verify() {
   if [ -n "$AGENT_MODE" ]; then
     contains ":443 " "$(ss -ltn 2>/dev/null || true)" || { warn "front door :443 not listening — browser access is down"; ok=0; }
   fi
+  # A host OpenClaw's gateway, behind that front door: Caddy listens on :443 whether or not
+  # it is up. (agent_openclaw started it last; it can take a while to listen.)
+  if [ "$AGENT_MODE" = openclaw ]; then
+    for i in $(seq 1 20); do contains ":$GATEWAY_PORT " "$(ss -ltn 2>/dev/null || true)" && break; sleep 3; done
+    contains ":$GATEWAY_PORT " "$(ss -ltn 2>/dev/null || true)" \
+      || { warn "OpenClaw gateway :$GATEWAY_PORT not listening — Talk, the agent and memory recall are down (openclaw gateway status --deep)"; ok=0; }
+  fi
   # A listening engine can still be prosody-degraded: without bin/g2p/ it runs
   # espeak-only G2P and only says so in one journal line. Check that line.
   local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: dict G2P (ready|unavailable)' | tail -1 || true)"
@@ -3876,7 +3891,7 @@ phase_verify() {
   if contains "AI watermark unavailable" "$wm_log" || contains "AI watermark off" "$wm_log" || contains "watermark needs" "$wm_log"; then
     warn "engine is running WITHOUT the AI watermark (its speech goes out unmarked): $wm_log"; ok=0
   fi
-  [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
+  [ "$ok" = 1 ] && log "engine + brain$([ "$AGENT_MODE" = openclaw ] && echo ' + gateway') are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }
 
 usage_footer() {
