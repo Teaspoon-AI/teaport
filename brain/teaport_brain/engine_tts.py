@@ -16,9 +16,11 @@
 
 import asyncio
 import functools
+import json
 import math
 import os
 import time
+import urllib.request
 from contextlib import aclosing
 from typing import AsyncGenerator
 
@@ -314,14 +316,13 @@ _PREFIX_ESPEAK = {
     "i": "it",     # Italian
     "p": "pt-br",  # Brazilian Portuguese
     "j": "ja",     # Japanese  (espeak g2p — lower quality than misaki)
-    "z": "cmn",    # Mandarin  (espeak g2p — lower quality than misaki)
+    "z": "cmn",    # Mandarin  (the engine's port of misaki's G2P, teaport-engine #122)
 }
 _ESPEAK_PREFIX = {v: k for k, v in _PREFIX_ESPEAK.items()}  # "es" -> "e", etc.
 
-# Voice inventory of the engine GGUF (50 of 54 upstream voices — the four
-# male-Mandarin zm_* packs are absent from TTS.cpp's converter default list; see
-# docs/SINGLE_CUDA_CONTEXT_SCOPE.md). Grouped by the language the prefix letter implies.
-# Source of truth for the list_voices / switch_voice tools.
+# Voice inventory of the engine GGUF (all 54 upstream voices; the four male-Mandarin
+# zm_* packs were added with teaport-engine PR #122). Grouped by the language the
+# prefix letter implies. Source of truth for the list_voices / switch_voice tools.
 ENGINE_VOICES = {
     "en-us": ["af_heart", "af_alloy", "af_aoede", "af_bella", "af_jessica",
               "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
@@ -335,8 +336,80 @@ ENGINE_VOICES = {
     "it": ["if_sara", "im_nicola"],
     "ja": ["jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo"],
     "pt-br": ["pf_dora", "pm_alex", "pm_santa"],
-    "cmn": ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi"],
+    "cmn": ["zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+            "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang"],
 }
+
+# Names a voice is called by in conversation, where its id would be read out as letters.
+# Mandarin only for now: in a Mandarin reply the model spoke "zf_xiaobei" as a garbled
+# run of letter sounds and the caller could not tell the voices apart (teaport#415).
+# These are the Azure neural voices the packs are named after (the Kokoro voice list
+# gives no names); to confirm with a native speaker.
+VOICE_NAMES = {
+    "zf_xiaobei": "晓北", "zf_xiaoni": "晓妮", "zf_xiaoxiao": "晓晓", "zf_xiaoyi": "晓伊",
+    "zm_yunjian": "云健", "zm_yunxi": "云希", "zm_yunxia": "云夏", "zm_yunyang": "云扬",
+}
+
+# What the engine's model holds, from its GET /v1/audio/voices: ENGINE_VOICES is every
+# voice a current engine model has, but a box keeps the model it was installed with until
+# an update replaces it, and the zm_* voices only exist in a model built since
+# teaport-engine #122 (the stable channel's predates them). A voice offered that the
+# model lacks is accepted by switch_voice and then refused by the engine on every
+# request: the rest of the session mute. Asked once; an answer is kept for the process
+# (the model changes only with an engine install, which restarts the brain too), a
+# failure is not, so the next session asks again. The brain asks at startup, off the
+# event loop (prefetch_served_voices), so a session normally finds the answer kept and
+# never makes the blocking call itself.
+_ENGINE_HTTP = "http" + _ENGINE_WS[2:] if _ENGINE_WS.startswith("ws") else _ENGINE_WS
+_served_voices = None
+
+
+def served_voices(timeout: float = 1.0, quiet: bool = False):
+    """The voice ids the engine's model holds (a frozenset), or None when the engine
+    could not be asked or gave no list (then nothing is withheld: as before). A list
+    naming none of ENGINE_VOICES (not a teaport engine's) counts as no list: kept, it
+    would offer no voice at all. `quiet`: a failure is logged at debug only."""
+    global _served_voices
+    if _served_voices is None:
+        try:
+            with urllib.request.urlopen(_ENGINE_HTTP + "/v1/audio/voices",
+                                        timeout=timeout) as r:
+                voices = json.load(r).get("voices")
+            served = (frozenset(v for v in voices if isinstance(v, str))
+                      if isinstance(voices, list) else frozenset())
+            if any(v in served for vs in ENGINE_VOICES.values() for v in vs):
+                _served_voices = served
+                withheld = sorted(v for vs in ENGINE_VOICES.values() for v in vs
+                                  if v not in served)
+                logger.info(f"engine voices: {len(served)}"
+                            + (f"; not in its model: {', '.join(withheld)}" if withheld else ""))
+            else:
+                raise ValueError(f"no known voice in {str(voices)[:80]}")
+        except Exception as e:  # noqa: BLE001
+            (logger.debug if quiet else logger.warning)(
+                f"engine voice list unavailable, offering every voice: {e!r}")
+    return _served_voices
+
+
+async def prefetch_served_voices(tries: int = 24, every_s: float = 5.0) -> None:
+    """Ask the engine for its voices at brain startup, off the event loop, until it
+    answers (the engine can come up after the brain): `tries` asks `every_s` apart."""
+    for i in range(tries):
+        if await asyncio.to_thread(served_voices, 1.0, i < tries - 1) is not None:
+            return
+        await asyncio.sleep(every_s)
+
+
+def offered_voices(served=None) -> dict:
+    """ENGINE_VOICES without the voices the engine's model lacks (served_voices()), by
+    language; a language left with none is dropped. `served`: the set to filter by, for
+    tests; by default the engine is asked."""
+    served = served_voices() if served is None else served
+    if not served:
+        return ENGINE_VOICES
+    offered = {lang: [v for v in vs if v in served] for lang, vs in ENGINE_VOICES.items()}
+    return {lang: vs for lang, vs in offered.items() if vs}
+
 
 LANG_NAMES = {
     "en-us": "English (US)", "en-gb": "English (UK)", "es": "Spanish",
