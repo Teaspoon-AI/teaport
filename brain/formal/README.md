@@ -1026,7 +1026,7 @@ peek now remembers, `_Peek.owed`). **The default run does not guard that fix**:
 holds too (1.89M states, the audit of 2026-11-05), so the shipped design is checked
 against it only by `--full`'s `ss_peek_freeze` and `ss_peekOwed_shipped` (the shipped
 design at `ss_noPeekOwed`'s own bounds: holds, 31.4M states, ~8 min on two workers, as
-the audit's verifier measured it). The code trims an earlier turn's owed words from the
+the audit's verifier measured it; 31.8M on the model as of audit S1). The code trims an earlier turn's owed words from the
 preview's front run (as many words as are owed, and two more): each word there that is
 an owed word still ahead of the pointer is dropped, and the pointer moves past it, so an
 owed word the later preview lacks is skipped. With words unique and in time order that
@@ -1116,7 +1116,40 @@ waiting), asked them again.
 |---|---|---|
 | `off` | no early settle: every other row here | — |
 | `shipped` | before A3 (`ss_early_shipped`) | ✗ |
-| `kept` | as shipped (`_early`): the settled turn stops waiting but keeps its stretch -- a late word ending in it is its own whatever its spelling, one past it that its preview vouched for too, and the trim reads its vouching -- until the bounds pass it, as its final would have waited; its final then settles, its correction with it. A late word below a settled turn is a later turn's whose preview vouched for it (it delivered it) -- in the code the first vouched word of the first such turn, as `_spend_later` reads them (a late "a" is no later "about"); the model's words are unique, so it is any. Not kept: a deferred turn, an empty provisional, or one the decoder's clock settled (no word of it is still to come). (`ss_early_kept`, ~4.8M states; `--full` `ss_early_kept_lossy`, lossy previews, ~20M) | ✓ |
+| `kept` | as shipped (`_early`): the settled turn stops waiting but keeps its stretch -- a late word ending in it is its own whatever its spelling, one past it that its preview vouched for too, and the trim reads its vouching -- until the bounds pass it, as its final would have waited; its final then settles, its correction with it (or until the decoder is the timeout past it: every word of it has come, and it stands as it went). A late word below a settled turn, in no kept turn's stretch, is the turn's whose preview vouched for it (it delivered it): the oldest turn, kept ones then waiting ones, at the **front** of whose vouched words it is (`LateTakers`, `_front_vouched`). Not kept: a deferred turn, an empty provisional, or one the decoder's clock settled (no word of it is still to come). (`ss_early_kept`, ~4.8M states; three commits and lossy previews `ss_early_kept_three`, ~1.4M; with the peek `ss_early_kept_peek`, ~3.7M; `--full`: `ss_early_kept_lossy`, ~20M, `ss_early_kept_peek_lossy`, ~12.5M, and three words at `ss_early_waitSpend`'s commits, `ss_early_kept_spend`, ~12M) | ✓ |
+| `first` | before audit S1: a late word is asked only of the first turn that vouches for anything, and is its only if it is that turn's front word (`ss_early_first`) | ✗ `NoDeliveredOpen` |
+| `waitSpend` | before audit S1: a word a kept turn takes that its preview lacked is not spent from the later turn that vouched for it (`ss_early_waitSpend`) | ✗ `NoDeliveredOpen` |
+
+**The front word** (audit S1). The code matches a late word to a preview by its text, so
+it may only ask for a turn's *first* outstanding vouched word: by any of them, a late
+"a" would claim a later "about", which would then come unvouched and be delivered again.
+The front is enough, and the model says why: the engine sends words in order, and every
+word of a preview that came was taken out of what the turn expects -- claimed by the
+turn, or, gone to an earlier turn whose preview lacked it, spent from the front of the
+first later turn that has it there (`Spent`, `_spend_later`; a peek's held preview loses
+it the same way) -- so the front of a turn's vouched words is the next of them to come,
+and a late word a preview delivered is at that turn's front. Which turn's is the rule
+the code had wrong. `first` is what shipped with A3: only the first turn with anything
+outstanding was asked. `ss_early_first`, three commits, 17 states deep: the first turn
+settles early on an empty preview; the second's preview misses the word still unsent and
+vouches for a later one; the third's has the word and delivers it; late, the word is not
+the second turn's front, no one else is asked, and it lands in the open turn, which the
+next commit delivers again. (The rows before S1 ran two commits, where the first vouching
+turn is the only one.) `waitSpend` is the other half: the spend was done only for a word
+a *waiting* turn took. A kept turn takes a late word of its stretch whatever its preview
+had; the later turn that vouched for it kept it at its front, and that turn's next word,
+late below a turn settled in between, found the front taken (`ss_early_waitSpend`, three
+commits, three words). Both end in `NoDeliveredOpen`, not `NoDoubleDeliver`: the fourth
+commit that would deliver the word again is past the rows' bounds. The spend is modelled
+in every row, as the code does it everywhere. It fires only where a preview is lossy: the
+rows without lossy previews are state for state as they were (`ss_shipped`, `ss_peek`),
+`ss_shipped_freeze` has 342 states more with it and holds, and there it also lets the
+later turn's final stop waiting on that word. Only the `EARLY` rows read the front.
+
+**The peek** (audit S3). The `EARLY` rows ran with `PEEKS` FALSE, while the shipped
+default asks the preview at the VAD stop. `ss_early_kept_peek` runs the kept design at
+`ss_peek`'s bounds and `--full`'s `ss_early_kept_peek_lossy` with lossy previews: both
+hold -- a kept turn beside a peek held, dropped or adopted delivers no word twice.
 
 `NoDeliveredOpen`: no word a turn delivered sits in the open turn, which the next commit
 would deliver again. An early settle is incomplete by design (the backstop's accepted
@@ -1137,29 +1170,50 @@ what one that did not lost (`ut_judge_noReport_nounjudged`).
 
 Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio to 4, a
 word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
-~20 s; `ss_shipped_freeze` ~9.4M (the bounds frozen or moving, previews lossy), ~1-3 min; the
+~20 s; `ss_shipped_freeze` ~8.6M (the bounds frozen or moving, previews lossy), ~1-3 min; the
 witnesses and rejected rows under 1.2M each (`ss_noPeekOwed` 3.3M before its trace,
 ~2.5 min on two workers); `ss_heard` 272k (~15 s on two workers), its two FAILS rows
 under 25k. `--full` adds three words: `ss_shipped_full`
-~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), `ss_peek_freeze` ~81M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
+~20M (audio to 5), `ss_peek_full` ~16M (audio to 4), `ss_peek_freeze` ~82M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
 on five cores), and `ss_peekOwed_shipped` ~31M (the same without frozen bounds, `NoDoubleDeliver`
-only: ~8 min on two workers).
+only: ~8 min on two workers). The early-settle rows, on three workers: `ss_early_kept`
+~4.8M (~80 s), `ss_early_kept_three` ~1.4M (audio to 3, ~30 s), `ss_early_kept_peek` ~3.7M
+(~2 min); `ss_early_first` falls after ~270k states and `ss_early_waitSpend` after ~2.1M
+(~1 min: three words, so its words end where they start and its channel is one deep);
+`--full` adds `ss_early_kept_lossy` ~20M, `ss_early_kept_peek_lossy` ~12.5M (~5 min) and
+`ss_early_kept_spend` ~12M (`ss_early_waitSpend`'s bounds with the channel two deep,
+~6 min).
 
 ### Known limits of this model
 
 - Text is sets of word ids. A preview that has a different word than the main stream (a
   preview's "light" where the main stream has "lighthouse") is not expressible; the brain matches by word text
   (the main word's first piece a prefix of the preview's), unit-tested in
-  `test_stt_turn_text.py`. Pieces are not modelled: a word arrives whole, as its pieces do
+  `test_stt_turn_text.py`. That match is why a late word may claim only a turn's front
+  vouched word (a late "a" is no later "about"); the model's words are unique, so its
+  front rule shows the front is enough, not that the rest is unsafe. (Two turns whose
+  front words begin alike are outside it too: the code gives the late word to the older.)
+  Pieces are not modelled: a word arrives whole, as its pieces do
   (the engine sends a word's pieces together, each with the word's positions); that its
   later pieces follow it is unit-tested.
 - The margin is one step and `end_ms` the only estimate: a start estimate's error is not
   modelled (the code's `end_ms < P + 200` clause covers a start stamped at or past P).
-- The final's timeout is modelled on `decoded_through_ms`; its wall-clock half (for an
-  engine that stops reporting) and the timeout's settle as the provisional are the code's,
-  unit-tested. The code also waits the margin longer while a preview still vouches (a
+- The final's timeout is modelled on `decoded_through_ms` (`Overdue`). Its wall-clock
+  half, for an engine that stops reporting, and the pause cap's settle are `EarlySettle`,
+  in the `EARLY` rows only (audit A3): the oldest turn waiting settles at any time on the
+  words in hand, and stands as its provisional went (`Delivered`). The other rows run
+  without it. The code also waits the margin longer while a preview still vouches (a
   vouched word's start estimate may be up to the margin past the cut; the model's starts
   are exact). What a timed-out or deferred turn delivers is TurnText.tla's.
+- A kept turn's wall-clock exit is not modelled. The code forgets a turn kept
+  `_FINAL_BACKSTOP_SECS` (6 s) with no bound having passed it (`_prune_early`: an engine
+  that stopped reporting); the model's `Kept` lasts until the bounds pass the turn, or
+  the decoder by the timeout. No premise bounds the wall clock, so an exit at any time
+  is `EARLY = "shipped"` from there on: a word of the turn that still comes goes to the
+  open turn and is delivered again (`ss_early_shipped`'s trace). That is the accepted
+  cost of not keeping a turn for ever behind an engine gone quiet; the exit is
+  unit-tested
+  (`test_a_kept_turn_whose_bounds_never_move_goes_after_the_backstop_s_wait`).
 - A cut-short preview is a `LOSSY` preview with no words here; the code also makes its
   turn wait on its final, which is what an empty provisional's `Delivered` counts.
 - The peek waits for nothing in flight; the stop that finds a commit in flight peeks when
@@ -1173,9 +1227,11 @@ only: ~8 min on two workers).
   words, a run of ours) is unit-tested in `test_turn_text_taken.py`.
 - A reconnect (the turns not yet final are dropped, their provisional standing) is not
   modelled.
-- The bounds are trusted. A word below a settled turn's commit (the engine breaking a
-  bound, or a final that timed out) goes to the open turn with a warning; the model's
-  engine sends none.
+- The bounds are trusted: the model's engine sends no word under a bound it reported. A
+  word below a settled turn's position comes only after an early settle (the `EARLY`
+  rows), and is a kept turn's, the turn's at whose front it is, or the open turn's. The
+  code files a word the engine let through a bound the same way (the open turn's with a
+  warning); that case is not modelled.
 
 ## `TurnText.tla` — a sliced turn's final, from the STT to the context
 

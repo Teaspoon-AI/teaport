@@ -6,7 +6,8 @@
 # --full adds the rows too large for the default run: today six SttCommit rows (the
 # carry, the missed stop, the repaired final and the reset in their full environments) whose state
 # spaces are tens of millions, and SttSlice's three-word rows, its peek with frozen
-# bounds, and its peek at the owed-peek row's bounds (formal/README.md). The default run
+# bounds, its peek at the owed-peek row's bounds, and its early settle with lossy
+# previews, with the peek too, and at three words (formal/README.md). The default run
 # does not guard every shipped fix: the peek's owed flag (_Peek.owed) is guarded only by
 # SttSlice's two --full peek rows.
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
@@ -450,13 +451,19 @@ run SttSlice.tla ss_heard_reach     "(expected: FAILS HeardAllSent — witness: 
 run SttSlice.tla ss_heard_endOnly   "(expected: FAILS NoWordAfterHeard — the end bound alone, as before 3a46b6c (its smaller margin not shown): a word the voice end falls inside comes after the answer)"
 run SttSlice.tla ss_heard_final     "(expected: FAILS NoWordAfterHeard — a proposal, rejected 2026-11-06: a turn's final past the voice end answers the watch; a word stamped at the commit, inside the margin, is the next turn's and still to come)"
 run SttSlice.tla ss_early_shipped   "(expected: FAILS NoDoubleDeliver — BEFORE AUDIT A3: a turn settled early (the backstop, the pause's cap) forgets the words its provisional delivered; late, they go to the open turn and the next preview asks them again)"
-run SttSlice.tla ss_early_kept      "(expected: holds — AS SHIPPED (A3): a turn settled early keeps its stretch's late words and its vouching for the trim until the bounds pass it, then settles its final; a late word below a settled turn is a later vouching turn's; NoDoubleDeliver and NoDeliveredOpen; ~4.8M states)"
+run SttSlice.tla ss_early_kept      "(expected: holds — AS SHIPPED (A3): a turn settled early keeps its stretch's late words and its vouching for the trim until the bounds pass it, then settles its final; a late word below a settled turn is the oldest turn's at the front of whose vouched words it is; NoDoubleDeliver and NoDeliveredOpen; ~4.8M states)"
+run SttSlice.tla ss_early_first     "(expected: FAILS NoDeliveredOpen — BEFORE AUDIT S1: a late word below a settled turn is asked only of the first turn that vouches for anything; three commits, a lossy preview: that turn waits on another word, the third delivered this one, and the open turn takes it)"
+run SttSlice.tla ss_early_waitSpend "(expected: FAILS NoDeliveredOpen — BEFORE AUDIT S1: a word a kept turn takes that its preview lacked is not spent from the later turn that vouched for it; that turn's next word, late, finds the front taken)"
+run SttSlice.tla ss_early_kept_three "(expected: holds — AS SHIPPED (S1) at ss_early_first's bounds, three commits and lossy previews: ~1.4M states)"
+run SttSlice.tla ss_early_kept_peek "(expected: holds — AS SHIPPED with the preview at the VAD stop (S3), at ss_peek's bounds: ~3.7M states)"
 if [ "$FULL" = 1 ]; then
   limit=$FULL_ROW_TIMEOUT
   run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~20M states)"
   run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~16M states)"
   run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
   run SttSlice.tla ss_early_kept_lossy "(expected: holds — the A3 fix with lossy previews: ~20M states)"
+  run SttSlice.tla ss_early_kept_peek_lossy "(expected: holds — the early settle with the peek and lossy previews: ~12.5M states)"
+  run SttSlice.tla ss_early_kept_spend "(expected: holds — the early settle at ss_early_waitSpend's three words and three commits, the channel two deep: ~12M states)"
   run SttSlice.tla ss_peekOwed_shipped "(expected: holds — the peek as shipped at ss_noPeekOwed's bounds: the owed flag keeps the adopted peek waiting, ~31M states)"
   limit=$ROW_TIMEOUT
 fi
