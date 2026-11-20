@@ -2145,8 +2145,12 @@ openclaw_memory_embeddings() {
   current="$("$OPENCLAW" config get memory.search --json 2>/dev/null || true)"
   providers="$("$OPENCLAW" config get models.providers --json 2>/dev/null || true)"
   patch="$(mktemp)"
+  # The config file the CLI reads (OPENCLAW_CONFIG_PATH, OPENCLAW_STATE_DIR, ...), as it says;
+  # unreadable, the setting is not taken for ours.
+  local config_file
+  config_file="$("$OPENCLAW" config file 2>/dev/null | tail -n 1 || true)"
   out="$(write_memory_embed_patch "$patch" "$current" "$providers" "$LLM_BASE_URL" "$SECRETS/llm_key" \
-    "$MEMORY_EMBED_RECORD" "${OPENCLAW_CONFIG_PATH:-$RUN_HOME/.openclaw/openclaw.json}")" || rc=$?
+    "$MEMORY_EMBED_RECORD" "${config_file:-$RUN_HOME/.openclaw/openclaw.json}")" || rc=$?
   pid="$(printf '%s\n' "$out" | sed -n 1p)"; keyhash="$(printf '%s\n' "$out" | sed -n 2p)"
   case "$rc" in
     3) log "OpenClaw memory search stays keyword-only: no OpenRouter account to embed with"
@@ -2286,8 +2290,9 @@ agent_openclaw() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] systemctl --user stop openclaw-gateway.service (when running), for the changes below\n'
   elif case "$(systemctl --user show -p ActiveState --value openclaw-gateway.service 2>/dev/null || true)" in
-         active|activating|reloading) true ;; *) false ;; esac; then
-    # activating too: a gateway on its way up, or waiting to restart after a crash.
+         active|activating|reloading|deactivating) true ;; *) false ;; esac; then
+    # activating too: a gateway on its way up, or waiting to restart after a crash; and
+    # deactivating, one mid restart.
     if systemctl --user stop openclaw-gateway.service; then
       gw_stopped=1
       trap 'systemctl --user start openclaw-gateway.service || true' EXIT
@@ -2352,8 +2357,10 @@ JSON
     cap_openclaw_heap || true
     if [ -n "$gw_stopped" ]; then
       # OpenClaw's own start, not systemctl's: it repairs a unit whose --port or program no
-      # longer matches the config (gateway.port was just set) and waits for it to be up.
-      "$OPENCLAW" gateway start
+      # longer matches the config (gateway.port was just set) and waits for it to be up. A
+      # gateway slower than that wait (45 s) is said, not taken for a failed install.
+      "$OPENCLAW" gateway start \
+        || warn "the OpenClaw gateway did not report ready in time: check it with openclaw gateway status --deep"
       trap - EXIT
     else
       "$OPENCLAW" gateway restart

@@ -144,9 +144,12 @@ def test_the_owners_setting_is_never_touched():
 
 
 def _phase(current="", fail=(), providers='{"openrouter": {"baseUrl": "%s"}}' % OR_URL, key=None, record=None,
-           written=None):
+           written=None, config_file=None):
+    """config_file: where the stub's `openclaw config file` says the config is (and where
+    `written` goes); None: it says nothing, and the installer looks in ~/.openclaw."""
     t = pathlib.Path(tempdir())
-    _openclaw_json(t / ".openclaw/openclaw.json", written)
+    cfg = t / config_file if config_file else t / ".openclaw/openclaw.json"
+    _openclaw_json(cfg, written)
     if key is not None:
         (t / "llm_key").write_text(key + "\n")
     if record is not None:
@@ -159,7 +162,8 @@ def _phase(current="", fail=(), providers='{"openrouter": {"baseUrl": "%s"}}' % 
                   f'for f in {fails}; do [ "$1 $2" = "$f" ] && exit 1; done\n'
                   f'if [ "$*" = "config get memory.search --json" ]; then [ -n {json.dumps(current)} ] && {{ printf %s {json.dumps(current)}; exit 0; }}; exit 1; fi\n'
                   f'if [ "$*" = "config get models.providers --json" ]; then printf %s {json.dumps(providers)}; exit 0; fi\n'
-                  f'if [ "$1 $2" = "config patch" ]; then cat "$4" >> "{patches}"; echo >> "{patches}"; fi\n'
+                  + (f'if [ "$*" = "config file" ]; then echo "Config file:"; echo "{cfg}"; exit 0; fi\n' if config_file else "")
+                  + f'if [ "$1 $2" = "config patch" ]; then cat "$4" >> "{patches}"; echo >> "{patches}"; fi\n'
                   "exit 0\n")
     oc.chmod(0o755)
     script = ("set -euo pipefail\nDRY_RUN=0\n" + _helpers() + _fn("write_memory_embed_patch")
@@ -210,6 +214,10 @@ def test_a_changed_key_is_refreshed_and_checked_like_a_new_one():
     assert rc == 0 and "stays keyword-only" in log, log
     assert patches[-1] == {"memory": {"search": {"provider": None, "model": None, "remote": None}}}, patches
     assert not (t / "openclaw-memory-embeddings").exists()
+    # The config where OpenClaw says it is (OPENCLAW_STATE_DIR, OPENCLAW_CONFIG_PATH), not ~/.openclaw.
+    rc, log, calls, patches, t = _phase(current=OURS, key="sk-or-v1-new", record=sha("sk-or-v1-old"),
+                                        written="sk-or-v1-old", config_file="srv/oc/openclaw.json")
+    assert rc == 0 and patches[0] == {"memory": {"search": {"remote": {"apiKey": "sk-or-v1-new"}}}}, (log, patches)
     # The key as recorded: nothing written, no rebuild.
     rc, log, calls, patches, _ = _phase(current=OURS, key="sk-or-v1-old", record=sha("sk-or-v1-old"), written="sk-or-v1-old")
     assert rc == 0 and patches == [] and "memory index --force" not in calls and "keeps its provider" in log, log
@@ -270,7 +278,7 @@ def test_a_running_gateway_is_stopped_for_the_changes_and_started_once():
     # OpenClaw applies the plugin, gateway.* and memory.search changes by restarting a running
     # gateway, each a moment after the change: so none of them may meet a running gateway,
     # and the one start comes after the last of them.
-    for state in ("active", "activating"):   # activating: on its way up, or about to restart
+    for state in ("active", "activating", "deactivating"):   # on its way up or down, or about to restart
         rc, log, calls = _agent(state)
         assert rc == 0, log
         i = lambda c: next(n for n, x in enumerate(calls) if x.startswith(c))
@@ -283,6 +291,14 @@ def test_a_running_gateway_is_stopped_for_the_changes_and_started_once():
     # Not running: nothing stopped, and the unit is restarted as before.
     rc, log, calls = _agent("inactive")
     assert rc == 0 and not [c for c in calls if " stop " in c] and "openclaw gateway restart" in calls, calls
+
+
+def test_a_gateway_slow_to_report_ready_is_said_not_a_failed_install():
+    # `gateway start` waits for the gateway to report ready (45 s); slower is said, and the
+    # install goes on (the token, the services, the front door).
+    rc, log, calls = _agent("active", fail="gateway start")
+    assert rc == 0 and "did not report ready" in log, log
+    assert "systemctl --user start openclaw-gateway.service" not in calls, calls   # trap cleared, not fired
 
 
 def test_a_run_that_stops_on_the_way_starts_the_gateway_again():
