@@ -426,8 +426,7 @@ async def test_a_control_cancelled_by_a_barge_in_still_tells_what_it_did():
         def __init__(self):
             self.said = []
 
-        def add_host_update(self, text, *, cancel=True):
-            assert cancel is False, "a late result's cancel time is not known"
+        def add_host_update(self, text):
             self.said.append(text)
 
     none = {"ok": False, "mode": "cancel", "active": False,

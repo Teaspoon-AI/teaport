@@ -333,23 +333,23 @@ async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
     h = _harness(on_cancel=lambda: noted.append(True))
     await _send_host(h)
     assert noted == [True], noted
-    h.notes.add_host_update("Got it. I steered the active run.")
-    h.notes.add_host_update("OpenClaw could not cancel the active run.")
+    await _send_host(h, _speech("Got it. I steered the active run."), rid="h2")
+    await _send_host(h, _speech("OpenClaw could not cancel the active run."), rid="h3")
     assert noted == [True], "only a cancel that aborted the run"
     from loguru import logger
     warned = []
     sink = logger.add(lambda m: warned.append(str(m)), level="WARNING")
     try:
-        h.notes.add_host_update("There is no active OpenClaw run to cancel.")
+        await _send_host(h, _speech("There is no active OpenClaw run to cancel."), rid="h4")
         assert not any("cancel-like" in w for w in warned), "nothing to cancel is no drift"
-        h.notes.add_host_update("Got it. I'll cancel the two o'clock instead.")
+        await _send_host(h, _speech("Got it. I'll cancel the two o'clock instead."), rid="h5")
         assert not any("cancel-like" in w for w in warned), "a steer about a cancel is no drift"
-        h.notes.add_host_update("Cancelled the OpenClaw run.")   # OpenClaw's wording drifted
+        await _send_host(h, _speech("Cancelled the OpenClaw run."), rid="h6")   # drifted
         assert any("cancel-like" in w for w in warned), "the drift is warned"
     finally:
         logger.remove(sink)
     assert noted == [True], "not read as a cancel, but warned (the drift's trace)"
-    h.notes.add_host_update(STATUS, cancel=False)
+    h.notes.add_host_update(STATUS)
     assert noted == [True], "a late result's cancel is not noted: its time is not known"
 
 

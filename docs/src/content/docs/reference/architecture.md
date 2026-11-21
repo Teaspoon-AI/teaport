@@ -125,7 +125,7 @@ On every front end, the brain ends the consult's context with a note for the age
 
 A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway, a configured front door, and a room or Talk conversation behind `pair_device`, which is never offered on a phone call or through the Discord bridge; and the settings site and a room or Talk conversation behind `open_settings`, under the same rule. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
 
-<!-- source: brain/teaport_brain/tools.py:19-25,1943-1967,1981-1992,1993-1995,1998-1999,2005-2009,2010-2015#6cf4ebb0; brain/teaport_brain/wifi_voice.py:296-298#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
+<!-- source: brain/teaport_brain/tools.py:19-25,1944-1968,1982-1993,1994-1996,1999-2000,2006-2010,2011-2016#6cf4ebb0; brain/teaport_brain/wifi_voice.py:296-298#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces client-tool features; the phone and Discord announce none and never see these tools.
 
@@ -133,7 +133,7 @@ Client tools run on the client, not in the brain: the client announces its featu
 
 Only the plugin's Talk session has a relay for `openclaw_agent_consult`. The plugin announces `relay` in its features when OpenClaw gives the session a tool-call handler. The brain also counts the run-control protocol, which only the plugin speaks, so a brain updated without its plugin keeps the relay. A consult on any other session goes straight to the agent: the brain sends no call to the client and does not wait for the relay to acknowledge one.
 
-<!-- source: brain/teaport_brain/tools.py:1724-1738#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:339-340#62541491 -->
+<!-- source: brain/teaport_brain/tools.py:1725-1739#264ea14e; plugin/README.md:39-47#e5b53562; brain/teaport_brain/gateway_server.py:339-340#62541491 -->
 
 ## Network ports
 

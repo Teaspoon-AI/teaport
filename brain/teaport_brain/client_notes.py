@@ -425,14 +425,14 @@ class ClientNotes(FrameProcessor):
             return
         await self._reply(frame, status=status)
 
-    def add_host_update(self, text: str, kind: str = "openclaw-control", *,
-                        cancel: bool = True):
+    def add_host_update(self, text: str, kind: str = "openclaw-control"):
         """An update from OpenClaw that reached the brain itself rather than as the
         plugin's note -- the result of the model's openclaw_agent_control call that a
         barge-in cancelled after the client had acted on it (tools._openclaw_agent_control)
-        -- said the way the relay's own replies are (HOST NOTES). `cancel` False: a cancel
-        status in it is not told to on_cancel (its time is not known)."""
-        self._take_host(text, kind, kind, self._clock(), cancel=cancel)
+        -- said the way the relay's own replies are (HOST NOTES). A cancel status in it is
+        never told to on_cancel: when OpenClaw aborted is not known from a result this
+        late, and a consult sent since could be read beside it."""
+        self._take_host(text, kind, kind, self._clock(), cancel=False)
 
     def _take_host(self, raw: str, kind, log_kind: str, now: float, *,
                    cancel: bool = True) -> str | None:

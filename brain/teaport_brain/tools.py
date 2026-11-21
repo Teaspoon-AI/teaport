@@ -1662,9 +1662,8 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
         if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
             logger.info(f"openclaw_agent_control: result after its cancel -- "
                         f"{quoted(out['update'][:80])}")
-            # Not a cancel for the owed book: when OpenClaw aborted is not known from a
-            # result that came this late, and a consult sent since could be read beside it.
-            notes.add_host_update(out["update"], cancel=False)
+            # Not a cancel for the owed book (add_host_update): its abort time is unknown.
+            notes.add_host_update(out["update"])
 
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
                                         OPENCLAW_AGENT_CONTROL.name, args, CONTROL_TIMEOUT_S,
@@ -1674,7 +1673,9 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
     if owed is not None and _control_aborted(result):
         # The model's cancel aborted the session's lane: a consult whose run returned its
-        # empty final first gets no "cancelled" of its own (Owed.settle_empty).
+        # empty final first gets no "cancelled" of its own (Owed.settle_empty). Only a
+        # result within CONTROL_TIMEOUT_S: one held past it (or told late) has no known
+        # abort time, and the relay's own host note for the cancel still counts.
         owed.note_cancel()
     await params.result_callback(out)
 
