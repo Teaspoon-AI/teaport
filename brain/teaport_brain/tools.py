@@ -81,7 +81,7 @@ from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
-from teaport_brain.owed import CANCELLED_NOTE
+from teaport_brain.owed import CANCELLED_NOTE, clean_outcome
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES, offered_voices
@@ -1020,7 +1020,13 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             progress.cancel()
         sibling = False
         settle_empty = getattr(owed, "settle_empty", None)
-        if relayed and outcome.failure == "empty" and settle_empty is not None:
+        # Empty as land() will read it: no answer, or one that cleans to nothing (only an
+        # address, say), which a lane abort can leave as well. While the grace runs the
+        # consult still counts as running (_count_consult) and the client's "done" waits:
+        # up to EMPTY_CANCEL_GRACE_S more, and only beside another consult still open,
+        # which is running for the relay's run control either way.
+        empty = outcome.failure == "empty" or (outcome.text and not clean_outcome(outcome.text))
+        if relayed and empty and settle_empty is not None:
             sibling = await settle_empty(request, tool_call_id, started,
                                          detail=outcome.detail)
             if sibling is None:

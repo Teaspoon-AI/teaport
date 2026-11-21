@@ -1316,16 +1316,10 @@ class Owed:
         logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
-    @property
-    def closed(self) -> bool:
-        """The session is over (close_session)."""
-        return self._closed
-
     def note_cancel(self) -> None:
         """OpenClaw cancelled a run in this session's lane (_cancelled): noted for
         settle_empty, and a waiting one woken."""
-        self._cancel_times = [*self._cancel_times[-(CANCEL_TIMES_KEPT - 1):],
-                              time.monotonic()]
+        self._cancel_times = [*self._cancel_times, time.monotonic()][-CANCEL_TIMES_KEPT:]
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 

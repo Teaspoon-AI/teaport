@@ -201,8 +201,6 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
     delivered = []
 
     class Owed:
-        closed = False
-
         def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True):
             delivered.append((text, failure) if by_openclaw
                              else (text, failure, "not by OpenClaw"))
@@ -216,7 +214,6 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
             # the session ends during the grace. `asked`: a list the call is noted in.
             if asked is not None:
                 asked.append(since)
-            self.closed = closes
             return None if closes else cancelled
 
     saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
@@ -305,6 +302,14 @@ async def test_an_empty_whose_session_ends_in_the_grace_is_not_landed():
     fut = asyncio.get_running_loop().create_future()
     fut.set_result("OpenClaw finished with no text.")
     assert await _wait(fut, closes=True) == []
+
+
+async def test_an_answer_that_cleans_to_nothing_beside_a_cancel_is_a_sibling():
+    """Only an address, which land() reads as empty: a lane abort can leave that too."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"text": "https://example.com/results"})
+    delivered = await _wait(fut, cancelled=True)
+    assert delivered == [(None, "cancelled", "not by OpenClaw")], delivered
 
 
 async def test_an_answer_or_a_timeout_beside_a_cancel_is_not_touched():

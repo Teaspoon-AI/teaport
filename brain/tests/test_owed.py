@@ -1008,7 +1008,7 @@ async def test_close_session_wakes_a_cancelled_since_waiting():
     t0 = time.monotonic()
     assert await b.cancelled_since(began, grace=5.0) is False
     assert time.monotonic() - t0 < 1.0, "woken by the close, not the grace"
-    assert b.closed
+    assert b._closed
     await t
 
 # =============================================================== a sync tool's answer (#204)
