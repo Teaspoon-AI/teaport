@@ -12,13 +12,20 @@
 #   - every entry in REQUIRED (and engine.watermark from engine 1.7 on) is present with
 #     a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
-#   - a url with no sha256 (models.voxtral.aux) must answer;
+#   - a url with no sha256 (models.voxtral.aux in a manifest without aux_sha256) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
 #     without it, or an npm registry that does not answer, fails the check.
+#   - access.gated (the engine license gate's download prefixes) and access.api are
+#     https URLs on the download host. A gated artifact must refuse an anonymous download
+#     (HTTP 401), asked on every run; one served without a token means the gate is not in
+#     front of it, an error, and one the gate serves open (its switchover) is a warning.
+#     Then it is fetched with DL_CHECK_TOKEN (the download gate Worker's CHECK_TOKEN) and
+#     its sha256 compared; without the token (a pull request's run) the refusal is all
+#     that is checked of it.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -109,11 +116,15 @@ def entries(node, path=""):
             if key.startswith("_") or key in ("url", "sha256"):
                 continue
             sub = f"{path}.{key}" if path else key
+            if key == "aux_sha256":
+                continue   # read with aux, below
             if key == "aux" and isinstance(value, dict):
-                # models.voxtral.aux: {filename: url}, no hash (install.sh downloads as-is).
+                # models.voxtral.aux: {filename: url}, its hashes beside it in aux_sha256
+                # (an older manifest has none: install.sh downloads them as-is).
+                hashes = node.get("aux_sha256") if isinstance(node.get("aux_sha256"), dict) else {}
                 for name, url in value.items():
                     if isinstance(url, str):
-                        yield f"{sub}.{name}", url, None
+                        yield f"{sub}.{name}", url, hashes.get(name)
                     else:
                         yield f"{sub}.{name}", None, f"url is not a string: {url!r}"
             else:
@@ -133,13 +144,16 @@ def repos(node, path=""):
                 yield from repos(value, f"{path}.{key}" if path else key)
 
 
-def fetch(url, digest):
-    """GET url, hashing the body into digest (None: just open it). Retries a failed
-    transfer from the start, as a fresh digest."""
+def fetch(url, digest, token=None):
+    """GET url, hashing the body into digest (None: just open it), with a download token
+    when given. Retries a failed transfer from the start, as a fresh digest."""
+    headers = {"User-Agent": "teaport-manifest-check"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     for attempt in range(1, ATTEMPTS + 1):
         d = digest.copy() if digest is not None else None
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 while d is not None and (chunk := resp.read(CHUNK)):
                     d.update(chunk)
@@ -152,6 +166,59 @@ def fetch(url, digest):
             if attempt == ATTEMPTS:
                 raise
         time.sleep(5 * attempt)
+
+
+# refused(): the gate serves it without a token because its GATE is "open", for the
+# switchover only (worker/src/index.js).
+GATE_OPEN = "gate open"
+
+
+def refused(url):
+    """None when url refuses an anonymous download (HTTP 401), as a gated artifact must;
+    GATE_OPEN when the gate serves it during the switchover; else what it did. A HEAD: an
+    open gate would otherwise start sending the file. Retried as fetch() is: it runs before
+    every upload, where one blip would leave the manifest unpublished."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            # A HEAD answers at once: a shorter timeout than a download's, so a gate that
+            # is down fails the run in minutes, not past the job's timeout.
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.headers.get("x-teaport-gate") == "open":
+                    return GATE_OPEN
+            return "served without a download token: the license gate is not in front of it"
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == ATTEMPTS:
+                return None if e.code == 401 else f"HTTP {e.code}"
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt == ATTEMPTS:
+                return str(e)
+        except Exception as e:  # noqa: BLE001 -- anything else: a problem listed, not a traceback
+            return str(e)
+        time.sleep(5 * attempt)
+
+
+def gate(manifest):
+    """(gated URL prefixes, problems) of the manifest's access entry."""
+    access = manifest.get("access")
+    if access is None:
+        return [], []
+    problems, prefixes = [], []
+    if not isinstance(access, dict):
+        return [], [f"access: not an object ({access!r})"]
+    api, gated = access.get("api"), access.get("gated")
+    if not isinstance(api, str) or urlparse(api).scheme != "https" or urlparse(api).hostname != HOST:
+        problems.append(f"access.api: not an https URL on {HOST} ({api!r})")
+    if not isinstance(gated, list) or not gated:
+        problems.append(f"access.gated: not a list of URL prefixes ({gated!r})")
+    else:
+        for p in gated:
+            if (not isinstance(p, str) or urlparse(p).scheme != "https" or urlparse(p).hostname != HOST
+                    or not p.endswith("/")):
+                problems.append(f"access.gated: not an https URL prefix on {HOST} ending in / ({p!r})")
+            else:
+                prefixes.append(p)
+    return prefixes, problems
 
 
 def resolves(repo, tag):
@@ -180,6 +247,8 @@ def check(manifest_path, placeholders_ok):
     with open(manifest_path) as f:
         manifest = json.load(f)
     problems, checked = [], 0
+    prefixes, problems = gate(manifest)
+    token = os.environ.get("DL_CHECK_TOKEN", "")
 
     def placeholder(where, value):
         if not placeholders_ok:
@@ -206,8 +275,26 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
+        gated = any(url.startswith(p) for p in prefixes)
+        if gated:
+            # Asked without a token on every run, token or not: a gate left open after the
+            # switchover shows up here, on pushes and the weekly run as well as on PRs.
+            why = refused(url)
+            if why == GATE_OPEN:
+                print(f"::warning::{where}: {url} is served without a download token: the gate's "
+                      "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
+                      "and deploy once the installer that accepts is merged")
+            elif why:
+                problems.append(f"{where}: {url} -> {why}")
+                continue
+            if not token:
+                checked += 1
+                if not why:
+                    print(f"ok {where} (gated: refused without a token; its contents are checked "
+                          "with DL_CHECK_TOKEN)")
+                continue
         try:
-            digest = fetch(url, hashlib.sha256() if sha else None)
+            digest = fetch(url, hashlib.sha256() if sha else None, token if gated else None)
         except Exception as e:  # HTTPError, URLError, timeouts: all mean "not published"
             problems.append(f"{where}: {url} -> {e}")
             continue
