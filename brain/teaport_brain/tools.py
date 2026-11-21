@@ -1019,7 +1019,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             progress.cancel()
         sibling = False
         if relayed and outcome.failure == "empty":
-            sibling = await owed.settle_empty(request, tool_call_id, started)
+            sibling = await owed.settle_empty(request, tool_call_id, started,
+                                              detail=outcome.detail)
             if sibling is None:
                 # The session ended during the grace: close_session already landed this
                 # consult as what it was by then (empty, or a cancel's sibling), and the

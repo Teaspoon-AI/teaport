@@ -888,9 +888,14 @@ async def test_a_cancel_burst_does_not_hide_one_inside_the_window():
     b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
     b.dispatch("a", HN_REQ)
     b.dispatch("c", "something else")
-    t = time.monotonic()
-    b._cancel_times = [t + 0.5, t + 5.0]
-    assert b._cancel_in(t, t + 1.0)
+    b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
+    first = b._cancel_times[-1]
+    await asyncio.sleep(0.01)
+    for k in range(5):                           # the rest of the burst, after it
+        b.dispatch(f"x{k}", f"more {k}")
+        b.land(f"more {k}", None, f"x{k}", failure="cancelled", detail="Cancelled.")
+    assert b._cancel_times[-1] > first
+    assert b._cancel_in(first, first), "the first cancel is still known after the burst"
 
 
 async def test_settle_empty_says_none_when_the_session_closed_it_and_false_on_a_closed_book():

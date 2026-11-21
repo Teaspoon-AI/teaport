@@ -207,7 +207,7 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
             delivered.append((text, failure) if by_openclaw
                              else (text, failure, "not by OpenClaw"))
 
-        async def settle_empty(self, request, key, since, grace=None):
+        async def settle_empty(self, request, key, since, grace=None, *, detail=""):
             # `cancelled`: OpenClaw cancelled a run in the session (owed.Owed). `closes`:
             # the session ends during the grace. `asked`: a list the call is noted in.
             if asked is not None:

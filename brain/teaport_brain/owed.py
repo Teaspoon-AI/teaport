@@ -1042,9 +1042,9 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
-        # key -> (request, floor, deadline): consults whose run has ended, empty, waiting
-        # out the grace for a cancel beside them (settle_empty; a cancel counts in
-        # [floor, deadline]). Their run is over: no dispatch folds into one (dispatch).
+        # key -> (request, floor, deadline, detail): consults whose run has ended, empty,
+        # waiting out the grace for a cancel beside them (settle_empty; a cancel counts in
+        # [floor, deadline]; `detail` the empty's, for close_session). Their run is over: no dispatch folds into one (dispatch).
         self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
@@ -1330,7 +1330,8 @@ class Owed:
         self._direct.add(key)
 
     async def settle_empty(self, request, key, since: float,
-                           grace: Optional[float] = None) -> Optional[bool]:
+                           grace: Optional[float] = None, *,
+                           detail: str = "") -> Optional[bool]:
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
         of a run OpenClaw just cancelled (cancelled_since)? tools._consult_and_land's entry
         point: it registers the wait for dispatch and close_session. While it waits
@@ -1345,7 +1346,7 @@ class Owed:
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
         window = (max(since, now - grace), now + grace)
-        self._settling[key] = (request, *window)
+        self._settling[key] = (request, *window, detail)
         others = any(k != key and k not in self._direct for k in self._running.values()) \
             or any(k != key for k in self._settling)
         # Cancelled mid-wait, the entry stays: that is the session's teardown
@@ -2098,11 +2099,11 @@ class Owed:
                 self.land(request, None, key, failure="unknown")
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
-        for key, (request, floor, deadline) in list(self._settling.items()):
+        for key, (request, floor, deadline, detail) in list(self._settling.items()):
             sibling = self._cancel_in(floor, deadline)
             self.land(request, None, key, failure="cancelled" if sibling else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
-                      else "OpenClaw finished with no text.", by_openclaw=False)
+                      else detail or "OpenClaw finished with no text.", by_openclaw=False)
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
