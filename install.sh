@@ -472,6 +472,14 @@ dl_token() {
 # eula_record <api> <version> <sha256> <method> — record this acceptance with Teaspoon AI:
 # sets ACCEPTANCE_ID and DL_TOKEN. No record, no download: dies when it cannot.
 ACCEPTANCE_ID=""
+# installer_revision — this checkout's commit, for the acceptance record: git:<12 hex>, or
+# unknown (no git, or a copy that is not a checkout).
+installer_revision() {
+  local r
+  r="$(git_read -C "$HERE" rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$r" ] && { printf 'git:%s' "$r"; return; }
+  printf unknown
+}
+
 eula_record() {
   local out code body why
   # Who accepts goes to python in its environment, not its arguments (ps shows those).
@@ -479,10 +487,11 @@ eula_record() {
           python3 -I -c 'import json,os,sys
 a, e = sys.argv[1:], os.environ
 d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3], "name": e["TEAPORT_NAME"],
-     "email": e["TEAPORT_EMAIL"], "use": a[4], "device_id": a[5]}
+     "email": e["TEAPORT_EMAIL"], "use": a[4], "device_id": a[5], "installer": a[6]}
 if a[4] == "licensed":
     d["license_id"] = e["TEAPORT_LICENSE_ID"]
-print(json.dumps(d))' "$(mget channel 2>/dev/null || echo stable)" "$2" "$3" "$4" "$ACCEPT_USE" "$(device_id)")"
+print(json.dumps(d))' "$(mget channel 2>/dev/null || echo stable)" "$2" "$3" "$4" "$ACCEPT_USE" "$(device_id)" \
+          "$(installer_revision)")"
   out="$(mktemp)"
   code="$(api_post "$1/accept" "$body" "$out")"
   why="$(api_field "$out" message)"

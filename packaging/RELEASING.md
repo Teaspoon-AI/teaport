@@ -132,6 +132,11 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       engine license is accepted; a copy in `teaport-get` would be public. Its
       `THIRD_PARTY_NOTICES.txt` goes to `teaport-get` under `dl/notices/`, public on
       purpose.
+- [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves the
+      gated files without a token, and is for the switchover only: deploy the Worker open,
+      merge the installer that accepts through it, then set `"enforce"` and deploy again
+      (`cd worker && npx wrangler deploy`). While it is open, the `publish` check warns on
+      every gated file.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

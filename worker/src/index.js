@@ -9,11 +9,12 @@
 // brain package stay public in teaport-get.
 //
 //   POST /api/accept   {channel, eula_version, eula_sha256, name, email, use, license_id,
-//                       device_id, method}
+//                       device_id, method, installer}
 //                      -> {acceptance_id, token, expires_at}. The license version and
 //                      sha256 must be the current ones: the channel's manifest's
 //                      engine.eula, read from teaport-get. The acceptance is recorded with
-//                      the request's IP address, country and user agent.
+//                      the installer's revision and the request's IP address, country and
+//                      user agent.
 //   POST /api/token    {acceptance_id} -> {token, expires_at}: a later run on the same box
 //                      (a repair, `teaport update`) gets a new token from its receipt.
 //                      409 eula_changed when the license changed since: the installer asks
@@ -21,6 +22,16 @@
 //   GET|HEAD /dl/engine/*, /dl/models/*   Authorization: Bearer <token>. Streams the file
 //                      from teaport-engine-dist, with byte ranges (curl -C - resumes the
 //                      multi-GB models), and logs the download against the acceptance.
+//
+// GATE (a wrangler.toml var): "enforce" refuses a download without a token. "open" is for
+// the switchover only: a request with no Authorization header is served too (logged as
+// acceptance "open", with x-teaport-gate: open), so the installer on main that predates the
+// gate keeps working until the one that accepts through here is merged; a token that is
+// sent is still checked. Anything else, or unset, enforces.
+//
+// Retention (the daily cron, scheduled()): acceptances and downloads older than
+// RETENTION_DAYS are deleted; unset or 0 keeps them. What is kept and why:
+// docs/engine-license-data.md.
 //
 // The token: "v1.<payload>.<HMAC-SHA256>", base64url, signed with TOKEN_KEY (a Worker
 // secret). It carries the acceptance, its license version and channel, and an expiry
@@ -38,6 +49,7 @@ const MANIFEST_TTL_MS = 60 * 1000;
 const CHANNELS = new Set(["stable", "beta"]);
 const GATED = /^\/dl\/(engine|models)\/[A-Za-z0-9._\-/]+$/;
 const MAX_BODY = 4096;
+const INSTALLER = /^[A-Za-z0-9._:+-]{1,64}$/;
 
 const manifests = new Map();   // channel -> {at, eula: {version, sha256}}
 
@@ -208,15 +220,18 @@ async function accept(request, env, now) {
     if (device === undefined) return fail(400, "bad_request", "device_id: 16 to 128 lowercase hex digits");
   }
   if (b.method !== "tty" && b.method !== "flag") return fail(400, "bad_request", "method: tty or flag");
+  if (typeof b.installer !== "string" || !INSTALLER.test(b.installer)) {
+    return fail(400, "bad_request", "installer: the installer's revision, such as git:0123456789ab");
+  }
 
   const id = randomId();
   const c = client(request);
   await env.DB.prepare(
     `INSERT INTO acceptances (id, created_at, channel, eula_version, eula_sha256, name, email, use_type,
-       license_id, device_id, method, ip, country, user_agent, last_token_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?2)`,
+       license_id, device_id, method, installer, ip, country, user_agent, last_token_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?2)`,
   ).bind(id, new Date(now * 1000).toISOString(), channel, eula.version, eula.sha256, name, email, b.use,
-         license, device, b.method, c.ip, c.country, c.ua).run();
+         license, device, b.method, b.installer, c.ip, c.country, c.ua).run();
   return json(200, { acceptance_id: id, ...(await issue(env, id, channel, eula.version, now)) });
 }
 
@@ -244,9 +259,12 @@ async function token(request, env, now) {
 const DENIED = "This file downloads only after the Teaport Engine License is accepted: install with "
   + "the teaport installer, bash <(curl -fsSL https://get.teaspoon.tech/teaport)";
 
-// Who may download: "ci" for CHECK_TOKEN, an acceptance id, or a Response refusing.
+// Who may download: "ci" for CHECK_TOKEN, an acceptance id, "open" for no token while
+// GATE is "open", or a Response refusing.
 async function authorize(request, env, now) {
-  const m = /^Bearer ([A-Za-z0-9._~+/-]{1,2048}=*)$/.exec(request.headers.get("authorization") ?? "");   // RFC 6750 token68
+  const auth = request.headers.get("authorization");
+  if (auth === null && env.GATE === "open") return "open";
+  const m = /^Bearer ([A-Za-z0-9._~+/-]{1,2048}=*)$/.exec(auth ?? "");   // RFC 6750 token68
   if (!m) return fail(401, "license_not_accepted", DENIED, { "www-authenticate": "Bearer" });
   if (env.CHECK_TOKEN && await sameSecret(m[1], env.CHECK_TOKEN)) return "ci";
   const claims = await readToken(env, m[1], now);
@@ -289,6 +307,7 @@ async function download(request, env, ctx, now, path) {
   const range = parseRange(request.headers.get("range"), head.size);
   const headers = new Headers({ "accept-ranges": "bytes", "cache-control": "private, no-store", etag: head.httpEtag });
   head.writeHttpMetadata(headers);
+  if (who === "open") headers.set("x-teaport-gate", "open");
   const c = client(request);
   const log = (status) => ctx.waitUntil(env.DB.prepare(
     "INSERT INTO downloads (at, acceptance_id, key, range_start, status, ip, country) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -333,4 +352,17 @@ export default {
     }
     return fail(404, "not_found", `no such endpoint: ${path}`);
   },
+
+  // Daily (wrangler.toml [triggers]): what is past RETENTION_DAYS goes.
+  async scheduled(_event, env) {
+    await expire(env, Math.floor(Date.now() / 1000));
+  },
 };
+
+export async function expire(env, now) {
+  const days = Number(env.RETENTION_DAYS || 0);
+  if (!(days > 0)) return;
+  const cutoff = new Date((now - days * 86400) * 1000).toISOString();
+  await env.DB.prepare("DELETE FROM downloads WHERE at < ?1").bind(cutoff).run();
+  await env.DB.prepare("DELETE FROM acceptances WHERE created_at < ?1").bind(cutoff).run();
+}

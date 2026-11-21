@@ -167,11 +167,20 @@ def fetch(url, digest, token=None):
         time.sleep(5 * attempt)
 
 
+# refused(): the gate serves it without a token because its GATE is "open", for the
+# switchover only (worker/src/index.js).
+GATE_OPEN = "gate open"
+
+
 def refused(url):
     """None when url refuses an anonymous download (HTTP 401), as a gated artifact must;
-    else what it did."""
+    GATE_OPEN when the gate serves it during the switchover; else what it did. A HEAD: an
+    open gate would otherwise start sending the file."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
     try:
-        fetch(url, None)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            if resp.headers.get("x-teaport-gate") == "open":
+                return GATE_OPEN
     except urllib.error.HTTPError as e:
         return None if e.code == 401 else f"HTTP {e.code}"
     except Exception as e:  # noqa: BLE001 -- no answer at all
@@ -258,7 +267,12 @@ def check(manifest_path, placeholders_ok):
             continue
         if any(url.startswith(p) for p in prefixes) and not token:
             why = refused(url)
-            if why:
+            if why == GATE_OPEN:
+                checked += 1
+                print(f"::warning::{where}: {url} is served without a download token: the gate's "
+                      "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
+                      "and deploy once the installer that accepts is merged")
+            elif why:
                 problems.append(f"{where}: {url} -> {why}")
             else:
                 checked += 1

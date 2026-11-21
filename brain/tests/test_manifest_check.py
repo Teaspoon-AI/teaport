@@ -1,15 +1,18 @@
 #
 # manifest/check.py's list of what a release manifest must name, against install.sh's reads:
 # from engine 1.7 on, the AI watermark's weights (engine.watermark) are one of them, by the
-# same rule install.sh's engine_release_marks applies. Offline: nothing is fetched.
+# same rule install.sh's engine_release_marks applies. And how it reads the license gate's
+# answer to a download without a token. Offline: the gate is a server on loopback.
 #
 # Run: python test_manifest_check.py   (or via pytest test_suite.py)
 #
+import http.server
 import importlib.util
 import json
 import pathlib
 import re
 import subprocess
+import threading
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 INSTALL = REPO / "install.sh"
@@ -58,7 +61,39 @@ def test_a_release_that_marks_must_name_its_watermark():
     assert "engine.watermark" in check.required(beta) and beta["engine"]["watermark"]["url"]
 
 
+def test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open():
+    check = _check()
+    seen = []
+
+    class Gate(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            seen.append(self.command)
+            status, headers = {"/closed": (401, {}), "/open": (200, {"x-teaport-gate": "open"}),
+                               "/public": (200, {})}.get(self.path, (404, {}))
+            self.send_response(status)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gate)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        assert check.refused(f"{base}/closed") is None
+        assert check.refused(f"{base}/open") == check.GATE_OPEN
+        assert "not in front of it" in check.refused(f"{base}/public")
+        assert check.refused(f"{base}/gone") == "HTTP 404"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert set(seen) == {"HEAD"}   # an open gate is never asked for the file itself
+
+
 if __name__ == "__main__":
     test_the_watermark_rule_is_install_shs()
     test_a_release_that_marks_must_name_its_watermark()
+    test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open()
     print("ok")

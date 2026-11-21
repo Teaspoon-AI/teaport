@@ -69,7 +69,8 @@ less() { cat "$@"; }
 '''
 
 FNS = ("fetch_manifest", "mget", "gated", "download", "receipt_get", "api_post", "api_field",
-       "device_id", "eula_identity", "eula_token", "dl_token", "eula_record", "eula_gate")
+       "device_id", "git_read", "installer_revision", "eula_identity", "eula_token", "dl_token", "eula_record",
+       "eula_gate")
 
 
 def _manifest(tmp, access=True, version="1.0"):
@@ -84,7 +85,7 @@ def _manifest(tmp, access=True, version="1.0"):
 
 def _script(tmp, body, **env):
     head = STUBS + FAKE_CURL + "".join(_fn(f) for f in FNS)
-    head += ('STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
+    head += ('HERE="${HERE:-$T}"; STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
              'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID=""\n'
              'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_NAME="${ACCEPT_NAME:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
              'ACCEPT_LICENSE_ID="${ACCEPT_LICENSE_ID:-}"\n')
@@ -129,7 +130,8 @@ def test_accepting_by_flag_records_who_and_what_with_teaspoon_ai():
     device = body.pop("device_id")
     assert re.fullmatch(r"[0-9a-f]{64}", device) or device == "", device
     assert body == {"channel": "stable", "eula_version": "1.0", "eula_sha256": SHA, "method": "flag",
-                    "name": "Ada Lovelace", "email": "ada@example.com", "use": "personal"}, body
+                    "name": "Ada Lovelace", "email": "ada@example.com", "use": "personal",
+                    "installer": "unknown"}, body   # HERE: the test dir, not a checkout
     r = _receipt(tmp_path)
     assert {k: r[k] for k in ("version", "sha256", "method", "acceptance_id", "recorded_with", "name", "email", "use")} == {
         "version": "1.0", "sha256": SHA, "method": "flag", "acceptance_id": "acc-0123456789",
@@ -138,6 +140,21 @@ def test_accepting_by_flag_records_who_and_what_with_teaspoon_ai():
     sudo = pathlib.Path(tmp_path, "sudo.log").read_text()
     assert sudo.index("install -m 0600 /dev/null") < sudo.index("tee " + str(tmp_path / "state/eula-accepted.json")), sudo
     assert pathlib.Path(tmp_path, "state/EULA-v1.0.txt").read_text() == LICENSE
+
+
+def test_the_record_names_the_installers_commit():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    here = tmp_path / "checkout"
+    here.mkdir()
+    git = ["git", "-C", str(here), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "x"], check=True)
+    rev = subprocess.run(git + ["rev-parse", "--short=12", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    rc, out = _run(tmp_path, GATE, ACCEPT_EULA="1.0", HERE=str(here), **WHO)
+    assert rc == 0, out
+    [(_, body)] = _api(tmp_path)
+    assert body["installer"] == f"git:{rev}", body
 
 
 def test_licensed_use_sends_its_license_id():

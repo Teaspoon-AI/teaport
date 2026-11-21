@@ -7,7 +7,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import worker, { makeToken, parseRange, resetCache, TOKEN_TTL_SECS } from "../src/index.js";
+import worker, { expire, makeToken, parseRange, resetCache, TOKEN_TTL_SECS } from "../src/index.js";
 
 const MIGRATIONS = new URL("../migrations/", import.meta.url);
 const SHA = "33334d85d3f087da738131fcfe5ee6f862859c8130c4bbdd0aad441aff34effb";
@@ -80,7 +80,7 @@ async function call(method, path, { body, headers = {} } = {}) {
 }
 
 const ACCEPT = { eula_version: "1.0", eula_sha256: SHA, name: "Ada Lovelace", email: "ada@example.com",
-                 use: "personal", device_id: "ab".repeat(16), method: "tty" };
+                 use: "personal", device_id: "ab".repeat(16), method: "tty", installer: "git:0123456789ab" };
 
 async function accepted(extra = {}) {
   const res = await call("POST", "/api/accept", { body: { ...ACCEPT, ...extra } });
@@ -99,9 +99,9 @@ test("an acceptance is recorded with who, what and from where, and returns a tok
   const row = env.DB.db.prepare("SELECT * FROM acceptances").get();
   assert.equal(row.id, r.acceptance_id);
   assert.deepEqual([row.channel, row.eula_version, row.eula_sha256, row.name, row.email, row.use_type,
-                    row.license_id, row.device_id, row.method, row.ip],
+                    row.license_id, row.device_id, row.method, row.installer, row.ip],
                    ["stable", "1.0", SHA, "Ada Lovelace", "ada@example.com", "personal",
-                    null, "ab".repeat(16), "tty", "203.0.113.7"]);
+                    null, "ab".repeat(16), "tty", "git:0123456789ab", "203.0.113.7"]);
   assert.ok(Math.abs(Date.parse(r.expires_at) - (Date.now() + TOKEN_TTL_SECS * 1000)) < 5000);
 });
 
@@ -129,7 +129,9 @@ test("licensed use needs a license id; personal use records none", async () => {
 test("each field is checked", async () => {
   for (const [field, value] of [["name", ""], ["name", "   "], ["name", "x".repeat(201)], ["name", "a\nb"],
                                 ["email", "not-an-email"], ["email", 42], ["use", "business"],
-                                ["method", "env"], ["device_id", "XYZ"], ["channel", "nightly"]]) {
+                                ["method", "env"], ["device_id", "XYZ"], ["channel", "nightly"],
+                                ["installer", undefined], ["installer", ""], ["installer", "git: x"],
+                                ["installer", "x".repeat(65)]]) {
     const res = await call("POST", "/api/accept", { body: { ...ACCEPT, [field]: value } });
     assert.equal(res.status, 400, `${field}=${JSON.stringify(value)}`);
   }
@@ -255,6 +257,50 @@ test("a check token in base64, with + / and =, is taken whole", async () => {
   env.CHECK_TOKEN = "q+Lw/9Zx3v==";
   assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("q+Lw/9Zx3v==") })).status, 200);
   assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("q+Lw/9Zx3v") })).status, 401);
+});
+
+test("GATE open serves a request without a token, marked and logged; a token sent is still checked", async () => {
+  env.GATE = "open";
+  const res = await call("GET", `/${ENGINE}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("x-teaport-gate"), "open");
+  assert.deepEqual(new Uint8Array(await res.arrayBuffer()), BYTES);
+  for (const h of [bearer("garbage"), { authorization: "" }, { authorization: "Basic abc" }]) {
+    assert.equal((await call("GET", `/${ENGINE}`, { headers: h })).status, 401);
+  }
+  const { token } = await accepted();
+  const ok = await call("GET", `/${ENGINE}`, { headers: bearer(token) });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("x-teaport-gate"), null);
+  const log = env.DB.db.prepare("SELECT acceptance_id FROM downloads ORDER BY id").all();
+  assert.equal(log[0].acceptance_id, "open");
+  assert.notEqual(log.at(-1).acceptance_id, "open");
+});
+
+test("any GATE but open, or none, enforces", async () => {
+  for (const g of [undefined, "enforce", "OPEN", "1", ""]) {
+    env.GATE = g;
+    assert.equal((await call("GET", `/${ENGINE}`)).status, 401, String(g));
+  }
+});
+
+test("the retention cron deletes acceptances and downloads past RETENTION_DAYS, and nothing unset", async () => {
+  const { token } = await accepted();
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
+  const count = (table) => env.DB.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
+  const now = Math.floor(Date.now() / 1000);
+  for (const days of [undefined, "0", "abc"]) {
+    env.RETENTION_DAYS = days;
+    await expire(env, now + 3650 * 86400);
+    assert.deepEqual([count("acceptances"), count("downloads")], [1, 1], String(days));
+  }
+  env.RETENTION_DAYS = "30";
+  await expire(env, now + 29 * 86400);
+  assert.deepEqual([count("acceptances"), count("downloads")], [1, 1]);
+  await expire(env, now + 31 * 86400);
+  assert.deepEqual([count("acceptances"), count("downloads")], [0, 0]);
+  const res = await call("POST", "/api/token", { body: { acceptance_id: "x".repeat(24) } });
+  assert.equal(res.status, 404);
 });
 
 test("parseRange takes one bytes= range and serves anything else whole", () => {

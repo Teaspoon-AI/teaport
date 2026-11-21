@@ -6,6 +6,8 @@
 #   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
 #   npx wrangler deploy
 #
+# Switchover: deploy with GATE = "open", merge the installer that accepts through this
+# Worker, then set GATE = "enforce" and deploy again (packaging/RELEASING.md).
 # The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated
 # download paths only; everything else there is still the public bucket teaport-get.
 name = "teaport-download-gate"
@@ -19,6 +21,17 @@ routes = [
   { pattern = "get.teaspoon.tech/dl/engine/*", zone_name = "teaspoon.tech" },
   { pattern = "get.teaspoon.tech/dl/models/*", zone_name = "teaspoon.tech" },
 ]
+
+[vars]
+# "enforce": a download needs a token. "open": one without an Authorization header is
+# served too, for the switchover only (src/index.js). Unset, or anything else, enforces.
+GATE = "open"
+# Acceptances and downloads older than this are deleted daily. 2557 days, 7 years: a
+# PROPOSAL to confirm with counsel (docs/engine-license-data.md); change both together.
+RETENTION_DAYS = "2557"
+
+[triggers]
+crons = ["17 4 * * *"]   # daily, 04:17 UTC: the retention cron
 
 # The gated files: private, no public URL. Only this Worker reads it.
 [[r2_buckets]]
