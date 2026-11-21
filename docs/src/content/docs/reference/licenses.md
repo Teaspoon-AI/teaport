@@ -24,7 +24,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:65-70,106-120#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:110,832,1212#d68294c9; packaging/nfpm.yaml:65-70,106-121#873f7aec -->
+<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:112,834,1214#d68294c9; packaging/nfpm.yaml:69-74,119-134#873f7aec -->
 
 ## See the licenses on the device
 
@@ -42,7 +42,7 @@ The installer records your acceptance with Teaspoon AI, together with the licens
 
 To accept without the prompt, name the version you read: `--accept-eula=<version>`, with the version the license's title names, and give `--name` and `--email`, plus `--license-id` for licensed use. A bare `--accept-eula`, or another version, stops the installer.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:112,140-147,405-438,492-582#4b0e2125; worker/src/index.js:166-172,213-220#bc1590a6 -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:114,142-149,407-440,494-584#4b0e2125; worker/src/index.js:166-172,213-220#bc1590a6 -->
 
 ## The LGPL libraries
 

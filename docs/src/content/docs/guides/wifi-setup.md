@@ -55,7 +55,7 @@ If you start setup by voice, the screen shows its words in the language that the
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device makes a fresh random one for each run: twelve characters in three groups of four, for example `k7mq-x4tn-p9wr`, lowercase letters and digits without look-alikes or sound-alikes (no 0 or o, no 1, l or i, no q). The hyphens are part of the password; type it as the screen shows it. The screen shows it, and the device reads it out, character by character with "dash" between the groups, when it has no screen or you say "repeat". A password for the paper insert should use the same grouped form: `teaport setup-card --new-password` makes one, stores it, and prints what goes on the insert (see [teaport setup-card](/reference/cli/#teaport-setup-card)).
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-12,90-97#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:3687-3691#0fa4dad8 -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-12,115-122#e06919a7; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:3981-3985#0fa4dad8 -->
 
 ## Create your login
 
