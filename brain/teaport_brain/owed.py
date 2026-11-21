@@ -1234,7 +1234,7 @@ class Owed:
 
     # ---- Land ---------------------------------------------------------------------
 
-    def dispatch(self, key: str, request: str) -> Optional[str]:
+    def dispatch(self, key: str, request: str, *, supersede: bool = True) -> Optional[str]:
         """A consult is asked for (tools.openclaw_agent_consult). None: it runs, and its
         placeholder is in the context until land() rewrites it or the session ends
         (close_session). Otherwise the key of the consult already running for this exact
@@ -1244,10 +1244,14 @@ class Owed:
         share -- the same words asked again run again, as they did when an empty landed
         at once, and a sibling's cancel does not close the re-ask with it. The settling
         one is superseded: it closes without a record (settle_empty), so the caller is
-        not told "it found nothing" of a request already running again."""
+        not told "it found nothing" of a request already running again. `supersede` False
+        (asked as the session ends, with no waiter to land it): the settling one is left to
+        land as what it is, and this one runs on its own."""
         running = self._running.get(request)
         superseded = None
-        if running in self._settling:
+        if running in self._settling and not supersede:
+            running = None
+        elif running in self._settling:
             self._superseded.add(running)
             del self._running[request]
             superseded, running = running, None
@@ -2137,7 +2141,9 @@ class Owed:
             if key not in self._settling:
                 self.land(request, None, key, failure="unknown")
         # An empty still waiting out its grace lands as what it is by now: the sibling of
-        # a cancel already seen, or empty -- not "didn't report back", since it did.
+        # a cancel already seen, or empty -- not "didn't report back", since it did. Its
+        # window is cut at the close: a cancel still on its way no longer counts. Only the
+        # room keeps records past a session, and it has no relay, so none settle there.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
             superseded = key in self._superseded
             sibling = not superseded and self._cancel_in(floor, deadline)

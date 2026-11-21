@@ -985,6 +985,21 @@ async def test_a_superseded_empty_stops_waiting_at_once():
     assert await waiting == "superseded" and time.monotonic() - t0 < 1.0
 
 
+async def test_a_re_ask_as_the_session_ends_supersedes_nothing():
+    """Asked as the session ends, with no waiter to land it: the settling empty is left
+    to land as what it is (it did report back), and the re-ask runs on its own."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b.dispatch("a", HN_REQ)
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ, supersede=False) is None
+    assert "a" not in b._superseded
+    b.close_session()
+    assert await waiting is None
+    assert b.record("a").failure == "empty", "it came back empty, and says so"
+
+
 async def test_superseded_wins_over_a_cancel_in_the_window():
     """Asked again during the grace AND a cancel in the window: superseded, never told it
     was stopped, since the same request is running again."""

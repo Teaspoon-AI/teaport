@@ -1219,7 +1219,11 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # live), which doubled every ack, progress line, and follow-up. One
     # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
     # resolves silently and the original's record answers for both.
-    if owed is not None and owed.dispatch(params.tool_call_id, request) is not None:
+    # Asked as the session ends (`over`, below): no waiter will land it, so it supersedes no
+    # settling empty (Owed.dispatch), which did report back.
+    ending = owed is not None and getattr(params.llm, "session_over", False) is True
+    if owed is not None and owed.dispatch(params.tool_call_id, request,
+                                          supersede=not ending) is not None:
         # A placeholder result: no inference, and a landing that came first replaces
         # it -- see placeholder_properties() and the comment below.
         await params.result_callback(
