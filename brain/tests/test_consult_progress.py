@@ -517,7 +517,7 @@ async def test_the_consult_hands_its_phrase_to_the_narrator():
         got.update(request=request, **kwargs)
 
     class _Owed:
-        def dispatch(self, tool_call_id, request):
+        def dispatch(self, tool_call_id, request, *, supersede=True):
             return None
 
         async def placed(self):             # the placeholder's on_context_updated (#386)

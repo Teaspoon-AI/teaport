@@ -184,6 +184,15 @@ _INVISIBLE = frozenset(
     + list(range(0x2066, 0x206A)))  # LRI RLI FSI PDI
 
 
+# The status OpenClaw's run control gives a cancel that aborted the session's run
+# (controlRealtimeVoiceAgentRun, src/talk/agent-run-control.ts, 2026.10.5: mode "cancel",
+# abortEmbeddedAgentRun). Its "could not cancel" twin aborted nothing. A host note carries
+# only the text; the model's own control result is read by its fields
+# (tools._control_aborted). A status shaped like it (starting "Cancel", about an OpenClaw
+# run) that does not match is warned: OpenClaw's wording may have drifted.
+CANCEL_STATUS = "Cancelled the active OpenClaw run."
+
+
 def _text_only(text: str) -> str:
     """`text` without what is not text: control characters (whitespace aside; the
     callers fold it), lone surrogates, and the invisible format characters above.
@@ -291,7 +300,7 @@ class ClientNotes(FrameProcessor):
                  respond_interval_s: float = RESPOND_INTERVAL_S,
                  react_max_wait_s: float = REACT_MAX_WAIT_S,
                  burst: int = BURST, refill_per_s: float = REFILL_PER_S,
-                 reactions: bool = True, clock=time.monotonic):
+                 reactions: bool = True, clock=time.monotonic, on_cancel=None):
         super().__init__()
         self._context = context
         self._gate = gate
@@ -308,6 +317,9 @@ class ClientNotes(FrameProcessor):
         # unprompted.
         self._reactions = reactions
         self._clock = clock
+        # Told when the relay's run control reports a cancel (CANCEL_STATUS): the owed
+        # book's note_cancel, for an empty consult beside it (Owed.settle_empty).
+        self._on_cancel = on_cancel
         self._bucket = _Bucket(burst, refill_per_s, clock())
         self._last_respond: float | None = None
         self._pending: list[_Note] = []
@@ -416,14 +428,24 @@ class ClientNotes(FrameProcessor):
         """An update from OpenClaw that reached the brain itself rather than as the
         plugin's note -- the result of the model's openclaw_agent_control call that a
         barge-in cancelled after the client had acted on it (tools._openclaw_agent_control)
-        -- said the way the relay's own replies are (HOST NOTES)."""
-        self._take_host(text, kind, kind, self._clock())
+        -- said the way the relay's own replies are (HOST NOTES). A cancel status in it is
+        never told to on_cancel: when OpenClaw aborted is not known from a result this
+        late, and a consult sent since could be read beside it."""
+        self._take_host(text, kind, kind, self._clock(), cancel=False)
 
-    def _take_host(self, raw: str, kind, log_kind: str, now: float) -> str | None:
+    def _take_host(self, raw: str, kind, log_kind: str, now: float, *,
+                   cancel: bool = True) -> str | None:
         """Queue a host note: "applied" or "queued", or None for one with no text."""
         text = _host_status(raw)
         if not text:
             return None
+        if cancel and self._on_cancel is not None:
+            if text.startswith(CANCEL_STATUS):
+                self._on_cancel()
+            elif text.lower().startswith("cancel") and "openclaw run" in text.lower():
+                # A host note is text only: if OpenClaw's wording drifts, this is the trace.
+                logger.warning(f"host note: a cancel-like status not read as a cancel: "
+                               f"{quoted(text[:80])}")
         self._pending.append(_Note(text, True, kind, now + self._react_max_wait, host=True))
         status = "applied" if self._gate.is_clear() else "queued"
         logger.info(f"host note: {log_kind} ({len(text)} chars) -> {status}")

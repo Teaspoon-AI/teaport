@@ -326,6 +326,35 @@ async def test_an_update_the_brain_got_itself_is_said_as_the_hosts():
     assert _results(h) == [], "nobody asked: nothing to answer"
 
 
+async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
+    """The relay's status for a spoken cancel tells the owed book (Owed.note_cancel):
+    the only word of a cancel whose consult returned its empty final first."""
+    noted = []
+    h = _harness(on_cancel=lambda: noted.append(True))
+    await _send_host(h)
+    assert noted == [True], noted
+    await _send_host(h, _speech("Got it. I steered the active run."), rid="h2")
+    await _send_host(h, _speech("OpenClaw could not cancel the active run."), rid="h3")
+    assert noted == [True], "only a cancel that aborted the run"
+    from loguru import logger
+    warned = []
+    sink = logger.add(lambda m: warned.append(str(m)), level="WARNING")
+    try:
+        await _send_host(h, _speech("There is no active OpenClaw run to cancel."), rid="h4")
+        assert not any("cancel-like" in w for w in warned), "nothing to cancel is no drift"
+        await _send_host(h, _speech("Got it. I'll cancel the two o'clock instead."), rid="h5")
+        await _send_host(h, _speech("Got it. I told the active OpenClaw run to cancel the "
+                                    "booking."), rid="h7")
+        assert not any("cancel-like" in w for w in warned), "a steer about a cancel is no drift"
+        await _send_host(h, _speech("Cancelled the OpenClaw run."), rid="h6")   # drifted
+        assert any("cancel-like" in w for w in warned), "the drift is warned"
+    finally:
+        logger.remove(sink)
+    assert noted == [True], "not read as a cancel, but warned (the drift's trace)"
+    h.notes.add_host_update(STATUS)
+    assert noted == [True], "a late result's cancel is not noted: its time is not known"
+
+
 async def test_a_host_note_is_not_held_to_a_clients_limits():
     """The relay's control queue bounds what it sends; a respond interval or a burst
     allowance spent by the client must not refuse the host's reply."""

@@ -196,12 +196,23 @@ async def test_echoes_of_the_brains_own_tool_calls_are_not_logged():
 
 # --- the async waiter ---------------------------------------------------------------
 
-async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None):
+async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes=False,
+                asked=None):
     delivered = []
 
     class Owed:
-        def land(self, request, text, key, *, failure=None, detail=""):
-            delivered.append((text, failure))
+        def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True,
+                 superseded=False):
+            delivered.append((text, failure) if by_openclaw
+                             else (text, failure, "not by OpenClaw", "superseded")
+                             if superseded else (text, failure, "not by OpenClaw"))
+
+        async def settle_empty(self, request, key, since, grace=None, *, detail=""):
+            # `cancelled`: OpenClaw cancelled a run in the session (owed.Owed). `closes`:
+            # the session ends during the grace. `asked`: a list the call is noted in.
+            if asked is not None:
+                asked.append(since)
+            return None if closes else cancelled
 
     saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
              oc.agent_consult)
@@ -243,6 +254,66 @@ async def test_the_no_text_placeholder_is_not_delivered_as_an_answer():
     fut.set_result("OpenClaw finished with no text.")
     delivered = await _wait(fut)
     assert delivered == [(None, "empty")], delivered
+
+
+async def test_an_empty_beside_an_openclaw_cancel_is_delivered_as_cancelled():
+    """#450: "cancel that" with two consults in the session's lane. The one whose run was
+    cancelled says so; the other comes back an empty final. Landed empty it was owed and
+    re-offered ("the lookup didn't return any information"); it is that cancel's sibling."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result("OpenClaw finished with no text.")
+    delivered = await _wait(fut, cancelled=True)
+    # Landed as not OpenClaw's own cancel: it is not one more for another empty to be
+    # read beside (owed.Owed._cancelled `by_openclaw`).
+    assert delivered == [(None, "cancelled", "not by OpenClaw")], delivered
+
+
+async def test_an_empty_on_the_direct_lane_does_not_wait_for_a_cancel():
+    """No relay (the room, the phone): OpenClaw's run control never reports a cancel to
+    it, so its empty lands at once, as empty, with no grace waited out in silence."""
+    asked = []
+
+    async def cli(request, *, timeout=None, session_key=None):
+        return oc.ConsultOutcome(None, "empty", "OpenClaw finished with no text.")
+
+    delivered = await _wait(None, cli=cli, cancelled=True, asked=asked)
+    assert delivered == [(None, "empty")] and asked == [], (delivered, asked)
+
+
+async def test_an_empty_whose_session_ends_in_the_grace_is_not_landed():
+    """The session closed while the empty waited out the grace: close_session already
+    landed the consult, and the room's sleep may have saved the book. Nothing more."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result("OpenClaw finished with no text.")
+    assert await _wait(fut, closes=True) == []
+
+
+async def test_a_superseded_empty_lands_as_superseded_not_as_a_cancel():
+    """The same words asked again during the grace: closed without a record, as
+    superseded -- not logged or noted as a cancel's sibling."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result("OpenClaw finished with no text.")
+    delivered = await _wait(fut, cancelled="superseded")
+    assert delivered == [(None, "cancelled", "not by OpenClaw", "superseded")], delivered
+
+
+async def test_an_answer_that_cleans_to_nothing_beside_a_cancel_is_a_sibling():
+    """Only an address, which land() reads as empty: a lane abort can leave that too."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"text": "https://example.com/results"})
+    delivered = await _wait(fut, cancelled=True)
+    assert delivered == [(None, "cancelled", "not by OpenClaw")], delivered
+
+
+async def test_an_answer_or_a_timeout_beside_a_cancel_is_not_touched():
+    """Only an EMPTY result is read as the cancel's sibling: an answer is an answer, and
+    a timeout or an error is still told."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"text": "Three shops."})
+    assert await _wait(fut, cancelled=True) == [("Three shops.", None)]
+    fut = asyncio.get_running_loop().create_future()
+    fut.working = True
+    assert await _wait(fut, ack=0.05, ceiling=0.2, cancelled=True) == [(None, "timeout")]
 
 
 async def test_a_cancelled_run_is_delivered_as_cancelled():
