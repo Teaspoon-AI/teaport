@@ -1405,7 +1405,10 @@ class Owed:
         lands, through settle_empty: such an empty is a sibling of the run the
         caller called off (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing,
         told nothing. A cancel further off is another request's, and a genuine empty
-        stays empty. Only cancels OpenClaw reported count (_cancelled `by_openclaw`).
+        stays empty. Only cancels OpenClaw reported count (note_cancel): a consult that
+        came back "cancelled" (_cancelled `by_openclaw`), the run control's cancel status
+        in a host note (ClientNotes on_cancel), and the model's own control result that
+        aborted the run (tools._openclaw_agent_control).
         Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
         transition.
 
@@ -1433,7 +1436,7 @@ class Owed:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
         for dup in [d for d, of in self._duplicates.items() if of == key]:
             self._rewrite(dup, {"status": "duplicate",
-                                "note": "The same request as an earlier call; its result "
+                                "note": "The same request as another call; its result "
                                         "is that call's."})
             del self._duplicates[dup]
 
@@ -2147,7 +2150,7 @@ class Owed:
                       failure="cancelled" if sibling or superseded else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
                       else "empty, the same request asked again" if superseded
-                      else detail or "OpenClaw finished with no text.",
+                      else detail,
                       by_openclaw=False, superseded=superseded)
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
