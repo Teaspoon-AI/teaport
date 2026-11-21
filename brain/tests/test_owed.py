@@ -110,6 +110,7 @@ def tool_round(key="call-hn", request=HN_REQ, placeholder=None):
 
 # =============================================================== the outcome, cleaned
 
+
 def test_the_203_answer_cleans_to_what_the_replays_measured():
     assert clean_outcome(HN_RAW) == HN_CLEAN, repr(clean_outcome(HN_RAW))
 
@@ -137,6 +138,7 @@ def test_openclaw_meta_notes_links_and_addresses_go():
 
 
 # =============================================================== the spoken form, terms
+
 
 def test_a_number_is_one_token_however_it_is_written():
     assert spoken_tokens("1,255") == spoken_tokens("twelve hundred fifty-five") == ["1255"]
@@ -170,6 +172,7 @@ def test_a_script_without_spaces_is_one_token_per_character():
 
 
 # =============================================================== the about gate
+
 
 def test_a_telling_and_a_lead_in_are_about_it_and_a_deferral_is_not():
     """Only a reply ABOUT a record is judged or counts toward the backstop (#210). The
@@ -251,7 +254,6 @@ def test_a_failure_for_credit_says_the_account_ran_out():
     assert "credit" not in limited and "billing" not in limited, limited
 
 
-
 def test_a_failure_has_no_terms_its_tellings_are_judged():
     """#380: no word list says what a failure's telling is -- the four English words of
     formal audit C1 matched no telling in Spanish or Italian. Every kind's record has no
@@ -266,6 +268,7 @@ BILLING_REPLY = "I couldn't do that because of a billing problem. Want me to ope
 
 
 # =============================================================== the note
+
 
 def test_a_caller_turn_carries_the_measured_note_before_the_last_caller_message():
     rec = hn_record()
@@ -791,7 +794,6 @@ async def test_a_consult_openclaw_cancelled_is_owed_nothing():
     assert render(ctx.get_messages(), b.owed(), "caller") == ctx.get_messages()
 
 
-
 async def test_cancelled_since_sees_a_cancel_before_or_within_the_grace():
     """#450: a consult's empty result asks whether OpenClaw cancelled a run in the session
     since it began. Both orders were seen live: the sibling's empty lands first (the
@@ -961,7 +963,11 @@ async def test_a_settling_empty_asked_again_is_superseded_not_owed():
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.1))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None
-    assert await waiting is True, "superseded: closed silently, like a sibling"
+    assert await waiting == "superseded", "superseded: closed silently, not as a cancel"
+    b.land(HN_REQ, None, "a", failure="cancelled", detail="x", by_openclaw=False,
+           superseded=True)
+    assert b.record("a") is None and not b._cancel_times, "no record, and no cancel noted"
+
 
 async def test_settle_empty_on_a_book_that_closed_it_lands_nothing():
     """close_session landed the running consult; its empty arriving after says None."""
@@ -970,6 +976,7 @@ async def test_settle_empty_on_a_book_that_closed_it_lands_nothing():
     b.dispatch("a", HN_REQ)
     b.close_session()
     assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is None
+
 
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
     """One consult open, and "cancel that": its aborted run can return its empty final
@@ -987,6 +994,7 @@ async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
     t = asyncio.create_task(word_soon())
     assert await b.settle_empty(HN_REQ, "a", began, grace=1.0) is True
     await t
+
 
 async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
     """The wait times out, and a cancel inside the window lands before the waiter runs:
@@ -1243,6 +1251,7 @@ async def test_a_verdict_still_to_come_at_the_sessions_end_errs_owed():
 
 
 # =============================================================== a held stop (Owed.tla Hold)
+
 
 async def test_a_held_stop_disarms_the_reoffer_until_their_next_turn():
     """barge_pause.py A BARE STOP -> Owed.caller_waits: "Okay, wait." asks nothing, so no
@@ -2083,6 +2092,7 @@ async def test_only_an_open_answer_is_owed():
 
 
 # =============================================================== the room's sleep
+
 
 async def test_the_records_sleep_and_wake_with_the_conversation():
     store = wake_gate.MicConversation()

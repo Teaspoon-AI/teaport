@@ -82,7 +82,7 @@ from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
 from teaport_brain.client_notes import CANCEL_STATUS
-from teaport_brain.owed import CANCELLED_NOTE, clean_outcome
+from teaport_brain.owed import CANCELLED_NOTE, SUPERSEDED, clean_outcome
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES, offered_voices
@@ -1041,6 +1041,15 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                 logger.info("openclaw_agent_consult(async): an empty result as the session "
                             "ended -- dropped, the session closed it")
                 return
+        if sibling == SUPERSEDED:
+            # The same words were asked again during the grace: that later consult is the
+            # one running, and this empty closes without a record (Owed.dispatch).
+            logger.info(f"openclaw_agent_consult(async): {tool_call_id}'s empty result -- "
+                        f"the same request was asked again meanwhile; superseded")
+            owed.land(request, None, tool_call_id, failure="cancelled",
+                      detail="empty, the same request asked again", by_openclaw=False,
+                      superseded=True)
+            return
         if sibling:
             # OpenClaw cancelled a run in this session within the grace of this empty,
             # since this consult began: this empty is that cancel's sibling (#450), not a

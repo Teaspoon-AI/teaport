@@ -201,9 +201,11 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
     delivered = []
 
     class Owed:
-        def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True):
+        def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True,
+                 superseded=False):
             delivered.append((text, failure) if by_openclaw
-                             else (text, failure, "not by OpenClaw"))
+                             else (text, failure, "not by OpenClaw", "superseded")
+                             if superseded else (text, failure, "not by OpenClaw"))
 
         async def settle_empty(self, request, key, since, grace=None, *, detail=""):
             # `cancelled`: OpenClaw cancelled a run in the session (owed.Owed). `closes`:
@@ -284,6 +286,15 @@ async def test_an_empty_whose_session_ends_in_the_grace_is_not_landed():
     fut = asyncio.get_running_loop().create_future()
     fut.set_result("OpenClaw finished with no text.")
     assert await _wait(fut, closes=True) == []
+
+
+async def test_a_superseded_empty_lands_as_superseded_not_as_a_cancel():
+    """The same words asked again during the grace: closed without a record, as
+    superseded -- not logged or noted as a cancel's sibling."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result("OpenClaw finished with no text.")
+    delivered = await _wait(fut, cancelled="superseded")
+    assert delivered == [(None, "cancelled", "not by OpenClaw", "superseded")], delivered
 
 
 async def test_an_answer_that_cleans_to_nothing_beside_a_cancel_is_a_sibling():

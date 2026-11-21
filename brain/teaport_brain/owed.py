@@ -422,6 +422,12 @@ _HELD = "held for its placeholder"
 # it is not to be started again unless the user asks.
 CANCELLED_NOTE = ("OpenClaw stopped this before it finished, so there is no result. Don't "
                   "start it again unless the user asks.")
+# What a superseded consult's tool result says (Owed.dispatch): it came back empty while
+# the same request was asked again, and that later call is the one to wait on.
+SUPERSEDED_NOTE = ("The same request was asked again before this one's result was in; "
+                   "its result is that later call's.")
+# What settle_empty returns for a superseded consult.
+SUPERSEDED = "superseded"
 
 
 # A billing failure -- out of credit, or a bare 402 -- where open_settings is offered
@@ -1044,7 +1050,8 @@ class Owed:
         self._running: dict = {}              # request -> key: consults not landed yet
         # key -> (request, floor, deadline, detail): consults whose run has ended, empty,
         # waiting out the grace for a cancel beside them (settle_empty; a cancel counts in
-        # [floor, deadline]; `detail` the empty's, for close_session). Their run is over: no dispatch folds into one (dispatch).
+        # [floor, deadline]; `detail` the empty's, for close_session). Their run is over:
+        # no dispatch folds into one (dispatch).
         self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
@@ -1251,7 +1258,7 @@ class Owed:
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",
-             ask=True, by_openclaw=True) -> Optional[Record]:
+             ask=True, by_openclaw=True, superseded=False) -> Optional[Record]:
         """The consult landed: rewrite its placeholder to the cleaned outcome (the only
         context write delivery makes; one that lands before its placeholder is in the
         context is written when it comes in: _rewrite), make the record owed, and ask the
@@ -1272,7 +1279,8 @@ class Owed:
         self._settling.pop(key, None)
         self._superseded.discard(key)
         if failure == "cancelled":
-            self._cancelled(key, detail, by_openclaw=by_openclaw)
+            self._cancelled(key, detail, by_openclaw=by_openclaw and not superseded,
+                            superseded=superseded)
             return None
         outcome = clean_outcome(text) if text else None
         status = "complete"
@@ -1302,7 +1310,8 @@ class Owed:
             self.gate.ask([key], RUN, self.context)
         return rec
 
-    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True) -> None:
+    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True,
+                   superseded: bool = False) -> None:
         """OpenClaw stopped the consult (consult_bridge.classify): the caller called it
         off, and the relay's spoken run control cancelled the run and says so itself; or
         the run was aborted. Its placeholder becomes the cancellation, so the model neither
@@ -1313,9 +1322,13 @@ class Owed:
         self._questions.pop(key, None)
         if by_openclaw:
             self.note_cancel()
-        rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
+        rewrote = self._rewrite(key, {"status": "superseded", "note": SUPERSEDED_NOTE}
+                                if superseded else
+                                {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
-        why = "cancelled by OpenClaw" if by_openclaw else "read as an OpenClaw cancel's sibling"
+        why = ("superseded by the same request asked again" if superseded
+               else "cancelled by OpenClaw" if by_openclaw
+               else "read as an OpenClaw cancel's sibling")
         logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
@@ -1356,7 +1369,9 @@ class Owed:
         # (end_with_session cancels the consult's task before close_session runs), and
         # close_session lands it from it, as empty or a cancel's sibling.
         sibling = await self.cancelled_since(since, grace, window=window)
-        return None if self._closed else sibling or key in self._superseded
+        if self._closed:
+            return None
+        return True if sibling else SUPERSEDED if key in self._superseded else False
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
         return any(floor <= t <= deadline for t in self._cancel_times)
@@ -2102,14 +2117,18 @@ class Owed:
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
-            sibling = self._cancel_in(floor, deadline) or key in self._superseded
-            if sibling and key not in self._superseded:
+            sibling = self._cancel_in(floor, deadline)
+            superseded = not sibling and key in self._superseded
+            if sibling:
                 # Warned as tools._consult_and_land warns it: the read is by timing.
                 logger.warning(f"OWED: {key}'s empty came beside OpenClaw cancelling a run "
                                f"in this session -- closed with the session as cancelled")
-            self.land(request, None, key, failure="cancelled" if sibling else "empty",
+            self.land(request, None, key,
+                      failure="cancelled" if sibling or superseded else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
-                      else detail or "OpenClaw finished with no text.", by_openclaw=False)
+                      else "empty, the same request asked again" if superseded
+                      else detail or "OpenClaw finished with no text.",
+                      by_openclaw=False, superseded=superseded)
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
