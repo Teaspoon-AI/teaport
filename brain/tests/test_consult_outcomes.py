@@ -197,7 +197,7 @@ async def test_echoes_of_the_brains_own_tool_calls_are_not_logged():
 # --- the async waiter ---------------------------------------------------------------
 
 async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes=False,
-                asked=None):
+                asked=None, direct=None):
     delivered = []
 
     class Owed:
@@ -206,6 +206,10 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
         def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True):
             delivered.append((text, failure) if by_openclaw
                              else (text, failure, "not by OpenClaw"))
+
+        def went_direct(self, key):
+            if direct is not None:
+                direct.append(key)
 
         async def settle_empty(self, request, key, since, grace=None, *, detail=""):
             # `cancelled`: OpenClaw cancelled a run in the session (owed.Owed). `closes`:
@@ -279,6 +283,21 @@ async def test_an_empty_on_the_direct_lane_does_not_wait_for_a_cancel():
 
     delivered = await _wait(None, cli=cli, cancelled=True, asked=asked)
     assert delivered == [(None, "empty")] and asked == [], (delivered, asked)
+
+
+async def test_only_a_consult_with_no_relay_call_is_off_the_lane():
+    """No relay (fut None): the consult runs in an OpenClaw session of its own. A relay
+    that never acked in time was still sent the call and may start it in the session's
+    lane late, where a cancel can take it: that one is not marked off the lane."""
+    async def cli(request, *, timeout=None, session_key=None):
+        return oc.ConsultOutcome("ok", None, "")
+
+    direct = []
+    await _wait(None, cli=cli, direct=direct)
+    assert direct == ["tc-1"], direct
+    direct = []
+    await _wait(asyncio.get_running_loop().create_future(), cli=cli, direct=direct)
+    assert direct == [], direct
 
 
 async def test_an_empty_whose_session_ends_in_the_grace_is_not_landed():

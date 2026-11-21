@@ -1056,8 +1056,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # 500'd and the consult burned its budget retrying -- took a dig through the
         # gateway journal to find. One line here would have pointed straight at it.
         logger.info(f"openclaw_agent_consult(async): {why}; asking the agent directly")
+        # Off the session's lane only when no relay call was sent: one the relay never
+        # acked in time may still be started there late, and a cancel can take it.
         went_direct = getattr(owed, "went_direct", None)
-        if went_direct is not None:
+        if went_direct is not None and fut is None:
             went_direct(tool_call_id)
         outcome = await _run_to_its_end(
             oc.agent_consult(message or request, timeout=deadline - loop.time()))
@@ -1237,6 +1239,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         # its answer is dropped (_ran_on), and the owed book has closed it with the session.
         logger.info("openclaw_agent_consult(async): called as the session ended; asking the "
                     "agent directly, its answer to be dropped")
+        if owed is not None:
+            owed.went_direct(params.tool_call_id)  # no waiter: it never lands, nor holds a grace
         _run_detached(oc.agent_consult(_consult_message(args), timeout=_ASYNC_CONSULT_TIMEOUT))
     elif owed is not None:
         # The model's words for the listener (CONSULT_STATUS), said by the progress
