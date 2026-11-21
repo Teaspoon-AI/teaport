@@ -810,11 +810,45 @@ async def test_cancelled_since_sees_a_cancel_before_or_within_the_grace():
     t = asyncio.create_task(cancel_soon())
     assert await b.cancelled_since(began, grace=1.0) is True, "a cancel within the grace"
     await t
-    assert await b.cancelled_since(began, grace=0) is True, "a cancel already recorded"
+    assert await b.cancelled_since(began, grace=1.0) is True, "a cancel already recorded"
     later = time.monotonic()
     assert await b.cancelled_since(later, grace=0.05) is False, \
         "a cancel from before this consult began is not its sibling"
+    await asyncio.sleep(0.1)
+    assert await b.cancelled_since(began, grace=0.05) is False, \
+        "a cancel further off than the grace is another request's"
     assert b.owed() == []
+
+
+async def test_only_a_cancel_openclaw_reported_counts_for_cancelled_since():
+    """An empty the brain read as a cancel's sibling lands cancelled, but is no cancel of
+    OpenClaw's: another consult's genuine empty is not suppressed beside it."""
+    import time
+    msgs = tool_round("a") + tool_round("b")
+    b, _, _ = book(msgs=msgs)
+    began = time.monotonic()
+    b.dispatch("a", HN_REQ)
+    b.land(HN_REQ, None, "a", failure="cancelled", detail="sibling", by_openclaw=False)
+    assert await b.cancelled_since(began, grace=0.05) is False
+    assert b.owed() == []
+
+
+async def test_close_session_wakes_a_cancelled_since_waiting():
+    """The session's end does not leave an empty sleeping out its grace."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    began = time.monotonic()
+
+    async def close_soon():
+        await asyncio.sleep(0.05)
+        b.close_session()
+
+    t = asyncio.create_task(close_soon())
+    t0 = time.monotonic()
+    assert await b.cancelled_since(began, grace=5.0) is False
+    assert time.monotonic() - t0 < 1.0, "woken by the close, not the grace"
+    assert b.closed
+    await t
 
 # =============================================================== a sync tool's answer (#204)
 

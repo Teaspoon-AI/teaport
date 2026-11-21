@@ -1226,7 +1226,7 @@ class Owed:
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",
-             ask=True) -> Optional[Record]:
+             ask=True, by_openclaw=True) -> Optional[Record]:
         """The consult landed: rewrite its placeholder to the cleaned outcome (the only
         context write delivery makes; one that lands before its placeholder is in the
         context is written when it comes in: _rewrite), make the record owed, and ask the
@@ -1238,11 +1238,14 @@ class Owed:
         the note.
 
         A consult OpenClaw cancelled (failure "cancelled", consult_bridge.classify) makes
-        no record and returns None: see _cancelled."""
+        no record and returns None: see _cancelled. `by_openclaw` False: the cancelled
+        outcome is the brain's own reading of an empty beside such a cancel
+        (cancelled_since), not one OpenClaw reported, so it is not one more cancel for
+        another consult's empty to be read beside."""
         if self._running.get(request) == key:
             del self._running[request]
         if failure == "cancelled":
-            self._cancelled(key, detail)
+            self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
         outcome = clean_outcome(text) if text else None
         status = "complete"
@@ -1272,7 +1275,7 @@ class Owed:
             self.gate.ask([key], RUN, self.context)
         return rec
 
-    def _cancelled(self, key, detail: str) -> None:
+    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True) -> None:
         """OpenClaw stopped the consult (consult_bridge.classify): the caller called it
         off, and the relay's spoken run control cancelled the run and says so itself; or
         the run was aborted. Its placeholder becomes the cancellation, so the model neither
@@ -1281,26 +1284,35 @@ class Owed:
         whose Land never fires (Land is not fair): the record stays "none", and no row
         speaks of such a one."""
         self._questions.pop(key, None)
-        self._cancelled_at = time.monotonic()
-        self._cancel_seen.set()
-        self._cancel_seen = asyncio.Event()
+        if by_openclaw:
+            self._cancelled_at = time.monotonic()
+            self._cancel_seen.set()
+            self._cancel_seen = asyncio.Event()
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
         logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
+    @property
+    def closed(self) -> bool:
+        """The session is over (close_session)."""
+        return self._closed
+
     async def cancelled_since(self, since: float,
                               grace: float = EMPTY_CANCEL_GRACE_S) -> bool:
-        """Did OpenClaw cancel a consult in this session at or after `since` (a
-        time.monotonic() reading: when the asking consult started), or does it within
-        `grace` seconds from now? tools._consult_and_land asks it of an EMPTY outcome
-        before landing it: such an empty is a sibling of the run the caller called off
-        (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing, told nothing.
+        """Did OpenClaw cancel a consult in this session within `grace` seconds of now,
+        before or after, and not before `since` (a time.monotonic() reading: when the
+        asking consult started)? tools._consult_and_land asks it of an EMPTY outcome on a
+        relayed consult before landing it: such an empty is a sibling of the run the
+        caller called off (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing,
+        told nothing. A cancel further off is another request's, and a genuine empty
+        stays empty. Only cancels OpenClaw reported count (_cancelled `by_openclaw`).
         Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
         transition."""
-        deadline = time.monotonic() + grace
+        now = time.monotonic()
+        floor, deadline = max(since, now - grace), now + grace
         while True:
-            if self._cancelled_at is not None and self._cancelled_at >= since:
+            if self._cancelled_at is not None and self._cancelled_at >= floor:
                 return True
             left = deadline - time.monotonic()
             if left <= 0 or self._closed:
@@ -2011,6 +2023,7 @@ class Owed:
         placeholder becomes its failure record, so no "will arrive later" outlives the
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
+        self._cancel_seen.set()  # a cancelled_since waiting sees the close now
         for request, key in list(self._running.items()):
             self.land(request, None, key, failure="unknown")
         lull, self._lull = self._lull, None

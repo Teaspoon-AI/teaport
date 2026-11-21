@@ -1005,8 +1005,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         except Exception:  # noqa: BLE001
             pass
 
-    async def deliver(outcome: oc.ConsultOutcome):
-        """Land the outcome (owed.Owed), narrator first."""
+    async def deliver(outcome: oc.ConsultOutcome, relayed: bool = False):
+        """Land the outcome (owed.Owed), narrator first. `relayed`: the relay ran it, so
+        OpenClaw's run control could have cancelled a run beside it (cancelled_since);
+        the direct lane has no relay and never hears a cancel, and does not wait for one."""
         # Stop the narrator BEFORE the answer is told, not in the finally below. It is a
         # countdown against dead air, and there is no dead air once the outcome is
         # known. Observed live 2026-08-26 09:44, when the follow-up waited for its
@@ -1015,17 +1017,26 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         nonlocal answered
         if progress is not None:
             progress.cancel()
-        if outcome.failure == "empty" and await owed.cancelled_since(started):
-            # OpenClaw cancelled a run in this session since this consult began, or does
-            # within the grace: this empty is that cancel's sibling (#450), not a request
-            # that came back with nothing. Landed as cancelled, nothing is owed for it.
+        sibling = False
+        if relayed and outcome.failure == "empty":
+            sibling = await owed.cancelled_since(started)
+            if owed.closed:
+                # The session ended during the grace: close_session already landed this
+                # consult ("unknown"), and the room's sleep may have saved the book.
+                logger.info("openclaw_agent_consult(async): an empty result as the session "
+                            "ended -- dropped, the session closed it")
+                return
+        if sibling:
+            # OpenClaw cancelled a run in this session within the grace of this empty,
+            # since this consult began: this empty is that cancel's sibling (#450), not a
+            # request that came back with nothing. Landed as cancelled, nothing is owed.
             logger.info("openclaw_agent_consult(async): an empty result beside OpenClaw "
                         "cancelling a run in this session -- landed as cancelled")
             outcome = oc.ConsultOutcome(None, "cancelled",
                                         "empty beside an OpenClaw cancel in this session")
         answered = bool(outcome.text)
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
-                  detail=outcome.detail)
+                  detail=outcome.detail, by_openclaw=not sibling)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
@@ -1072,7 +1083,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             logger.info(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
         else:
             logger.warning(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
-        await deliver(outcome)
+        await deliver(outcome, relayed=True)
     except asyncio.TimeoutError:
         logger.warning(f"openclaw_agent_consult(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
