@@ -197,7 +197,7 @@ async def test_echoes_of_the_brains_own_tool_calls_are_not_logged():
 # --- the async waiter ---------------------------------------------------------------
 
 async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes=False,
-                asked=None, direct=None):
+                asked=None, direct=None, notes=None):
     delivered = []
 
     class Owed:
@@ -206,6 +206,10 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
         def land(self, request, text, key, *, failure=None, detail="", by_openclaw=True):
             delivered.append((text, failure) if by_openclaw
                              else (text, failure, "not by OpenClaw"))
+
+        def note_cancel(self):
+            if notes is not None:
+                notes.append(True)
 
         def went_direct(self, key):
             if direct is not None:
@@ -298,6 +302,24 @@ async def test_only_a_consult_with_no_relay_call_is_off_the_lane():
     direct = []
     await _wait(asyncio.get_running_loop().create_future(), cli=cli, direct=direct)
     assert direct == [], direct
+
+
+async def test_a_late_relay_cancel_of_a_consult_gone_direct_is_noted():
+    """A relay that never acked in time may still start the call in the lane, where
+    "cancel that" takes it: its cancelled result reaches only the abandoned future, and
+    is noted as a cancel for a sibling's empty (Owed.note_cancel)."""
+    fut = asyncio.get_running_loop().create_future()
+    noted = []
+    release = asyncio.Event()
+
+    async def cli(request, *, timeout=None, session_key=None):
+        fut.set_result({"status": "cancelled", "message": "Cancelled the active OpenClaw run."})
+        await asyncio.sleep(0)
+        release.set()
+        return oc.ConsultOutcome("ok", None, "")
+
+    await _wait(fut, cli=cli, notes=noted)
+    assert release.is_set() and noted == [True], noted
 
 
 async def test_an_empty_whose_session_ends_in_the_grace_is_not_landed():

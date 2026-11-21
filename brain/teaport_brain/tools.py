@@ -1018,9 +1018,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if progress is not None:
             progress.cancel()
         sibling = False
-        if relayed and outcome.failure == "empty":
-            sibling = await owed.settle_empty(request, tool_call_id, started,
-                                              detail=outcome.detail)
+        settle_empty = getattr(owed, "settle_empty", None)
+        if relayed and outcome.failure == "empty" and settle_empty is not None:
+            sibling = await settle_empty(request, tool_call_id, started,
+                                         detail=outcome.detail)
             if sibling is None:
                 # The session ended during the grace: close_session already landed this
                 # consult as what it was by then (empty, or a cancel's sibling), and the
@@ -1080,7 +1081,15 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                                             timeout=_NATIVE_CONSULT_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
-                # Never acked -- the relay didn't take it.
+                # Never acked -- the relay didn't take it. It may yet start it in the
+                # session's lane, late, where a cancel can take it: that cancel reaches
+                # only this future, which no one awaits now, so it is noted from here
+                # (Owed.note_cancel) for a sibling's empty to be read beside.
+                note_cancel = getattr(owed, "note_cancel", None)
+                if note_cancel is not None:
+                    fut.add_done_callback(lambda f: (
+                        note_cancel() if not f.cancelled() and f.exception() is None
+                        and _consult_outcome(f.result()).failure == "cancelled" else None))
                 await direct(f"relay never acked in {_NATIVE_CONSULT_ACK_TIMEOUT:.1f}s")
                 return
             result = await asyncio.wait_for(fut, timeout=deadline - loop.time())
@@ -1113,10 +1122,11 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
-        if asyncio.current_task().cancelling():
-            # The session is ending (#122): nothing more goes into its pipeline, not even
-            # the "done" -- the client is gone or going. The owed book closes the consult
-            # with the session (Owed.close_session), as it did one that ran on.
+        if asyncio.current_task().cancelling() or getattr(owed, "closed", False):
+            # The session is ending (#122), or its book closed while the outcome waited
+            # (settle_empty): nothing more goes into its pipeline, not even the "done" --
+            # the client is gone or going. The owed book closes the consult with the
+            # session (Owed.close_session), as it did one that ran on.
             _count_consult(gate, -1)
         else:
             await working(True)

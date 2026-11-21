@@ -1309,10 +1309,7 @@ class Owed:
         speaks of such a one."""
         self._questions.pop(key, None)
         if by_openclaw:
-            self._cancel_times = [*self._cancel_times[-(CANCEL_TIMES_KEPT - 1):],
-                                  time.monotonic()]
-            self._cancel_seen.set()
-            self._cancel_seen = asyncio.Event()
+            self.note_cancel()
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
         why = "cancelled by OpenClaw" if by_openclaw else "read as an OpenClaw cancel's sibling"
@@ -1323,6 +1320,16 @@ class Owed:
     def closed(self) -> bool:
         """The session is over (close_session)."""
         return self._closed
+
+    def note_cancel(self) -> None:
+        """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
+        waiting one woken. _cancelled for a consult that lands; tools._consult_and_land
+        for a relay call it no longer waits on (the relay never acked it in time, but
+        may still start it in the lane, where the cancel takes it)."""
+        self._cancel_times = [*self._cancel_times[-(CANCEL_TIMES_KEPT - 1):],
+                              time.monotonic()]
+        self._cancel_seen.set()
+        self._cancel_seen = asyncio.Event()
 
     def went_direct(self, key) -> None:
         """The consult `key` runs on the direct lane, in an OpenClaw session of its own:
