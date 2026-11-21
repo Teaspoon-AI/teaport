@@ -980,7 +980,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     straight to the agent."""
     from teaport_brain import consult_bridge
 
-    started = time.monotonic()  # for owed.cancelled_since: a cancel after this is ours too
+    started = time.monotonic()  # for owed.settle_empty: a cancel after this is ours too
     progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
                                                       gate=gate, tts=tts))
                 if llm is not None else None)
@@ -1007,7 +1007,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
 
     async def deliver(outcome: oc.ConsultOutcome, relayed: bool = False):
         """Land the outcome (owed.Owed), narrator first. `relayed`: the relay ran it, so
-        OpenClaw's run control could have cancelled a run beside it (cancelled_since);
+        OpenClaw's run control could have cancelled a run beside it (settle_empty);
         the direct lane has no relay and never hears a cancel, and does not wait for one."""
         # Stop the narrator BEFORE the answer is told, not in the finally below. It is a
         # countdown against dead air, and there is no dead air once the outcome is
@@ -1020,7 +1020,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         sibling = False
         if relayed and outcome.failure == "empty":
             sibling = await owed.settle_empty(request, tool_call_id, started)
-            if owed.closed:
+            if sibling is None:
                 # The session ended during the grace: close_session already landed this
                 # consult as what it was by then (empty, or a cancel's sibling), and the
                 # room's sleep may have saved the book.
@@ -1055,6 +1055,9 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # 500'd and the consult burned its budget retrying -- took a dig through the
         # gateway journal to find. One line here would have pointed straight at it.
         logger.info(f"openclaw_agent_consult(async): {why}; asking the agent directly")
+        went_direct = getattr(owed, "went_direct", None)
+        if went_direct is not None:
+            went_direct(tool_call_id)
         outcome = await _run_to_its_end(
             oc.agent_consult(message or request, timeout=deadline - loop.time()))
         (logger.info if outcome.text else logger.warning)(

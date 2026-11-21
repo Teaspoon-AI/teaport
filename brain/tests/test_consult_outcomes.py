@@ -213,7 +213,7 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None, cancelled=False, closes
             if asked is not None:
                 asked.append(since)
             self.closed = closes
-            return cancelled
+            return None if closes else cancelled
 
     saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
              oc.agent_consult)

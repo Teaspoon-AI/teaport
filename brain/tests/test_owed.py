@@ -881,6 +881,60 @@ async def test_a_settling_sibling_of_a_cancel_closes_as_cancelled():
     assert "a" not in {r.key for r in b2.owed()}
 
 
+async def test_a_cancel_burst_does_not_hide_one_inside_the_window():
+    """The relay cancels every open consult at once: a later cancel past the window does
+    not hide the one inside it."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    t = time.monotonic()
+    b._cancel_times = [t + 0.5, t + 5.0]
+    assert b._cancel_in(t, t + 1.0)
+
+
+async def test_settle_empty_says_none_when_the_session_closed_it_and_false_on_a_closed_book():
+    """None: close_session landed it during the grace, so the caller lands nothing. A book
+    already closed when the empty came: False, and the caller lands it as it is."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
+    b.close_session()
+    assert await waiting is None
+    assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is False
+
+
+async def test_a_direct_consult_is_no_reason_to_wait():
+    """A consult on the direct lane runs in an OpenClaw session of its own: no cancel
+    here reaches it, so beside it a relayed empty is still lone."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    b.went_direct("c")
+    t0 = time.monotonic()
+    assert await b.settle_empty(HN_REQ, "a", t0, grace=5.0) is False
+    assert time.monotonic() - t0 < 1.0
+
+
+async def test_a_settle_cancelled_mid_wait_leaves_no_settling_entry():
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
+    waiting.cancel()
+    try:
+        await waiting
+    except asyncio.CancelledError:
+        pass
+    assert "a" not in b._settling
+
+
 async def test_a_lone_empty_is_told_without_the_grace():
     """No other consult open and no cancel already: nothing can make this empty a
     sibling, so it does not wait out the grace in silence."""
@@ -903,7 +957,7 @@ async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
 
     async def late(aw, timeout):
         aw.close()  # the Event.wait() coroutine, never awaited
-        b._cancelled_at = time.monotonic()  # inside the window, with no wake-up
+        b._cancel_times.append(time.monotonic())  # inside the window, with no wake-up
         raise asyncio.TimeoutError
 
     asyncio.wait_for = late
