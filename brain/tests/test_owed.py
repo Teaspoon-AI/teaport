@@ -949,18 +949,19 @@ async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is()
     assert owed == {"a": "empty", "c": "unknown"}, owed
 
 
-async def test_a_re_ask_after_a_cancel_is_not_folded_into_the_run_it_may_have_taken():
-    """"Cancel that -- no, do look it up": a cancel came after the running consult was
-    dispatched, so the same words asked since are a request made again, not a duplicate
-    to be closed with the cancelled one. Both still close with the session."""
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c"))
+async def test_a_settling_empty_asked_again_is_superseded_not_owed():
+    """The words asked again during an empty's grace: the re-ask runs, and the settling
+    one closes without a record, so the caller is not told it found nothing while the
+    same request runs again. A duplicate of a running consult still folds."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c") + tool_round("d"))
+    b.dispatch("c", "something else")
+    assert b.dispatch("d", "something else") == "c", "a duplicate of a running one folds"
     b.dispatch("a", HN_REQ)
-    assert b.dispatch("c", HN_REQ) == "a", "no cancel: a duplicate still folds"
-    b.note_cancel()
-    assert b.dispatch("b", HN_REQ) is None, "after the cancel: its own consult"
-    b.close_session()
-    assert b.record("a") is not None and b.record("b") is not None
-
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.1))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None
+    assert await waiting is True, "superseded: closed silently, like a sibling"
 
 async def test_settle_empty_on_a_book_that_closed_it_lands_nothing():
     """close_session landed the running consult; its empty arriving after says None."""
