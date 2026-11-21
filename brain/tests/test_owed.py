@@ -956,11 +956,11 @@ async def test_an_abandoned_consult_folds_no_re_ask_and_still_closes():
     b, _, _ = book(msgs=tool_round("x") + tool_round("y"))
     b.dispatch("x", "a third")
     del b._running["a third"]                 # as land() does before it raises
-    b.abandon("a third", "x")
+    b.abandon("a third", "x", detail="RuntimeError('boom')")
     assert b.dispatch("y", "a third") is None, "the re-ask of an abandoned one runs"
     b.close_session()
-    assert b.record("x") is not None and b.record("y") is not None, \
-        "the abandoned one and its re-ask are both closed"
+    assert b.record("x").failure == "error", "closed as the error it was, not 'unknown'"
+    assert b.record("y") is not None, "its re-ask is closed too"
 
 
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():

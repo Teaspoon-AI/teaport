@@ -1070,8 +1070,8 @@ class Owed:
         # event that wakes a settle_empty waiting on one (note_cancel).
         self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
-        # key -> request: consults whose waiter ended without landing them (abandon),
-        # for close_session to close.
+        # key -> (request, detail): consults whose waiter ended without landing them
+        # (abandon), for close_session to close as the error they were.
         self._abandoned: dict = {}
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
@@ -1326,15 +1326,15 @@ class Owed:
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
-    def abandon(self, request, key) -> None:
+    def abandon(self, request, key, *, detail: str = "") -> None:
         """The waiter for `key` ended without landing it (its delivery itself failed,
         perhaps inside land(), after land took it out of _running): no longer running, so
         the same words asked again run again rather than fold into it (dispatch), and
-        close_session still closes it, as it did a consult left running."""
+        close_session still closes it, as the error it was (`detail`)."""
         if self._running.get(request) == key:
             del self._running[request]
         if key not in self._records:
-            self._abandoned[key] = request
+            self._abandoned[key] = (request, detail)
 
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None, *,
@@ -2102,10 +2102,11 @@ class Owed:
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
         self._cancel_seen.set()  # a settle_empty waiting sees the close now
-        for request, key in [*self._running.items(),
-                             *((r, k) for k, r in self._abandoned.items())]:
+        for request, key in list(self._running.items()):
             if key not in self._settling:
                 self.land(request, None, key, failure="unknown")
+        for key, (request, detail) in list(self._abandoned.items()):
+            self.land(request, None, key, failure="error", detail=detail)
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):

@@ -421,19 +421,22 @@ class ClientNotes(FrameProcessor):
             return
         await self._reply(frame, status=status)
 
-    def add_host_update(self, text: str, kind: str = "openclaw-control"):
+    def add_host_update(self, text: str, kind: str = "openclaw-control", *,
+                        cancel: bool = True):
         """An update from OpenClaw that reached the brain itself rather than as the
         plugin's note -- the result of the model's openclaw_agent_control call that a
         barge-in cancelled after the client had acted on it (tools._openclaw_agent_control)
-        -- said the way the relay's own replies are (HOST NOTES)."""
-        self._take_host(text, kind, kind, self._clock())
+        -- said the way the relay's own replies are (HOST NOTES). `cancel` False: a cancel
+        status in it is not told to on_cancel (its time is not known)."""
+        self._take_host(text, kind, kind, self._clock(), cancel=cancel)
 
-    def _take_host(self, raw: str, kind, log_kind: str, now: float) -> str | None:
+    def _take_host(self, raw: str, kind, log_kind: str, now: float, *,
+                   cancel: bool = True) -> str | None:
         """Queue a host note: "applied" or "queued", or None for one with no text."""
         text = _host_status(raw)
         if not text:
             return None
-        if self._on_cancel is not None and text.startswith(CANCEL_STATUS):
+        if cancel and self._on_cancel is not None and text.startswith(CANCEL_STATUS):
             self._on_cancel()
         self._pending.append(_Note(text, True, kind, now + self._react_max_wait, host=True))
         status = "applied" if self._gate.is_clear() else "queued"

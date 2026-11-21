@@ -81,6 +81,7 @@ from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
+from teaport_brain.client_notes import CANCEL_STATUS
 from teaport_brain.owed import CANCELLED_NOTE, clean_outcome
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
@@ -1118,7 +1119,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         except Exception:  # noqa: BLE001
             abandon = getattr(owed, "abandon", None)
             if abandon is not None:
-                abandon(request, tool_call_id)
+                abandon(request, tool_call_id, detail=repr(e))
     finally:
         if progress is not None:
             progress.cancel()
@@ -1636,7 +1637,7 @@ def _control_result(result, failure) -> dict:
     return out
 
 
-async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
+async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=None):
     args = _control_args(params.arguments)
     if args is None:
         await params.result_callback({"ok": False, "error": "text required"})
@@ -1649,7 +1650,9 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
         if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
             logger.info(f"openclaw_agent_control: result after its cancel -- "
                         f"{quoted(out['update'][:80])}")
-            notes.add_host_update(out["update"])
+            # Not a cancel for the owed book: when OpenClaw aborted is not known from a
+            # result that came this late, and a consult sent since could be read beside it.
+            notes.add_host_update(out["update"], cancel=False)
 
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
                                         OPENCLAW_AGENT_CONTROL.name, args, CONTROL_TIMEOUT_S,
@@ -1657,6 +1660,10 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
+    if owed is not None and out["ok"] and out.get("update", "").startswith(CANCEL_STATUS):
+        # The model's cancel aborted the session's lane: a consult whose run returned its
+        # empty final first gets no "cancelled" of its own (Owed.settle_empty).
+        owed.note_cancel()
     await params.result_callback(out)
 
 
@@ -1952,7 +1959,8 @@ TOOLS: tuple[Tool, ...] = (
     # Talk only ("run_control"), and only with the consult it controls ("consult"). Its
     # ceiling sits above the handler's own wait (CONTROL_TIMEOUT_S).
     Tool(OPENCLAW_AGENT_CONTROL,
-         lambda ctx: functools.partial(_openclaw_agent_control, notes=ctx.notes),
+         lambda ctx: functools.partial(_openclaw_agent_control, notes=ctx.notes,
+                                       owed=ctx.owed),
          setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL"),
          frozenset({"agent", "consult", "run_control"}),
          timeout_secs=CONTROL_TIMEOUT_S + 5,
