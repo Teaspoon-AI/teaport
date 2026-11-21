@@ -1025,10 +1025,9 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         sibling = False
         settle_empty = getattr(owed, "settle_empty", None)
         # Empty as land() will read it: no answer, or one that cleans to nothing (only an
-        # address, say), which a lane abort can leave as well. While the grace runs the
-        # consult still counts as running (_count_consult) and the client's "done" waits:
-        # up to EMPTY_CANCEL_GRACE_S more, and only beside another consult still open,
-        # which is running for the relay's run control either way.
+        # address, say), which a lane abort can leave as well. Every relayed empty waits
+        # up to EMPTY_CANCEL_GRACE_S (settle_empty), and meanwhile the consult still
+        # counts as running (_count_consult) and the client's "done" waits.
         empty = outcome.failure == "empty" or (outcome.text and not clean_outcome(outcome.text))
         if relayed and empty and settle_empty is not None:
             sibling = await settle_empty(request, tool_call_id, started,
@@ -1117,9 +1116,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         try:
             await deliver(oc.ConsultOutcome(None, "error", repr(e)))
         except Exception:  # noqa: BLE001
-            abandon = getattr(owed, "abandon", None)
-            if abandon is not None:
-                abandon(request, tool_call_id, detail=repr(e))
+            pass
     finally:
         if progress is not None:
             progress.cancel()

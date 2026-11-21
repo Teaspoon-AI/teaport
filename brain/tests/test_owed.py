@@ -861,7 +861,7 @@ async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_sessio
     assert await waiting is None, "the close landed it during its grace"
     owed = {r.key: r.failure for r in b.owed()}
     assert owed == {"a": "empty"}, f"it came back empty, not 'didn't report back': {owed}"
-    assert await b.settle_empty(HN_REQ, "a", began) is False, "a closed book waits for nothing"
+    assert await b.settle_empty(HN_REQ, "a", began) is None, "a closed book that landed it waits for nothing"
     assert not b._settling
 
 
@@ -898,9 +898,9 @@ async def test_a_cancel_burst_does_not_hide_one_inside_the_window():
     assert b._cancel_in(first, first), "the first cancel is still known after the burst"
 
 
-async def test_settle_empty_says_none_when_the_session_closed_it_and_false_on_a_closed_book():
-    """None: close_session landed it during the grace, so the caller lands nothing. A book
-    already closed when the empty came: False, and the caller lands it as it is."""
+async def test_settle_empty_says_none_when_the_session_closed_it():
+    """None: close_session landed it, during the grace or before the empty came, so the
+    caller lands nothing more."""
     import time
     b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
     b.dispatch("a", HN_REQ)
@@ -909,7 +909,7 @@ async def test_settle_empty_says_none_when_the_session_closed_it_and_false_on_a_
     await asyncio.sleep(0)
     b.close_session()
     assert await waiting is None
-    assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is False
+    assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is None
 
 
 async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is():
@@ -949,19 +949,26 @@ async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is()
     assert owed == {"a": "empty", "c": "unknown"}, owed
 
 
-async def test_an_abandoned_consult_folds_no_re_ask_and_still_closes():
-    """A waiter whose delivery failed, even inside land() after land took it out of
-    _running: the same words asked again run again, and the session's end still closes
-    the abandoned one."""
-    b, _, _ = book(msgs=tool_round("x") + tool_round("y"))
-    b.dispatch("x", "a third")
-    del b._running["a third"]                 # as land() does before it raises
-    b.abandon("a third", "x", detail="RuntimeError('boom')")
-    assert b.dispatch("y", "a third") is None, "the re-ask of an abandoned one runs"
+async def test_a_re_ask_after_a_cancel_is_not_folded_into_the_run_it_may_have_taken():
+    """"Cancel that -- no, do look it up": a cancel came after the running consult was
+    dispatched, so the same words asked since are a request made again, not a duplicate
+    to be closed with the cancelled one. Both still close with the session."""
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    assert b.dispatch("c", HN_REQ) == "a", "no cancel: a duplicate still folds"
+    b.note_cancel()
+    assert b.dispatch("b", HN_REQ) is None, "after the cancel: its own consult"
     b.close_session()
-    assert b.record("x").failure == "error", "closed as the error it was, not 'unknown'"
-    assert b.record("y") is not None, "its re-ask is closed too"
+    assert b.record("a") is not None and b.record("b") is not None
 
+
+async def test_settle_empty_on_a_book_that_closed_it_lands_nothing():
+    """close_session landed the running consult; its empty arriving after says None."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    b.close_session()
+    assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is None
 
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
     """One consult open, and "cancel that": its aborted run can return its empty final

@@ -1070,9 +1070,12 @@ class Owed:
         # event that wakes a settle_empty waiting on one (note_cancel).
         self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
-        # key -> (request, detail): consults whose waiter ended without landing them
-        # (abandon), for close_session to close as the error they were.
-        self._abandoned: dict = {}
+        # key -> when it was dispatched (time.monotonic()): a running consult a cancel
+        # came after folds no re-ask (dispatch).
+        self._dispatched_at: dict = {}
+        # key -> request: running consults a re-ask no longer folds into (dispatch), which
+        # left _running for it but are still closed with the session.
+        self._orphans: dict = {}
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1233,9 +1236,18 @@ class Owed:
         one's outcome answers both (land() rewrites this placeholder to point at it).
         Not one settling (settle_empty): its run has ended, empty, so there is nothing to
         share -- the same words asked again run again, as they did when an empty landed
-        at once, and a sibling's cancel does not close the re-ask with it."""
+        at once, and a sibling's cancel does not close the re-ask with it. Nor one a
+        cancel in the session came after: that cancel may have taken its run, and the
+        same words asked since are a request made again, not a duplicate to be closed
+        with it ("cancel that -- no, do look it up")."""
         running = self._running.get(request)
-        if running in self._settling:
+        if running in self._settling or (
+                running is not None
+                and any(t >= self._dispatched_at.get(running, float("inf"))
+                        for t in self._cancel_times)):
+            if running not in self._settling:
+                # Still closed with the session, as it was, under its own key.
+                self._orphans[running] = request
             del self._running[request]
             running = None
         self._answers[key] = _Answer(request, record=running or key)
@@ -1245,6 +1257,7 @@ class Owed:
             self._duplicates[key] = running
             return running
         self._running[request] = key
+        self._dispatched_at[key] = time.monotonic()
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",
@@ -1267,7 +1280,8 @@ class Owed:
         if self._running.get(request) == key:
             del self._running[request]
         self._settling.pop(key, None)
-        self._abandoned.pop(key, None)
+        self._dispatched_at.pop(key, None)
+        self._orphans.pop(key, None)
         if failure == "cancelled":
             self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
@@ -1326,16 +1340,6 @@ class Owed:
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
-    def abandon(self, request, key, *, detail: str = "") -> None:
-        """The waiter for `key` ended without landing it (its delivery itself failed,
-        perhaps inside land(), after land took it out of _running): no longer running, so
-        the same words asked again run again rather than fold into it (dispatch), and
-        close_session still closes it, as the error it was (`detail`)."""
-        if self._running.get(request) == key:
-            del self._running[request]
-        if key not in self._records:
-            self._abandoned[key] = (request, detail)
-
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None, *,
                            detail: str = "") -> Optional[bool]:
@@ -1345,7 +1349,7 @@ class Owed:
         no dispatch folds into it (dispatch). The session's end closes it with the
         outcome it has by then, read on the same window (close_session), and None says
         so: it is landed, and the caller lands nothing. On a book already closed it
-        waits for nothing: False, landed as it is.
+        waits for nothing: None if close_session landed it, else False.
 
         It waits even with no other consult open: OpenClaw's relay submits a consult's
         result when its run returns, and a run the spoken cancel aborted can return its
@@ -1353,7 +1357,8 @@ class Owed:
         "cancelled" ever comes for it. The cancel is known then only from the run
         control's own word (note_cancel from ClientNotes), which can come just after."""
         if self._closed:
-            return False
+            # Landed by close_session already (it was running then): None, nothing more.
+            return None if key in self._records else False
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
         window = (max(since, now - grace), now + grace)
@@ -2102,11 +2107,10 @@ class Owed:
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
         self._cancel_seen.set()  # a settle_empty waiting sees the close now
-        for request, key in list(self._running.items()):
+        for request, key in [*self._running.items(),
+                             *((r, k) for k, r in self._orphans.items())]:
             if key not in self._settling:
                 self.land(request, None, key, failure="unknown")
-        for key, (request, detail) in list(self._abandoned.items()):
-            self.land(request, None, key, failure="error", detail=detail)
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
