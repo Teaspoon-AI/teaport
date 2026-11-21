@@ -20,11 +20,12 @@
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
 #     without it, or an npm registry that does not answer, fails the check.
 #   - access.gated (the engine license gate's download prefixes) and access.api are
-#     https URLs on the download host. A gated artifact is fetched with DL_CHECK_TOKEN (the
-#     download gate Worker's CHECK_TOKEN) and its sha256 compared; without the token (a
-#     pull request's run) it must refuse an anonymous download (HTTP 401), which is all
-#     that is checked of it. One served without a token means the gate is not in front of
-#     it: an error either way.
+#     https URLs on the download host. A gated artifact must refuse an anonymous download
+#     (HTTP 401), asked on every run; one served without a token means the gate is not in
+#     front of it, an error, and one the gate serves open (its switchover) is a warning.
+#     Then it is fetched with DL_CHECK_TOKEN (the download gate Worker's CHECK_TOKEN) and
+#     its sha256 compared; without the token (a pull request's run) the refusal is all
+#     that is checked of it.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -265,23 +266,26 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
-        if any(url.startswith(p) for p in prefixes) and not token:
+        gated = any(url.startswith(p) for p in prefixes)
+        if gated:
+            # Asked without a token on every run, token or not: a gate left open after the
+            # switchover shows up here, on pushes and the weekly run as well as on PRs.
             why = refused(url)
             if why == GATE_OPEN:
-                checked += 1
                 print(f"::warning::{where}: {url} is served without a download token: the gate's "
                       "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
                       "and deploy once the installer that accepts is merged")
             elif why:
                 problems.append(f"{where}: {url} -> {why}")
-            else:
+                continue
+            if not token:
                 checked += 1
-                print(f"ok {where} (gated: refused without a token; its contents are checked "
-                      "with DL_CHECK_TOKEN)")
-            continue
+                if not why:
+                    print(f"ok {where} (gated: refused without a token; its contents are checked "
+                          "with DL_CHECK_TOKEN)")
+                continue
         try:
-            digest = fetch(url, hashlib.sha256() if sha else None,
-                           token if any(url.startswith(p) for p in prefixes) else None)
+            digest = fetch(url, hashlib.sha256() if sha else None, token if gated else None)
         except Exception as e:  # HTTPError, URLError, timeouts: all mean "not published"
             problems.append(f"{where}: {url} -> {e}")
             continue

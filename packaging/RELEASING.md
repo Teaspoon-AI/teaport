@@ -135,8 +135,8 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves the
       gated files without a token, and is for the switchover only: deploy the Worker open,
       merge the installer that accepts through it, then set `"enforce"` and deploy again
-      (`cd worker && npx wrangler deploy`). While it is open, the `publish` check warns on
-      every gated file.
+      (`cd worker && npx wrangler deploy`). While it is open, every `publish` run (pull
+      requests, merges and the weekly check) warns on every gated file.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

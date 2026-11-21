@@ -363,6 +363,11 @@ export async function expire(env, now) {
   const days = Number(env.RETENTION_DAYS || 0);
   if (!(days > 0)) return;
   const cutoff = new Date((now - days * 86400) * 1000).toISOString();
-  await env.DB.prepare("DELETE FROM downloads WHERE at < ?1").bind(cutoff).run();
+  // An acceptance's downloads go with it, however recent, so none outlive the row that
+  // finds them (docs/engine-license-data.md: access and erasure). Downloads first, so the
+  // subquery still sees the acceptances; a run cut short between the two finishes tomorrow.
+  await env.DB.prepare(
+    "DELETE FROM downloads WHERE at < ?1 OR acceptance_id IN (SELECT id FROM acceptances WHERE created_at < ?1)",
+  ).bind(cutoff).run();
   await env.DB.prepare("DELETE FROM acceptances WHERE created_at < ?1").bind(cutoff).run();
 }

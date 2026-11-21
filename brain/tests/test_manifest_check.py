@@ -92,8 +92,54 @@ def test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open():
     assert set(seen) == {"HEAD"}   # an open gate is never asked for the file itself
 
 
+def test_a_gated_file_is_asked_without_a_token_on_every_run():
+    """With DL_CHECK_TOKEN set (pushes, the weekly run) as without: an open gate warns and
+    the file is still checked with the token; a gate not in front of it is an error and
+    the file is not fetched."""
+    import contextlib
+    import io
+    import os
+    import tempfile
+    check = _check()
+    url = f"https://{check.HOST}/dl/engine/f"
+    manifest = {"access": {"api": f"https://{check.HOST}/api/", "gated": [f"https://{check.HOST}/dl/engine/"]},
+                "engine": {"f": {"url": url, "sha256": "0" * 64}}}
+    fetched = []
+
+    class Digest:
+        def hexdigest(self):
+            return "0" * 64
+
+    check.fetch = lambda u, digest, token=None: fetched.append((u, token)) or Digest()
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(manifest, f)
+    old = os.environ.get("DL_CHECK_TOKEN")
+    os.environ["DL_CHECK_TOKEN"] = "t"
+    try:
+        for answer, warns, fails, fetches in ((check.GATE_OPEN, True, False, True),
+                                              (None, False, False, True),
+                                              ("served without a download token: the license gate "
+                                               "is not in front of it", False, True, False)):
+            fetched.clear()
+            check.refused = lambda u, a=answer: a
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                check.check(f.name, True)
+            text = out.getvalue()
+            assert ("::warning::engine.f" in text) == warns, text
+            assert ("::error" in text and "not in front of it" in text) == fails, text
+            assert fetched == ([(url, "t")] if fetches else []), (answer, fetched)
+    finally:
+        os.unlink(f.name)
+        if old is None:
+            del os.environ["DL_CHECK_TOKEN"]
+        else:
+            os.environ["DL_CHECK_TOKEN"] = old
+
+
 if __name__ == "__main__":
     test_the_watermark_rule_is_install_shs()
     test_a_release_that_marks_must_name_its_watermark()
     test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open()
+    test_a_gated_file_is_asked_without_a_token_on_every_run()
     print("ok")

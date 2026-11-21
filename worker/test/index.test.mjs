@@ -265,6 +265,12 @@ test("GATE open serves a request without a token, marked and logged; a token sen
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("x-teaport-gate"), "open");
   assert.deepEqual(new Uint8Array(await res.arrayBuffer()), BYTES);
+  const part = await call("GET", `/${ENGINE}`, { headers: { range: "bytes=5-9" } });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get("x-teaport-gate"), "open");
+  const head = await call("HEAD", `/${ENGINE}`);
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get("x-teaport-gate"), "open");
   for (const h of [bearer("garbage"), { authorization: "" }, { authorization: "Basic abc" }]) {
     assert.equal((await call("GET", `/${ENGINE}`, { headers: h })).status, 401);
   }
@@ -285,7 +291,7 @@ test("any GATE but open, or none, enforces", async () => {
 });
 
 test("the retention cron deletes acceptances and downloads past RETENTION_DAYS, and nothing unset", async () => {
-  const { token } = await accepted();
+  const { acceptance_id, token } = await accepted();
   assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
   const count = (table) => env.DB.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
   const now = Math.floor(Date.now() / 1000);
@@ -297,10 +303,18 @@ test("the retention cron deletes acceptances and downloads past RETENTION_DAYS, 
   env.RETENTION_DAYS = "30";
   await expire(env, now + 29 * 86400);
   assert.deepEqual([count("acceptances"), count("downloads")], [1, 1]);
+  // Recent downloads: the old acceptance's go with it, the CI check's stay.
+  const recent = new Date((now + 30 * 86400) * 1000).toISOString();
+  for (const who of [acceptance_id, "ci"]) {
+    env.DB.db.prepare("INSERT INTO downloads (at, acceptance_id, key, status) VALUES (?, ?, 'k', 200)").run(recent, who);
+  }
   await expire(env, now + 31 * 86400);
-  assert.deepEqual([count("acceptances"), count("downloads")], [0, 0]);
-  const res = await call("POST", "/api/token", { body: { acceptance_id: "x".repeat(24) } });
+  assert.deepEqual([count("acceptances"), count("downloads")], [0, 1]);
+  assert.equal(env.DB.db.prepare("SELECT acceptance_id FROM downloads").get().acceptance_id, "ci");
+  const res = await call("POST", "/api/token", { body: { acceptance_id } });
   assert.equal(res.status, 404);
+  // A token still in date stops at the deleted acceptance.
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 403);
 });
 
 test("parseRange takes one bytes= range and serves anything else whole", () => {

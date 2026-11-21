@@ -15,7 +15,8 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 - `acceptances`: one row each time `install.sh` calls `POST /api/accept`. That happens once
   per box per license version, after the person has typed `accept` or passed
   `--accept-eula=<version>`, and again if the box loses its receipt.
-- `downloads`: one row per request for a gated file. A resumed download is several rows.
+- `downloads`: one row per download of a gated file (a GET; a HEAD request, or one for a
+  file that does not exist, writes none). A resumed download is several rows.
 
 ## What an acceptance row holds
 
@@ -73,6 +74,8 @@ to get a new token.
 
 - **D1 rows:** 7 years after `created_at` (acceptances) or `at` (downloads). Then the
   Worker's daily cron deletes them (`RETENTION_DAYS = "2557"` in `worker/wrangler.toml`).
+  An acceptance's downloads go with it, even recent ones, so no download row outlives the
+  acceptance it names.
   Seven years outlasts the usual limitation periods for a contract claim. After an
   acceptance is deleted, the box's next token request gets "unknown acceptance", and the
   installer asks for acceptance again.
