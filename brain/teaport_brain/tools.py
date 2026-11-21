@@ -81,7 +81,6 @@ from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
-from teaport_brain.client_notes import CANCEL_STATUS
 from teaport_brain.owed import CANCELLED_NOTE, SUPERSEDED, clean_outcome
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
@@ -1610,6 +1609,13 @@ def _control_args(arguments) -> dict | None:
     return args
 
 
+def _control_aborted(result) -> bool:
+    """A control result for a cancel that aborted the run, read from its fields
+    (RealtimeVoiceAgentControlResult: mode "cancel", aborted true), not its wording."""
+    return (isinstance(result, dict) and result.get("mode") == "cancel"
+            and result.get("aborted") is True)
+
+
 def _control_result(result, failure) -> dict:
     """What the model gets for a control call: whether it went through, the mode, and the
     update (OpenClaw's message, RealtimeVoiceAgentControlResult.message), with the order to
@@ -1666,7 +1672,7 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
-    if owed is not None and out["ok"] and out.get("update", "").startswith(CANCEL_STATUS):
+    if owed is not None and _control_aborted(result):
         # The model's cancel aborted the session's lane: a consult whose run returned its
         # empty final first gets no "cancelled" of its own (Owed.settle_empty).
         owed.note_cancel()

@@ -850,7 +850,7 @@ async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_sessio
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None, "a finished run is no fold target"
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
-    assert await waiting is True
+    assert await waiting == "superseded", "asked again: superseded, whatever cancel came"
     b.close_session()
     owed = {r.key: r.failure for r in b.owed()}
     assert "a" not in owed and owed.get("b") == "unknown", owed
@@ -949,6 +949,19 @@ async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is()
     b.close_session()
     owed = {r.key: r.failure for r in b.owed()}
     assert owed == {"a": "empty", "c": "unknown"}, owed
+
+
+async def test_superseded_wins_over_a_cancel_in_the_window():
+    """Asked again during the grace AND a cancel in the window: superseded, never told it
+    was stopped, since the same request is running again."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b.dispatch("a", HN_REQ)
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.2))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None
+    b.note_cancel()
+    assert await waiting == "superseded"
 
 
 async def test_a_settling_empty_asked_again_is_superseded_not_owed():

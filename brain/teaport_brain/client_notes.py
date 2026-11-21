@@ -186,8 +186,11 @@ _INVISIBLE = frozenset(
 
 # The status OpenClaw's run control gives a cancel that aborted the session's run
 # (controlRealtimeVoiceAgentRun, src/talk/agent-run-control.ts, 2026.10.5: mode "cancel",
-# abortEmbeddedAgentRun). Its "could not cancel" twin aborted nothing.
+# abortEmbeddedAgentRun). Its "could not cancel" twin aborted nothing. A host note carries
+# only the text; the model's own control result is read by its fields
+# (tools._control_aborted).
 CANCEL_STATUS = "Cancelled the active OpenClaw run."
+NOT_CANCELLED_STATUS = "OpenClaw could not cancel the active run."
 
 
 def _text_only(text: str) -> str:
@@ -436,8 +439,13 @@ class ClientNotes(FrameProcessor):
         text = _host_status(raw)
         if not text:
             return None
-        if cancel and self._on_cancel is not None and text.startswith(CANCEL_STATUS):
-            self._on_cancel()
+        if cancel and self._on_cancel is not None:
+            if text.startswith(CANCEL_STATUS):
+                self._on_cancel()
+            elif "cancel" in text.lower() and not text.startswith(NOT_CANCELLED_STATUS):
+                # A host note is text only: if OpenClaw's wording drifts, this is the trace.
+                logger.warning(f"host note: a cancel-like status not read as a cancel: "
+                               f"{quoted(text[:80])}")
         self._pending.append(_Note(text, True, kind, now + self._react_max_wait, host=True))
         status = "applied" if self._gate.is_clear() else "queued"
         logger.info(f"host note: {log_kind} ({len(text)} chars) -> {status}")

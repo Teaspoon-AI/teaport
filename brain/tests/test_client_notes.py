@@ -336,6 +336,8 @@ async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
     h.notes.add_host_update("Got it. I steered the active run.")
     h.notes.add_host_update("OpenClaw could not cancel the active run.")
     assert noted == [True], "only a cancel that aborted the run"
+    h.notes.add_host_update("Cancelled the active run.")   # OpenClaw's wording drifted
+    assert noted == [True], "not read as a cancel, but warned (the drift's trace)"
     h.notes.add_host_update(STATUS, cancel=False)
     assert noted == [True], "a late result's cancel is not noted: its time is not known"
 

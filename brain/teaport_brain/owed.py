@@ -1344,14 +1344,16 @@ class Owed:
 
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None, *,
-                           detail: str = "") -> Optional[bool]:
+                           detail: str = "") -> "bool | str | None":
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
         of a run OpenClaw just cancelled (cancelled_since)? tools._consult_and_land's entry
         point: it registers the wait for dispatch and close_session. While it waits
         no dispatch folds into it (dispatch). The session's end closes it with the
         outcome it has by then, read on the same window (close_session), and None says
         so: it is landed, and the caller lands nothing. On a book already closed it
-        waits for nothing: None if close_session landed it, else False.
+        waits for nothing: None if close_session landed it, else False. SUPERSEDED (a
+        truthy string: compare to it before reading the result as a bool) when the same
+        words were asked again during the grace, whatever cancel came.
 
         It waits even with no other consult open: OpenClaw's relay submits a consult's
         result when its run returns, and a run the spoken cancel aborted can return its
@@ -1371,7 +1373,9 @@ class Owed:
         sibling = await self.cancelled_since(since, grace, window=window)
         if self._closed:
             return None
-        return True if sibling else SUPERSEDED if key in self._superseded else False
+        # Superseded first: the same request runs again, and must not be told it was
+        # stopped (CANCELLED_NOTE) even with a cancel in the window.
+        return SUPERSEDED if key in self._superseded else sibling
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
         return any(floor <= t <= deadline for t in self._cancel_times)
@@ -2117,8 +2121,8 @@ class Owed:
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
-            sibling = self._cancel_in(floor, deadline)
-            superseded = not sibling and key in self._superseded
+            superseded = key in self._superseded
+            sibling = not superseded and self._cancel_in(floor, deadline)
             if sibling:
                 # Warned as tools._consult_and_land warns it: the read is by timing.
                 logger.warning(f"OWED: {key}'s empty came beside OpenClaw cancelling a run "
