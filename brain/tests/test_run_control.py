@@ -367,6 +367,19 @@ async def test_a_control_that_cancelled_tells_the_owed_book():
         await tools._openclaw_agent_control(params, owed=owed)
         assert owed.asked == [tools.CONTROL_TIMEOUT_S], "asked as it is sent"
         assert owed.answers == [("token", aborted)], (answer["message"], owed.answers)
+    # An explicit cancel with no result in time may have gone through: counted as one.
+    # A mode-less call that times out is not presumed a cancel.
+    saved = tools.CONTROL_TIMEOUT_S
+    tools.CONTROL_TIMEOUT_S = 0.05
+    try:
+        for args, aborted in (({"text": "cancel that", "mode": "cancel"}, True),
+                              ({"text": "and the prices"}, False)):
+            owed, llm = Owed(), _LLM(answer=lambda msg: None)
+            params, _ = _params(llm, args)
+            await tools._openclaw_agent_control(params, owed=owed)
+            assert owed.answers == [("token", aborted)], (args, owed.answers)
+    finally:
+        tools.CONTROL_TIMEOUT_S = saved
     # Never sent (the client cannot be reached): OpenClaw was asked nothing.
     class Down(_LLM):
         async def push_frame(self, frame, direction=None):

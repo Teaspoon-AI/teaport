@@ -984,6 +984,11 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     # sent (`started`, _openclaw_agent_consult), not when this task first runs.
     if started is None:
         started = time.monotonic()
+    # This consult will be landed now: a settling empty it re-asks is superseded
+    # (Owed.waiter_started), not before -- a handler that never got here leaves it be.
+    waiter_started = getattr(owed, "waiter_started", None)
+    if waiter_started is not None:
+        waiter_started(tool_call_id)
     progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
                                                       gate=gate, tts=tts))
                 if llm is not None else None)
@@ -1663,8 +1668,9 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
     # A cancel asked of OpenClaw (mode "cancel", or none: the relay may read one from the
     # text), registered with the owed book as it is sent: OpenClaw aborts after this and
     # before its result, which the Control UI can hold while audio plays, so a settling
-    # empty waits for that result and counts an abort at this send time
-    # (Owed.cancel_asked).
+    # empty waits for that result (Owed.cancel_asked). A mode-less call that proves a
+    # steer or a status holds a settling empty all the same, until its result: the
+    # price of not missing the cancel the relay reads from the same words.
     # Registered once the call is sent (on_sent): one never sent asked OpenClaw nothing.
     asked = []
     cancels = owed is not None and args.get("mode") in (None, "cancel")
@@ -1693,8 +1699,11 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
     if asked:
         # The model's cancel aborted the session's lane, or not: a consult whose run
         # returned its empty final first gets no "cancelled" of its own (settle_empty).
-        # No result in time is no abort known.
-        owed.cancel_answered(asked[0], _control_aborted(result))
+        # An explicit cancel with no result in time may have gone through, its result
+        # held (_CONTROL_UNCONFIRMED): counted as one, so a request called off is not
+        # re-offered. A mode-less call is not presumed a cancel.
+        owed.cancel_answered(asked[0], _control_aborted(result) or (
+            failure == "timeout" and args.get("mode") == "cancel"))
     await params.result_callback(out)
 
 

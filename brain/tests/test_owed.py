@@ -849,6 +849,7 @@ async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_sessio
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None, "a finished run is no fold target"
+    b.waiter_started("b")
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
     assert await waiting == "superseded", "asked again: superseded, whatever cancel came"
     b.close_session()
@@ -963,6 +964,7 @@ async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None
+    b.waiter_started("b")
     assert b._duplicates["d"] == "b" and b._answers["d"].record == "b"
     assert b._answers["a"].record == "b", "the superseded call's own answer follows too"
     await waiting
@@ -970,6 +972,7 @@ async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "b", time.monotonic(), grace=0.05))
     await asyncio.sleep(0)
     assert b.dispatch("c", HN_REQ) is None
+    b.waiter_started("c")
     assert {k: b._answers[k].record for k in ("a", "b", "d")} == {"a": "c", "b": "c", "d": "c"}
     await waiting
 
@@ -982,7 +985,20 @@ async def test_a_superseded_empty_stops_waiting_at_once():
     await asyncio.sleep(0)
     t0 = time.monotonic()
     b.dispatch("b", HN_REQ)
+    b.waiter_started("b")
     assert await waiting == "superseded" and time.monotonic() - t0 < 1.0
+
+
+async def test_a_re_ask_whose_handler_never_started_its_waiter_supersedes_nothing():
+    """The re-ask was dispatched but its handler left (cancelled mid-send) before its
+    waiter ran: the settling empty is left to land as what it is, and is told."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b.dispatch("a", HN_REQ)
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None       # and no waiter_started("b")
+    assert await waiting is False, "not superseded: it lands as the empty it was"
 
 
 async def test_a_re_ask_as_the_session_ends_supersedes_nothing():
@@ -1009,6 +1025,7 @@ async def test_superseded_wins_over_a_cancel_in_the_window():
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.2))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None
+    b.waiter_started("b")
     b.note_cancel()
     assert await waiting == "superseded"
 
@@ -1025,6 +1042,7 @@ async def test_a_settling_empty_asked_again_is_superseded_not_owed():
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.1))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None
+    b.waiter_started("b")
     assert await waiting == "superseded", "superseded: closed silently, not as a cancel"
     b.land(HN_REQ, None, "a", failure="cancelled", detail="x", by_openclaw=False,
            superseded=True)

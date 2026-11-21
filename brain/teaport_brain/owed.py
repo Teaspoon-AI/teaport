@@ -1086,6 +1086,8 @@ class Owed:
         # Settling consults whose words were asked again during their grace (dispatch):
         # the re-ask runs, and the settling one closes without a record, superseded.
         self._superseded: set = set()
+        # re-ask key -> the settling key it will supersede once its waiter runs.
+        self._to_supersede: dict = {}
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1247,18 +1249,16 @@ class Owed:
         Not one settling (settle_empty): its run has ended, empty, so there is nothing to
         share -- the same words asked again run again, as they did when an empty landed
         at once, and a sibling's cancel does not close the re-ask with it. The settling
-        one is superseded: it closes without a record (settle_empty), so the caller is
-        not told "it found nothing" of a request already running again. `supersede` False
-        (asked as the session ends, with no waiter to land it): the settling one is left to
-        land as what it is, and this one runs on its own."""
+        one is superseded once the re-ask's waiter runs (waiter_started): it then closes
+        without a record (settle_empty), so the caller is not told "it found nothing" of a
+        request already running again -- and a re-ask whose handler never got that far
+        leaves it to land as what it is. `supersede` False (asked as the session ends,
+        with no waiter to land it): never superseded."""
         running = self._running.get(request)
-        superseded = None
-        if running in self._settling and not supersede:
+        if running in self._settling:
+            if supersede:
+                self._to_supersede[key] = running
             running = None
-        elif running in self._settling:
-            self._superseded.add(running)
-            del self._running[request]
-            superseded, running = running, None
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
         self._questions.setdefault(running or key, _caller_turns(msgs, len(msgs)))
@@ -1266,17 +1266,25 @@ class Owed:
             self._duplicates[key] = running
             return running
         self._running[request] = key
-        if superseded is not None:
-            # It and its duplicates are this re-ask's now: the superseded one has no
-            # result. Its waiter is woken: nothing is left to wait for.
-            for answer in self._answers.values():
-                if answer.record == superseded:   # it, and any an earlier supersede moved
-                    answer.record = key
-            self._cancel_seen.set()
-            self._cancel_seen = asyncio.Event()
-            for dup in [d for d, of in self._duplicates.items() if of == superseded]:
-                self._duplicates[dup] = key
         return None
+
+    def waiter_started(self, key) -> None:
+        """The consult `key`'s waiter is running (tools._consult_and_land), so it will be
+        landed: a settling empty its dispatch is a re-ask of is superseded now, if it has
+        not landed meanwhile."""
+        superseded = self._to_supersede.pop(key, None)
+        if superseded is None or superseded not in self._settling:
+            return
+        self._superseded.add(superseded)
+        # It and its duplicates are this re-ask's now: the superseded one has no result.
+        # Its waiter is woken: nothing is left to wait for.
+        for answer in self._answers.values():
+            if answer.record == superseded:   # it, and any an earlier supersede moved
+                answer.record = key
+        for dup in [d for d, of in self._duplicates.items() if of == superseded]:
+            self._duplicates[dup] = key
+        self._cancel_seen.set()
+        self._cancel_seen = asyncio.Event()
 
     def land(self, request, text, key, *, failure=None, detail="",
              ask=True, by_openclaw=True, superseded=False) -> Optional[Record]:
