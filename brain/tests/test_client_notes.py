@@ -336,7 +336,16 @@ async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
     h.notes.add_host_update("Got it. I steered the active run.")
     h.notes.add_host_update("OpenClaw could not cancel the active run.")
     assert noted == [True], "only a cancel that aborted the run"
-    h.notes.add_host_update("Cancelled the active run.")   # OpenClaw's wording drifted
+    from loguru import logger
+    warned = []
+    sink = logger.add(lambda m: warned.append(str(m)), level="WARNING")
+    try:
+        h.notes.add_host_update("There is no active OpenClaw run to cancel.")
+        assert not any("cancel-like" in w for w in warned), "nothing to cancel is no drift"
+        h.notes.add_host_update("Cancelled the active run.")   # OpenClaw's wording drifted
+        assert any("cancel-like" in w for w in warned), "the drift is warned"
+    finally:
+        logger.remove(sink)
     assert noted == [True], "not read as a cancel, but warned (the drift's trace)"
     h.notes.add_host_update(STATUS, cancel=False)
     assert noted == [True], "a late result's cancel is not noted: its time is not known"
