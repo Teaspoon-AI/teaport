@@ -181,7 +181,9 @@ def refused(url):
     req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
     for attempt in range(1, ATTEMPTS + 1):
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            # A HEAD answers at once: a shorter timeout than a download's, so a gate that
+            # is down fails the run in minutes, not past the job's timeout.
+            with urllib.request.urlopen(req, timeout=20) as resp:
                 if resp.headers.get("x-teaport-gate") == "open":
                     return GATE_OPEN
             return "served without a download token: the license gate is not in front of it"
@@ -191,6 +193,8 @@ def refused(url):
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             if attempt == ATTEMPTS:
                 return str(e)
+        except Exception as e:  # noqa: BLE001 -- anything else: a problem listed, not a traceback
+            return str(e)
         time.sleep(5 * attempt)
 
 

@@ -221,7 +221,7 @@ async function accept(request, env, now) {
   }
   if (b.method !== "tty" && b.method !== "flag") return fail(400, "bad_request", "method: tty or flag");
   if (typeof b.installer !== "string" || !INSTALLER.test(b.installer)) {
-    return fail(400, "bad_request", "installer: the installer's revision, such as git:0123456789ab");
+    return fail(400, "bad_request", "installer: the installer's revision, such as git:0123456789ab (an installer that sends none is out of date: update it)");
   }
 
   const id = randomId();
@@ -273,7 +273,8 @@ async function authorize(request, env, now) {
                 { "www-authenticate": "Bearer" });
   }
   const row = await env.DB.prepare("SELECT revoked_at FROM acceptances WHERE id = ?1").bind(claims.a).first();
-  if (!row || row.revoked_at) return fail(403, "revoked", "this acceptance was revoked: contact stefano@teaspoon.tech");
+  if (!row) return fail(403, "unknown_acceptance", "this acceptance is no longer on record: run the installer again to accept the license");
+  if (row.revoked_at) return fail(403, "revoked", "this acceptance was revoked: contact stefano@teaspoon.tech");
   const eula = await currentEula(env, claims.c, now * 1000);
   if (!eula || eula.version !== claims.v) {
     return fail(403, "eula_changed", "the license changed: run the installer again to read and accept it");

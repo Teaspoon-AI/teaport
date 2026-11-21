@@ -155,6 +155,13 @@ def test_the_record_names_the_installers_commit():
     assert rc == 0, out
     [(_, body)] = _api(tmp_path)
     assert body["installer"] == f"git:{rev}", body
+    # An install.sh inside another repository does not name that repository's commit.
+    inner = here / "copied"
+    inner.mkdir()
+    (tmp_path / "state/eula-accepted.json").unlink(missing_ok=True)
+    rc, out = _run(tmp_path, GATE, ACCEPT_EULA="1.0", HERE=str(inner), **WHO)
+    assert rc == 0, out
+    assert _api(tmp_path)[-1][1]["installer"] == "unknown"
 
 
 def test_licensed_use_sends_its_license_id():

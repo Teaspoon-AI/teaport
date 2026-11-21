@@ -475,8 +475,13 @@ ACCEPTANCE_ID=""
 # installer_revision — this checkout's commit, for the acceptance record: git:<12 hex>, or
 # unknown (no git, or a copy that is not a checkout).
 installer_revision() {
-  local r
-  r="$(git_read -C "$HERE" rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$r" ] && { printf 'git:%s' "$r"; return; }
+  # Only this installer's own checkout: an install.sh copied into another repository is
+  # "unknown", not that repository's commit.
+  local r top
+  top="$(git_read -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" \
+    && [ "$(cd "$top" && pwd -P)" = "$(cd "$HERE" && pwd -P)" ] \
+    && r="$(git_read -C "$HERE" rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$r" ] \
+    && { printf 'git:%s' "$r"; return; }
   printf unknown
 }
 

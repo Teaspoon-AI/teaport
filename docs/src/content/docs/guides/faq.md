@@ -27,13 +27,13 @@ teaport targets the NVIDIA Jetson Orin family (Nano, NX, and AGX) and needs JetP
 
 The brain and the plugin are MIT. The engine is a separate component with its own license. The installer displays the full text, asks you to accept it, and remembers the accepted version, so a re-run prompts again only after the license changes. The license prompt is part of [Install teaport](/getting-started/installation/).
 
-<!-- source: README.md:54-55#db00dcd0; install.sh:503-532,557-567#c6141f02 -->
+<!-- source: README.md:54-55#db00dcd0; install.sh:508-537,562-572#c6141f02 -->
 
 ## Can I run teaport without NemoClaw?
 
 Yes. Install without an agent and teaport runs in voice-only mode: the brain offers only the tools that live on the device, and the installer writes `TEAPORT_AGENT=none`. Anything that needs the OpenClaw gateway, such as web search, memory, or the agent consult, is not available in this mode. Installing OpenClaw later and running the installer again turns the agent on; the choices are in [Install an agent](/getting-started/installation/#install-an-agent).
 
-<!-- source: install.sh:3398-3419#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
+<!-- source: install.sh:3403-3424#35ef53dd; brain/teaport_brain/config_schema.toml:138,144#7d3215ea -->
 
 ## Can teaport answer phone calls?
 
@@ -51,4 +51,4 @@ The engine serves a single speech-to-text session at a time, and the brain holds
 
 The brain updates on its own, without a new engine download. Run the installer again with `--only brain`, and it installs the brain package, restarts `teaport-brain`, and checks that the brain comes back. The restart drops a Talk session in progress; a phone call stays up, and the restarted brain picks it up again. If the new package does not come up healthy, the previous package comes back by itself. An engine release has its own path too: `--only engine` updates the engine alone, and puts the previous engine back by itself when the new one doesn't come up healthy. The `teaport update --check` command compares the installation with the release manifest; the details are in [Update teaport](/guides/updating/).
 
-<!-- source: install.sh:19-25,1595#468bd310; install.sh:12,39-47#b2996d9d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7-8#efef4a9b -->
+<!-- source: install.sh:19-25,1600#468bd310; install.sh:12,39-47#b2996d9d; brain/teaport_brain/sip_server.py:45-52#9213415f; cli/teaport:7-8#efef4a9b -->

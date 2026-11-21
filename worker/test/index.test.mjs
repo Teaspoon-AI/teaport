@@ -313,8 +313,10 @@ test("the retention cron deletes acceptances and downloads past RETENTION_DAYS, 
   assert.equal(env.DB.db.prepare("SELECT acceptance_id FROM downloads").get().acceptance_id, "ci");
   const res = await call("POST", "/api/token", { body: { acceptance_id } });
   assert.equal(res.status, 404);
-  // A token still in date stops at the deleted acceptance.
-  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 403);
+  // A token still in date stops at the deleted acceptance, which it does not call revoked.
+  const gone = await call("GET", `/${ENGINE}`, { headers: bearer(token) });
+  assert.equal(gone.status, 403);
+  assert.equal((await gone.json()).error, "unknown_acceptance");
 });
 
 test("parseRange takes one bytes= range and serves anything else whole", () => {
