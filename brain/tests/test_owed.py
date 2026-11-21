@@ -891,14 +891,14 @@ async def test_a_cancel_burst_does_not_hide_one_inside_the_window():
     b.dispatch("a", HN_REQ)
     b.dispatch("c", "something else")
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
-    first = b._cancel_times[-1]
+    first = b._cancel_spans[-1][1]
     await asyncio.sleep(0.01)
     for k in range(5):                           # the rest of the burst, after it
         b.dispatch(f"x{k}", f"more {k}")
         b.land(f"more {k}", None, f"x{k}", failure="cancelled", detail="Cancelled.")
     for _ in range(40):
         b.note_cancel()                          # a burst far past any count
-    assert b._cancel_times[-1] > first
+    assert b._cancel_spans[-1][1] > first
     assert b._cancel_in(first, first), "the first cancel is still known after the burst"
 
 
@@ -1028,7 +1028,7 @@ async def test_a_settling_empty_asked_again_is_superseded_not_owed():
     assert await waiting == "superseded", "superseded: closed silently, not as a cancel"
     b.land(HN_REQ, None, "a", failure="cancelled", detail="x", by_openclaw=False,
            superseded=True)
-    assert b.record("a") is None and not b._cancel_times, "no record, and no cancel noted"
+    assert b.record("a") is None and not b._cancel_spans, "no record, and no cancel noted"
 
 
 async def test_settle_empty_on_a_closed_book_lands_as_before():
@@ -1074,6 +1074,26 @@ async def test_a_lone_empty_waits_for_the_models_cancel_held_past_the_grace():
     t = asyncio.create_task(answer_no())
     assert await b2.settle_empty(HN_REQ, "a", t0 - 0.01, grace=0.02) is False
     assert time.monotonic() - t0 < 1.0, "woken by the answer, not the ask's whole wait"
+    await t
+
+
+async def test_a_model_cancel_that_aborted_long_after_its_ask_still_counts():
+    """Asked at T; OpenClaw aborted at T+1.5 (the control waited on the run's queue), and
+    the run returned its empty at T+1.4: the ask is before the empty's window, but its
+    span reaches into it, so the empty is the cancel's sibling."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    a_sent = time.monotonic()
+    token = b.cancel_asked(5.0)
+    await asyncio.sleep(0.15)                    # longer than the empty's grace
+
+    async def answer_soon():
+        await asyncio.sleep(0.05)
+        b.cancel_answered(token, True)
+
+    t = asyncio.create_task(answer_soon())
+    assert await b.settle_empty(HN_REQ, "a", a_sent, grace=0.1) is True
     await t
 
 
@@ -1125,7 +1145,7 @@ async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
     class Late:
         """A cancel time lands inside the window with no wake-up, as the wait runs out."""
         async def wait(self):
-            b._cancel_times.append(time.monotonic())
+            b._cancel_spans.append((time.monotonic(), time.monotonic()))
             await asyncio.sleep(10)
 
     b._cancel_seen = Late()

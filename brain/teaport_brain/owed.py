@@ -1074,10 +1074,11 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
-        # When OpenClaw cancelled runs in this session lately (time.monotonic(), kept for
-        # CANCEL_TIMES_KEPT_S), and the event that wakes a settle_empty waiting on one
-        # (note_cancel).
-        self._cancel_times: list = []
+        # When OpenClaw cancelled runs in this session lately, as spans (time.monotonic()
+        # from, to): the moment itself for a cancel seen, or from the model's ask to its
+        # answer for one it asked (cancel_answered), the abort lying somewhere inside. Kept
+        # for CANCEL_TIMES_KEPT_S; and the event that wakes a settle_empty (note_cancel).
+        self._cancel_spans: list = []
         self._cancel_seen = asyncio.Event()
         # token -> (asked at, wait until): the model's cancels not answered yet
         # (cancel_asked).
@@ -1367,28 +1368,31 @@ class Owed:
         return token
 
     def cancel_answered(self, token, aborted: bool) -> None:
-        """The answer to cancel_asked: an abort is noted at the time it was asked, the
-        earliest OpenClaw could have aborted, so a consult sent after the ask is not read
-        beside it. Not aborted: nothing noted, and a waiter is woken. Never answered (no
-        result came): the ask lapses at its wait, and nothing is noted."""
+        """The answer to cancel_asked: an abort is noted as the span from the ask to now,
+        since OpenClaw aborted somewhere in it (the Control UI can hold the result while
+        audio plays, and the control can wait on the run's queue). A consult sent after
+        the answer is not read beside it. Not aborted: nothing noted, and a waiter is
+        woken. Never answered (no result came): the ask lapses at its wait."""
         entry = self._cancels_asked.pop(token, None)
         if entry is None:
             return
         if aborted:
-            self.note_cancel(at=entry[0])
+            self.note_cancel(since=entry[0])
         else:
             self._cancel_seen.set()
             self._cancel_seen = asyncio.Event()
 
-    def note_cancel(self, at: Optional[float] = None) -> None:
+    def note_cancel(self, since: Optional[float] = None) -> None:
         """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
         waiting one woken. From a consult that came back cancelled (_cancelled), and from
         the run control's own status for a cancel, the relay's host note "Cancelled the
         active OpenClaw run." (ClientNotes `on_cancel`): the only word of a cancel whose
-        consult returned its empty final first."""
+        consult returned its empty final first. `since`: the cancel happened between then
+        and now (cancel_answered); else at this moment."""
         now = time.monotonic()
-        self._cancel_times = [t for t in self._cancel_times if t >= now - CANCEL_TIMES_KEPT_S]
-        self._cancel_times.append(now if at is None else at)
+        self._cancel_spans = [(a, z) for a, z in self._cancel_spans
+                              if z >= now - CANCEL_TIMES_KEPT_S]
+        self._cancel_spans.append((now if since is None else since, now))
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
@@ -1428,7 +1432,8 @@ class Owed:
         return SUPERSEDED if key in self._superseded else sibling
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
-        return any(floor <= t <= deadline for t in self._cancel_times)
+        """A cancel whose span overlaps [floor, deadline]."""
+        return any(a <= deadline and z >= floor for a, z in self._cancel_spans)
 
     async def cancelled_since(self, since: float, grace: Optional[float] = None, *,
                               window: Optional[tuple] = None, key=None) -> bool:
@@ -1460,10 +1465,11 @@ class Owed:
             if self._cancel_in(floor, deadline):
                 return True
             now = time.monotonic()
-            # A cancel the model asked within the window, not answered yet: its abort may
-            # be in the window too, so the answer is waited for (cancel_asked).
+            # A cancel the model asked before the window ends, not answered yet: its abort
+            # can come any time until its answer, inside the window too, so the answer is
+            # waited for (cancel_asked).
             held = [until for at, until in self._cancels_asked.values()
-                    if floor <= at <= deadline and until > now]
+                    if at <= deadline and until > now]
             left = max(deadline, *held) - now if held else deadline - now
             if left <= 0 or self._closed or key in self._superseded:
                 return False
