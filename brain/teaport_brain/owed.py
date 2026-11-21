@@ -127,7 +127,10 @@ SETTLE_WAIT_S = 2.0
 # never reaches). The race seen was ~0.1 s; the grace is the dead air a genuine empty on
 # the relay costs before it is told.
 EMPTY_CANCEL_GRACE_S = 1.0
-CANCEL_TIMES_KEPT = 16
+# How long a cancel time is kept: by age, not count, so a burst of them (one per open
+# consult, the host note, the model's control result) never pushes out one a settling
+# empty's window still holds, however long close_session comes after.
+CANCEL_TIMES_KEPT_S = 600.0
 
 # The lull before the one re-offer (§4 (a), the user's choice 2026-10-16): the line has
 # been quiet this long, with the caller's turn answered. setting(): brain.env.
@@ -1071,10 +1074,9 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
-        # When OpenClaw cancelled runs in this session lately (time.monotonic(), the last
-        # CANCEL_TIMES_KEPT: a burst of them -- the relay cancelling every open consult --
-        # does not hide one inside a settling empty's window behind a later one), and the
-        # event that wakes a settle_empty waiting on one (note_cancel).
+        # When OpenClaw cancelled runs in this session lately (time.monotonic(), kept for
+        # CANCEL_TIMES_KEPT_S), and the event that wakes a settle_empty waiting on one
+        # (note_cancel).
         self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
         # Settling consults whose words were asked again during their grace (dispatch):
@@ -1244,10 +1246,11 @@ class Owed:
         one is superseded: it closes without a record (settle_empty), so the caller is
         not told "it found nothing" of a request already running again."""
         running = self._running.get(request)
+        superseded = None
         if running in self._settling:
             self._superseded.add(running)
             del self._running[request]
-            running = None
+            superseded, running = running, None
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
         self._questions.setdefault(running or key, _caller_turns(msgs, len(msgs)))
@@ -1255,6 +1258,12 @@ class Owed:
             self._duplicates[key] = running
             return running
         self._running[request] = key
+        if superseded is not None:
+            # Its duplicates are this re-ask's now: the superseded one has no result.
+            for dup in [d for d, of in self._duplicates.items() if of == superseded]:
+                self._duplicates[dup] = key
+                if dup in self._answers:
+                    self._answers[dup].record = key
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",
@@ -1338,7 +1347,9 @@ class Owed:
         the run control's own status for a cancel, the relay's host note "Cancelled the
         active OpenClaw run." (ClientNotes `on_cancel`): the only word of a cancel whose
         consult returned its empty final first."""
-        self._cancel_times = [*self._cancel_times, time.monotonic()][-CANCEL_TIMES_KEPT:]
+        now = time.monotonic()
+        self._cancel_times = [t for t in self._cancel_times if t >= now - CANCEL_TIMES_KEPT_S]
+        self._cancel_times.append(now)
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
@@ -1351,7 +1362,7 @@ class Owed:
         no dispatch folds into it (dispatch). The session's end closes it with the
         outcome it has by then, read on the same window (close_session), and None says
         so: it is landed, and the caller lands nothing. On a book already closed it
-        waits for nothing: None if close_session landed it, else False. SUPERSEDED (a
+        waits for nothing: False, landed as it is, as before. SUPERSEDED (a
         truthy string: compare to it before reading the result as a bool) when the same
         words were asked again during the grace, whatever cancel came.
 
@@ -1361,8 +1372,8 @@ class Owed:
         "cancelled" ever comes for it. The cancel is known then only from the run
         control's own word (note_cancel from ClientNotes), which can come just after."""
         if self._closed:
-            # Landed by close_session already (it was running then): None, nothing more.
-            return None if key in self._records else False
+            # Landed as before this PR: over close_session's "unknown", it did report back.
+            return False
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
         window = (max(since, now - grace), now + grace)
