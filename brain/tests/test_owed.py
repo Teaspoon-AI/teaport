@@ -920,8 +920,28 @@ async def test_a_direct_consult_is_no_reason_to_wait():
     assert time.monotonic() - t0 < 1.0
 
 
-async def test_a_settle_cancelled_mid_wait_leaves_no_settling_entry():
+async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is():
+    """Production teardown order: end_with_session cancels the consult's task, THEN
+    close_session runs. The settling empty still lands as a cancel's sibling (or
+    empty) -- not "didn't report back" -- and a re-ask during its grace does not lose it."""
     import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None        # the re-ask: a leaves _running
+    b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
+    waiting.cancel()
+    try:
+        await waiting
+    except asyncio.CancelledError:
+        pass
+    b.close_session()
+    owed = {r.key: r.failure for r in b.owed()}
+    assert "a" not in owed and owed.get("b") == "unknown", owed
+    assert not b._settling and not b._running
+
     b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
     b.dispatch("a", HN_REQ)
     b.dispatch("c", "something else")
@@ -932,7 +952,9 @@ async def test_a_settle_cancelled_mid_wait_leaves_no_settling_entry():
         await waiting
     except asyncio.CancelledError:
         pass
-    assert "a" not in b._settling
+    b.close_session()
+    owed = {r.key: r.failure for r in b.owed()}
+    assert owed == {"a": "empty", "c": "unknown"}, owed
 
 
 async def test_a_lone_empty_is_told_without_the_grace():

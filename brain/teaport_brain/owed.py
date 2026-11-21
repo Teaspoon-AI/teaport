@@ -1348,13 +1348,11 @@ class Owed:
         self._settling[key] = (request, *window)
         others = any(k != key and k not in self._direct for k in self._running.values()) \
             or any(k != key for k in self._settling)
-        try:
-            sibling = (await self.cancelled_since(since, grace, window=window) if others
-                       else self._cancel_in(window[0], now))
-        except asyncio.CancelledError:
-            if not self._closed:
-                self._settling.pop(key, None)
-            raise
+        # Cancelled mid-wait, the entry stays: that is the session's teardown
+        # (end_with_session cancels the consult's task before close_session runs), and
+        # close_session lands it from it, as empty or a cancel's sibling.
+        sibling = (await self.cancelled_since(since, grace, window=window) if others
+                   else self._cancel_in(window[0], now))
         return None if self._closed else sibling
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
