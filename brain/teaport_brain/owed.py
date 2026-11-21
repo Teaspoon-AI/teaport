@@ -1261,14 +1261,13 @@ class Owed:
         if superseded is not None:
             # It and its duplicates are this re-ask's now: the superseded one has no
             # result. Its waiter is woken: nothing is left to wait for.
-            if superseded in self._answers:
-                self._answers[superseded].record = key
+            for answer in self._answers.values():
+                if answer.record == superseded:   # it, and any an earlier supersede moved
+                    answer.record = key
             self._cancel_seen.set()
             self._cancel_seen = asyncio.Event()
             for dup in [d for d, of in self._duplicates.items() if of == superseded]:
                 self._duplicates[dup] = key
-                if dup in self._answers:
-                    self._answers[dup].record = key
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",

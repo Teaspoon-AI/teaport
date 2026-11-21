@@ -957,7 +957,7 @@ async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
     """A duplicate folded into a consult later superseded answers to the re-ask now, not
     to a call that has no result."""
     import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("d") + tool_round("b"))
+    b, _, _ = book(msgs=tool_round("a") + tool_round("d") + tool_round("b") + tool_round("c"))
     b.dispatch("a", HN_REQ)
     assert b.dispatch("d", HN_REQ) == "a"
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
@@ -965,6 +965,12 @@ async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
     assert b.dispatch("b", HN_REQ) is None
     assert b._duplicates["d"] == "b" and b._answers["d"].record == "b"
     assert b._answers["a"].record == "b", "the superseded call's own answer follows too"
+    await waiting
+    # A chain: b comes back empty and the words are asked again as c.
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "b", time.monotonic(), grace=0.05))
+    await asyncio.sleep(0)
+    assert b.dispatch("c", HN_REQ) is None
+    assert {k: b._answers[k].record for k in ("a", "b", "d")} == {"a": "c", "b": "c", "d": "c"}
     await waiting
 
 

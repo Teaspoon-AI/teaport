@@ -343,6 +343,8 @@ async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
         await _send_host(h, _speech("There is no active OpenClaw run to cancel."), rid="h4")
         assert not any("cancel-like" in w for w in warned), "nothing to cancel is no drift"
         await _send_host(h, _speech("Got it. I'll cancel the two o'clock instead."), rid="h5")
+        await _send_host(h, _speech("Got it. I told the active OpenClaw run to cancel the "
+                                    "booking."), rid="h7")
         assert not any("cancel-like" in w for w in warned), "a steer about a cancel is no drift"
         await _send_host(h, _speech("Cancelled the OpenClaw run."), rid="h6")   # drifted
         assert any("cancel-like" in w for w in warned), "the drift is warned"
