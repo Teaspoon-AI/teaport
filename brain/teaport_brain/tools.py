@@ -1060,7 +1060,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                            f"landed as cancelled, nothing owed")
             outcome = oc.ConsultOutcome(None, "cancelled",
                                         "empty beside an OpenClaw cancel in this session")
-        answered = bool(outcome.text)
+        answered = bool(outcome.text) and not empty  # an answer that cleans to nothing is none
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
                   detail=outcome.detail, **({"by_openclaw": False} if sibling else {}))
 

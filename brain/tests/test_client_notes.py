@@ -342,7 +342,9 @@ async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
     try:
         h.notes.add_host_update("There is no active OpenClaw run to cancel.")
         assert not any("cancel-like" in w for w in warned), "nothing to cancel is no drift"
-        h.notes.add_host_update("Cancelled the active run.")   # OpenClaw's wording drifted
+        h.notes.add_host_update("Got it. I'll cancel the two o'clock instead.")
+        assert not any("cancel-like" in w for w in warned), "a steer about a cancel is no drift"
+        h.notes.add_host_update("Cancelled the OpenClaw run.")   # OpenClaw's wording drifted
         assert any("cancel-like" in w for w in warned), "the drift is warned"
     finally:
         logger.remove(sink)

@@ -443,8 +443,8 @@ class ClientNotes(FrameProcessor):
         if cancel and self._on_cancel is not None:
             if text.startswith(CANCEL_STATUS):
                 self._on_cancel()
-            elif "cancel" in text.lower() and not text.startswith(
-                    (NOT_CANCELLED_STATUS, NOTHING_TO_CANCEL_STATUS)):
+            elif "openclaw run" in text.lower() and "cancel" in text.lower() \
+                    and not text.startswith((NOT_CANCELLED_STATUS, NOTHING_TO_CANCEL_STATUS)):
                 # A host note is text only: if OpenClaw's wording drifts, this is the trace.
                 logger.warning(f"host note: a cancel-like status not read as a cancel: "
                                f"{quoted(text[:80])}")
