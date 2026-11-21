@@ -36,7 +36,7 @@
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
-# watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# Mandarin dict, watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
 # from the manifest's beside the live ones, and checks them as a full run does (ldd, and
 # cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
 # rollback (with any model it replaces), moves the new files in, renders
@@ -559,8 +559,8 @@ setup_logs() {
 # --- engine: staged, swapped in whole, one rollback away ---------------------------------
 # The engine is a binary and the files of its own release (the manifest's g2p_dict note:
 # "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
-# from <exe_dir>/g2p/, from 1.7 on the AI watermark's weights it reads from
-# <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# from <exe_dir>/g2p/, from 1.7 on the Mandarin dict beside them and the AI watermark's
+# weights it reads from <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
 # models go with it here too: a release that changes one changes what the binary loads.
 # phase_engine used to download each over the live one in turn, so a run that failed half
 # way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
@@ -602,7 +602,7 @@ ENGINE_STAGE="$PREFIX/engine.staged"
 ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
 ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
 ENGINE_KEEP=2
-ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/g2p/kokoro_zh.v1.dict bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
 ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
 ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
 ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
@@ -627,14 +627,18 @@ engine_fetch() {
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
 }
 
-# engine_release_marks <release> — whether that engine release puts the AI watermark on its
-# speech, and so cannot be installed without engine.watermark: 1.7 on (the first release cut
-# from teagram-engine main@bd5974a or later). One that is not a dotted number (a
-# placeholder, "unknown", empty) counts as marking: the check fails closed.
-# manifest/check.py holds the same line (WATERMARK_FROM); keep the two in step.
+# engine_release_from <release> <first> — whether that engine release is <first> or later,
+# and so cannot be installed without the files that release on reads. One that is not a
+# dotted number (a placeholder, "unknown", empty) counts as later: the check fails closed.
+#   ENGINE_WATERMARK_FROM  engine.watermark: the release puts the AI watermark on its
+#                          speech (the first cut from teagram-engine main@bd5974a or later)
+#   ENGINE_ZH_FROM         engine.zh_dict: the release reads the Mandarin dict
+#                          (teagram-engine #122)
+# manifest/check.py holds the same lines (WATERMARK_FROM, ZH_FROM); keep the two in step.
 ENGINE_WATERMARK_FROM=1.7
-engine_release_marks() {
-  python3 -I - "$1" "$ENGINE_WATERMARK_FROM" <<'PY'
+ENGINE_ZH_FROM=1.7
+engine_release_from() {
+  python3 -I - "$1" "$2" <<'PY'
 import re, sys
 rel, first = sys.argv[1], sys.argv[2]
 num = lambda v: tuple(int(x) for x in v.split("."))
@@ -949,6 +953,24 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     engine_fetch "$pos_url" bin/g2p/kokoro_pos.bin "$pos_sha"
   fi
+  # The Mandarin dict beside them (kokoro_zh.v1.dict: jieba's dictionary and HMM
+  # probabilities, pypinyin's readings and misaki's spelling of each syllable, built by
+  # teagram-engine tools/g2p_zh_build.py; attribution in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 the zf_/zm_ voices read Mandarin
+  # through it (teagram-engine #122); the engine probes <exe_dir>/g2p/kokoro_zh.v1.dict, and
+  # without it those voices fall back to espeak, whose tones Kokoro cannot read, with one
+  # journal line saying so. Fail-fast like the tagger for a release that reads it.
+  local zh_url zh_sha zh_rel
+  zh_rel="$(mget engine.release 2>/dev/null)" || zh_rel=""
+  zh_url="$(mget engine.zh_dict.url 2>/dev/null)" || zh_url=""
+  zh_sha="$(mget engine.zh_dict.sha256 2>/dev/null)" || zh_sha=""
+  if [ -n "$zh_url" ] && [ -n "$zh_sha" ]; then
+    engine_fetch "$zh_url" bin/g2p/kokoro_zh.v1.dict "$zh_sha"
+  elif engine_release_from "$zh_rel" "$ENGINE_ZH_FROM"; then
+    local zh_msg="manifest has no engine.zh_dict (url+sha256) for engine ${zh_rel:-?} — a box installed without it speaks Mandarin in tones Kokoro cannot read; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$zh_msg"; else die "$zh_msg"; fi
+  else
+    log "engine $zh_rel predates the Mandarin dict: no Mandarin dict to install"
+  fi
   # The AI watermark's weights (perth_implicit.v2.bin: the embedder of Resemble AI's Perth
   # implicit watermarker, MIT, converted by teagram-engine tools/wm_convert.py; attribution
   # in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 every TTS output carries
@@ -963,7 +985,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   wm_sha="$(mget engine.watermark.sha256 2>/dev/null)" || wm_sha=""
   if [ -n "$wm_url" ] && [ -n "$wm_sha" ]; then
     engine_fetch "$wm_url" bin/watermark/perth_implicit.v2.bin "$wm_sha"
-  elif engine_release_marks "$wm_rel"; then
+  elif engine_release_from "$wm_rel" "$ENGINE_WATERMARK_FROM"; then
     local wm_msg="manifest has no engine.watermark (url+sha256) for engine ${wm_rel:-?} — a box installed without it speaks synthetic audio with no AI watermark; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$wm_msg"; else die "$wm_msg"; fi
   else
@@ -1063,7 +1085,8 @@ wait_for_idle() {
 # Restart= would otherwise hide. Then it must stay up through a settle window. Last, this
 # start's own journal must not say the G2P dict failed to load (phase_verify's check, here
 # scoped to the one invocation): that engine speaks robotic en-us (2026-08-05). A missing
-# POS tagger only reads homographs in their default form; it is said, and does not fail.
+# POS tagger only reads homographs in their default form, and a missing Mandarin dict only
+# degrades the zf_/zm_ voices; each is said, and does not fail.
 # Not a live turn: the engine serves one session at a time, and a real one may hold it.
 engine_verify() {
   local port envtxt id now st i up=0 line sel
@@ -1101,6 +1124,12 @@ engine_verify() {
   line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$line"; then
     warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
+  fi
+  # From 1.7 the engine says where its Mandarin dict is ("TTS: Mandarin G2P at <path>"), or
+  # that it has none ("unavailable"); an older one says nothing.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: Mandarin G2P (at|ready|unavailable)' | tail -1 || true)"
+  if contains "Mandarin G2P unavailable" "$line"; then
+    warn "the engine is running WITHOUT the Mandarin dict (the zf_/zm_ voices fall back to espeak, whose tones Kokoro cannot read): $line"
   fi
   # From 1.7 the engine says whether it marks its speech (an older one says nothing): "AI
   # watermark on", "off" (VOX_TTS_WATERMARK=0), "unavailable", or "watermark needs <rate>"
@@ -3883,6 +3912,10 @@ phase_verify() {
   local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$pos_log"; then
     warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
+  fi
+  local zh_log; zh_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: Mandarin G2P (at|ready|unavailable)' | tail -1 || true)"
+  if contains "Mandarin G2P unavailable" "$zh_log"; then
+    warn "engine is running WITHOUT the Mandarin dict (the zf_/zm_ voices fall back to espeak, whose tones Kokoro cannot read): $zh_log"; ok=0
   fi
   # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK=0 in
   # engine.env, or it would not be listening) it speaks with no AI watermark. The status

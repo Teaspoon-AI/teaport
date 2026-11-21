@@ -94,13 +94,14 @@ def _line(prefix: str) -> str:
 
 # The engine layout as install.sh defines it, under the test's $PREFIX.
 LAYOUT = "".join(_line(p) for p in ("ENGINE_STAGE=", "ENGINE_ROLLBACKS=", "ENGINE_SWAP_MARK=", "ENGINE_KEEP=",
-                                    "ENGINE_FILES=", "ENGINE_MODELS=", "ENGINE_WATERMARK_FROM="))
+                                    "ENGINE_FILES=", "ENGINE_MODELS=", "ENGINE_WATERMARK_FROM=",
+                                    "ENGINE_ZH_FROM="))
 LAYOUT += 'ENGINE_UNIT="$T/etc/systemd/teaport-engine.service" ENGINE_CHANGED="" ENGINE_KEPT=""\n'
 LAYOUT += 'ENGINE_RECORD="$T/state/engine.release"\n'
 ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe", "engine_copies",
               "engine_swap_abort", "engine_swap_recover",
               "engine_keep_live", "engine_swap_in", "engine_restore", "engine_rollback_target",
-              "engine_prune", "manifest_take_py", "manifest_take", "engine_record", "engine_release_marks"]
+              "engine_prune", "manifest_take_py", "manifest_take", "engine_record", "engine_release_from"]
 
 
 def _run(tmp, script, fns=(), env=None):
@@ -127,8 +128,10 @@ def _write(path, text):
 
 
 ENGINE_REL = ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict", "bin/g2p/kokoro_pos.bin", "THIRD_PARTY_NOTICES.txt")
-# The AI watermark's weights: an engine's file from release 1.7 on (the live engines above are older).
+# The AI watermark's weights and the Mandarin dict: an engine's files from release 1.7 on (the
+# live engines above are older).
 WM_REL = "bin/watermark/perth_implicit.v2.bin"
+ZH_REL = "bin/g2p/kokoro_zh.v1.dict"
 
 
 def _engine(tmp, tag, release=None, unit=True):
@@ -220,6 +223,7 @@ def test_the_dry_run_shows_the_plan_off_the_appliance_and_touches_nothing():
                  "nothing to keep for --rollback engine",
                  f"add to {tmp}/etc/engine.env the keys it lacks", "KOKORO_RESERVE_FPT=12", "VOX_REQUIRE_DICT_G2P=1",
                  "VOX_REQUIRE_WATERMARK=1", "engine 1.6 predates the AI watermark",
+                 "engine 1.6 predates the Mandarin dict",
                  "render teaport-engine.service.in -> /etc/systemd/system/teaport-engine.service",
                  "restart teaport-engine.service if any of the above changed it",
                  "put the previous engine back if it does not", "done — engine 1.6",
@@ -337,10 +341,10 @@ ldd() { if [ -n "${LDD_MISSING:-}" ]; then printf '\tlibcudnn.so.9 => not found\
 '''
 
 
-def _manifest(tmp, keep_pos=False, release="1.6", watermark=False):
+def _manifest(tmp, keep_pos=False, release="1.6", watermark=False, zh=False):
     """A manifest whose engine is "new": each file's sha is that of "new <name>" (the
     download stub's), the POS tagger's that of the live "old" one when keep_pos. It names
-    the AI watermark's weights only when watermark."""
+    the AI watermark's weights only when watermark, the Mandarin dict only when zh."""
     def art(name, tag="new"):
         return {"url": f"https://dl/{name}", "sha256": _sha(f"{tag} {name}\n")}
     mf = {"engine": {"release": release, "assets": {"l4t38-cu13": art("voxtral")},
@@ -350,6 +354,8 @@ def _manifest(tmp, keep_pos=False, release="1.6", watermark=False):
           "models": {"voxtral": art("consolidated.safetensors"), "kokoro": art("Kokoro_espeak_F16.gguf")}}
     if watermark:
         mf["engine"]["watermark"] = art("perth_implicit.v2.bin")
+    if zh:
+        mf["engine"]["zh_dict"] = art("kokoro_zh.v1.dict")
     return _write(pathlib.Path(tmp, "mf.json"), json.dumps(mf))
 
 
@@ -369,6 +375,7 @@ def test_only_engine_stages_what_differs_and_leaves_the_live_engine_alone():
             "models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf\n") in out, out
     assert "have kokoro_pos.bin (sha ok)" in out, out
     assert "engine 1.6 predates the AI watermark: no watermark weights to install" in out, out
+    assert "engine 1.6 predates the Mandarin dict: no Mandarin dict to install" in out, out
     assert set(_live(tmp).values()) == {"old"}, _live(tmp)
     stage = pathlib.Path(tmp, "opt/engine.staged")
     assert (stage / "bin/voxtral").read_text() == "new voxtral\n" and os.access(stage / "bin/voxtral", os.X_OK)
@@ -903,29 +910,30 @@ def test_without_flock_a_run_says_so_and_goes_on():
 def test_the_watermark_is_needed_from_engine_1_7_on():
     for rel, marks in (("1.6", False), ("1.6.9", False), ("0.9", False), ("1.7", True), ("1.7.0", True),
                        ("1.10", True), ("2", True), ("TODO", True), ("unknown", True), ("", True), ("1.7-rc1", True)):
-        rc, out = _run(tempdir("teaport-eng-wm-"), f'engine_release_marks "{rel}" && echo MARKS || echo PLAIN',
-                       ["engine_release_marks"])
-        assert rc == 0 and out.strip() == ("MARKS" if marks else "PLAIN"), (rel, out)
+        for first in ("$ENGINE_WATERMARK_FROM", "$ENGINE_ZH_FROM"):   # the Mandarin dict: the same release
+            rc, out = _run(tempdir("teaport-eng-wm-"),
+                           f'engine_release_from "{rel}" "{first}" && echo MARKS || echo PLAIN', ["engine_release_from"])
+            assert rc == 0 and out.strip() == ("MARKS" if marks else "PLAIN"), (rel, first, out)
 
 
 def test_a_release_that_marks_stages_the_watermark_and_swaps_it_in():
     tmp = tempdir("teaport-eng-wm-")
     _engine(tmp, "old", release="1.6")
-    rc, out = _phase(tmp, "engine", release="1.7", watermark=True)
+    rc, out = _phase(tmp, "engine", release="1.7", watermark=True, zh=True)
     assert rc == 0, out
-    assert f"CHANGED bin/voxtral bin/g2p/kokoro_g2p.v2.dict {WM_REL} THIRD_PARTY_NOTICES.txt " in out, out
+    assert f"CHANGED bin/voxtral bin/g2p/kokoro_g2p.v2.dict {ZH_REL} {WM_REL} THIRD_PARTY_NOTICES.txt " in out, out
     assert pathlib.Path(tmp, "opt/engine.staged", WM_REL).read_text() == "new perth_implicit.v2.bin\n"
     assert not pathlib.Path(tmp, "opt", WM_REL).exists(), out
     tmp = tempdir("teaport-eng-wm-")
     _engine(tmp, "old", release="1.6")
-    rc, out = _phase(tmp, "", release="1.7", watermark=True)
+    rc, out = _phase(tmp, "", release="1.7", watermark=True, zh=True)
     assert rc == 0, out
     assert pathlib.Path(tmp, "opt", WM_REL).read_text() == "new perth_implicit.v2.bin\n", out
     # The engine kept for a rollback had none, so --rollback engine leaves this one (engine_restore).
     (copy,) = _copies(tmp)
     assert not pathlib.Path(tmp, "opt/engine.rollback", copy, WM_REL).exists(), copy
     # The next run finds it in place.
-    rc, out = _phase(tmp, "", release="1.7", watermark=True)
+    rc, out = _phase(tmp, "", release="1.7", watermark=True, zh=True)
     assert rc == 0 and "have perth_implicit.v2.bin (sha ok)" in out, out
 
 
@@ -935,7 +943,7 @@ def test_the_watermark_is_kept_and_put_back_with_its_engine():
     tmp = tempdir("teaport-eng-wm-")
     opt = _engine(tmp, "old", release="1.7")
     _write(opt / WM_REL, "old perth_implicit.v2.bin\n")
-    rc, out = _phase(tmp, "", release="1.8", watermark=True)
+    rc, out = _phase(tmp, "", release="1.8", watermark=True, zh=True)
     assert rc == 0 and (opt / WM_REL).read_text() == "new perth_implicit.v2.bin\n", out
     (copy,) = _copies(tmp)
     assert pathlib.Path(tmp, "opt/engine.rollback", copy, WM_REL).read_text() == "old perth_implicit.v2.bin\n"
@@ -947,7 +955,7 @@ def test_the_watermark_is_kept_and_put_back_with_its_engine():
     tmp = tempdir("teaport-eng-wm-")
     opt = _engine(tmp, "old", release="1.7")
     _write(opt / WM_REL, "new perth_implicit.v2.bin\n")
-    rc, out = _phase(tmp, "", release="1.8", watermark=True)
+    rc, out = _phase(tmp, "", release="1.8", watermark=True, zh=True)
     assert rc == 0 and "have perth_implicit.v2.bin (sha ok)" in out, out
     (copy,) = _copies(tmp)
     assert pathlib.Path(tmp, "opt/engine.rollback", copy, WM_REL).read_text() == "new perth_implicit.v2.bin\n"
@@ -957,16 +965,69 @@ def test_a_release_that_marks_without_its_watermark_stops_before_anything_moves(
     for release in ("1.7", "TODO"):
         tmp = tempdir("teaport-eng-wm-")
         _engine(tmp, "old", release="1.6")
-        rc, out = _phase(tmp, "", release=release)
+        rc, out = _phase(tmp, "", release=release, zh=True)
         assert rc != 0 and f"DIE manifest has no engine.watermark (url+sha256) for engine {release}" in out, out
         assert set(_live(tmp).values()) == {"old"} and _copies(tmp) == [], (release, _live(tmp))
         # A preview says so and goes on.
         # (The download stub writes even in a preview: give it the stage SUDO only prints.)
-        mf = _manifest(tmp, keep_pos=True, release=release)
+        mf = _manifest(tmp, keep_pos=True, release=release, zh=True)
         rc, out = _run(tmp, f'{PHASE_STUBS}MF="{mf}"; ONLY=""; DRY_RUN=1; mkdir -p "$T/opt/engine.staged/models/voxtral" '
                             f'"$T/opt/engine.staged/models/kokoro"; phase_engine; echo PLANNED',
                        ENGINE_FNS + ["phase_engine"])
         assert "WARN manifest has no engine.watermark" in out and "PLANNED" in out, out
+
+
+def test_a_release_that_reads_the_mandarin_dict_stages_it_and_swaps_it_in():
+    tmp = tempdir("teaport-eng-zh-")
+    _engine(tmp, "old", release="1.6")
+    rc, out = _phase(tmp, "engine", release="1.7", watermark=True, zh=True)
+    assert rc == 0, out
+    assert pathlib.Path(tmp, "opt/engine.staged", ZH_REL).read_text() == "new kokoro_zh.v1.dict\n"
+    assert not pathlib.Path(tmp, "opt", ZH_REL).exists(), out
+    tmp = tempdir("teaport-eng-zh-")
+    _engine(tmp, "old", release="1.6")
+    rc, out = _phase(tmp, "", release="1.7", watermark=True, zh=True)
+    assert rc == 0 and pathlib.Path(tmp, "opt", ZH_REL).read_text() == "new kokoro_zh.v1.dict\n", out
+    # The 1.6 engine kept for a rollback had none, so --rollback engine leaves this one (1.6 never reads it).
+    (copy,) = _copies(tmp)
+    assert not pathlib.Path(tmp, "opt/engine.rollback", copy, ZH_REL).exists(), copy
+    rc, out = _rollback(tmp)
+    assert rc == 0 and pathlib.Path(tmp, "opt", ZH_REL).read_text() == "new kokoro_zh.v1.dict\n", out
+    # The next run finds it in place.
+    rc, out = _phase(tmp, "", release="1.7", watermark=True, zh=True)
+    assert rc == 0 and "have kokoro_zh.v1.dict (sha ok)" in out, out
+
+
+def test_the_mandarin_dict_is_kept_and_put_back_with_its_engine():
+    """An update from 1.7 to a later release keeps the live dict with the engine it belongs to
+    (ENGINE_FILES), and --rollback engine puts it back; a second undoes it."""
+    tmp = tempdir("teaport-eng-zh-")
+    opt = _engine(tmp, "old", release="1.7")
+    _write(opt / ZH_REL, "old kokoro_zh.v1.dict\n")
+    _write(opt / WM_REL, "new perth_implicit.v2.bin\n")
+    rc, out = _phase(tmp, "", release="1.8", watermark=True, zh=True)
+    assert rc == 0 and (opt / ZH_REL).read_text() == "new kokoro_zh.v1.dict\n", out
+    (copy,) = _copies(tmp)
+    assert pathlib.Path(tmp, "opt/engine.rollback", copy, ZH_REL).read_text() == "old kokoro_zh.v1.dict\n"
+    rc, out = _rollback(tmp)
+    assert rc == 0 and (opt / ZH_REL).read_text() == "old kokoro_zh.v1.dict\n", out
+    rc, out = _rollback(tmp)
+    assert rc == 0 and (opt / ZH_REL).read_text() == "new kokoro_zh.v1.dict\n", out
+
+
+def test_a_release_that_reads_the_mandarin_dict_without_it_stops_before_anything_moves():
+    for release in ("1.7", "TODO"):
+        tmp = tempdir("teaport-eng-zh-")
+        _engine(tmp, "old", release="1.6")
+        rc, out = _phase(tmp, "", release=release, watermark=True)
+        assert rc != 0 and f"DIE manifest has no engine.zh_dict (url+sha256) for engine {release}" in out, out
+        assert set(_live(tmp).values()) == {"old"} and _copies(tmp) == [], (release, _live(tmp))
+        mf = _manifest(tmp, keep_pos=True, release=release, watermark=True)
+        rc, out = _run(tmp, f'{PHASE_STUBS}MF="{mf}"; ONLY=""; DRY_RUN=1; mkdir -p "$T/opt/engine.staged/models/voxtral" '
+                            f'"$T/opt/engine.staged/models/kokoro" "$T/opt/engine.staged/bin/watermark"; '
+                            f'phase_engine; echo PLANNED',
+                       ENGINE_FNS + ["phase_engine"])
+        assert "WARN manifest has no engine.zh_dict" in out and "PLANNED" in out, out
 
 
 # --- the health check ----------------------------------------------------------------------
@@ -1009,6 +1070,12 @@ J_WM_BANNER = ("****************************************************************
                "* TTS: the AI watermark is NOT loaded: speech goes out UNMARKED.  *\\n"
                "* Install watermark/perth_implicit.v2.bin next to this binary,    *\\n"
                "********************************************************************\\n")
+J_ZH_AT = "TTS: Mandarin G2P at /opt/teaport/bin/g2p/kokoro_zh.v1.dict (loaded on first use)\\n"
+J_ZH_MISSING = ("TTS: Mandarin G2P unavailable (/opt/teaport/bin/g2p/kokoro_zh.v1.dict) — the zf_/zm_ voices "
+                "fall back to espeak, whose tones Kokoro cannot read\\n")
+# A dict found at startup that fails to load on its first use (damaged): the later line says so.
+J_ZH_BAD = ("TTS: Mandarin G2P unavailable (/opt/teaport/bin/g2p/kokoro_zh.v1.dict) — espeak cmn, whose tones "
+            "Kokoro cannot read\\n")
 J_READY = "TTS: Kokoro ready (24000 Hz, 600 samples/frame, ctx 192 tokens)\\n"
 
 
@@ -1050,6 +1117,41 @@ def test_an_engine_without_its_watermark_is_not_healthy():
     for journal in (J_G2P_OK + J_WM_ON + J_READY, J_G2P_OK + J_READY):
         rc, out = _verify(tempdir("teaport-eng-verify-"), {"JOURNAL": journal})
         assert rc == 0 and "HEALTHY" in out and "WARN" not in out, (journal, out)
+
+
+def test_a_missing_mandarin_dict_is_said_and_does_not_fail():
+    # The status line comes between the dict's and the tagger's (voxtral_tts.cpp).
+    j_no_zh = J_G2P_OK.replace("TTS: POS", J_ZH_MISSING + "TTS: POS")
+    j_bad_zh = J_G2P_OK.replace("TTS: POS", J_ZH_AT + "TTS: POS") + J_WM_ON + J_READY + J_ZH_BAD
+    for journal in (j_no_zh + J_WM_ON + J_READY, j_bad_zh):
+        rc, out = _verify(tempdir("teaport-eng-verify-"), {"JOURNAL": journal})
+        assert rc == 0 and "HEALTHY" in out and "WITHOUT the Mandarin dict" in out, (journal, out)
+    # Found, or an engine before 1.7 (no Mandarin line at all): nothing to say.
+    for journal in (J_G2P_OK.replace("TTS: POS", J_ZH_AT + "TTS: POS") + J_WM_ON + J_READY, J_G2P_OK + J_READY):
+        rc, out = _verify(tempdir("teaport-eng-verify-"), {"JOURNAL": journal})
+        assert rc == 0 and "HEALTHY" in out and "WARN" not in out, (journal, out)
+
+
+def test_the_full_run_check_reports_each_degraded_engine_as_not_up():
+    """phase_verify, a full run's last step: it reads the same status lines over the last ten
+    minutes of the engine's journal, and anything degraded makes the run say it is not up."""
+    zh = lambda line: J_G2P_OK.replace("TTS: POS", line + "TTS: POS")
+    stubs = (VERIFY_STUBS + 'BRAIN_PORT=7861\n'
+             'ss() { printf "LISTEN 0 128 0.0.0.0:8000 0.0.0.0:*\\nLISTEN 0 128 0.0.0.0:7861 0.0.0.0:*\\n"; }\n')
+    for journal, want in ((zh(J_ZH_AT) + J_WM_ON + J_READY, None),
+                          (J_G2P_OK + J_READY, None),   # an engine before 1.7: no Mandarin or watermark line
+                          (J_NO_DICT + J_WM_ON + J_READY + J_G2P_BANNER, "WITHOUT the en-us G2P dict"),
+                          (J_NO_POS + J_WM_ON + J_READY + J_G2P_BANNER, "WITHOUT the POS tagger"),
+                          (zh(J_ZH_MISSING) + J_WM_ON + J_READY, "WITHOUT the Mandarin dict"),
+                          (zh(J_ZH_AT) + J_WM_ON + J_READY + J_ZH_BAD, "WITHOUT the Mandarin dict"),
+                          (zh(J_ZH_AT) + J_WM_MISSING + J_READY + J_WM_BANNER, "WITHOUT the AI watermark"),
+                          (zh(J_ZH_AT) + J_WM_OFF + J_READY, "WITHOUT the AI watermark")):
+        rc, out = _run(tempdir("teaport-eng-pv-"), stubs + "phase_verify", ["phase_verify"], {"JOURNAL": journal})
+        assert rc == 0, (journal, out)
+        if want is None:
+            assert "engine + brain are up" in out and "WARN" not in out, (journal, out)
+        else:
+            assert want in out and "something is not up" in out, (want, out)
 
 
 def test_a_missing_pos_tagger_is_said_and_does_not_fail():
