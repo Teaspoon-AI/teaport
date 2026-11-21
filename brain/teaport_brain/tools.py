@@ -1219,11 +1219,14 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # live), which doubled every ack, progress line, and follow-up. One
     # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
     # resolves silently and the original's record answers for both.
-    # Asked as the session ends (`over`, below): no waiter will land it, so it supersedes no
-    # settling empty (Owed.dispatch), which did report back.
-    ending = owed is not None and getattr(params.llm, "session_over", False) is True
+    # Called as its session ends (#122): the completion that called it was still streaming
+    # when the session's EndFrame reached the LLM, behind it. Nothing goes to the relay:
+    # its call would be one more push into the ending session, behind the EndFrame. The
+    # agent is asked directly, as it is when a relay does not ack. No waiter will land it,
+    # so it supersedes no settling empty (Owed.dispatch), which did report back.
+    over = owed is not None and getattr(params.llm, "session_over", False) is True
     if owed is not None and owed.dispatch(params.tool_call_id, request,
-                                          supersede=not ending) is not None:
+                                          supersede=not over) is not None:
         # A placeholder result: no inference, and a landing that came first replaces
         # it -- see placeholder_properties() and the comment below.
         await params.result_callback(
@@ -1236,11 +1239,6 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # From here on the call is the agent's: the relay's and the CLI lane's (_for_the_agent).
     args = _for_the_agent(args)
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
-    # Called as its session ends (#122): the completion that called it was still streaming
-    # when the session's EndFrame reached the LLM, behind it. Nothing goes to the relay:
-    # its call would be one more push into the ending session, behind the EndFrame. The
-    # agent is asked directly, as it is when a relay does not ack.
-    over = owed is not None and getattr(params.llm, "session_over", False) is True
     fut = None
     sent_at = time.monotonic()
     if relay and not over:
@@ -1659,14 +1657,24 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
         await params.result_callback({"ok": False, "error": "text required"})
         return
 
+    # A cancel asked of OpenClaw (mode "cancel", or none: the relay may read one from the
+    # text), registered with the owed book as it is sent: OpenClaw aborts after this and
+    # before its result, which the Control UI can hold while audio plays, so a settling
+    # empty waits for that result and counts an abort at this send time
+    # (Owed.cancel_asked).
+    asked = (owed.cancel_asked(CONTROL_TIMEOUT_S)
+             if owed is not None and args.get("mode") in (None, "cancel") else None)
+
     async def told_late(result):
         # The call was cancelled (a barge-in) and its result came after: said as the
         # host's update when it changed or reported something (module comment above).
+        if asked is not None:
+            owed.cancel_answered(asked, _control_aborted(result))
         out = _control_result(result, None)
         if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
             logger.info(f"openclaw_agent_control: result after its cancel -- "
                         f"{quoted(out['update'][:80])}")
-            # Not a cancel for the owed book (add_host_update): its abort time is unknown.
+            # The cancel itself is counted above (cancel_answered), at its send time.
             notes.add_host_update(out["update"])
 
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
@@ -1675,12 +1683,11 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
-    if owed is not None and _control_aborted(result):
-        # The model's cancel aborted the session's lane: a consult whose run returned its
-        # empty final first gets no "cancelled" of its own (Owed.settle_empty). Only a
-        # result within CONTROL_TIMEOUT_S: one held past it (or told late) has no known
-        # abort time, and the relay's own host note for the cancel still counts.
-        owed.note_cancel()
+    if asked is not None:
+        # The model's cancel aborted the session's lane, or not: a consult whose run
+        # returned its empty final first gets no "cancelled" of its own (settle_empty).
+        # No result in time is no abort known.
+        owed.cancel_answered(asked, _control_aborted(result))
     await params.result_callback(out)
 
 

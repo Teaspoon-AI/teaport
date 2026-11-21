@@ -350,18 +350,27 @@ async def test_a_control_that_cancelled_tells_the_owed_book():
     control that did not cancel notes nothing."""
     class Owed:
         def __init__(self):
-            self.noted = 0
+            self.asked, self.answers = [], []
 
-        def note_cancel(self):
-            self.noted += 1
+        def cancel_asked(self, wait):
+            self.asked.append(wait)
+            return "token"
 
-    for answer, noted in ((_CANCELLED, 1),
-                          ({**_CANCELLED, "ok": False, "aborted": False,
-                            "message": "OpenClaw could not cancel the active run."}, 0)):
+        def cancel_answered(self, token, aborted):
+            self.answers.append((token, aborted))
+
+    for answer, aborted in ((_CANCELLED, True),
+                            ({**_CANCELLED, "ok": False, "aborted": False,
+                              "message": "OpenClaw could not cancel the active run."}, False)):
         owed, llm = Owed(), _LLM(answer=lambda msg, a=answer: a)
         params, _ = _params(llm, {"text": "cancel that", "mode": "cancel"})
         await tools._openclaw_agent_control(params, owed=owed)
-        assert owed.noted == noted, (answer["message"], owed.noted)
+        assert owed.asked == [tools.CONTROL_TIMEOUT_S], "asked as it is sent"
+        assert owed.answers == [("token", aborted)], (answer["message"], owed.answers)
+    owed, llm = Owed(), _LLM(answer=lambda msg: _CANCELLED)
+    params, _ = _params(llm, {"text": "how long?", "mode": "status"})
+    await tools._openclaw_agent_control(params, owed=owed)
+    assert owed.asked == [], "a status is no cancel asked"
 
 
 async def test_a_control_with_nothing_in_progress_leaves_a_new_request_to_be_done():

@@ -1041,6 +1041,42 @@ async def test_settle_empty_on_a_closed_book_lands_as_before():
     assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is False
 
 
+async def test_a_lone_empty_waits_for_the_models_cancel_held_past_the_grace():
+    """The model asked a cancel; OpenClaw aborted, its run returned empty first, and the
+    Control UI held the result while audio played -- past the grace. The empty waits for
+    the answer and counts the abort at the ask; a consult sent after the ask does not."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b.dispatch("a", HN_REQ)
+    a_sent = time.monotonic()
+    token = b.cancel_asked(5.0)
+
+    async def answer_late():
+        await asyncio.sleep(0.15)                # past the 0.05 grace
+        b.cancel_answered(token, True)
+
+    t = asyncio.create_task(answer_late())
+    assert await b.settle_empty(HN_REQ, "a", a_sent, grace=0.05) is True
+    await t
+    b.dispatch("c", "something sent after the ask")
+    assert await b.settle_empty("something sent after the ask", "c", time.monotonic(),
+                                grace=0.05) is False, "sent after the ask: not its sibling"
+
+    b2, _, _ = book(msgs=tool_round("a"))
+    b2.dispatch("a", HN_REQ)
+    token = b2.cancel_asked(5.0)
+    t0 = time.monotonic()
+
+    async def answer_no():
+        await asyncio.sleep(0.05)
+        b2.cancel_answered(token, False)
+
+    t = asyncio.create_task(answer_no())
+    assert await b2.settle_empty(HN_REQ, "a", t0 - 0.01, grace=0.02) is False
+    assert time.monotonic() - t0 < 1.0, "woken by the answer, not the ask's whole wait"
+    await t
+
+
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
     """One consult open, and "cancel that": its aborted run can return its empty final
     before any "cancelled" (OpenClaw runConsult), so none comes. The run control's

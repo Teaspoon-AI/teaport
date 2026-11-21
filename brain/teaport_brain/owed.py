@@ -1079,6 +1079,9 @@ class Owed:
         # (note_cancel).
         self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
+        # token -> (asked at, wait until): the model's cancels not answered yet
+        # (cancel_asked).
+        self._cancels_asked: dict = {}
         # Settling consults whose words were asked again during their grace (dispatch):
         # the re-ask runs, and the settling one closes without a record, superseded.
         self._superseded: set = set()
@@ -1349,7 +1352,32 @@ class Owed:
         logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
-    def note_cancel(self) -> None:
+    def cancel_asked(self, wait: float) -> object:
+        """The model asked OpenClaw to cancel (tools._openclaw_agent_control), now: a token
+        for cancel_answered. A settling empty whose window holds this moment waits for the
+        answer, up to `wait` (settle_empty): the abort comes after the ask and before its
+        result, which the Control UI can hold while audio plays."""
+        token = object()
+        now = time.monotonic()
+        self._cancels_asked = {t: v for t, v in self._cancels_asked.items() if v[1] > now}
+        self._cancels_asked[token] = (now, now + wait)
+        return token
+
+    def cancel_answered(self, token, aborted: bool) -> None:
+        """The answer to cancel_asked: an abort is noted at the time it was asked, the
+        earliest OpenClaw could have aborted, so a consult sent after the ask is not read
+        beside it. Not aborted: nothing noted, and a waiter is woken. Never answered (no
+        result came): the ask lapses at its wait, and nothing is noted."""
+        entry = self._cancels_asked.pop(token, None)
+        if entry is None:
+            return
+        if aborted:
+            self.note_cancel(at=entry[0])
+        else:
+            self._cancel_seen.set()
+            self._cancel_seen = asyncio.Event()
+
+    def note_cancel(self, at: Optional[float] = None) -> None:
         """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
         waiting one woken. From a consult that came back cancelled (_cancelled), and from
         the run control's own status for a cancel, the relay's host note "Cancelled the
@@ -1357,7 +1385,7 @@ class Owed:
         consult returned its empty final first."""
         now = time.monotonic()
         self._cancel_times = [t for t in self._cancel_times if t >= now - CANCEL_TIMES_KEPT_S]
-        self._cancel_times.append(now)
+        self._cancel_times.append(now if at is None else at)
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
@@ -1411,7 +1439,8 @@ class Owed:
         stays empty. Only cancels OpenClaw reported count (note_cancel): a consult that
         came back "cancelled" (_cancelled `by_openclaw`), the run control's cancel status
         in a host note (ClientNotes on_cancel), and the model's own control result that
-        aborted the run (tools._openclaw_agent_control).
+        aborted the run (tools._openclaw_agent_control, at the time it was asked: a
+        settling empty waits for that answer, cancel_asked).
         Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
         transition.
 
@@ -1427,7 +1456,12 @@ class Owed:
         while True:
             if self._cancel_in(floor, deadline):
                 return True
-            left = deadline - time.monotonic()
+            now = time.monotonic()
+            # A cancel the model asked within the window, not answered yet: its abort may
+            # be in the window too, so the answer is waited for (cancel_asked).
+            held = [until for at, until in self._cancels_asked.values()
+                    if floor <= at <= deadline and until > now]
+            left = max(deadline, *held) - now if held else deadline - now
             if left <= 0 or self._closed or key in self._superseded:
                 return False
             try:
