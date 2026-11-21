@@ -833,6 +833,22 @@ async def test_only_a_cancel_openclaw_reported_counts_for_cancelled_since():
     assert b.owed() == []
 
 
+async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_session():
+    """While an empty waits out the grace (settle_empty), the caller asking the same thing
+    again starts a new consult -- not a duplicate the sibling's cancel would close too --
+    and the session's end still closes the settling one."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b.dispatch("a", HN_REQ)
+    began = time.monotonic()
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None, "the re-ask is a consult of its own"
+    b.close_session()
+    assert await waiting is False
+    assert {r.key for r in b.owed()} >= {"a", "b"}, [r.key for r in b.owed()]
+
+
 async def test_close_session_wakes_a_cancelled_since_waiting():
     """The session's end does not leave an empty sleeping out its grace."""
     import time

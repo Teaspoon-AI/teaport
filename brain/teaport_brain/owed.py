@@ -120,7 +120,13 @@ SETTLE_WAIT_S = 2.0
 # no text.") a moment BEFORE that cancel lands (live 2026-11-20 14:48:42: empty at .332,
 # cancelled at .437). Landed empty, it was owed, and the re-offer told the caller the
 # lookup "didn't return any information" -- of a request they had just called off.
-EMPTY_CANCEL_GRACE_S = 2.0
+# Read by timing, session-wide: every consult the relay runs in a Talk session shares the
+# session's one run lane, and a cancel aborts that lane, so the brain cannot tell which
+# runs a cancel took and does not try. Only relayed consults wait (the direct lane runs a
+# fresh OpenClaw session per consult, openclaw_client.agent_consult, which a spoken cancel
+# never reaches). The race seen was ~0.1 s; the grace is the dead air a genuine empty on
+# the relay costs before it is told.
+EMPTY_CANCEL_GRACE_S = 1.0
 
 # The lull before the one re-offer (§4 (a), the user's choice 2026-10-16): the line has
 # been quiet this long, with the caller's turn answered. setting(): brain.env.
@@ -1035,6 +1041,10 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
+        # key -> request: consults whose run has ended, empty, waiting out the grace for a
+        # cancel beside them (settle_empty). Not landed, but no longer what a new dispatch
+        # of the same words folds into.
+        self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
         self._landing: dict = {}
@@ -1244,6 +1254,7 @@ class Owed:
         another consult's empty to be read beside."""
         if self._running.get(request) == key:
             del self._running[request]
+        self._settling.pop(key, None)
         if failure == "cancelled":
             self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
@@ -1290,13 +1301,27 @@ class Owed:
             self._cancel_seen = asyncio.Event()
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
-        logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
+        why = "cancelled by OpenClaw" if by_openclaw else "read as an OpenClaw cancel's sibling"
+        logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
     @property
     def closed(self) -> bool:
         """The session is over (close_session)."""
         return self._closed
+
+    async def settle_empty(self, request, key, since: float,
+                           grace: Optional[float] = None) -> bool:
+        """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
+        of a run OpenClaw just cancelled (cancelled_since)? While it waits, the consult
+        is no longer running for dispatch, so the caller asking the same thing again
+        right after "cancel that" starts a new consult, not a duplicate the sibling's
+        cancel would close too; it is still closed with the session (close_session)."""
+        if self._running.get(request) == key:
+            del self._running[request]
+        self._settling[key] = request
+        return await self.cancelled_since(since, EMPTY_CANCEL_GRACE_S if grace is None
+                                          else grace)
 
     async def cancelled_since(self, since: float,
                               grace: float = EMPTY_CANCEL_GRACE_S) -> bool:
@@ -2024,7 +2049,8 @@ class Owed:
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
         self._cancel_seen.set()  # a cancelled_since waiting sees the close now
-        for request, key in list(self._running.items()):
+        for request, key in [*self._running.items(),
+                             *((r, k) for k, r in self._settling.items())]:
             self.land(request, None, key, failure="unknown")
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():

@@ -1019,7 +1019,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             progress.cancel()
         sibling = False
         if relayed and outcome.failure == "empty":
-            sibling = await owed.cancelled_since(started)
+            sibling = await owed.settle_empty(request, tool_call_id, started)
             if owed.closed:
                 # The session ended during the grace: close_session already landed this
                 # consult ("unknown"), and the room's sleep may have saved the book.
@@ -1036,7 +1036,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                                         "empty beside an OpenClaw cancel in this session")
         answered = bool(outcome.text)
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
-                  detail=outcome.detail, by_openclaw=not sibling)
+                  detail=outcome.detail, **({"by_openclaw": False} if sibling else {}))
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
