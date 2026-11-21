@@ -965,7 +965,7 @@ def _ran_on(run) -> None:
 
 
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
-                            message=None, tts=None, status_phrase=None):
+                            message=None, tts=None, status_phrase=None, started=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
     caller's question, `message` the whole call for the CLI lane (_consult_message; the
     question when not given), `status_phrase` the model's CONSULT_STATUS, which the
@@ -980,7 +980,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     straight to the agent."""
     from teaport_brain import consult_bridge
 
-    started = time.monotonic()  # for owed.settle_empty: a cancel after this is ours too
+    # For owed.settle_empty: a cancel after this is ours too. From when the relay call was
+    # sent (`started`, _openclaw_agent_consult), not when this task first runs.
+    if started is None:
+        started = time.monotonic()
     progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
                                                       gate=gate, tts=tts))
                 if llm is not None else None)
@@ -1130,9 +1133,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if asyncio.current_task().cancelling() or closed_out:
             # The session is ending (#122), or its book closed this consult while its
             # empty waited (settle_empty): nothing more goes into its pipeline, not even
-            # the "done" --
-            # the client is gone or going. The owed book closes the consult with the
-            # session (Owed.close_session), as it did one that ran on.
+            # the "done", since the client is gone or going. The owed book closes the
+            # consult with the session (Owed.close_session), as it did one that ran on.
             _count_consult(gate, -1)
         else:
             await working(True)
@@ -1237,6 +1239,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # agent is asked directly, as it is when a relay does not ack.
     over = owed is not None and getattr(params.llm, "session_over", False) is True
     fut = None
+    sent_at = time.monotonic()
     if relay and not over:
         fut = consult_bridge.create(call_id)
         # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by
@@ -1267,7 +1270,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         _log_status_phrase(status_phrase, tts)
         consult = params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
-            message=_consult_message(args), tts=tts, status_phrase=status_phrase))
+            message=_consult_message(args), tts=tts, status_phrase=status_phrase,
+            started=sent_at))
         # Cancelled when the session ends, not left running into its teardown (#122).
         end_with_session = getattr(params.llm, "end_with_session", None)
         if end_with_session is not None:

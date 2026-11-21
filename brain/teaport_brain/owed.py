@@ -1073,6 +1073,9 @@ class Owed:
         # Keys of consults that went to the direct lane (went_direct): a spoken cancel
         # never reaches their OpenClaw session, so they cannot leave an empty a sibling.
         self._direct: set = set()
+        # key -> request: consults whose waiter ended without landing them (abandon),
+        # for close_session to close.
+        self._abandoned: dict = {}
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1268,6 +1271,7 @@ class Owed:
             del self._running[request]
         self._settling.pop(key, None)
         self._direct.discard(key)
+        self._abandoned.pop(key, None)
         if failure == "cancelled":
             self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
@@ -1325,9 +1329,12 @@ class Owed:
 
     def abandon(self, request, key) -> None:
         """The waiter for `key` ended without landing it (its delivery itself failed):
-        nothing of it runs in the lane, so it holds no sibling's grace (settle_empty).
-        It stays for close_session to close, as it did."""
-        self._direct.add(key)
+        it is no longer running, so the same words asked again run again rather than
+        fold into it (dispatch), and it holds no sibling's grace (settle_empty).
+        close_session still closes it, as it did."""
+        if self._running.get(request) == key:
+            del self._running[request]
+            self._abandoned[key] = request
 
     def went_direct(self, key) -> None:
         """The consult `key` runs on the direct lane, in an OpenClaw session of its own:
@@ -2101,13 +2108,18 @@ class Owed:
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
         self._cancel_seen.set()  # a settle_empty waiting sees the close now
-        for request, key in list(self._running.items()):
+        for request, key in [*self._running.items(),
+                             *((r, k) for k, r in self._abandoned.items())]:
             if key not in self._settling:
                 self.land(request, None, key, failure="unknown")
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
             sibling = self._cancel_in(floor, deadline)
+            if sibling:
+                # Warned as tools._consult_and_land warns it: the read is by timing.
+                logger.warning(f"OWED: {key}'s empty came beside OpenClaw cancelling a run "
+                               f"in this session -- closed with the session as cancelled")
             self.land(request, None, key, failure="cancelled" if sibling else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
                       else detail or "OpenClaw finished with no text.", by_openclaw=False)

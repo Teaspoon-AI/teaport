@@ -967,7 +967,7 @@ async def test_a_settling_or_abandoned_consult_is_no_reason_to_wait():
     landing left nothing running: neither can be taken by a cancel, so neither holds
     this empty's grace."""
     import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("c") + tool_round("x"))
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c") + tool_round("x") + tool_round("y"))
     b.dispatch("a", HN_REQ)
     b.dispatch("c", "something else")
     b.dispatch("x", "a third")
@@ -978,9 +978,11 @@ async def test_a_settling_or_abandoned_consult_is_no_reason_to_wait():
     t0 = time.monotonic()
     assert await b.settle_empty(HN_REQ, "a", t0, grace=5.0) is False
     assert time.monotonic() - t0 < 1.0
+    assert b.dispatch("y", "a third") is None, "the re-ask of an abandoned one runs"
     b.close_session()
     await waiting
-    assert "x" in {r.key for r in b.owed()}, "the abandoned one is still closed"
+    assert b.record("x") is not None and b.record("y") is not None, \
+        "the abandoned one and its re-ask are both closed"
 
 
 async def test_a_lone_empty_is_told_without_the_grace():
