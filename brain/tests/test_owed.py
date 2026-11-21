@@ -834,10 +834,10 @@ async def test_only_a_cancel_openclaw_reported_counts_for_cancelled_since():
 
 
 async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_session():
-    """While an empty waits out the grace (settle_empty), a duplicate dispatch still folds
-    into it (gpt-oss asking twice) until a cancel beside it is seen; after that the caller
-    asking the same thing again starts a new consult -- not a duplicate the sibling's
-    cancel would close too. The session's end closes a settling one as what it is."""
+    """While an empty waits out the grace (settle_empty) its run is over: the same words
+    asked again start a new consult, as they did when an empty landed at once -- not a
+    duplicate the sibling's cancel would close too. The session's end closes a settling
+    one as what it is."""
     import time
     b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c")
                    + tool_round("d"))
@@ -846,13 +846,12 @@ async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_sessio
     began = time.monotonic()
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
     await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) == "a", "no cancel seen: a duplicate still folds"
+    assert b.dispatch("b", HN_REQ) is None, "a finished run is no fold target"
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
-    assert b.dispatch("d", HN_REQ) is None, "after the cancel: the re-ask is its own"
     assert await waiting is True
     b.close_session()
     owed = {r.key: r.failure for r in b.owed()}
-    assert "a" not in owed and owed.get("d") == "unknown", owed
+    assert "a" not in owed and owed.get("b") == "unknown", owed
 
     b, _, _ = book(msgs=tool_round("a"))
     b.dispatch("a", HN_REQ)
@@ -880,6 +879,27 @@ async def test_a_settling_sibling_of_a_cancel_closes_as_cancelled():
     assert await waiting is True
     b2.close_session()
     assert "a" not in {r.key for r in b2.owed()}
+
+
+async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
+    """The wait times out, and a cancel inside the window lands before the waiter runs:
+    it is read the same as close_session and dispatch would read it."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    began = time.monotonic()
+    real = asyncio.wait_for
+
+    async def late(aw, timeout):
+        aw.close()  # the Event.wait() coroutine, never awaited
+        b._cancelled_at = time.monotonic()  # inside the window, with no wake-up
+        raise asyncio.TimeoutError
+
+    asyncio.wait_for = late
+    try:
+        assert await b.cancelled_since(began, grace=0.5) is True
+    finally:
+        asyncio.wait_for = real
 
 
 async def test_close_session_wakes_a_cancelled_since_waiting():

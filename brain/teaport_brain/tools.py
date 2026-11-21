@@ -1031,8 +1031,11 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             # OpenClaw cancelled a run in this session within the grace of this empty,
             # since this consult began: this empty is that cancel's sibling (#450), not a
             # request that came back with nothing. Landed as cancelled, nothing is owed.
-            logger.info("openclaw_agent_consult(async): an empty result beside OpenClaw "
-                        "cancelling a run in this session -- landed as cancelled")
+            # A warning: the read is by timing alone, and if it ever closes a genuine
+            # empty, this line is how that is traced.
+            logger.warning(f"openclaw_agent_consult(async): {tool_call_id}'s empty result "
+                           f"came beside OpenClaw cancelling a run in this session -- "
+                           f"landed as cancelled, nothing owed")
             outcome = oc.ConsultOutcome(None, "cancelled",
                                         "empty beside an OpenClaw cancel in this session")
         answered = bool(outcome.text)

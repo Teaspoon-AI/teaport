@@ -1041,9 +1041,9 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
-        # key -> (request, floor): consults whose run has ended, empty, waiting out the
-        # grace for a cancel beside them (settle_empty; `floor` the earliest cancel that
-        # counts). Still running for dispatch until such a cancel is seen (dispatch).
+        # key -> (request, floor, deadline): consults whose run has ended, empty, waiting
+        # out the grace for a cancel beside them (settle_empty; a cancel counts in
+        # [floor, deadline]). Their run is over: no dispatch folds into one (dispatch).
         self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
@@ -1225,10 +1225,11 @@ class Owed:
         (close_session). Otherwise the key of the consult already running for this exact
         request: gpt-oss sometimes asks the same thing twice a few seconds apart, and that
         one's outcome answers both (land() rewrites this placeholder to point at it).
-        Not one settling beside a cancel already seen (settle_empty): it is about to land
-        cancelled, and the caller asking again after "cancel that" wants a new consult."""
+        Not one settling (settle_empty): its run has ended, empty, so there is nothing to
+        share -- the same words asked again run again, as they did when an empty landed
+        at once, and a sibling's cancel does not close the re-ask with it."""
         running = self._running.get(request)
-        if running in self._settling and self._cancel_after(self._settling[running][1]):
+        if running in self._settling:
             del self._running[request]
             running = None
         self._answers[key] = _Answer(request, record=running or key)
@@ -1318,20 +1319,18 @@ class Owed:
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None) -> bool:
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
-        of a run OpenClaw just cancelled (cancelled_since)? While it waits it still
-        folds a duplicate dispatch, until a cancel beside it is seen: from then the
-        caller asking the same thing again starts a new consult (dispatch), not a
-        duplicate the sibling's cancel would close too. The session's end closes it with
-        the outcome it has by then (close_session). On a closed book it waits for
-        nothing: False."""
+        of a run OpenClaw just cancelled (cancelled_since)? While it waits no dispatch
+        folds into it (dispatch). The session's end closes it with the outcome it has by
+        then (close_session). On a closed book it waits for nothing: False."""
         if self._closed:
             return False
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
-        self._settling[key] = (request, max(since, time.monotonic() - grace))
+        now = time.monotonic()
+        self._settling[key] = (request, max(since, now - grace), now + grace)
         return await self.cancelled_since(since, grace)
 
-    def _cancel_after(self, floor: float) -> bool:
-        return self._cancelled_at is not None and self._cancelled_at >= floor
+    def _cancel_in(self, floor: float, deadline: float) -> bool:
+        return self._cancelled_at is not None and floor <= self._cancelled_at <= deadline
 
     async def cancelled_since(self, since: float,
                               grace: Optional[float] = None) -> bool:
@@ -1353,7 +1352,7 @@ class Owed:
         now = time.monotonic()
         floor, deadline = max(since, now - grace), now + grace
         while True:
-            if self._cancel_after(floor):
+            if self._cancel_in(floor, deadline):
                 return True
             left = deadline - time.monotonic()
             if left <= 0 or self._closed:
@@ -1361,7 +1360,7 @@ class Owed:
             try:
                 await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)
             except asyncio.TimeoutError:
-                return False
+                return self._cancel_in(floor, deadline)
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
@@ -2070,8 +2069,8 @@ class Owed:
                 self.land(request, None, key, failure="unknown")
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
-        for key, (request, floor) in list(self._settling.items()):
-            sibling = self._cancel_after(floor)
+        for key, (request, floor, deadline) in list(self._settling.items()):
+            sibling = self._cancel_in(floor, deadline)
             self.land(request, None, key, failure="cancelled" if sibling else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
                       else "OpenClaw finished with no text.", by_openclaw=False)
