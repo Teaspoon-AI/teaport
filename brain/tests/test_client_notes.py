@@ -326,6 +326,18 @@ async def test_an_update_the_brain_got_itself_is_said_as_the_hosts():
     assert _results(h) == [], "nobody asked: nothing to answer"
 
 
+async def test_the_run_controls_cancel_status_is_noted_as_a_cancel():
+    """The relay's status for a spoken cancel tells the owed book (Owed.note_cancel):
+    the only word of a cancel whose consult returned its empty final first."""
+    noted = []
+    h = _harness(on_cancel=lambda: noted.append(True))
+    await _send_host(h)
+    assert noted == [True], noted
+    h.notes.add_host_update("Got it. I steered the active run.")
+    h.notes.add_host_update("OpenClaw could not cancel the active run.")
+    assert noted == [True], "only a cancel that aborted the run"
+
+
 async def test_a_host_note_is_not_held_to_a_clients_limits():
     """The relay's control queue bounds what it sends; a respond interval or a burst
     allowance spent by the client must not refuse the host's reply."""

@@ -1064,15 +1064,12 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
-        # When OpenClaw cancelled consults in this session lately (time.monotonic(), the
-        # last CANCEL_TIMES_KEPT: a burst of them -- the relay cancelling every open
-        # consult -- does not hide one inside a settling empty's window behind a later
-        # one), and the event that wakes a settle_empty waiting on one (_cancelled).
+        # When OpenClaw cancelled runs in this session lately (time.monotonic(), the last
+        # CANCEL_TIMES_KEPT: a burst of them -- the relay cancelling every open consult --
+        # does not hide one inside a settling empty's window behind a later one), and the
+        # event that wakes a settle_empty waiting on one (note_cancel).
         self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
-        # Keys of consults that went to the direct lane (went_direct): a spoken cancel
-        # never reaches their OpenClaw session, so they cannot leave an empty a sibling.
-        self._direct: set = set()
         # key -> request: consults whose waiter ended without landing them (abandon),
         # for close_session to close.
         self._abandoned: dict = {}
@@ -1270,7 +1267,6 @@ class Owed:
         if self._running.get(request) == key:
             del self._running[request]
         self._settling.pop(key, None)
-        self._direct.discard(key)
         self._abandoned.pop(key, None)
         if failure == "cancelled":
             self._cancelled(key, detail, by_openclaw=by_openclaw)
@@ -1321,25 +1317,24 @@ class Owed:
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
     def note_cancel(self) -> None:
-        """OpenClaw cancelled a run in this session's lane (_cancelled): noted for
-        settle_empty, and a waiting one woken."""
+        """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
+        waiting one woken. From a consult that came back cancelled (_cancelled), and from
+        the run control's own status for a cancel, the relay's host note "Cancelled the
+        active OpenClaw run." (ClientNotes `on_cancel`): the only word of a cancel whose
+        consult returned its empty final first."""
         self._cancel_times = [*self._cancel_times, time.monotonic()][-CANCEL_TIMES_KEPT:]
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
     def abandon(self, request, key) -> None:
-        """The waiter for `key` ended without landing it (its delivery itself failed):
-        it is no longer running, so the same words asked again run again rather than
-        fold into it (dispatch), and it holds no sibling's grace (settle_empty).
-        close_session still closes it, as it did."""
+        """The waiter for `key` ended without landing it (its delivery itself failed,
+        perhaps inside land(), after land took it out of _running): no longer running, so
+        the same words asked again run again rather than fold into it (dispatch), and
+        close_session still closes it, as it did a consult left running."""
         if self._running.get(request) == key:
             del self._running[request]
+        if key not in self._records:
             self._abandoned[key] = request
-
-    def went_direct(self, key) -> None:
-        """The consult `key` runs on the direct lane, in an OpenClaw session of its own:
-        no cancel in this one reaches it, nor makes another's empty its sibling."""
-        self._direct.add(key)
 
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None, *,
@@ -1350,24 +1345,23 @@ class Owed:
         no dispatch folds into it (dispatch). The session's end closes it with the
         outcome it has by then, read on the same window (close_session), and None says
         so: it is landed, and the caller lands nothing. On a book already closed it
-        waits for nothing: False, landed as it is. Nor does it wait when no other relayed
-        consult is open and no cancel came already: a cancel that could leave this one a
-        sibling ends another's run, so a lone genuine empty is told without the grace."""
+        waits for nothing: False, landed as it is.
+
+        It waits even with no other consult open: OpenClaw's relay submits a consult's
+        result when its run returns, and a run the spoken cancel aborted can return its
+        empty final before the relay's abort of the consult (runConsult, 2026.10.5), so no
+        "cancelled" ever comes for it. The cancel is known then only from the run
+        control's own word (note_cancel from ClientNotes), which can come just after."""
         if self._closed:
             return False
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
         window = (max(since, now - grace), now + grace)
         self._settling[key] = (request, *window, detail)
-        # Another run still in the lane: running, relayed, and not itself settling (its
-        # run has ended; no cancel can take it now).
-        others = any(k != key and k not in self._direct and k not in self._settling
-                     for k in self._running.values())
         # Cancelled mid-wait, the entry stays: that is the session's teardown
         # (end_with_session cancels the consult's task before close_session runs), and
         # close_session lands it from it, as empty or a cancel's sibling.
-        sibling = (await self.cancelled_since(since, grace, window=window) if others
-                   else self._cancel_in(window[0], now))
+        sibling = await self.cancelled_since(since, grace, window=window)
         return None if self._closed else sibling
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
