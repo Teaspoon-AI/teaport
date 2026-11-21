@@ -1077,6 +1077,25 @@ async def test_a_lone_empty_waits_for_the_models_cancel_held_past_the_grace():
     await t
 
 
+async def test_a_cancel_asked_while_an_empty_waits_extends_its_wait():
+    """The empty is already waiting when the model asks a cancel: the ask wakes it, and it
+    waits for the answer, whose abort at the ask is inside its window."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    t0 = time.monotonic()
+
+    async def ask_then_answer():
+        await asyncio.sleep(0.03)
+        token = b.cancel_asked(5.0)
+        await asyncio.sleep(0.2)                 # the answer comes past the grace
+        b.cancel_answered(token, True)
+
+    t = asyncio.create_task(ask_then_answer())
+    assert await b.settle_empty(HN_REQ, "a", t0, grace=0.1) is True
+    await t
+
+
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
     """One consult open, and "cancel that": its aborted run can return its empty final
     before any "cancelled" (OpenClaw runConsult), so none comes. The run control's

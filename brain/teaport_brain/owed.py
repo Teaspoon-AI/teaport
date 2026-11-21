@@ -1361,6 +1361,9 @@ class Owed:
         now = time.monotonic()
         self._cancels_asked = {t: v for t, v in self._cancels_asked.items() if v[1] > now}
         self._cancels_asked[token] = (now, now + wait)
+        # A settling empty already waiting sees the ask now, and waits for its answer.
+        self._cancel_seen.set()
+        self._cancel_seen = asyncio.Event()
         return token
 
     def cancel_answered(self, token, aborted: bool) -> None:
@@ -1467,7 +1470,7 @@ class Owed:
             try:
                 await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)
             except asyncio.TimeoutError:
-                return self._cancel_in(floor, deadline)
+                continue  # read again: a cancel, or an ask made meanwhile, is counted
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""

@@ -367,6 +367,15 @@ async def test_a_control_that_cancelled_tells_the_owed_book():
         await tools._openclaw_agent_control(params, owed=owed)
         assert owed.asked == [tools.CONTROL_TIMEOUT_S], "asked as it is sent"
         assert owed.answers == [("token", aborted)], (answer["message"], owed.answers)
+    # Never sent (the client cannot be reached): OpenClaw was asked nothing.
+    class Down(_LLM):
+        async def push_frame(self, frame, direction=None):
+            raise RuntimeError("the pipeline is gone")
+
+    owed, llm = Owed(), Down()
+    params, _ = _params(llm, {"text": "cancel that", "mode": "cancel"})
+    await tools._openclaw_agent_control(params, owed=owed)
+    assert owed.asked == [], "a call never sent is no cancel asked"
     owed, llm = Owed(), _LLM(answer=lambda msg: _CANCELLED)
     params, _ = _params(llm, {"text": "how long?", "mode": "status"})
     await tools._openclaw_agent_control(params, owed=owed)

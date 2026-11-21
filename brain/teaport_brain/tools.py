@@ -1451,7 +1451,8 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
 
 
 async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
-                      timeout: float, *, after_cancel=None, extra: dict | None = None) -> tuple:
+                      timeout: float, *, after_cancel=None, extra: dict | None = None,
+                      on_sent=None) -> tuple:
     """Send a call the client runs (_send_call) and wait for its tool_result:
     (result, None), or (None, "timeout") when none came in `timeout`, or (None,
     "unreachable") when the call could not be sent. A cancel of the call itself propagates
@@ -1469,6 +1470,8 @@ async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
     try:
         await _send_call(llm, kind, call_id, name, args, extra)
         sent = True
+        if on_sent is not None:
+            on_sent()
         # Shielded: a cancel of this wait leaves the future to the task below.
         return await asyncio.wait_for(asyncio.shield(fut), timeout), None
     except asyncio.TimeoutError:
@@ -1662,14 +1665,15 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
     # before its result, which the Control UI can hold while audio plays, so a settling
     # empty waits for that result and counts an abort at this send time
     # (Owed.cancel_asked).
-    asked = (owed.cancel_asked(CONTROL_TIMEOUT_S)
-             if owed is not None and args.get("mode") in (None, "cancel") else None)
+    # Registered once the call is sent (on_sent): one never sent asked OpenClaw nothing.
+    asked = []
+    cancels = owed is not None and args.get("mode") in (None, "cancel")
 
     async def told_late(result):
         # The call was cancelled (a barge-in) and its result came after: said as the
         # host's update when it changed or reported something (module comment above).
-        if asked is not None:
-            owed.cancel_answered(asked, _control_aborted(result))
+        if asked:
+            owed.cancel_answered(asked[0], _control_aborted(result))
         out = _control_result(result, None)
         if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
             logger.info(f"openclaw_agent_control: result after its cancel -- "
@@ -1679,15 +1683,18 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=N
 
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
                                         OPENCLAW_AGENT_CONTROL.name, args, CONTROL_TIMEOUT_S,
-                                        after_cancel=told_late)
+                                        after_cancel=told_late,
+                                        on_sent=(lambda: asked.append(
+                                            owed.cancel_asked(CONTROL_TIMEOUT_S)))
+                                        if cancels else None)
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
-    if asked is not None:
+    if asked:
         # The model's cancel aborted the session's lane, or not: a consult whose run
         # returned its empty final first gets no "cancelled" of its own (settle_empty).
         # No result in time is no abort known.
-        owed.cancel_answered(asked, _control_aborted(result))
+        owed.cancel_answered(asked[0], _control_aborted(result))
     await params.result_callback(out)
 
 
