@@ -1022,7 +1022,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             sibling = await owed.settle_empty(request, tool_call_id, started)
             if owed.closed:
                 # The session ended during the grace: close_session already landed this
-                # consult ("unknown"), and the room's sleep may have saved the book.
+                # consult as what it was by then (empty, or a cancel's sibling), and the
+                # room's sleep may have saved the book.
                 logger.info("openclaw_agent_consult(async): an empty result as the session "
                             "ended -- dropped, the session closed it")
                 return

@@ -1041,10 +1041,9 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
-        # key -> (request, since, floor): consults whose run has ended, empty, waiting out
-        # the grace for a cancel beside them (settle_empty; `floor` the earliest cancel
-        # that counts). Not landed, but no longer what a new dispatch of the same words
-        # folds into.
+        # key -> (request, floor): consults whose run has ended, empty, waiting out the
+        # grace for a cancel beside them (settle_empty; `floor` the earliest cancel that
+        # counts). Still running for dispatch until such a cancel is seen (dispatch).
         self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
@@ -1225,8 +1224,13 @@ class Owed:
         placeholder is in the context until land() rewrites it or the session ends
         (close_session). Otherwise the key of the consult already running for this exact
         request: gpt-oss sometimes asks the same thing twice a few seconds apart, and that
-        one's outcome answers both (land() rewrites this placeholder to point at it)."""
+        one's outcome answers both (land() rewrites this placeholder to point at it).
+        Not one settling beside a cancel already seen (settle_empty): it is about to land
+        cancelled, and the caller asking again after "cancel that" wants a new consult."""
         running = self._running.get(request)
+        if running in self._settling and self._cancel_after(self._settling[running][1]):
+            del self._running[request]
+            running = None
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
         self._questions.setdefault(running or key, _caller_turns(msgs, len(msgs)))
@@ -1314,15 +1318,14 @@ class Owed:
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None) -> bool:
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
-        of a run OpenClaw just cancelled (cancelled_since)? While it waits, the consult
-        is no longer running for dispatch, so the caller asking the same thing again
-        right after "cancel that" starts a new consult, not a duplicate the sibling's
-        cancel would close too; it is still closed with the session (close_session),
-        with the outcome it has by then. On a closed book it waits for nothing: False."""
+        of a run OpenClaw just cancelled (cancelled_since)? While it waits it still
+        folds a duplicate dispatch, until a cancel beside it is seen: from then the
+        caller asking the same thing again starts a new consult (dispatch), not a
+        duplicate the sibling's cancel would close too. The session's end closes it with
+        the outcome it has by then (close_session). On a closed book it waits for
+        nothing: False."""
         if self._closed:
             return False
-        if self._running.get(request) == key:
-            del self._running[request]
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         self._settling[key] = (request, max(since, time.monotonic() - grace))
         return await self.cancelled_since(since, grace)
@@ -2063,7 +2066,8 @@ class Owed:
         self._closed = True
         self._cancel_seen.set()  # a cancelled_since waiting sees the close now
         for request, key in list(self._running.items()):
-            self.land(request, None, key, failure="unknown")
+            if key not in self._settling:
+                self.land(request, None, key, failure="unknown")
         # An empty still waiting out its grace lands as what it is by now: the sibling of
         # a cancel already seen, or empty -- not "didn't report back", since it did.
         for key, (request, floor) in list(self._settling.items()):

@@ -834,21 +834,34 @@ async def test_only_a_cancel_openclaw_reported_counts_for_cancelled_since():
 
 
 async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_session():
-    """While an empty waits out the grace (settle_empty), the caller asking the same thing
-    again starts a new consult -- not a duplicate the sibling's cancel would close too --
-    and the session's end still closes the settling one."""
+    """While an empty waits out the grace (settle_empty), a duplicate dispatch still folds
+    into it (gpt-oss asking twice) until a cancel beside it is seen; after that the caller
+    asking the same thing again starts a new consult -- not a duplicate the sibling's
+    cancel would close too. The session's end closes a settling one as what it is."""
     import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c")
+                   + tool_round("d"))
     b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
     began = time.monotonic()
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
     await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) is None, "the re-ask is a consult of its own"
+    assert b.dispatch("b", HN_REQ) == "a", "no cancel seen: a duplicate still folds"
+    b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
+    assert b.dispatch("d", HN_REQ) is None, "after the cancel: the re-ask is its own"
+    assert await waiting is True
+    b.close_session()
+    owed = {r.key: r.failure for r in b.owed()}
+    assert "a" not in owed and owed.get("d") == "unknown", owed
+
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
     b.close_session()
     assert await waiting is False
-    owed = {r.key: r for r in b.owed()}
-    assert {"a", "b"} <= set(owed), list(owed)
-    assert owed["a"].failure == "empty", "it came back empty: not 'didn't report back'"
+    owed = {r.key: r.failure for r in b.owed()}
+    assert owed == {"a": "empty"}, f"it came back empty, not 'didn't report back': {owed}"
     assert await b.settle_empty(HN_REQ, "a", began) is False, "a closed book waits for nothing"
     assert not b._settling
 
@@ -857,15 +870,6 @@ async def test_a_settling_sibling_of_a_cancel_closes_as_cancelled():
     """The session ends while an empty waits, after OpenClaw's cancel beside it: the close
     lands it cancelled, so the room's sleep does not carry the #450 re-offer forward."""
     import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
-    began = time.monotonic()
-    b.dispatch("a", HN_REQ)
-    b.dispatch("c", "something else")
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
-    await asyncio.sleep(0)
-    b.close_session()          # lands "c" unknown; no cancel yet: "a" lands empty
-    assert await waiting is False
-
     b2, _, _ = book(msgs=tool_round("a") + tool_round("c"))
     b2.dispatch("a", HN_REQ)
     b2.dispatch("c", "something else")
