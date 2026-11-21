@@ -281,7 +281,9 @@ two itself. It records the gateway connection that created each bridge (through 
 SDK's `getPluginRuntimeGatewayRequestScope`), binds each bridge to its session the
 moment `talk.session.create` makes it, and checks every id against OpenClaw's Talk
 session registry. That registry is internal to OpenClaw, not part of its SDK; it is a
-global on 2026.9.1 and 2026.9.6, where this was checked.
+global on 2026.9.1, 2026.9.6 and 2026.10.5, where this was checked. On 2026.10.5 the SDK marks
+`getPluginRuntimeGatewayRequestScope` removal-pending (it was deprecated); it still works,
+and without it only context notes stop binding to their session.
 
 ## Transcripts in the Talk view
 
@@ -291,7 +293,7 @@ text differently from user text. It appends each assistant partial as a delta, a
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
 2026.7.2 stable release. The package declares `openclaw >=2026.9.7`. The captions
-were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
+were checked against the Talk view code of 2026.7.1, 2026.7.35, 2026.9.1 and 2026.10.5. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:
 

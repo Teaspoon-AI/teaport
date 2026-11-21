@@ -34,7 +34,7 @@ def _fn(name: str) -> str:
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
-def _run(mode, want="2026.9.7", says="OpenClaw 2026.9.7 (c074824)"):
+def _run(mode, want="2026.10.5", says="OpenClaw 2026.10.5 (1b58cb9)"):
     t = tempdir()
     for name in ("openclaw", "nemoclaw"):
         p = pathlib.Path(t, name)
@@ -51,26 +51,26 @@ def _run(mode, want="2026.9.7", says="OpenClaw 2026.9.7 (c074824)"):
 
 def test_the_tested_release_is_logged_and_named_in_the_hints():
     out = _run("openclaw")
-    assert "LOG OpenClaw 2026.9.7 (the release this one is tested with)" in out
-    assert "WARN" not in out and "SPEC=openclaw@2026.9.7" in out
+    assert "LOG OpenClaw 2026.10.5 (the release this one is tested with)" in out
+    assert "WARN" not in out and "SPEC=openclaw@2026.10.5" in out
 
 
 def test_another_release_on_the_host_is_warned_about_with_the_fix():
     out = _run("openclaw", says="OpenClaw 2026.10.9 (abc1234)")
     assert "WARN OpenClaw 2026.10.9 is installed; this release of teaport is tested " \
-           "with OpenClaw 2026.9.7" in out
-    assert "sudo npm install -g openclaw@2026.9.7" in out
+           "with OpenClaw 2026.10.5" in out
+    assert "sudo npm install -g openclaw@2026.10.5" in out
 
 
 def test_the_sandbox_is_read_through_nemoclaw_and_its_fix_is_nemoclaws():
     out = _run("nemoclaw", says="OpenClaw 2026.10.7 (fed0001)")
     assert "WARN OpenClaw 2026.10.7 is installed" in out
-    assert "NemoClaw release that ships OpenClaw 2026.9.7" in out
+    assert "NemoClaw release that ships OpenClaw 2026.10.5" in out
 
 
 def test_an_unreadable_version_warns_and_voice_only_or_no_pin_says_nothing():
     assert "could not read the OpenClaw version" in _run("openclaw", says="command not found")
-    assert "OpenClaw" not in _run("").replace("SPEC=openclaw@2026.9.7", "")
+    assert "OpenClaw" not in _run("").replace("SPEC=openclaw@2026.10.5", "")
     out = _run("openclaw", want="", says="OpenClaw 2026.10.9 (abc1234)")
     assert "WARN" not in out and "LOG" not in out and "SPEC=openclaw\n" in out
 
@@ -84,7 +84,7 @@ def test_the_real_manifest_names_it_and_the_guide_installs_the_same():
         p = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _fn("mget")
                             + 'MF="$M"; mget openclaw.version'], capture_output=True, text=True,
                            env={**os.environ, "M": str(root / "manifest" / manifest)})
-        assert p.returncode == 0 and p.stdout.strip() == "2026.9.7", (manifest, p.stderr)
+        assert p.returncode == 0 and p.stdout.strip() == "2026.10.5", (manifest, p.stderr)
     pin = json.loads((root / "manifest" / "stable.json").read_text())["openclaw"]
     guide = (root / "docs/src/content/docs/getting-started/installation.md").read_text()
     assert f"setup_{pin['node']}.x" in guide
