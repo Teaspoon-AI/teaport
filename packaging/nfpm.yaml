@@ -132,6 +132,25 @@ contents:
       owner: root
       group: root
 
+  # The user docs (the website's pages, as Markdown), and the script that puts them in a host
+  # OpenClaw's memory wiki, one page per section (see docs-wiki-sync): install.sh runs it
+  # after enabling the wiki, and postinst re-runs it on every upgrade so the agent has the
+  # docs of the version installed. /usr/share/teaport, not /usr/share/doc: minimal images
+  # path-exclude /usr/share/doc.
+  - src: docs/src/content/docs/
+    dst: /usr/share/teaport/docs/
+    type: tree
+    file_info:
+      owner: root
+      group: root
+
+  - src: packaging/deb/docs-wiki-sync
+    dst: /usr/lib/teaport/docs-wiki-sync
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
   # teaport update's apply step (#60's updater): the root unit `teaport update` starts, and
   # the script it runs with the SYSTEM python, outside the venv it replaces.
   - src: packaging/deb/update_apply.py
