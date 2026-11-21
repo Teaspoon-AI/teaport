@@ -1409,7 +1409,11 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
     retires the call). Otherwise the run went on without a waiter, and OpenClaw's spoken run
     control still acted on it -- a "cancel that" the brain no longer asked the plugin about
     (no consult running, run_control.py) was answered by the model and acted on by the
-    relay. Best effort: a torn-down pipeline cannot send it."""
+    relay. Best effort: a torn-down pipeline cannot send it.
+
+    It aborts that run only, by its id (OpenClaw 2026.10.5
+    cancelTalkRealtimeRelayProviderToolCall -> abortChatRunById), not the session's lane:
+    no sibling comes back empty from it, so it is no cancel for Owed.settle_empty."""
     if llm is None:
         return
     try:

@@ -1319,15 +1319,24 @@ class Owed:
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None) -> bool:
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
-        of a run OpenClaw just cancelled (cancelled_since)? While it waits no dispatch
-        folds into it (dispatch). The session's end closes it with the outcome it has by
-        then (close_session). On a closed book it waits for nothing: False."""
+        of a run OpenClaw just cancelled (cancelled_since; tools._consult_and_land's entry
+        point, which registers the wait for dispatch and close_session)? While it waits
+        no dispatch folds into it (dispatch). The session's end closes it with the
+        outcome it has by then, read on the same window (close_session). On a closed book
+        it waits for nothing: False. Nor when no other consult is open and no cancel came
+        already: a cancel that could leave this one a sibling ends another's run, so
+        there is none to wait for, and a lone genuine empty is told without the grace."""
         if self._closed:
             return False
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
-        self._settling[key] = (request, max(since, now - grace), now + grace)
-        return await self.cancelled_since(since, grace)
+        floor, deadline = max(since, now - grace), now + grace
+        self._settling[key] = (request, floor, deadline)
+        others = any(k != key for k in self._running.values()) or \
+            any(k != key for k in self._settling)
+        if not others:
+            return self._cancel_in(floor, now)
+        return await self._wait_cancel(floor, deadline)
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
         return self._cancelled_at is not None and floor <= self._cancelled_at <= deadline
@@ -1336,8 +1345,8 @@ class Owed:
                               grace: Optional[float] = None) -> bool:
         """Did OpenClaw cancel a consult in this session within `grace` seconds of now,
         before or after, and not before `since` (a time.monotonic() reading: when the
-        asking consult started)? tools._consult_and_land asks it of an EMPTY outcome on a
-        relayed consult before landing it: such an empty is a sibling of the run the
+        asking consult started)? Asked of an EMPTY outcome on a relayed consult before it
+        lands, through settle_empty: such an empty is a sibling of the run the
         caller called off (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing,
         told nothing. A cancel further off is another request's, and a genuine empty
         stays empty. Only cancels OpenClaw reported count (_cancelled `by_openclaw`).
@@ -1350,7 +1359,10 @@ class Owed:
         a sibling empty either way."""
         grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
         now = time.monotonic()
-        floor, deadline = max(since, now - grace), now + grace
+        return await self._wait_cancel(max(since, now - grace), now + grace)
+
+    async def _wait_cancel(self, floor: float, deadline: float) -> bool:
+        """A cancel in [floor, deadline], waited for until the deadline or the close."""
         while True:
             if self._cancel_in(floor, deadline):
                 return True

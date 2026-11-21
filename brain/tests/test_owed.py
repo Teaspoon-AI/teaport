@@ -881,6 +881,17 @@ async def test_a_settling_sibling_of_a_cancel_closes_as_cancelled():
     assert "a" not in {r.key for r in b2.owed()}
 
 
+async def test_a_lone_empty_is_told_without_the_grace():
+    """No other consult open and no cancel already: nothing can make this empty a
+    sibling, so it does not wait out the grace in silence."""
+    import time
+    b, _, _ = book(msgs=tool_round("a"))
+    b.dispatch("a", HN_REQ)
+    t0 = time.monotonic()
+    assert await b.settle_empty(HN_REQ, "a", t0, grace=5.0) is False
+    assert time.monotonic() - t0 < 1.0
+
+
 async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
     """The wait times out, and a cancel inside the window lands before the waiter runs:
     it is read the same as close_session and dispatch would read it."""
