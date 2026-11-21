@@ -962,6 +962,27 @@ async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is()
     assert owed == {"a": "empty", "c": "unknown"}, owed
 
 
+async def test_a_settling_or_abandoned_consult_is_no_reason_to_wait():
+    """Another empty still settling has ended its run, and a waiter that failed without
+    landing left nothing running: neither can be taken by a cancel, so neither holds
+    this empty's grace."""
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("c") + tool_round("x"))
+    b.dispatch("a", HN_REQ)
+    b.dispatch("c", "something else")
+    b.dispatch("x", "a third")
+    b.abandon("a third", "x")
+    waiting = asyncio.create_task(b.settle_empty("something else", "c", time.monotonic(),
+                                                 grace=5.0))
+    await asyncio.sleep(0)
+    t0 = time.monotonic()
+    assert await b.settle_empty(HN_REQ, "a", t0, grace=5.0) is False
+    assert time.monotonic() - t0 < 1.0
+    b.close_session()
+    await waiting
+    assert "x" in {r.key for r in b.owed()}, "the abandoned one is still closed"
+
+
 async def test_a_lone_empty_is_told_without_the_grace():
     """No other consult open and no cancel already: nothing can make this empty a
     sibling, so it does not wait out the grace in silence."""

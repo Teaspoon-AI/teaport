@@ -1323,6 +1323,12 @@ class Owed:
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
+    def abandon(self, request, key) -> None:
+        """The waiter for `key` ended without landing it (its delivery itself failed):
+        nothing of it runs in the lane, so it holds no sibling's grace (settle_empty).
+        It stays for close_session to close, as it did."""
+        self._direct.add(key)
+
     def went_direct(self, key) -> None:
         """The consult `key` runs on the direct lane, in an OpenClaw session of its own:
         no cancel in this one reaches it, nor makes another's empty its sibling."""
@@ -1346,8 +1352,10 @@ class Owed:
         now = time.monotonic()
         window = (max(since, now - grace), now + grace)
         self._settling[key] = (request, *window, detail)
-        others = any(k != key and k not in self._direct for k in self._running.values()) \
-            or any(k != key for k in self._settling)
+        # Another run still in the lane: running, relayed, and not itself settling (its
+        # run has ended; no cancel can take it now).
+        others = any(k != key and k not in self._direct and k not in self._settling
+                     for k in self._running.values())
         # Cancelled mid-wait, the entry stays: that is the session's teardown
         # (end_with_session cancels the consult's task before close_session runs), and
         # close_session lands it from it, as empty or a cancel's sibling.

@@ -1120,7 +1120,9 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         try:
             await deliver(oc.ConsultOutcome(None, "error", repr(e)))
         except Exception:  # noqa: BLE001
-            pass
+            abandon = getattr(owed, "abandon", None)
+            if abandon is not None:
+                abandon(request, tool_call_id)
     finally:
         if progress is not None:
             progress.cancel()
