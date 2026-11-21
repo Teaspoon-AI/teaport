@@ -148,7 +148,7 @@ jobs:
           /opt/teaport/brain/bin/teaport-brain --help >/dev/null
           test -x /usr/bin/teaport && bash -n /usr/bin/teaport
           # compile(), not py_compile: that would write a __pycache__ beside the helper.
-          for p in /usr/lib/teaport/config_apply.py /usr/lib/teaport/update_apply.py /usr/lib/teaport/wifi_apply.py; do
+          for p in /usr/lib/teaport/config_apply.py /usr/lib/teaport/update_apply.py /usr/lib/teaport/wifi_apply.py /usr/lib/teaport/login_apply.py; do
             /usr/bin/python3 -I -c 'import sys; p = sys.argv[1]; compile(open(p).read(), p, "exec")' "$p"
           done
           # The update's unit, as systemd reads it (it is static: nothing enables it).

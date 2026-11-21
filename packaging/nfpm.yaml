@@ -37,12 +37,16 @@ description: |-
 # the CLI, sudo (visudo checks the config page's sudoers line before it is installed), git
 # (the update fetches the release's installer, as the one-line installer does), and polkitd
 # (the rule that lets the run user start the update).
+# libpam-modules-bin for mkhomedir_helper, which the owner's login helper (login_apply.py)
+# runs to finish an account a create left without its home directory; Ubuntu installs it
+# everywhere (priority required), the line says the package needs it.
 # No python3.12-venv: the venv is built in CI by uv, and nothing on the box
 # creates one or runs ensurepip.
 depends:
   - python3.12 (>= 3.12.3)
   - python3
   - sudo
+  - libpam-modules-bin
   - curl
   - git
   - polkitd
@@ -94,6 +98,15 @@ contents:
       owner: root
       group: root
 
+  # The owner's login helper, the same way (see login_apply.py, #421): makes the box's
+  # admin account once, on a box provisioning marked for it, and nothing else.
+  - src: brain/teaport_brain/login_apply.py
+    dst: /usr/lib/teaport/login_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
   # The Wi-Fi setup polkit rule's template: sudoers-sync rewrites a rule an earlier
   # install rendered (which granted more) from it, with no install.sh run needed.
   - src: packaging/wifi-setup/50-teaport-wifi-setup.rules.in
@@ -116,6 +129,25 @@ contents:
     dst: /usr/share/doc/teaport-brain/THIRD_PARTY_LICENSES.md
     file_info:
       mode: 0o644
+      owner: root
+      group: root
+
+  # The user docs (the website's pages, as Markdown), and the script that puts them in a host
+  # OpenClaw's memory wiki, one page per section (see docs-wiki-sync): install.sh runs it
+  # after enabling the wiki, and postinst re-runs it on every upgrade so the agent has the
+  # docs of the version installed. /usr/share/teaport, not /usr/share/doc: minimal images
+  # path-exclude /usr/share/doc.
+  - src: docs/src/content/docs/
+    dst: /usr/share/teaport/docs/
+    type: tree
+    file_info:
+      owner: root
+      group: root
+
+  - src: packaging/deb/docs-wiki-sync
+    dst: /usr/lib/teaport/docs-wiki-sync
+    file_info:
+      mode: 0o755
       owner: root
       group: root
 

@@ -1,0 +1,320 @@
+#!/usr/bin/python3 -I
+"""docs-wiki-sync [--if-present] [--docs DIR] -- the teaport docs as pages of OpenClaw's memory wiki.
+
+The brain package ships the user docs (the website's Markdown pages) at /usr/share/teaport/docs.
+This writes them into the run user's memory-wiki vault, one source page per "## " section,
+and compiles the vault, so the agent finds them with wiki_search (or memory_search
+corpus=wiki) and the teaport plugin's prompt hint points it there (plugin/docs-hint.js).
+
+Why the wiki and not memory.search.extraPaths: a plain memory_search searches only memory,
+never the wiki, so the docs cannot crowd the owner's own memories out of recall -- with the
+docs in extraPaths, keyword search lost 3 of 12 personal lookups to them. Why one page per
+section and not `openclaw wiki ingest`: ingest makes one page per file inside a text fence,
+and wiki search ranks whole pages, so a long page's one relevant section lost to whole other
+pages; it also takes ~10 s per file and leaves a renamed page behind.
+
+Our pages are sources/teaport-docs-*.md carrying sourceType "teaport-docs": each run writes
+the current set, rewrites only what changed, and removes ours that the docs no longer have.
+Nothing else in the vault is touched. updatedAt (the docs file's mtime, which every build
+of the package resets) is not a change on its own. After a compile succeeds, a digest of the
+set goes into .teaport-docs-compiled at the vault's root; a run that finds it missing or
+different compiles, so a compile that failed (or never ran) is retried even when the pages
+on disk already match.
+
+After a run that leaves the docs compiled in the vault, the teaport plugin's
+config.docsInWiki is set (when it is not already), so its docs hint goes out: a compile that
+failed at install and succeeds on a later upgrade brings the hint back without a reinstall.
+install.sh clears it where the docs could not be added.
+
+Which openclaw: $OPENCLAW, else the one install.sh recorded in ~/.config/teaport/openclaw-cli
+(postinst runs this with a plain PATH, and an OpenClaw under nvm or ~/.npm-global is not on
+it), else PATH and the usual places.
+
+Run as the OpenClaw user, with the system python:
+  * by install.sh (agent_openclaw), after it enables memory-wiki and inits the vault;
+  * by the package's postinst on every install or upgrade, with --if-present: it refreshes
+    pages an install already put there, and otherwise does nothing (no OpenClaw, the wiki
+    off, no teaport pages yet). It never enables anything.
+Exit 0 when done or when there is nothing to do; 1 on a failure, said on stderr.
+"""
+import datetime
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+
+DOCS = pathlib.Path("/usr/share/teaport/docs")
+SITE = "https://docs.teaspoon.tech"
+PREFIX = "teaport-docs-"
+SOURCE_TYPE = "teaport-docs"
+TITLE_PREFIX = "teaport docs: "
+# The CLI is a Node program that loads its plugins at start; a compile of the docs took ~12 s
+# on an Orin.
+CLI_TIMEOUT = 180
+# What install.sh recorded of the openclaw it used (write_openclaw_cli_record): the run user's
+# own file, read by the run user's own process.
+CLI_RECORD = pathlib.Path.home() / ".config/teaport/openclaw-cli"
+CLI_RECORD_ENV = ("OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH")
+COMPILED = ".teaport-docs-compiled"
+
+
+def say(msg):
+    print(f"docs-wiki-sync: {msg}", file=sys.stderr)
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:60].strip("-")
+
+
+def frontmatter(text):
+    """(fields, body) of a Markdown page with an optional --- block (simple key: value lines)."""
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return {}, text
+    fields = {k: v.strip().strip("'\"") for k, v in re.findall(r"^(\w+):[ \t]*(.*)$", m.group(1), re.M)}
+    return fields, text[m.end():]
+
+
+def site_links(body, url):
+    """Site-relative links (/guides/x/, #anchor) as links to the docs site: in the vault they
+    are not pages, and the reader of a section wants the page it points at."""
+    body = re.sub(r"\]\((/[^)\s]*)\)", lambda m: f"]({SITE}{m.group(1)})", body)
+    return re.sub(r"\]\((#[^)\s]*)\)", lambda m: f"]({url}{m.group(1)})", body)
+
+
+def outside_fences(body):
+    """The body with fenced code blocks blanked, line for line, so a "## " inside a code
+    sample is not taken for a heading."""
+    out, fence = [], None
+    for line in body.split("\n"):
+        m = re.match(r"^\s*(```|~~~)", line)
+        if fence is None and m:
+            fence = m.group(1)
+            out.append("")
+        elif fence is not None:
+            if line.strip().startswith(fence):
+                fence = None
+            out.append("")
+        else:
+            out.append(line)
+    return out
+
+
+def sections(body):
+    """[(heading, text)] -- "Overview" for what precedes the first "## ", then each section."""
+    lines, plain = body.split("\n"), outside_fences(body)
+    out, heading, start = [], "Overview", 0
+    for i, line in enumerate(plain):
+        m = re.match(r"^## +(.+?)\s*$", line)
+        if m:
+            out.append((heading, "\n".join(lines[start:i])))
+            heading, start = m.group(1), i + 1
+    out.append((heading, "\n".join(lines[start:])))
+    return [(h, t.strip()) for h, t in out if t.strip()]
+
+
+def pages(docs):
+    """{filename: content} -- the wiki pages for every .md page under docs."""
+    out = {}
+    for md in sorted(docs.rglob("*.md")):
+        if md.is_symlink() or not md.is_file():
+            continue
+        fields, body = frontmatter(md.read_text(encoding="utf-8"))
+        rel = md.relative_to(docs).with_suffix("")
+        title = fields.get("title") or md.stem
+        url = f"{SITE}/{rel.as_posix()}/"
+        updated = datetime.datetime.fromtimestamp(md.stat().st_mtime, datetime.timezone.utc)
+        for heading, text in sections(site_links(body, url)):
+            base = f"{PREFIX}{slug(rel.as_posix())}-{slug(heading)}"
+            name, n = f"{base}.md", 2
+            while name in out:                      # the same heading twice on one page
+                name, n = f"{base}-{n}.md", n + 1
+            page_title = f"{TITLE_PREFIX}{title} — {heading}"
+            meta = {"pageType": "source", "id": f"source.{name[:-3]}", "title": page_title,
+                    "sourceType": SOURCE_TYPE, "sourcePath": f"{rel.as_posix()}.md", "sourceUrl": url,
+                    "status": "active", "updatedAt": updated.isoformat(timespec="seconds").replace("+00:00", "Z")}
+            out[name] = ("---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in meta.items())
+                         + f"---\n\n# {page_title}\n\nFrom the teaport docs: {url}\n\n{text}\n")
+    return out
+
+
+def ours(path):
+    """A page this script wrote: our name and our sourceType (a page someone ingested under a
+    teaport-docs- title is theirs)."""
+    if not (path.name.startswith(PREFIX) and path.suffix == ".md") or path.is_symlink():
+        return False
+    try:
+        head = path.read_text(encoding="utf-8")[:2000]
+    except OSError:
+        return False
+    return frontmatter(head)[0].get("sourceType") == SOURCE_TYPE
+
+
+UPDATED_AT = re.compile(r"^updatedAt: .*\n", re.M)
+
+
+MANAGED = re.compile(r"\n*(?:## [^\n]*\n)?<!-- openclaw:wiki:([a-z-]+):start -->.*?<!-- openclaw:wiki:\1:end -->\n?", re.S)
+
+
+def unmanaged(text):
+    """A page without the blocks `wiki compile` maintains in it (## Related, ...) and without
+    updatedAt: what we wrote, less the date. A page differs from ours only when this does."""
+    return UPDATED_AT.sub("", MANAGED.sub("", text), count=1).rstrip("\n") + "\n"
+
+
+def digest(want):
+    """The set of pages as compiled: names and content, less updatedAt."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in sorted(want):
+        h.update(name.encode() + b"\0" + unmanaged(want[name]).encode() + b"\0")
+    return h.hexdigest()
+
+
+def sync(sources, want):
+    """Write want into sources (only what differs), remove our pages not in it. Returns the
+    number of files changed."""
+    changed = 0
+    for name, content in want.items():
+        path = sources / name
+        if path.is_symlink() or (path.exists() and not ours(path)):
+            say(f"left {path} alone: it is not one of ours")
+            continue
+        if path.exists() and unmanaged(path.read_text(encoding="utf-8")) == unmanaged(content):
+            continue
+        tmp = path.with_name(f".{name}.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+        changed += 1
+    for path in sorted(sources.glob(f"{PREFIX}*.md")):
+        if path.name not in want and ours(path):
+            path.unlink()
+            changed += 1
+    return changed
+
+
+def cli_record():
+    """{key: value} of install.sh's record (cli=, path=, OPENCLAW_STATE_DIR=, ...), or {}."""
+    try:
+        text = CLI_RECORD.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return {}
+    return dict(ln.split("=", 1) for ln in text.splitlines() if "=" in ln)
+
+
+def openclaw():
+    """$OPENCLAW (install.sh passes the one it found), else the recorded one, else the one on
+    PATH or in the usual places. A recorded one also brings its PATH entries (node beside an
+    nvm openclaw) and OpenClaw's state and config locations, where the environment has none."""
+    if os.environ.get("OPENCLAW") and os.access(os.environ["OPENCLAW"], os.X_OK):
+        return os.environ["OPENCLAW"]
+    rec = cli_record()
+    if rec.get("cli") and os.access(rec["cli"], os.X_OK):
+        if rec.get("path"):
+            os.environ["PATH"] = rec["path"] + os.pathsep + os.environ.get("PATH", "")
+        for k in CLI_RECORD_ENV:
+            if rec.get(k) and not os.environ.get(k):
+                os.environ[k] = rec[k]
+        return rec["cli"]
+    if rec.get("cli"):
+        say(f"the openclaw install.sh used ({rec['cli']}) is gone; looking on PATH")
+    found = shutil.which("openclaw")
+    if found:
+        return found
+    for cand in ("/usr/bin/openclaw", "/usr/local/bin/openclaw"):
+        if os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def cli(oc, *args):
+    return subprocess.run([oc, *args], capture_output=True, text=True, timeout=CLI_TIMEOUT, stdin=subprocess.DEVNULL)
+
+
+def wiki_status(oc):
+    """`openclaw wiki status --json`, or None when the wiki is not there (plugin off, no CLI)."""
+    p = cli(oc, "wiki", "status", "--json")
+    if p.returncode != 0:
+        return None
+    out = p.stdout
+    try:
+        return json.loads(out[out.index("{"):])
+    except ValueError:
+        return None
+
+
+HINT_KEY = "plugins.entries.teaport-realtime.config.docsInWiki"
+
+
+def hint_on(oc):
+    """Set the teaport plugin's docsInWiki, unless it is set already (a patch rewrites the
+    config file). A failure is said; the docs are in the wiki either way."""
+    p = cli(oc, "config", "get", HINT_KEY, "--json")
+    if p.returncode == 0 and p.stdout.strip().splitlines()[-1:] == ["true"]:
+        return
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"plugins": {"entries": {"teaport-realtime": {"config": {"docsInWiki": True}}}}}, f)
+    try:
+        p = cli(oc, "config", "patch", "--file", f.name)
+    finally:
+        os.unlink(f.name)
+    if p.returncode != 0:
+        say(f"could not turn on the teaport plugin's docs hint: {(p.stderr or p.stdout).strip()[-200:]}")
+
+
+def main(argv):
+    if_present = "--if-present" in argv
+    docs = pathlib.Path(argv[argv.index("--docs") + 1]) if "--docs" in argv else DOCS
+    if not docs.is_dir():
+        say(f"no docs at {docs}")
+        return 0 if if_present else 1
+    oc = openclaw()
+    if not oc:
+        if not if_present:
+            say("no openclaw on PATH")
+        return 0 if if_present else 1
+    status = wiki_status(oc)
+    if status is None:
+        if not if_present:
+            say("the memory wiki is not available (openclaw plugins enable memory-wiki)")
+        return 0 if if_present else 1
+    if status.get("vaultScope") != "global":
+        # One vault per agent: which agents should hold the docs is the owner's choice.
+        say(f"the memory wiki has one vault per agent (vault.scope {status.get('vaultScope')!r}); the teaport docs were not added")
+        return 0 if if_present else 1
+    vault = pathlib.Path(status.get("vaultPath") or "")
+    sources = vault / "sources"
+    if not status.get("vaultExists") or not sources.is_dir():
+        if not if_present:
+            say(f"no wiki vault at {vault} (openclaw wiki init)")
+        return 0 if if_present else 1
+    if if_present and not any(ours(p) for p in sources.glob(f"{PREFIX}*.md")):
+        return 0
+    want = pages(docs)
+    changed = sync(sources, want)
+    marker, done = vault / COMPILED, digest(want)
+    try:
+        compiled = marker.read_text().strip() == done
+    except OSError:
+        compiled = False
+    if changed or not compiled:
+        p = cli(oc, "wiki", "compile")
+        if p.returncode != 0:
+            say(f"openclaw wiki compile failed: {(p.stderr or p.stdout).strip()[-400:]}")
+            return 1
+        marker.write_text(done + "\n", encoding="utf-8")
+    hint_on(oc)
+    print(f"teaport docs in the memory wiki: {len(want)} pages, {changed} changed ({sources})")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (OSError, subprocess.SubprocessError) as e:
+        say(str(e))
+        sys.exit(1)

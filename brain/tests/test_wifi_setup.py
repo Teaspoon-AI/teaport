@@ -451,14 +451,16 @@ class FakeAvahi:
 
 
 def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", avahi=None,
-               lang=None, page_lang=None):
+               lang=None, page_lang=None, login=None, pages=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one. `lang`: the language the brain handed
-    over (an i18n.T); `page_lang`: the page's, posted as its form does (?lang=)."""
+    over (an i18n.T); `page_lang`: the page's, posted as its form does (?lang=). `login`:
+    the owner's login (an owner_login.Login); `pages`: a list the pages served (the setup
+    page before each post, then its answer) are appended to."""
     status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1",
-                     lang=lang)
+                     lang=lang, login=login)
     _no_avahi(setup, avahi)
     result = {}
 
@@ -481,6 +483,8 @@ def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35", ava
             query = f"?lang={page_lang}" if page_lang else ""
             reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect{query}",
                                            body).read().decode()
+            if pages is not None:
+                pages += [page, reply]
             assert i18n.get(page_lang or "en")._("Teaport is joining") in reply
             posted += 1
     t.join(5)
@@ -986,7 +990,7 @@ def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
         with socket.create_connection(("127.0.0.1", setup.port), timeout=5) as third:
             assert third.recv(10) == b""          # full: dropped at once
         time.sleep(0.5)                           # the idle two time out and free their slots
-        assert _raw(setup.port, b"GET / HTTP/1.0\r\n\r\n").startswith("HTTP/1.0 200")
+        assert _raw(setup.port, b"GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").startswith("HTTP/1.0 200")
         for c in idle:
             c.close()
     finally:

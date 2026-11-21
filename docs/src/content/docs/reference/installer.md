@@ -71,7 +71,7 @@ The parser exits with status 2 on an unknown argument, a missing value, or `--on
 | (none) | None | Installs or repairs everything: the engine, the models, the brain, the systemd units, and, when the install includes it, the OpenClaw plugin. |
 | `--only` | `brain` | Installs the `teaport-brain` package, the one the manifest names or the file in `TEAPORT_BRAIN_DEB`, renders the units that run brain code, restarts the brain unit, and puts the previous package back on its own if the brain does not come back. No EULA prompt, no system packages beyond the package's own dependencies, no engine download, no env rewrite. |
 | `--only` | `engine` | Downloads the engine files that differ from the manifest beside the live ones and checks the models, keeps the live engine for a rollback, swaps the new files in, renders the engine unit, restarts the engine, and puts the previous engine back on its own if the engine does not come back. Adds only the keys `engine.env` lacks. No system packages, no brain build, no other unit. |
-| `--rollback` | `brain` | Installs the newest other brain package kept in `/var/cache/teaport`, with the `teaport` command and config helper that come in it, and keeps the package it replaces. |
+| `--rollback` | `brain` | Installs the newest other brain package kept in `/var/cache/teaport`, with the `teaport` command and root helpers that come in it, and keeps the package it replaces. |
 | `--rollback` | `engine` | Puts the newest kept engine back, with the unit it ran under, and keeps the engine it replaces. |
 | `--dry-run` | None | Prints every action, privileged ones included, instead of running it. |
 | `--accept-eula` | The license version | Accepts the engine license without the prompt. The version must be the one the license's title names; a bare `--accept-eula` or another version stops the installer. See [The engine's license](/reference/licenses/#the-engines-license). |
@@ -111,11 +111,22 @@ The installer honors the overrides in this table; the default applies when the v
 | `TEAPORT_WAIT_IDLE_SECS` | `0` | Before `--only brain` or `--only engine` restarts anything, wait up to this many seconds for nobody to be talking to the device, then stop with nothing changed. `teaport update` sets it. |
 | `TEAPORT_NEWER_ONLY` | `0` | `1` makes `--only brain` stop rather than install a brain package older than the installed one. `teaport update` sets it; going back is `--rollback brain`. |
 | `TEAPORT_OPENCLAW_HEAP_MIB` | `1536` | The host OpenClaw gateway's JS heap limit. |
+| `TEAPORT_MEMORY_EMBED_MODEL` | `baai/bge-m3` | The OpenRouter embedding model that the installer gives the host OpenClaw's memory search. See [OpenClaw memory search](#openclaw-memory-search). |
 | `TEAPORT_HOST` | `teaport.local`; `teaport-ab12.local` when another device already answers to that name | The front door's name, a host name of lowercase ASCII letters, digits, hyphens, and dots. Capitals are lowercased. A re-run keeps the name an earlier run chose, unless another device answers to it or it is not a host name. |
 | `TEAPORT_TLS_CERT`, `TEAPORT_TLS_KEY` | The certificate an earlier run was given, else none | Your own certificate and key for the front door, in place of the device's own. Set both empty to go back to the device's own. See [Use your own certificate](#use-your-own-certificate). |
 | `TEAPORT_REGENERATE_CA` | `0` | `1` replaces the device's own certificate authority, on every run where it is set. See [Replace the device's certificate](#replace-the-devices-certificate). |
 
 <!-- source: install.sh:94-100,2810-2860#8db56ee2; install.sh:94-100,2792-2795,2810-2864#4a45fbd7 -->
+
+## OpenClaw memory search
+
+With OpenClaw on the device, the installer gives OpenClaw's memory search an embedding model, so that the agent finds a memory from a question in other words or in another language, not only from the same words. The model is `baai/bge-m3` on OpenRouter. The installer uses the OpenRouter account that OpenClaw already has, or else the one you gave for the language model. It sets the model only when OpenClaw's memory search has no provider. A provider that you chose, including `none` for keyword search only, stays. When the installer set the model with the key that you gave for the language model, and you later replace that key, the next run of the installer gives memory search the new key and rebuilds the index with it. If you changed the key in that setting yourself, for example to an environment variable, the installer leaves it as it is.
+
+The installer then rebuilds OpenClaw's memory index. If the index cannot be built, for example because the key has no credit, the installer removes the setting again and memory search stays keyword-only. The next run of the installer tries again.
+
+While OpenRouter is unreachable, OpenClaw's memory search returns an error instead of results. The language model is unreachable at the same time when it also runs on OpenRouter.
+
+<!-- source: install.sh:2039,2059-2193#26e5ec87 -->
 
 ## The front door's certificate
 
@@ -254,9 +265,31 @@ Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its ca
 
 **`/usr/bin/teaport` and `/usr/lib/teaport/`**
 
-The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the two `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
+The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the three `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:72-145#b185d90a; packaging/deb/sudoers-sync:1-29#3cec0b6e; packaging/deb/sudoers-sync:90-93#835838b5 -->
+<!-- source: packaging/nfpm.yaml:65-179#784777fe; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:107-110#835838b5 -->
+
+`sudoers-sync` writes one rule per helper into `/etc/sudoers.d/teaport-config`. Each rule lets the user that runs the brain run that one script as root, with the system Python, and nothing else:
+
+```text
+USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/config_apply.py *
+USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/wifi_apply.py *
+USER ALL=(root) NOPASSWD:NOLOG_INPUT: /usr/bin/python3 /usr/lib/teaport/login_apply.py *
+```
+
+Where the installed `sudo` is classic `sudo`, the login helper's rule also says `NOLOG_INPUT`: what it reads is the owner's new password, which `sudo` must not keep where its input logging is on. With `sudo-rs`, which has no input logging and doesn't accept the tag, the rule is `USER ALL=(root) NOPASSWD: /usr/bin/python3 /usr/lib/teaport/login_apply.py *`. The package runs `sudoers-sync` after every install and upgrade, and the installer runs it again after it renders the brain's unit. [Security model](/reference/security/) describes what each helper accepts.
+
+<!-- source: packaging/deb/sudoers-sync:30#89c77aa8; packaging/deb/sudoers-sync:82-105#e1a1abd8 -->
+
+The package also installs the user documentation, these pages as Markdown, in `/usr/share/teaport/docs/`, and `docs-wiki-sync` in `/usr/lib/teaport/`. With OpenClaw on the device, the installer turns on OpenClaw's memory wiki and runs `docs-wiki-sync`, which writes one wiki page for each section of the documentation, so that the agent can look up how to set up or fix teaport. Each update of the package refreshes those pages, as the user that runs the brain. Your own wiki pages are not changed, and a plain memory search does not return the documentation.
+
+<!-- source: packaging/nfpm.yaml:76-177#38a15b6f; install.sh:1980-2009#be0cb5c5; packaging/deb/postinst:107#34a9a5ff -->
+
+**`/var/lib/teaport-owner/`**
+
+The owner's login marker, `pending`, in a folder only root can open. Neither the installer nor the package creates it: the step that prepares a device for shipping writes it, and `login_apply.py` removes it when it creates the owner's login. A device that you install yourself never has it. It is outside `/var/lib/teaport`, so the installer's rebuild of that folder, an update, a rollback, and removing the package all leave it alone.
+
+<!-- source: brain/teaport_brain/login_apply.py:29-32#71da1c1e; brain/teaport_brain/login_apply.py:88-90#2cb3dff3; packaging/install/root_layout.py:68-71#6fea8d62 -->
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 

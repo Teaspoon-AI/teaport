@@ -67,9 +67,9 @@ The command prints `running`, `done`, `failed`, or `interrupted`, for a run that
 
 ### Update only the brain
 
-The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helpers that the configuration page and Wi-Fi setup run as root.
+The brain is a package, `teaport-brain`, that the project builds in CI. Nothing is built on the device. The package holds the brain's Python environment (`/opt/teaport/brain`), the `teaport` command (`/usr/bin/teaport`), and the helpers that the configuration page, Wi-Fi setup, and the owner's login run as root.
 
-<!-- source: install.sh:1595-1598#cee553a8; packaging/nfpm.yaml:61-107#65f36e8c; packaging/nfpm.yaml:61-95#eb12860b -->
+<!-- source: install.sh:1595-1598#cee553a8; packaging/nfpm.yaml:65-108#c48d03ff -->
 
 From a checkout of the teaport repository, update the source and install the package the release manifest names:
 
@@ -177,7 +177,7 @@ To put the previous brain package back, run the rollback on its own:
    ./install.sh --rollback brain
    ```
 
-The run installs the newest other package kept in `/var/cache/teaport`, restarts the brain, and checks it comes back. The `teaport` command and the configuration helper come with the package, so they go back together with the brain. The package that the run replaces stays kept, so running the rollback again undoes it.
+The run installs the newest other package kept in `/var/cache/teaport`, restarts the brain, and checks it comes back. The `teaport` command and the root helpers come with the package, so they go back together with the brain. The package that the run replaces stays kept, so running the rollback again undoes it.
 
 <!-- source: install.sh:3935-3955#a43d31fd -->
 

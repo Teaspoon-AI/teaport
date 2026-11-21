@@ -12,8 +12,8 @@ step**. It requires **Node ≥ 22** (it uses the global `WebSocket`).
 
 ```bash
 # from a checkout (local dev):
-openclaw plugins install --link ./plugin
-openclaw plugins enable teaport-realtime
+openclaw plugins install --link ./plugin --accept-capabilities
+openclaw plugins enable teaport-realtime --accept-capabilities
 # or, once published:
 # openclaw plugins install @teaspoon-ai/openclaw-teaport-realtime
 ```
@@ -169,6 +169,25 @@ Two things require it:
 This was documented as `"none"` until 2026-09-08, on the reasoning that the teaport brain
 orchestrates so OpenClaw should stay quiet. That confuses `brain` with response ownership.
 
+## The teaport docs hint
+
+`install.sh` puts teaport's user documentation in OpenClaw's memory wiki, one page
+per section, titled `teaport docs: <page> — <section>` (`packaging/deb/docs-wiki-sync`).
+A plain `memory_search` never searches the wiki, which keeps the docs out of the
+owner's personal recall, so the plugin tells the agent they are there: a
+`before_prompt_build` hook appends one static paragraph to the system prompt
+(`docs-hint.js`, `appendSystemContext`, so providers can cache it). The hint is
+sent only where the docs are: `install.sh` sets this plugin's `config.docsInWiki`
+after it wrote them (and clears it when it could not), and the wiki must still be
+reachable: plugins on, `memory-wiki` enabled and not denied or left out of
+`plugins.allow`, and one shared vault (`vault.scope` not `agent`).
+
+OpenClaw runs `before_prompt_build` for a non-bundled plugin only with
+`plugins.entries.teaport-realtime.hooks.allowConversationAccess: true`, which
+`install.sh` sets. The hook reads nothing from the conversation. Installing or
+enabling the plugin without a terminal also needs `--accept-capabilities`
+(OpenClaw's capability consent; the hook is one of the declared capabilities).
+
 ## Context notes for a live session
 
 A Talk client can give the voice some context during a call without speaking: a tap
@@ -262,7 +281,9 @@ two itself. It records the gateway connection that created each bridge (through 
 SDK's `getPluginRuntimeGatewayRequestScope`), binds each bridge to its session the
 moment `talk.session.create` makes it, and checks every id against OpenClaw's Talk
 session registry. That registry is internal to OpenClaw, not part of its SDK; it is a
-global on 2026.9.1 and 2026.9.6, where this was checked.
+global on 2026.9.1, 2026.9.6 and 2026.10.5, where this was checked. On 2026.10.5 the SDK marks
+`getPluginRuntimeGatewayRequestScope` removal-pending (it was deprecated); it still works,
+and without it only context notes stop binding to their session.
 
 ## Transcripts in the Talk view
 
@@ -272,7 +293,7 @@ text differently from user text. It appends each assistant partial as a delta, a
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
 2026.7.2 stable release. The package declares `openclaw >=2026.9.7`. The captions
-were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
+were checked against the Talk view code of 2026.7.1, 2026.7.35, 2026.9.1 and 2026.10.5. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:
 
