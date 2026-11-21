@@ -1259,7 +1259,12 @@ class Owed:
             return running
         self._running[request] = key
         if superseded is not None:
-            # Its duplicates are this re-ask's now: the superseded one has no result.
+            # It and its duplicates are this re-ask's now: the superseded one has no
+            # result. Its waiter is woken: nothing is left to wait for.
+            if superseded in self._answers:
+                self._answers[superseded].record = key
+            self._cancel_seen.set()
+            self._cancel_seen = asyncio.Event()
             for dup in [d for d, of in self._duplicates.items() if of == superseded]:
                 self._duplicates[dup] = key
                 if dup in self._answers:
@@ -1381,7 +1386,7 @@ class Owed:
         # Cancelled mid-wait, the entry stays: that is the session's teardown
         # (end_with_session cancels the consult's task before close_session runs), and
         # close_session lands it from it, as empty or a cancel's sibling.
-        sibling = await self.cancelled_since(since, grace, window=window)
+        sibling = await self.cancelled_since(since, grace, window=window, key=key)
         if self._closed:
             return None
         # Superseded first: the same request runs again, and must not be told it was
@@ -1392,7 +1397,7 @@ class Owed:
         return any(floor <= t <= deadline for t in self._cancel_times)
 
     async def cancelled_since(self, since: float, grace: Optional[float] = None, *,
-                              window: Optional[tuple] = None) -> bool:
+                              window: Optional[tuple] = None, key=None) -> bool:
         """Did OpenClaw cancel a consult in this session within `grace` seconds of now,
         before or after, and not before `since` (a time.monotonic() reading: when the
         asking consult started)? `window` (floor, deadline): the one settle_empty
@@ -1417,7 +1422,7 @@ class Owed:
             if self._cancel_in(floor, deadline):
                 return True
             left = deadline - time.monotonic()
-            if left <= 0 or self._closed:
+            if left <= 0 or self._closed or key in self._superseded:
                 return False
             try:
                 await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)

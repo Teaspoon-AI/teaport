@@ -964,7 +964,19 @@ async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None
     assert b._duplicates["d"] == "b" and b._answers["d"].record == "b"
+    assert b._answers["a"].record == "b", "the superseded call's own answer follows too"
     await waiting
+
+
+async def test_a_superseded_empty_stops_waiting_at_once():
+    import time
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
+    b.dispatch("a", HN_REQ)
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
+    await asyncio.sleep(0)
+    t0 = time.monotonic()
+    b.dispatch("b", HN_REQ)
+    assert await waiting == "superseded" and time.monotonic() - t0 < 1.0
 
 
 async def test_superseded_wins_over_a_cancel_in_the_window():
