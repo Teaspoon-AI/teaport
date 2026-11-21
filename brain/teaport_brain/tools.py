@@ -986,6 +986,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                 if llm is not None else None)
 
     answered = False    # the outcome landed is an answer (not a timeout, error or nothing)
+    closed_out = False  # the book closed this consult while its empty waited (settle_empty)
 
     async def working(done: bool) -> None:
         # Tell the client an answer is still owed (and, at the end, that it no longer
@@ -1023,6 +1024,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             sibling = await settle_empty(request, tool_call_id, started,
                                          detail=outcome.detail)
             if sibling is None:
+                nonlocal closed_out
+                closed_out = True
                 # The session ended during the grace: close_session already landed this
                 # consult as what it was by then (empty, or a cancel's sibling), and the
                 # room's sleep may have saved the book.
@@ -1057,10 +1060,12 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # 500'd and the consult burned its budget retrying -- took a dig through the
         # gateway journal to find. One line here would have pointed straight at it.
         logger.info(f"openclaw_agent_consult(async): {why}; asking the agent directly")
-        # Off the session's lane only when no relay call was sent: one the relay never
-        # acked in time may still be started there late, and a cancel can take it.
+        # Off the session's lane: no relay, or one that never acked in time, which this
+        # code takes as the relay not having taken the call, as the fallback itself does
+        # (asking the agent again would run it twice otherwise; a relay starting it late
+        # is #454). No cancel in the lane reaches it, nor makes another's empty a sibling.
         went_direct = getattr(owed, "went_direct", None)
-        if went_direct is not None and fut is None:
+        if went_direct is not None:
             went_direct(tool_call_id)
         outcome = await _run_to_its_end(
             oc.agent_consult(message or request, timeout=deadline - loop.time()))
@@ -1081,15 +1086,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                                             timeout=_NATIVE_CONSULT_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
-                # Never acked -- the relay didn't take it. It may yet start it in the
-                # session's lane, late, where a cancel can take it: that cancel reaches
-                # only this future, which no one awaits now, so it is noted from here
-                # (Owed.note_cancel) for a sibling's empty to be read beside.
-                note_cancel = getattr(owed, "note_cancel", None)
-                if note_cancel is not None:
-                    fut.add_done_callback(lambda f: (
-                        note_cancel() if not f.cancelled() and f.exception() is None
-                        and _consult_outcome(f.result()).failure == "cancelled" else None))
+                # Never acked -- the relay didn't take it.
                 await direct(f"relay never acked in {_NATIVE_CONSULT_ACK_TIMEOUT:.1f}s")
                 return
             result = await asyncio.wait_for(fut, timeout=deadline - loop.time())
@@ -1122,9 +1119,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
-        if asyncio.current_task().cancelling() or getattr(owed, "closed", False):
-            # The session is ending (#122), or its book closed while the outcome waited
-            # (settle_empty): nothing more goes into its pipeline, not even the "done" --
+        if asyncio.current_task().cancelling() or closed_out:
+            # The session is ending (#122), or its book closed this consult while its
+            # empty waited (settle_empty): nothing more goes into its pipeline, not even
+            # the "done" --
             # the client is gone or going. The owed book closes the consult with the
             # session (Owed.close_session), as it did one that ran on.
             _count_consult(gate, -1)
@@ -1249,8 +1247,9 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         # its answer is dropped (_ran_on), and the owed book has closed it with the session.
         logger.info("openclaw_agent_consult(async): called as the session ended; asking the "
                     "agent directly, its answer to be dropped")
-        if owed is not None:
-            owed.went_direct(params.tool_call_id)  # no waiter: it never lands, nor holds a grace
+        went_direct = getattr(owed, "went_direct", None)
+        if went_direct is not None:
+            went_direct(params.tool_call_id)  # no waiter: it never lands, nor holds a grace
         _run_detached(oc.agent_consult(_consult_message(args), timeout=_ASYNC_CONSULT_TIMEOUT))
     elif owed is not None:
         # The model's words for the listener (CONSULT_STATUS), said by the progress

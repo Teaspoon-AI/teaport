@@ -1322,10 +1322,8 @@ class Owed:
         return self._closed
 
     def note_cancel(self) -> None:
-        """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
-        waiting one woken. _cancelled for a consult that lands; tools._consult_and_land
-        for a relay call it no longer waits on (the relay never acked it in time, but
-        may still start it in the lane, where the cancel takes it)."""
+        """OpenClaw cancelled a run in this session's lane (_cancelled): noted for
+        settle_empty, and a waiting one woken."""
         self._cancel_times = [*self._cancel_times[-(CANCEL_TIMES_KEPT - 1):],
                               time.monotonic()]
         self._cancel_seen.set()
