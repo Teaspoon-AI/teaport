@@ -63,13 +63,17 @@ def test_a_release_that_marks_must_name_its_watermark():
 
 def test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open():
     check = _check()
-    seen = []
+    slept = []
+    check.time = type("Clock", (), {"sleep": staticmethod(slept.append)})
+    seen, flaky = [], iter([503, 502])
 
     class Gate(http.server.BaseHTTPRequestHandler):
         def do_HEAD(self):
             seen.append(self.command)
             status, headers = {"/closed": (401, {}), "/open": (200, {"x-teaport-gate": "open"}),
-                               "/public": (200, {})}.get(self.path, (404, {}))
+                               "/public": (200, {}), "/down": (503, {})}.get(self.path, (404, {}))
+            if self.path == "/flaky":
+                status = next(flaky, 401)
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -86,6 +90,10 @@ def test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open():
         assert check.refused(f"{base}/open") == check.GATE_OPEN
         assert "not in front of it" in check.refused(f"{base}/public")
         assert check.refused(f"{base}/gone") == "HTTP 404"
+        assert slept == []   # an answer is final
+        assert check.refused(f"{base}/flaky") is None   # 503, 502, then the gate's 401
+        assert check.refused(f"{base}/down") == "HTTP 503"
+        assert len(slept) == 2 + check.ATTEMPTS - 1
     finally:
         srv.shutdown()
         srv.server_close()
