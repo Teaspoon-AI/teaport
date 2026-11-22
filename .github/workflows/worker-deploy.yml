@@ -9,7 +9,8 @@ name: worker-deploy
 # worker-deploy environment, D1 migrations, the deploy, and a check that the live gate does
 # what wrangler.toml says (GATE = "enforce": an anonymous gated download answers 401).
 #
-# The worker-deploy environment (Settings → Environments) holds:
+# The worker-deploy environment (Settings → Environments; GitHub creates it, unprotected, on
+# the first run that names it: set its reviewer and branches before its secret) holds:
 #   CLOUDFLARE_API_TOKEN   an API token for this account only, with Workers Scripts: Edit,
 #                          Workers Routes: Edit (the teaspoon.tech zone), D1: Edit
 #   CLOUDFLARE_ACCOUNT_ID  the account's id (a variable, not a secret)
@@ -58,13 +59,11 @@ jobs:
     timeout-minutes: 15
     environment: worker-deploy
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WRANGLER_SEND_METRICS: "false"
-      # Pinned: a deploy tool that changes under the gate is a change to the gate.
-      WRANGLER: wrangler@4.166.0
     defaults:
       run:
+        # bash, not the default bash -e: pipefail, so a failed command in a pipe fails its step.
+        shell: bash
         working-directory: worker
     steps:
       - uses: actions/checkout@v5
@@ -73,25 +72,53 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+      - name: Install wrangler, without the Cloudflare token in reach
+        # Pinned: a deploy tool that changes under the gate is a change to the gate. Its
+        # install scripts (esbuild, workerd) run here, where no Cloudflare secret is set; the
+        # token is handed only to the steps below that call Cloudflare.
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/wrangler" wrangler@4.166.0
+          echo "$RUNNER_TEMP/wrangler/node_modules/.bin" >> "$GITHUB_PATH"
       - name: The environment is set up
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set in the worker-deploy environment: nothing was deployed"
             exit 1
           fi
+          wrangler --version
       - name: The live version, for a rollback
+        # Only the version ids, their traffic and the time: the JSON also names the author's
+        # email, and this repo's job logs and summaries are public.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
+          live=$(wrangler deployments status --json \
+                 | jq -r '.created_on as $t | .versions[] | "\(.version_id) (\(.percentage)%), deployed \($t)"')
+          if [ -z "$live" ]; then
+            echo "::error::no live version id read: not deploying without a rollback target"
+            exit 1
+          fi
           {
             echo "### Before this deploy"
             echo '```'
-            npx --yes "$WRANGLER" deployments status
+            echo "$live"
             echo '```'
             echo "To go back: \`cd worker && npx wrangler rollback <the version id above>\` (packaging/RELEASING.md)."
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: D1 migrations
-        run: npx --yes "$WRANGLER" d1 migrations apply teaport-gate --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler d1 migrations apply teaport-gate --remote
       - name: Deploy
-        run: npx --yes "$WRANGLER" deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy
       - name: The live gate does what wrangler.toml says
         # An engine file from the published stable manifest, asked for without a token.
         # "enforce" (or anything but "open"): 401 and no x-teaport-gate header. "open": served,
@@ -99,11 +126,14 @@ jobs:
         # every edge.
         working-directory: .
         run: |
-          gate=$(python3 -c 'import tomllib; print(tomllib.load(open("worker/wrangler.toml","rb"))["vars"].get("GATE",""))')
-          url=$(curl -fsS https://get.teaspoon.tech/manifest/stable.json \
-                | python3 -c 'import json,sys; print(json.load(sys.stdin)["engine"]["pos_model"]["url"])')
+          gate=$(sed -n 's/^GATE *= *"\([^"]*\)".*/\1/p' worker/wrangler.toml)
+          if ! url=$(curl -fsS https://get.teaspoon.tech/manifest/stable.json \
+                     | python3 -c 'import json,sys; print(json.load(sys.stdin)["engine"]["pos_model"]["url"])'); then
+            echo "::error::could not read the stable manifest's engine.pos_model url: the deploy happened, the gate is unchecked"
+            exit 1
+          fi
           for i in 1 2 3 4 5 6; do
-            head=$(curl -sS -o /dev/null -D - -I "$url" | tr -d '\r')
+            head=$(curl -sS -o /dev/null -D - -I "$url" | tr -d '\r' || true)
             code=$(printf '%s\n' "$head" | awk 'NR==1{print $2}')
             mark=$(printf '%s\n' "$head" | awk 'tolower($1)=="x-teaport-gate:"{print $2}')
             if [ "$gate" = open ]; then
@@ -113,5 +143,5 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::after the deploy, $url answered $code (x-teaport-gate: ${mark:-none}) for GATE = \"${gate:-unset}\": see packaging/RELEASING.md for the way back"
+          echo "::error::after the deploy, $url answered ${code:-nothing} (x-teaport-gate: ${mark:-none}) for GATE = \"${gate:-unset}\": see packaging/RELEASING.md for the way back"
           exit 1

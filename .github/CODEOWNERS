@@ -2,6 +2,10 @@
 # review on a PR that touches these paths. main's ruleset does not require that review
 # (teaport has one account, and an author cannot approve their own PR), so this marks
 # ownership rather than gating merges (packaging/RELEASING.md, "GitHub settings").
+# The last matching line wins, so the broad lines come first.
+
+# The workflows, and this file.
+/.github/                             @teaspoonai
 
 # The download gate: the Worker, its deploy, and the license and data records it keeps.
 /worker/                              @teaspoonai
@@ -17,6 +21,3 @@
 # What a box runs as root: the installer (its license acceptance included) and its bootstrap.
 /install.sh                           @teaspoonai
 /install-bootstrap.sh*                @teaspoonai
-
-# The workflows themselves, and this file.
-/.github/                             @teaspoonai

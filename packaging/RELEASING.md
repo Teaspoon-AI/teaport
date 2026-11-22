@@ -206,8 +206,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       Actions → worker-deploy, approve the `worker-deploy` environment. The job runs the
       Worker's tests, prints the live version id first (the rollback target), applies D1
       migrations, deploys, and checks that an anonymous gated download answers as
-      `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. Deploy by hand
-      (`cd worker && npx wrangler deploy`) only to roll back.
+      `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. To go back, use
+      step 4's way back (`npx wrangler rollback <version-id>`, the id the job printed),
+      not a deploy by hand.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 
@@ -228,7 +229,9 @@ lets through.
   `brain (ubuntu-24.04-arm)`, `brain-deb`, `plugin`, `formal`, `installer`, `worker`
   and `docs`. No approvals. The admin role bypasses it only by merging a PR, never by
   pushing.
-- **`worker-deploy` environment** (`.github/workflows/worker-deploy.yml`):
+- **`worker-deploy` environment** (`.github/workflows/worker-deploy.yml`). GitHub creates
+  it, unprotected, the first time the workflow names it; set its protections before its
+  secret, or the next change to `worker/` deploys unapproved:
   - required reviewer `teaspoonai`, "Prevent self-review" unticked;
   - "Allow administrators to bypass configured protection rules" unticked;
   - deployment branches: `main` only;
