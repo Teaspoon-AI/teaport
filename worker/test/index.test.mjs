@@ -17,7 +17,10 @@ const BYTES = new TextEncoder().encode("0123456789abcdefghij");   // 20 bytes
 function bucket(objects) {
   const meta = (key, o) => ({
     key, size: o.bytes.length, httpEtag: `"etag-${key}"`,
-    writeHttpMetadata(h) { h.set("content-type", o.type ?? "application/octet-stream"); },
+    writeHttpMetadata(h) {   // as R2's: the object's stored HTTP metadata
+      h.set("content-type", o.type ?? "application/octet-stream");
+      if (o.cacheControl) h.set("cache-control", o.cacheControl);
+    },
   });
   return {
     objects,
@@ -142,6 +145,47 @@ test("each field is checked", async () => {
   assert.equal(env.DB.db.prepare("SELECT count(*) AS n FROM acceptances").get().n, 0);
 });
 
+// A request body from <chunks> (strings), streamed without a Content-Length unless one is
+// given; pulls counts how many chunks the Worker read.
+function streamed(chunks, headers = {}) {
+  const state = { pulls: 0 };
+  let i = 0;
+  const stream = new ReadableStream({
+    pull(c) {
+      state.pulls++;
+      if (i < chunks.length) c.enqueue(new TextEncoder().encode(chunks[i++]));
+      else c.close();
+    },
+  }, { highWaterMark: 0 });
+  const request = new Request("https://get.teaspoon.tech/api/accept", {
+    method: "POST", body: stream, duplex: "half",
+    headers: { "cf-connecting-ip": "203.0.113.7", "content-type": "application/json", ...headers },
+  });
+  return { request, state };
+}
+
+test("a body over 4 KB is refused without being read whole, with a Content-Length or without", async () => {
+  const count = () => env.DB.db.prepare("SELECT count(*) AS n FROM acceptances").get().n;
+  // No Content-Length (chunked): reading stops at the cap, not at the end of the body.
+  const big = streamed(Array(1000).fill("x".repeat(1024)));
+  assert.equal(big.request.headers.get("content-length"), null);
+  let res = await worker.fetch(big.request, env, ctx);
+  assert.equal(res.status, 400);
+  assert.ok(big.state.pulls <= 6, `read ${big.state.pulls} KB of a 1000 KB body`);
+  // A Content-Length over the cap: refused before a byte is read.
+  const declared = streamed([JSON.stringify(ACCEPT)], { "content-length": "5000" });
+  res = await worker.fetch(declared.request, env, ctx);
+  assert.equal(res.status, 400);
+  assert.equal(declared.state.pulls, 0);
+  assert.equal(count(), 0);
+  // A body under the cap, chunked without a Content-Length, is read whole.
+  const text = JSON.stringify(ACCEPT);
+  const small = streamed([text.slice(0, 10), text.slice(10, 50), text.slice(50)]);
+  res = await worker.fetch(small.request, env, ctx);
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(count(), 1);
+});
+
 test("a channel whose manifest has no released license accepts nothing", async () => {
   env.PUBLIC.objects.set("manifest/stable.json", manifest("1.0", "TODO"));
   const res = await call("POST", "/api/accept", { body: ACCEPT });
@@ -200,6 +244,20 @@ test("a token downloads the file whole, and the download is logged", async () =>
   assert.equal(res.headers.get("cache-control"), "private, no-store");
   const log = env.DB.db.prepare("SELECT acceptance_id, key, range_start, status FROM downloads").all();
   assert.deepEqual(log.map((r) => ({ ...r })), [{ acceptance_id, key: ENGINE, range_start: null, status: 200 }]);
+});
+
+test("an object stored with its own Cache-Control is still served private and uncached", async () => {
+  env.DIST.objects.set(ENGINE, { bytes: BYTES, type: "application/x-engine", cacheControl: "public, max-age=31536000" });
+  const { token } = await accepted();
+  for (const [method, headers, gate] of [["GET", bearer(token)], ["HEAD", bearer(token)],
+                                         ["GET", { range: "bytes=0-3", ...bearer(token) }], ["GET", {}, "open"]]) {
+    env.GATE = gate;
+    const res = await call(method, `/${ENGINE}`, { headers });
+    assert.ok(res.status === 200 || res.status === 206, `${method} ${res.status}`);
+    assert.equal(res.headers.get("cache-control"), "private, no-store", method);
+    assert.equal(res.headers.get("etag"), `"etag-${ENGINE}"`);
+    assert.equal(res.headers.get("content-type"), "application/x-engine");   // its metadata is kept
+  }
 });
 
 test("curl -C - resumes: a range is served as 206, a range past the end as 416", async () => {

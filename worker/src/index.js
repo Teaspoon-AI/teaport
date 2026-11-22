@@ -152,11 +152,30 @@ async function currentEula(env, channel, nowMs) {
 
 // --- /api ----------------------------------------------------------------------------------
 
+// The request's JSON object, else null. At most MAX_BODY bytes are read: a Content-Length
+// over it is refused unread, and a body sent without one (chunked) stops being read at the cap.
 async function body(request) {
-  const text = await request.text();
-  if (text.length > MAX_BODY) return null;
+  const declared = request.headers.get("content-length");
+  if (declared !== null && !(Number(declared) <= MAX_BODY)) return null;
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
   try {
-    const v = JSON.parse(text);
+    const v = JSON.parse(new TextDecoder().decode(bytes));   // as request.text() decodes
     return typeof v === "object" && v !== null && !Array.isArray(v) ? v : null;
   } catch {
     return null;
@@ -306,8 +325,13 @@ async function download(request, env, ctx, now, path) {
   const head = await env.DIST.head(key);
   if (!head) return fail(404, "not_found", `no such file: ${path}`);
   const range = parseRange(request.headers.get("range"), head.size);
-  const headers = new Headers({ "accept-ranges": "bytes", "cache-control": "private, no-store", etag: head.httpEtag });
+  // The object's own metadata first (its content type), then what this sets over it: an
+  // object stored with a Cache-Control of its own must not make a gated file cacheable.
+  const headers = new Headers();
   head.writeHttpMetadata(headers);
+  headers.set("accept-ranges", "bytes");
+  headers.set("cache-control", "private, no-store");
+  headers.set("etag", head.httpEtag);
   if (who === "open") headers.set("x-teaport-gate", "open");
   const c = client(request);
   const log = (status) => ctx.waitUntil(env.DB.prepare(
