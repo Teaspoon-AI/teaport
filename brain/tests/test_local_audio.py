@@ -664,6 +664,47 @@ def test_an_ask_whose_dial_never_reached_the_brain_is_given_back(monkeypatch):
     assert asyncio.run(run())["id"] == "a"
 
 
+class _OneAsk:
+    """Asks that hands out one ask at its first step (no await), and records what is
+    given back."""
+    def __init__(self):
+        self.released = []
+
+    async def next(self):
+        return {"why": "first-boot", "id": "a"}
+
+    def release(self, ask):
+        self.released.append(ask["id"])
+
+
+def test_a_voice_with_an_ask_is_voiced_and_still_names_the_ask(monkeypatch):
+    # a voice and an ask on the same tick: the dial is pre-rolled, and the ask it spends
+    # is still named, so a dial that fails can give it back
+    monkeypatch.setattr(la, "DEVICE", "fake")
+
+    async def run():
+        card = la.Card(la.FaceTap(os.path.join(tempdir(), "face.sock")))
+        card.voice.set()                 # someone is speaking as the wait begins
+        card.voice.clear = lambda: None  # (the wait clears it first: keep it set)
+        return await card.wait_for_voice_or_ask(_OneAsk())
+
+    assert asyncio.run(run()) == (True, {"why": "first-boot", "id": "a"})
+
+
+def test_a_card_that_fails_gives_its_ask_back(monkeypatch):
+    monkeypatch.setattr(la, "DEVICE", "fake")
+
+    async def run():
+        card = la.Card(la.FaceTap(os.path.join(tempdir(), "face.sock")))
+        asks = _OneAsk()
+        card.failed.set_exception(la.CardError("unplugged"))
+        with pytest.raises(la.CardError):
+            await card.wait_for_voice_or_ask(asks)
+        return asks.released
+
+    assert asyncio.run(run()) == ["a"]      # nothing was dialled for it: the ask stands
+
+
 def test_bridge_dials_an_ask_again_after_a_dial_error(monkeypatch):
     _fake_card(monkeypatch, ARECORD)
     monkeypatch.setattr(la, "WANTED_POLL_SECS", 0.05)

@@ -1559,24 +1559,30 @@ class Card:
         self.voice.clear()
         await self._until(self.voice.wait())
 
-    async def wait_for_voice_or_ask(self, asks: "Asks") -> dict | None:
-        """A voice in the room (None), or the brain asking for the room (Asks.next): the
-        ask. A voice that comes with an ask wins: its words are pre-rolled (the ask is
-        spent all the same: the session it wanted is opening)."""
+    async def wait_for_voice_or_ask(self, asks: "Asks") -> tuple[bool, dict | None]:
+        """Until a voice in the room or the brain asking for the room (Asks.next):
+        (voiced, the ask or None). Both may come on the same tick: the dial is then
+        pre-rolled (a voice), and the ask it spends is still named, so a dial that never
+        reaches the brain gives it back. A card that fails meanwhile gives a taken ask
+        back too: nothing was dialled for it."""
         self.gate.reset()
         self.voice.clear()
         voice = asyncio.ensure_future(self.voice.wait())
         ask = asyncio.ensure_future(asks.next())
         try:
             await self._until(asyncio.wait([voice, ask], return_when=asyncio.FIRST_COMPLETED))
+        except CardError:
+            if ask.done() and not ask.cancelled() and ask.exception() is None:
+                asks.release(ask.result())
+            raise
         finally:
             for t in (voice, ask):
                 if not t.done():
                     t.cancel()
             await asyncio.gather(voice, ask, return_exceptions=True)
-        if voice.done() and not voice.cancelled():
-            return None
-        return ask.result()
+        voiced = voice.done() and not voice.cancelled()
+        got = ask.result() if ask.done() and not ask.cancelled() else None
+        return voiced, got
 
     async def idle_for(self, secs: float) -> None:
         await self._until(asyncio.sleep(secs))
@@ -2285,16 +2291,16 @@ async def run_bridge() -> None:
                         backoff = None
                         logger.info(f"no other Talk session for {BACKOFF_SECS:g} s — "
                                     "back-off over, waiting for voice")
-                    asked = None
+                    voiced, asked = False, None
                     if not connect_now:
                         # Or the brain asks for the room: a new box going into setup mode
                         # by itself (#457), which nobody would ever have spoken to.
-                        asked = await card.wait_for_voice_or_ask(asks)
-                        logger.info("voice detected — connecting" if asked is None else
+                        voiced, asked = await card.wait_for_voice_or_ask(asks)
+                        logger.info("voice detected — connecting" if voiced else
                                     f"the brain asks for the room ({asked['why']}) — "
                                     "connecting")
                     try:
-                        ended = await run_session(card, preroll=not connect_now and asked is None)
+                        ended = await run_session(card, preroll=voiced)
                         if ended == "restart":
                             # Dial straight back: a fresh context and a greeting, no voice wait.
                             connect_now = True
