@@ -243,13 +243,13 @@ def _mkdirs(base: str, rel: str, owner) -> None:
             os.chmod(path, 0o755)
 
 
-def _finish(path: str, executable: bool, owner) -> None:
+def _finish(path: str, executable: bool, owner, mode=None) -> None:
     os.chown(path, *owner, follow_symlinks=False)
     _strip_acl(path)
-    os.chmod(path, 0o755 if executable else 0o644)
+    os.chmod(path, mode if mode is not None else 0o755 if executable else 0o644)
 
 
-def _copy(old: Tree, rel: str, dest: str, owner, limit=None, md5=None) -> bool:
+def _copy(old: Tree, rel: str, dest: str, owner, limit=None, md5=None, mode=None) -> bool:
     f = old.open_file(rel)
     if f is None:
         return False
@@ -280,7 +280,7 @@ def _copy(old: Tree, rel: str, dest: str, owner, limit=None, md5=None) -> bool:
     if digest and digest.hexdigest() != md5:
         os.unlink(dest)
         return False
-    _finish(dest, executable, owner)
+    _finish(dest, executable, owner, mode)
     # The source's times: a .py newer than its packaged .pyc would make python recompile it
     # on every start (the run user cannot write the cache in a root tree).
     os.utime(dest, ns=(src.st_atime_ns, src.st_mtime_ns))
@@ -504,7 +504,9 @@ def _rebuild_state(state: str, stamp: str, owner) -> None:
             try:
                 for name in STATE_KEPT_JSON:
                     dest = os.path.join(new, name)
-                    if _copy(old, name, dest, owner, limit=SMALL):
+                    # 0600: the license receipt holds the acceptance's id, which gets
+                    # download tokens, and who accepted (install.sh's eula_gate).
+                    if _copy(old, name, dest, owner, limit=SMALL, mode=0o600):
                         try:
                             with open(dest, encoding="utf-8") as fh:
                                 ok = isinstance(json.load(fh), dict)

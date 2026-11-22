@@ -50,7 +50,7 @@ pronunciation dictionary. See
 **Cause** You are not on a Jetson, or the Jetson image carries no
 `/etc/nv_tegra_release`. The installer works only on Jetson devices.
 
-<!-- source: install.sh:363,382#582f6f18 -->
+<!-- source: install.sh:612,631#582f6f18 -->
 
 **Fix**
 
@@ -62,7 +62,7 @@ pronunciation dictionary. See
 **Cause** The device runs a JetPack that the engine does not support. The engine
 ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-<!-- source: install.sh:358-364,369-375#bdfac419 -->
+<!-- source: install.sh:607-613,618-624#bdfac419 -->
 
 **Fix**
 
@@ -83,7 +83,7 @@ ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 **Cause** The engine links against `libopenblas.so.0`. JetPack does not include
 it.
 
-<!-- source: install.sh:414-421,431#ce9fbe14 -->
+<!-- source: install.sh:663-670,680#ce9fbe14 -->
 
 **Fix**
 
@@ -99,7 +99,7 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:930-940#0ba66554 -->
+<!-- source: install.sh:1179-1189#0ba66554 -->
 
 **Fix**
 
@@ -114,7 +114,7 @@ its URL and sha256. A device installed without the watermark weights speaks
 without the machine-readable mark that identifies its speech as AI-generated.
 The watermark check is necessary, so keep it.
 
-<!-- source: install.sh:638,978-990#348d5c16 -->
+<!-- source: install.sh:887,1227-1239#348d5c16 -->
 
 **Fix**
 
@@ -129,7 +129,7 @@ its URL and sha256. On a device installed without the Mandarin dictionary, the
 Mandarin voices speak without their tones. The dictionary check is necessary,
 so keep it.
 
-<!-- source: install.sh:639,962-970#aa0bbfbe -->
+<!-- source: install.sh:888,1211-1219#aa0bbfbe -->
 
 **Fix**
 
@@ -141,7 +141,7 @@ so keep it.
 **Cause** A downloaded file does not agree with the checksum in the manifest.
 The installer removes the partial download, so the next run starts it again.
 
-<!-- source: install.sh:289-294#172ce37b -->
+<!-- source: install.sh:366-369#0e841fac -->
 
 **Fix**
 
@@ -159,7 +159,7 @@ The installer removes the partial download, so the next run starts it again.
 **Cause** A second run of the installer started while one was running. Two runs at
 the same time replace the same files, so the second one stops before it changes anything.
 
-<!-- source: install.sh:187-195,196-213#05549d41 -->
+<!-- source: install.sh:219-227,228-245#05549d41 -->
 
 **Fix**
 
@@ -216,7 +216,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2585#2ca3ef5a; install.sh:3033-3102#d970b544 -->
+<!-- source: install.sh:2838#2ca3ef5a; install.sh:3286-3355#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -241,7 +241,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2413-2426#3bb53588; install.sh:2412-2425#e0d335b8 -->
+<!-- source: install.sh:2666-2679#3bb53588; install.sh:2665-2678#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -272,7 +272,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2431-2435#bf1269bd -->
+<!-- source: install.sh:2684-2688#bf1269bd -->
 
 **Fix**
 
@@ -303,7 +303,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:1973-1990#ffe8b2e4 -->
+<!-- source: install.sh:2226-2243#ffe8b2e4 -->
 
 **Fix**
 
@@ -374,7 +374,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:3033-3102#d970b544; install.sh:2900-2950#a3eb07c3; install.sh:2882-2885,2900-2954#49197cea -->
+<!-- source: install.sh:3286-3355#d970b544; install.sh:3153-3203#a3eb07c3; install.sh:3135-3138,3153-3207#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -419,7 +419,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:3122-3126#3c1e6011; install.sh:3206-3209#b1e28ef5 -->
+<!-- source: install.sh:3375-3379#3c1e6011; install.sh:3459-3462#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -448,7 +448,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:413#649012b4; install.sh:920-921#12d8444d -->
+<!-- source: install.sh:662#649012b4; install.sh:1169-1170#12d8444d -->
 
 **Fix**
 
@@ -487,7 +487,7 @@ read Chinese through the Mandarin dictionary,
 speak without tones. The other voices are not affected. The installer's checks
 report `running WITHOUT the Mandarin dict`.
 
-<!-- source: install.sh:1128-1133#5b5b2217; install.sh:3916-3919#3dd0b60f -->
+<!-- source: install.sh:1381-1386#5b5b2217; install.sh:4169-4172#3dd0b60f -->
 
 **Fix**
 
@@ -517,7 +517,7 @@ when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
 watermark, and the installer's checks report `running WITHOUT the AI
 watermark`.
 
-<!-- source: install.sh:978-980,2840-2844,3923-3925,1138-1140#41f37ed9 -->
+<!-- source: install.sh:1227-1229,3093-3097,4176-4178,1391-1393#41f37ed9 -->
 
 **Fix**
 
@@ -612,7 +612,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2520-2528,2555-2561#4287c4a8; install.sh:2575-2578#cefd034b -->
+<!-- source: install.sh:2773-2781,2808-2814#4287c4a8; install.sh:2828-2831#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -620,7 +620,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2565-2573#b3851890 -->
+<!-- source: install.sh:2818-2826#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -728,7 +728,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2413-2426#3bb53588; install.sh:2412-2425#e0d335b8 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2666-2679#3bb53588; install.sh:2665-2678#e0d335b8 -->
 
 **Fix**
 

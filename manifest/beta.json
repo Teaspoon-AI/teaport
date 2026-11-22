@@ -2,6 +2,14 @@
   "version": "0.0.0-beta.0",
   "channel": "beta",
   "_note": "Beta channel manifest — same shape as stable.json. Placeholder values until the first beta is cut.",
+  "access": {
+    "_note": "The engine license gate (worker/: the download gate Worker). install.sh records each acceptance of engine.eula with api (POST <api>/accept; a later run, POST <api>/token) and sends the token it returns with every download whose URL starts with one of gated: the engine's files and its models, which live in a private bucket only the Worker reads. Everything else here downloads without one: the license text, the brain package, and the engine's THIRD_PARTY_NOTICES.txt (under dl/notices/, public on purpose). manifest/check.py downloads the gated files with DL_CHECK_TOKEN.",
+    "api": "https://get.teaspoon.tech/api",
+    "gated": [
+      "https://get.teaspoon.tech/dl/engine/",
+      "https://get.teaspoon.tech/dl/models/"
+    ]
+  },
   "engine": {
     "release": "TODO",
     "eula": {
@@ -32,18 +40,18 @@
     },
     "watermark": {
       "_note": "engine/watermark/perth_implicit.v2.bin: the AI watermark's weights, the embedder of Resemble AI's Perth implicit watermarker (resemble-perth 1.0.1, MIT), converted by teagram-engine tools/wm_convert.py. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. From engine 1.7 every TTS output carries the mark (EU AI Act Art. 50(2)); MUST install to bin/watermark/ — without it the engine speaks unmarked, or with VOX_REQUIRE_WATERMARK=1 refuses to serve. install.sh and manifest/check.py require it for any engine release from 1.7 on. Arch-independent; rides the engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-watermark.bin",
-      "sha256": "TODO"
+      "url": "https://get.teaspoon.tech/dl/engine/watermark/perth_implicit.v2.bin",
+      "sha256": "85c1bf827fa18c91f3fd9359a3b0fe1c320c1584668649c558fe273bf44ddfa4"
     },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from. Carries the MIT/BSD/Apache-2.0 attributions for the engine's third-party components. install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-THIRD_PARTY_NOTICES.txt",
+      "url": "https://get.teaspoon.tech/dl/notices/teaport-engine-TODO-THIRD_PARTY_NOTICES.txt",
       "sha256": "TODO"
     }
   },
   "models": {
     "kokoro": { "url": "https://get.teaspoon.tech/dl/models/kokoro/Kokoro_espeak_F16.gguf", "sha256": "TODO" },
-    "voxtral": { "url": "https://get.teaspoon.tech/dl/models/voxtral/consolidated.safetensors", "sha256": "TODO", "aux": { "params.json": "TODO", "tekken.json": "TODO" } }
+    "voxtral": { "url": "https://get.teaspoon.tech/dl/models/voxtral/consolidated.safetensors", "sha256": "TODO", "aux": { "params.json": "TODO", "tekken.json": "TODO" }, "aux_sha256": { "params.json": "TODO", "tekken.json": "TODO" } }
   },
   "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main", "deb": { "url": "TODO", "sha256": "TODO" } },
   "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
