@@ -298,6 +298,44 @@ test("an expired token, a forged one, a revoked acceptance or a changed license 
   assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 403);
 });
 
+test("a license text changed under the same version stops the token and the download, not the check token", async () => {
+  const { acceptance_id, token } = await accepted();
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+  assert.equal(claims.s, SHA);   // the token names the exact text accepted
+  env.PUBLIC.objects.set("manifest/stable.json", manifest("1.0", "e".repeat(64)));
+  resetCache();
+  const dl = await call("GET", `/${ENGINE}`, { headers: bearer(token) });
+  assert.equal(dl.status, 403);
+  assert.equal((await dl.json()).error, "eula_changed");
+  const res = await call("POST", "/api/token", { body: { acceptance_id } });
+  assert.equal(res.status, 409);
+  assert.deepEqual(await res.json(), { error: "eula_changed", message: "the license changed to version 1.0: read and accept it",
+                                       eula_version: "1.0", eula_sha256: "e".repeat(64) });
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(env.CHECK_TOKEN) })).status, 200);
+  // The text back as accepted: the same token downloads again.
+  env.PUBLIC.objects.set("manifest/stable.json", manifest());
+  resetCache();
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
+  // A token without the sha256 (the claims before it) is refused.
+  const now = Math.floor(Date.now() / 1000);
+  const old = await makeToken(env, { a: acceptance_id, v: "1.0", c: "stable", exp: now + 60 });
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(old) })).status, 403);
+});
+
+test("a HEAD writes no download row, a range past the end included; a GET does", async () => {
+  const { token } = await accepted();
+  const rows = () => env.DB.db.prepare("SELECT status FROM downloads ORDER BY id").all().map((r) => r.status);
+  for (const range of [undefined, "bytes=5-", "bytes=20-"]) {
+    const res = await call("HEAD", `/${ENGINE}`, { headers: { ...bearer(token), ...(range ? { range } : {}) } });
+    assert.equal(res.status, range === "bytes=20-" ? 416 : range ? 206 : 200, String(range));
+  }
+  env.GATE = "open";
+  assert.equal((await call("HEAD", `/${ENGINE}`, { headers: { range: "bytes=20-" } })).status, 416);
+  assert.deepEqual(rows(), []);
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: { ...bearer(token), range: "bytes=20-" } })).status, 416);
+  assert.deepEqual(rows(), [416]);
+});
+
 test("the check token downloads, logged as ci; other paths and methods are refused", async () => {
   const res = await call("GET", `/${ENGINE}`, { headers: bearer(env.CHECK_TOKEN) });
   assert.equal(res.status, 200);

@@ -34,9 +34,10 @@
 // docs/engine-license-data.md.
 //
 // The token: "v1.<payload>.<HMAC-SHA256>", base64url, signed with TOKEN_KEY (a Worker
-// secret). It carries the acceptance, its license version and channel, and an expiry
-// (TOKEN_TTL_SECS). Each download also checks the acceptance is not revoked and the
-// license version is still the current one. CHECK_TOKEN (a Worker secret, optional) is
+// secret). It carries the acceptance, its license version and sha256 and channel, and an
+// expiry (TOKEN_TTL_SECS). Each download also checks the acceptance is not revoked and the
+// license version and sha256 are still the current ones (a token without the sha256 is
+// refused). CHECK_TOKEN (a Worker secret, optional) is
 // the publish workflow's: manifest/check.py downloads every gated file with it to compare
 // its sha256; its downloads are logged as acceptance "ci".
 //
@@ -120,9 +121,9 @@ async function sameSecret(a, b) {
   return diff === 0;
 }
 
-async function issue(env, acceptance, channel, version, now) {
+async function issue(env, acceptance, channel, eula, now) {
   const exp = now + TOKEN_TTL_SECS;
-  const token = await makeToken(env, { a: acceptance, v: version, c: channel, exp });
+  const token = await makeToken(env, { a: acceptance, v: eula.version, s: eula.sha256, c: channel, exp });
   return { token, expires_at: new Date(exp * 1000).toISOString() };
 }
 
@@ -251,7 +252,7 @@ async function accept(request, env, now) {
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?2)`,
   ).bind(id, new Date(now * 1000).toISOString(), channel, eula.version, eula.sha256, name, email, b.use,
          license, device, b.method, b.installer, c.ip, c.country, c.ua).run();
-  return json(200, { acceptance_id: id, ...(await issue(env, id, channel, eula.version, now)) });
+  return json(200, { acceptance_id: id, ...(await issue(env, id, channel, eula, now)) });
 }
 
 async function token(request, env, now) {
@@ -260,17 +261,18 @@ async function token(request, env, now) {
     ? b.acceptance_id : null;
   if (!id) return fail(400, "bad_request", "acceptance_id: the id your acceptance was recorded under");
   const row = await env.DB.prepare(
-    "SELECT channel, eula_version, revoked_at FROM acceptances WHERE id = ?1").bind(id).first();
+    "SELECT channel, eula_version, eula_sha256, revoked_at FROM acceptances WHERE id = ?1").bind(id).first();
   if (!row) return fail(404, "unknown_acceptance", "no acceptance is recorded under this id: accept the license again");
   if (row.revoked_at) return fail(403, "revoked", "this acceptance was revoked: contact stefano@teaspoon.tech");
   const eula = await currentEula(env, row.channel, now * 1000);
   if (!eula) return fail(503, "no_license", `the ${row.channel} channel has no published license`);
-  if (row.eula_version !== eula.version) {
+  // The text, not only its version: a license changed under the same version is accepted again.
+  if (row.eula_version !== eula.version || row.eula_sha256 !== eula.sha256) {
     return fail(409, "eula_changed", `the license changed to version ${eula.version}: read and accept it`, {}, { eula_version: eula.version, eula_sha256: eula.sha256 });
   }
   await env.DB.prepare("UPDATE acceptances SET last_token_at = ?2 WHERE id = ?1")
     .bind(id, new Date(now * 1000).toISOString()).run();
-  return json(200, await issue(env, id, row.channel, eula.version, now));
+  return json(200, await issue(env, id, row.channel, eula, now));
 }
 
 // --- /dl -----------------------------------------------------------------------------------
@@ -295,7 +297,7 @@ async function authorize(request, env, now) {
   if (!row) return fail(403, "unknown_acceptance", "this acceptance is no longer on record: run the installer again to accept the license");
   if (row.revoked_at) return fail(403, "revoked", "this acceptance was revoked: contact stefano@teaspoon.tech");
   const eula = await currentEula(env, claims.c, now * 1000);
-  if (!eula || eula.version !== claims.v) {
+  if (!eula || eula.version !== claims.v || eula.sha256 !== claims.s) {
     return fail(403, "eula_changed", "the license changed: run the installer again to read and accept it");
   }
   return claims.a;
@@ -334,7 +336,8 @@ async function download(request, env, ctx, now, path) {
   headers.set("etag", head.httpEtag);
   if (who === "open") headers.set("x-teaport-gate", "open");
   const c = client(request);
-  const log = (status) => ctx.waitUntil(env.DB.prepare(
+  // A HEAD is never logged (docs/engine-license-data.md): only a GET sends the file.
+  const log = (status) => request.method !== "HEAD" && ctx.waitUntil(env.DB.prepare(
     "INSERT INTO downloads (at, acceptance_id, key, range_start, status, ip, country) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
   ).bind(new Date(now * 1000).toISOString(), who, key, range && range !== "unsatisfiable" ? range.offset : null,
          status, c.ip, c.country).run().catch(() => {}));
