@@ -266,7 +266,7 @@ def test_a_file_served_around_the_gate_is_an_error_on_every_run():
 
 
 def test_an_open_gate_fails_the_check_under_require_enforce():
-    """The weekly run passes --require-enforce: a gate still open is an error there, a warning
+    """The weekly run passes --require-enforce: an open gate is an error there, a warning
     everywhere else."""
     check = _check()
     check.bypassed = lambda u: None
@@ -276,7 +276,7 @@ def test_an_open_gate_fails_the_check_under_require_enforce():
         assert ok and "::warning::engine.f" in text and "::error" not in text, text
         ok, text = _run(check, _gated_manifest(check), token, require_enforce=True)
         assert not ok and "::warning" not in text, text
-        assert "::error" in text and "still open" in text, text
+        assert "::error" in text and "GATE is open" in text and "deploy main's Worker" in text, text
     check.refused = lambda u: None   # enforcing: nothing to report
     ok, text = _run(check, _gated_manifest(check), "t", require_enforce=True)
     assert ok and "::error" not in text, text

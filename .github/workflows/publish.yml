@@ -27,7 +27,7 @@ name: publish
 # but a pull request's; a pull request's run checks only that each refuses a download
 # without a token. Every run also checks that none is served at a percent-encoded path
 # around the Worker's routes (a copy left in teaport-get), and the weekly run fails while
-# the gate is still open.
+# the gate is open.
 
 on:
   push:
@@ -78,8 +78,8 @@ jobs:
             echo "::error::DL_CHECK_TOKEN is not set: the gated engine files cannot be checked (see the header)"
             exit 1
           fi
-          # The weekly run: a license gate still open (the switchover's GATE = "open") is an
-          # error there, so a gate left open after the switchover goes red within a week.
+          # The weekly run: a license gate that is open (GATE = "open") is an error there, so
+          # a gate left open goes red within a week.
           # Every other run warns (packaging/RELEASING.md).
           strict=()
           if [ "$EVENT" = schedule ]; then strict=(--require-enforce); fi

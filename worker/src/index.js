@@ -23,10 +23,10 @@
 //                      from teaport-engine-dist, with byte ranges (curl -C - resumes the
 //                      multi-GB models), and logs the download against the acceptance.
 //
-// GATE (a wrangler.toml var): "enforce" refuses a download without a token. "open" is for
-// the switchover only: a request with no Authorization header is served too (logged as
-// acceptance "open", with x-teaport-gate: open), so the installer on main that predates the
-// gate keeps working until the one that accepts through here is merged; a token that is
+// GATE (a wrangler.toml var): "enforce" refuses a download without a token. "open" served
+// the switchover, and is the way back if enforcing breaks installs: a request with no
+// Authorization header is served too (logged as acceptance "open", with x-teaport-gate:
+// open), so an installer that does not accept through here still downloads; a token that is
 // sent is still checked. Anything else, or unset, enforces.
 //
 // Retention (the daily cron, scheduled()): acceptances and downloads older than

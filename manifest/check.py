@@ -25,7 +25,7 @@
 #   - access.gated (the engine license gate's download prefixes) and access.api are
 #     https URLs on the download host. A gated artifact must refuse an anonymous download
 #     (HTTP 401), asked on every run; one served without a token means the gate is not in
-#     front of it, an error, and one the gate serves open (its switchover) is a warning.
+#     front of it, an error, and one the gate serves open (GATE = "open") is a warning.
 #     Then it is fetched with DL_CHECK_TOKEN (the download gate Worker's CHECK_TOKEN) and
 #     its sha256 compared; without the token (a pull request's run) the refusal is all
 #     that is checked of it. --require-enforce (the weekly run) makes an open gate an error.
@@ -187,14 +187,14 @@ def fetch(url, digest, token=None):
         time.sleep(5 * attempt)
 
 
-# refused(): the gate serves it without a token because its GATE is "open", for the
-# switchover only (worker/src/index.js).
+# refused(): the gate serves it without a token because its GATE is "open": the switchover,
+# or the way back if enforcing broke installs (worker/src/index.js).
 GATE_OPEN = "gate open"
 
 
 def refused(url):
     """None when url refuses an anonymous download (HTTP 401), as a gated artifact must;
-    GATE_OPEN when the gate serves it during the switchover; else what it did. A HEAD: an
+    GATE_OPEN when the gate serves it open (GATE = "open"); else what it did. A HEAD: an
     open gate would otherwise start sending the file. Retried as fetch() is: it runs before
     every upload, where one blip would leave the manifest unpublished."""
     req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
@@ -368,17 +368,19 @@ def check(manifest_path, placeholders_ok, require_enforce=False):
                 if (how := bypassed(u)):
                     around.append(f"{where}: {u} -> {how}")
             problems.extend(around)
-            # Asked without a token on every run, token or not: a gate left open after the
-            # switchover shows up here, on pushes and the weekly run as well as on PRs.
+            # Asked without a token on every run, token or not: a live gate that is open
+            # (deployed from elsewhere than main, or opened as the way back) shows up here,
+            # on pushes and the weekly run as well as on PRs.
             why = refused(url)
             if why == GATE_OPEN and require_enforce:
                 problems.append(f"{where}: {url} is served without a download token: the gate's GATE "
-                                "is still open (the switchover). Set GATE = \"enforce\" in "
-                                "worker/wrangler.toml and deploy (packaging/RELEASING.md)")
+                                "is open. main's worker/wrangler.toml enforces: deploy main's Worker "
+                                "(cd worker && npx wrangler deploy), unless it was opened as the "
+                                "way back (packaging/RELEASING.md)")
             elif why == GATE_OPEN:
                 print(f"::warning::{where}: {url} is served without a download token: the gate's "
-                      "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
-                      "and deploy, in the PR after the installer that accepts is merged "
+                      "GATE is open. main's worker/wrangler.toml enforces: deploy main's Worker "
+                      "(cd worker && npx wrangler deploy), unless it was opened as the way back "
                       "(packaging/RELEASING.md); the weekly run fails until then")
             elif why:
                 problems.append(f"{where}: {url} -> {why}")
@@ -449,8 +451,8 @@ def main():
     ap.add_argument("--placeholders-ok", action="store_true",
                     help='allow "TODO" entries (a channel with nothing released yet)')
     ap.add_argument("--require-enforce", action="store_true",
-                    help="an open license gate (GATE = \"open\", the switchover) is an error, not a "
-                         "warning: the weekly run, so a gate left open goes red within a week")
+                    help="an open license gate (GATE = \"open\") is an error, not a warning: the "
+                         "weekly run, so a gate left open goes red within a week")
     args = ap.parse_args()
     ok = all([check(m, args.placeholders_ok, args.require_enforce) for m in args.manifests])
     sys.exit(0 if ok else 1)

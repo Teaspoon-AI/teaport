@@ -6,11 +6,10 @@
 #   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
 #   npx wrangler deploy
 #
-# Switchover (packaging/RELEASING.md): deployed with GATE = "open", which serves an
-# anonymous download (x-teaport-gate: open). Next, delete teaport-get's dl/engine/* and
-# dl/models/* (a copy there is served around these routes at a percent-encoded path), then
-# merge the installer that accepts through this Worker. Then a follow-up PR sets
-# GATE = "enforce" and deploys it; only from then does an anonymous download answer 401.
+# GATE is "enforce": a gated download without a token answers 401. The switchover
+# (packaging/RELEASING.md) ran with GATE = "open" until the installer that accepts through
+# this Worker was on main. Deploy from main's HEAD, so the live Worker is main's (the way
+# back, if enforcing breaks installs, is in packaging/RELEASING.md).
 # The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated
 # download paths only; everything else there is still the public bucket teaport-get.
 name = "teaport-download-gate"
@@ -27,8 +26,8 @@ routes = [
 
 [vars]
 # "enforce": a download needs a token. "open": one without an Authorization header is
-# served too, for the switchover only (src/index.js). Unset, or anything else, enforces.
-GATE = "open"
+# served too: the switchover's, and the way back (src/index.js). Anything else enforces.
+GATE = "enforce"
 # Acceptances and downloads older than this are deleted daily. 2557 days, 7 years: a
 # PROPOSAL to confirm with counsel (docs/engine-license-data.md); change both together.
 RETENTION_DAYS = "2557"

@@ -43,7 +43,8 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 ## What a download row holds
 
 `at` (UTC), `acceptance_id` (or `ci` for the publish workflow's check, or `open` for a
-download without a token while the gate is open for the switchover), `key` (which file),
+download without a token while the gate is open: `GATE = "open"`, the switchover or the
+way back), `key` (which file),
 `range_start` (where a resumed download started), `status` (the HTTP status), `ip` and
 `country`. So the record shows which files an acceptance downloaded, when, and from where.
 
