@@ -216,7 +216,12 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 What the release path relies on outside the repo's files (Settings on GitHub). teaport
 pushes from one account, `teaspoonai`, so no rule here may need a second person: a PR's
 author cannot approve it, and an environment with "Prevent self-review" ticked never
-deploys a run its only reviewer started.
+deploys a run its only reviewer started. The same account is the one the coding agents
+on the development machine use, so an environment's reviewer is a step a person sees,
+not a barrier an agent cannot cross. What protects a box is elsewhere: each file's
+sha256 in the manifest (and, with manifest signing, the signature the box verifies), and
+the review of what merges to main, which is also what decides what the download gate
+lets through.
 
 - **`main`**: ruleset "main: PRs and green CI". No deletion, no force push, a change
   only through a PR with the required checks green: `brain (ubuntu-latest)`,
