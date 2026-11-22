@@ -53,7 +53,7 @@ import time
 
 MARK = ".root-layout"
 ENGINE = ("bin/voxtral", "bin/g2p/kokoro_g2p.v2.dict", "bin/g2p/kokoro_pos.bin",
-          "bin/watermark/perth_implicit.v2.bin", "THIRD_PARTY_NOTICES.txt",
+          "bin/g2p/kokoro_zh.v1.dict", "bin/watermark/perth_implicit.v2.bin", "THIRD_PARTY_NOTICES.txt",
           "models/voxtral/consolidated.safetensors", "models/voxtral/tekken.json", "models/voxtral/params.json",
           "models/kokoro/Kokoro_espeak_F16.gguf")
 # The engine's data directories: every regular file in them is the engine's, carried with
