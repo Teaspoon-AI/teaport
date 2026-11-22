@@ -266,7 +266,7 @@ def test_a_file_served_around_the_gate_is_an_error_on_every_run():
 
 
 def test_an_open_gate_fails_the_check_under_require_enforce():
-    """The weekly run passes --require-enforce: a gate still open is an error there, a warning
+    """The weekly run passes --require-enforce: an open gate is an error there, a warning
     everywhere else."""
     check = _check()
     check.bypassed = lambda u: None

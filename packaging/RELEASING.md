@@ -190,9 +190,11 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
            fetches every gated file with `DL_CHECK_TOKEN` and compares its sha256. On
            main it also uploads the manifests and the bootstrap again, unchanged.
          If enforcing breaks installs, the way back is a Worker version with the gate open:
-         `npx wrangler deployments list`, then `npx wrangler rollback <version-id>` with
-         step 3's version (a bare `rollback` takes the deployment before the current one,
-         which a later `wrangler secret put` changes), or a deploy with `GATE = "open"`.
+         `npx wrangler deployments list` (the last 10; `npx wrangler versions list` goes
+         further back), then `npx wrangler rollback <version-id>` with step 3's version (a
+         bare `rollback` takes the deployment before the current one, which a later
+         `wrangler secret put` changes; wrangler asks before rolling back over changed
+         secrets), or a deploy with `GATE = "open"`.
          The weekly check fails while it is open. Then fix main and deploy main again.
       5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
          `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
