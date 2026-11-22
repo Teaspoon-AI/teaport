@@ -1,10 +1,10 @@
-# teaport download gate (src/index.js). Deployed by hand from worker/, not by CI:
+# teaport download gate (src/index.js). Deployed from main by .github/workflows/
+# worker-deploy.yml, after a reviewer approves its environment (D1 migrations, then
+# wrangler deploy). Set up once, by hand from worker/:
 #
 #   npx wrangler d1 create teaport-gate            # once: put its id in database_id below
-#   npx wrangler d1 migrations apply teaport-gate --remote
 #   npx wrangler secret put TOKEN_KEY              # once: openssl rand -hex 32
 #   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
-#   npx wrangler deploy
 #
 # GATE is "enforce": a gated download without a token answers 401. The switchover
 # (packaging/RELEASING.md) ran with GATE = "open" until the installer that accepts through
