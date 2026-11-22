@@ -1,9 +1,10 @@
 #
 # manifest/check.py's list of what a release manifest must name, against install.sh's reads:
-# from engine 1.7 on, the AI watermark's weights (engine.watermark) are one of them, by the
-# same rule install.sh's engine_release_marks applies. And how it reads the license gate's
-# answer to a download without a token, and to the same file asked for at a percent-encoded
-# path the gate is not routed on. Offline: the gate is a server on loopback.
+# from engine 1.7 on, the AI watermark's weights (engine.watermark) and the Mandarin dict
+# (engine.zh_dict) are among them, by the same rule install.sh's engine_release_from
+# applies. And how it reads the license gate's answer to a download without a token, and
+# to the same file asked for at a percent-encoded path the gate is not routed on. Offline:
+# the gate is a server on loopback.
 #
 # Run: python test_manifest_check.py   (or via pytest test_suite.py)
 #
@@ -26,32 +27,35 @@ def _check():
     return mod
 
 
-def _install_marks(release):
-    """install.sh's own answer: engine_release_marks and ENGINE_WATERMARK_FROM, as written."""
+def _install_from(release, var):
+    """install.sh's own answer: engine_release_from and its <var> (ENGINE_WATERMARK_FROM,
+    ENGINE_ZH_FROM), as written."""
     text = INSTALL.read_text()
-    first = re.search(r"^ENGINE_WATERMARK_FROM=.*$", text, re.M).group(0)
+    first = re.search(rf"^{var}=.*$", text, re.M).group(0)
     lines = text.splitlines()
-    start = lines.index("engine_release_marks() {")
+    start = lines.index("engine_release_from() {")
     end = next(i for i in range(start, len(lines)) if lines[i] == "}")
     fn = "\n".join(lines[start:end + 1])
-    p = subprocess.run(["bash", "-c", f'{first}\n{fn}\nengine_release_marks "$1"', "-", release],
+    p = subprocess.run(["bash", "-c", f'{first}\n{fn}\nengine_release_from "$1" "${var}"', "-", release],
                        capture_output=True, text=True)
     assert p.returncode in (0, 1), p.stderr
     return p.returncode == 0
 
 
-def test_the_watermark_rule_is_install_shs():
+def test_the_release_rules_are_install_shs():
     check = _check()
     for release in ("1.6", "1.6.9", "1.7", "1.7.0", "1.10", "2", "TODO", "unknown", "", "1.7-rc1"):
-        assert check.release_marks(release) == _install_marks(release), release
-    assert check.release_marks(None)
+        assert check.release_marks(release) == _install_from(release, "ENGINE_WATERMARK_FROM"), release
+        assert check.release_from(release, check.ZH_FROM) == _install_from(release, "ENGINE_ZH_FROM"), release
+    assert check.release_marks(None) and check.release_from(None, check.ZH_FROM)
 
 
 def test_a_release_that_marks_must_name_its_watermark():
     check = _check()
-    assert "engine.watermark" not in check.required({"engine": {"release": "1.6"}})
-    assert "engine.watermark" in check.required({"engine": {"release": "1.7"}})
-    assert "engine.watermark" in check.required({})   # no release named: fail closed
+    for entry in ("engine.watermark", "engine.zh_dict"):
+        assert entry not in check.required({"engine": {"release": "1.6"}})
+        assert entry in check.required({"engine": {"release": "1.7"}})
+        assert entry in check.required({})   # no release named: fail closed
     # What the channels carry today: stable (1.6) does not need it, beta (a placeholder) names one.
     stable = json.loads((REPO / "manifest/stable.json").read_text())
     beta = json.loads((REPO / "manifest/beta.json").read_text())
@@ -60,6 +64,9 @@ def test_a_release_that_marks_must_name_its_watermark():
     else:
         assert stable["engine"].get("watermark", {}).get("sha256"), "stable marks but names no watermark"
     assert "engine.watermark" in check.required(beta) and beta["engine"]["watermark"]["url"]
+    assert "engine.zh_dict" in check.required(beta) and beta["engine"]["zh_dict"]["url"]
+    if check.release_from(stable["engine"]["release"], check.ZH_FROM):
+        assert stable["engine"].get("zh_dict", {}).get("sha256"), "stable reads the Mandarin dict but names none"
 
 
 def test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open():
@@ -403,7 +410,7 @@ def test_access_api_must_not_end_in_a_slash():
 
 
 if __name__ == "__main__":
-    test_the_watermark_rule_is_install_shs()
+    test_the_release_rules_are_install_shs()
     test_a_release_that_marks_must_name_its_watermark()
     test_a_gated_file_must_be_refused_without_a_token_unless_the_gate_is_open()
     test_a_gated_file_is_asked_without_a_token_on_every_run()
