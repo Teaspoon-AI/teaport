@@ -360,18 +360,18 @@ def check(manifest_path, placeholders_ok, require_enforce=False):
                 if (how := bypassed(u)):
                     around.append(f"{where}: {u} -> {how}")
             problems.extend(around)
-            # Asked without a token on every run, token or not: a gate left open after the
-            # switchover shows up here, on pushes and the weekly run as well as on PRs.
+            # Asked without a token on every run, token or not: a live gate that is open
+            # (deployed from elsewhere than main, or set open by hand) shows up here, on pushes and the weekly run as well as on PRs.
             why = refused(url)
             if why == GATE_OPEN and require_enforce:
                 problems.append(f"{where}: {url} is served without a download token: the gate's GATE "
-                                "is still open (the switchover). Set GATE = \"enforce\" in "
-                                "worker/wrangler.toml and deploy (packaging/RELEASING.md)")
+                                "is open. main's worker/wrangler.toml enforces: deploy main's Worker "
+                                "(cd worker && npx wrangler deploy; packaging/RELEASING.md)")
             elif why == GATE_OPEN:
                 print(f"::warning::{where}: {url} is served without a download token: the gate's "
-                      "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
-                      "and deploy, in the PR after the installer that accepts is merged "
-                      "(packaging/RELEASING.md); the weekly run fails until then")
+                      "GATE is open. main's worker/wrangler.toml enforces: deploy main's Worker "
+                      "(cd worker && npx wrangler deploy; packaging/RELEASING.md); the weekly run "
+                      "fails until then")
             elif why:
                 problems.append(f"{where}: {url} -> {why}")
                 continue
