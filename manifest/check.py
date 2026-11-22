@@ -15,6 +15,9 @@
 #   - a url with no sha256 (models.voxtral.aux in a manifest without aux_sha256) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
+#   - with access, a brain.tag that is a release tag must be an installer that reads it:
+#     its install.sh says ACCESS_PROTOCOL=1. `teaport update` runs that tag's installer as
+#     root, and one from before the gate would download the gated files without a token.
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
@@ -50,6 +53,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -80,6 +84,9 @@ REQUIRED = (
 WATERMARK_FROM = "1.7"
 # The {repo, tag} entries install.sh clones (brain: the Discord bridge's source).
 REQUIRED_REPOS = ("brain",)
+GITHUB = "https://github.com"
+# What an installer that reads access says (install.sh, beside UPDATE_PROTOCOL=1).
+ACCESS_PROTOCOL = "\nACCESS_PROTOCOL=1\n"
 NPM_REGISTRY = "https://registry.npmjs.org"
 
 
@@ -263,26 +270,53 @@ def gate(manifest):
     return prefixes, problems
 
 
+def git(*args, cwd="/", timeout=60):
+    """git, anonymously, as on a fresh box: no credential helper or token from this
+    machine's git config (cwd "/" keeps a repository's own config out too), and no prompt."""
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, timeout=timeout, cwd=cwd,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
+             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+
+
 def resolves(repo, tag):
     """Whether an anonymous clone of github.com/<repo> at <tag> would work, as
     install.sh's `git clone --branch <tag>` does it. None if so, else why not."""
     # Exact refs: ls-remote matches a pattern's tail, so a bare "main" would also
     # accept refs/heads/heads/main or refs/tags/release/main, which clone rejects.
-    p = subprocess.run(
-        ["git", "ls-remote", "--exit-code", f"https://github.com/{repo}.git",
-         f"refs/heads/{tag}", f"refs/tags/{tag}"],
-        capture_output=True, text=True, timeout=60, cwd="/",
-        # Anonymous, as on a fresh box: no credential helper or token from this
-        # machine's git config (cwd "/" keeps a repository's own config out too), and
-        # no prompt.
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
-             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    p = git("ls-remote", "--exit-code", f"{GITHUB}/{repo}.git", f"refs/heads/{tag}", f"refs/tags/{tag}")
     if p.returncode == 0:
         return None
     if p.returncode == 2:
         return f"no branch or tag {tag!r} in github.com/{repo}"
     return (f"github.com/{repo} is not cloneable anonymously "
             f"({(p.stderr.strip().splitlines() or ['?'])[-1]})")
+
+
+def reads_access(repo, tag):
+    """None when the installer at <tag> of github.com/<repo> reads the manifest's access
+    (its install.sh says ACCESS_PROTOCOL=1), or when <tag> is not a release tag; else why
+    not. `teaport update` (packaging/deb/update_apply.py) runs only a release tag's
+    installer, the one it clones at the tag, and refuses a branch: so only a tag is asked.
+    One commit, without its other files: install.sh alone is read."""
+    url = f"{GITHUB}/{repo}.git"
+    p = git("ls-remote", "--exit-code", url, f"refs/tags/{tag}")
+    if p.returncode == 2:
+        return None   # a branch: teaport update installs nothing from it
+    if p.returncode != 0:
+        return f"cannot ask github.com/{repo} for tag {tag!r} ({(p.stderr.strip().splitlines() or ['?'])[-1]})"
+    with tempfile.TemporaryDirectory() as tmp:
+        p = git("clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout",
+                "--branch", tag, url, tmp, timeout=120)
+        if p.returncode == 0:
+            p = git("show", "HEAD:install.sh", cwd=tmp, timeout=120)
+        if p.returncode != 0:
+            return f"cannot read install.sh at {tag} ({(p.stderr.strip().splitlines() or ['?'])[-1]})"
+    if ACCESS_PROTOCOL not in p.stdout:
+        return (f"{tag}'s install.sh predates the license gate (no ACCESS_PROTOCOL=1), and this "
+                "manifest has access: `teaport update` would run it, and every gated download "
+                "would fail. Name a release tag cut after the gate merged (packaging/RELEASING.md)")
+    return None
 
 
 def check(manifest_path, placeholders_ok, require_enforce=False):
@@ -364,6 +398,8 @@ def check(manifest_path, placeholders_ok, require_enforce=False):
             placeholder(where, f"{repo}@{tag}")
             continue
         why = resolves(repo, tag)
+        if not why and where == "brain" and "access" in manifest:
+            why = reads_access(repo, tag)
         if why:
             problems.append(f"{where}: {why}")
         else:

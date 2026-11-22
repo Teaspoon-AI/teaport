@@ -275,10 +275,10 @@ def test_an_open_gate_fails_the_check_under_require_enforce():
     assert ok and "::error" not in text, text
 
 
-def test_only_the_weekly_run_requires_an_enforcing_gate():
-    """publish.yml's check step, run with python3 stubbed: --require-enforce on a schedule
-    event, and on no other."""
-    import os
+def _publish_step():
+    """publish.yml's check step: (its run script, with python3 stubbed to print its argv and
+    the DL_CHECK_TOKEN it gets; its env's DL_CHECK_TOKEN expression as a function of the
+    event and the secret, GitHub's && and || being Python's and and or)."""
     text = (REPO / ".github/workflows/publish.yml").read_text().splitlines()
     start = next(i for i, l in enumerate(text) if "The manifests name everything install.sh needs" in l)
     run = next(i for i in range(start, len(text)) if text[i].strip() == "run: |")
@@ -288,14 +288,103 @@ def test_only_the_weekly_run_requires_an_enforcing_gate():
         if line.strip() and len(line) - len(line.lstrip()) < indent:
             break
         body.append(line[indent:])
-    script = "set -eo pipefail\npython3() { echo \"python3 $*\"; }\n" + "\n".join(body)
+    script = ('set -eo pipefail\npython3() { echo "python3 $* token=${DL_CHECK_TOKEN}"; }\n'
+              + "\n".join(body))
+    [expr] = [re.fullmatch(r"\s*DL_CHECK_TOKEN: \$\{\{(.*)\}\}\s*", l).group(1)
+              for l in text[start:run] if l.strip().startswith("DL_CHECK_TOKEN:")]
+    py = expr.replace("&&", " and ").replace("||", " or ")
+    py = py.replace("github.event_name", "event").replace("secrets.DL_CHECK_TOKEN", "secret")
+    # Nothing else may be in it: names, quoted strings, comparisons, and/or.
+    assert re.fullmatch(r"(\s|event|secret|and|or|!=|==|'[a-z_]*')+", py), expr
+    return script, lambda event, secret: eval(py, {"__builtins__": {}}, {"event": event, "secret": secret})
+
+
+def _publish_run(script, event, token):
+    import os
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={**os.environ, "EVENT": event, "DL_CHECK_TOKEN": token})
+
+
+def test_only_the_weekly_run_requires_an_enforcing_gate():
+    """publish.yml's check step, run with python3 stubbed: --require-enforce on a schedule
+    event, and on no other."""
+    script, _ = _publish_step()
     for event in ("schedule", "push", "workflow_dispatch", "pull_request"):
-        p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                           env={**os.environ, "EVENT": event, "DL_CHECK_TOKEN": "t"})
+        p = _publish_run(script, event, "t")
         assert p.returncode == 0, (event, p.stdout, p.stderr)
         calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
         assert len(calls) == 2, (event, p.stdout)
         assert all(("--require-enforce" in c) == (event == "schedule") for c in calls), (event, calls)
+
+
+def test_only_a_pull_requests_run_goes_without_the_download_token():
+    """The step's env gives every run but a pull request's the DL_CHECK_TOKEN secret, and a
+    pull request's none even when the secret is set; a run that should have it and does not
+    fails before any check, with an ::error."""
+    script, token_for = _publish_step()
+    assert token_for("pull_request", "s3cret") == ""
+    for event in ("push", "schedule", "workflow_dispatch"):
+        assert token_for(event, "s3cret") == "s3cret", event
+        assert token_for(event, "") == "", event   # the secret not set
+        p = _publish_run(script, event, token_for(event, ""))
+        assert p.returncode == 1, (event, p.stdout, p.stderr)
+        assert "::error::DL_CHECK_TOKEN is not set" in p.stdout, (event, p.stdout)
+        assert "python3 manifest/check.py" not in p.stdout, (event, p.stdout)
+        p = _publish_run(script, event, token_for(event, "s3cret"))
+        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
+        assert p.returncode == 0 and len(calls) == 2 and all(c.endswith("token=s3cret") for c in calls), (event, p.stdout)
+    for secret in ("s3cret", ""):
+        p = _publish_run(script, "pull_request", token_for("pull_request", secret))
+        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
+        assert p.returncode == 0 and len(calls) == 2 and all(c.endswith("token=") for c in calls), (secret, p.stdout)
+
+
+def _origin(tmp):
+    """A repository standing in for github.com/o/r (check.GITHUB = file://<tmp>): tag
+    brain-old's install.sh predates the gate, tag brain-new's and branch dev's read access."""
+    bare = pathlib.Path(tmp, "o/r.git")
+    work = pathlib.Path(tmp, "work")
+    g = lambda *a, cwd=work: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
+                                            cwd=cwd, check=True, capture_output=True)
+    work.mkdir()
+    g("init", "-q", "-b", "dev")
+    (work / "install.sh").write_text("#!/bin/bash\nUPDATE_PROTOCOL=1\n")
+    g("add", "install.sh")
+    g("commit", "-qm", "before the gate")
+    g("tag", "brain-old")
+    (work / "install.sh").write_text("#!/bin/bash\nUPDATE_PROTOCOL=1\nACCESS_PROTOCOL=1\n")
+    g("commit", "-qam", "the gate")
+    g("tag", "brain-new")
+    bare.parent.mkdir()
+    g("clone", "-q", "--bare", str(work), str(bare), cwd=tmp)
+    g("config", "uploadpack.allowFilter", "true", cwd=bare)
+    return f"file://{tmp}"
+
+
+def test_with_access_a_release_tag_must_be_an_installer_that_reads_it():
+    """teaport update runs brain.tag's install.sh as root: with access in the manifest, a tag
+    from before the gate would download every gated file without a token. A branch is not
+    asked (teaport update refuses one), nor is anything without access."""
+    from tempdirs import tempdir
+    check = _check()
+    check.GITHUB = _origin(tempdir())
+    assert "predates the license gate" in check.reads_access("o/r", "brain-old")
+    assert check.reads_access("o/r", "brain-new") is None
+    assert check.reads_access("o/r", "dev") is None
+    check.bypassed = lambda u: None
+    check.refused = lambda u: None
+    for tag, access, passes in (("brain-old", True, False), ("brain-new", True, True), ("dev", True, True),
+                                ("brain-old", False, True)):
+        manifest = _gated_manifest(check)
+        manifest["brain"] = {"repo": "o/r", "tag": tag}
+        if not access:
+            del manifest["access"]
+            manifest["engine"]["f"]["url"] = f"https://{check.HOST}/dl/brain/f.deb"
+            manifest["models"]["m"]["url"] = f"https://{check.HOST}/dl/brain/m.deb"
+        ok, text = _run(check, manifest, "t")
+        assert ok == passes, (tag, access, text)
+        assert ("ACCESS_PROTOCOL" in text) == (not passes), (tag, access, text)
+    assert check.ACCESS_PROTOCOL in INSTALL.read_text()   # this tree's installer says it
 
 
 def test_access_api_must_not_end_in_a_slash():
@@ -323,5 +412,7 @@ if __name__ == "__main__":
     test_a_file_served_around_the_gate_is_an_error_on_every_run()
     test_an_open_gate_fails_the_check_under_require_enforce()
     test_only_the_weekly_run_requires_an_enforcing_gate()
+    test_only_a_pull_requests_run_goes_without_the_download_token()
+    test_with_access_a_release_tag_must_be_an_installer_that_reads_it()
     test_access_api_must_not_end_in_a_slash()
     print("ok")

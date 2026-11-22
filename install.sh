@@ -107,6 +107,12 @@ set -euo pipefail
 # it says this: it keeps the install trees root's and takes the run user's home as data.
 # shellcheck disable=SC2034  # read by update_apply.py, not here
 UPDATE_PROTOCOL=1
+# And this: it reads the manifest's access (the engine license gate) and downloads the gated
+# files with a token. manifest/check.py refuses a manifest with access whose brain.tag is a
+# release tag without it: `teaport update` would run that tag's installer, and its gated
+# downloads would all fail.
+# shellcheck disable=SC2034  # read by manifest/check.py, not here
+ACCESS_PROTOCOL=1
 
 MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
