@@ -6,8 +6,11 @@
 #   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
 #   npx wrangler deploy
 #
-# Switchover: deploy with GATE = "open", merge the installer that accepts through this
-# Worker, then set GATE = "enforce" and deploy again (packaging/RELEASING.md).
+# Switchover (packaging/RELEASING.md): deployed with GATE = "open", which serves an
+# anonymous download (x-teaport-gate: open). Next, delete teaport-get's dl/engine/* and
+# dl/models/* (a copy there is served around these routes at a percent-encoded path), then
+# merge the installer that accepts through this Worker. Then a follow-up PR sets
+# GATE = "enforce" and deploys it; only from then does an anonymous download answer 401.
 # The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated
 # download paths only; everything else there is still the public bucket teaport-get.
 name = "teaport-download-gate"

@@ -132,11 +132,37 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       engine license is accepted; a copy in `teaport-get` would be public. Its
       `THIRD_PARTY_NOTICES.txt` goes to `teaport-get` under `dl/notices/`, public on
       purpose.
-- [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves the
-      gated files without a token, and is for the switchover only: deploy the Worker open,
-      merge the installer that accepts through it, then set `"enforce"` and deploy again
-      (`cd worker && npx wrangler deploy`). While it is open, every `publish` run (pull
-      requests, merges and the weekly check) warns on every gated file.
+- [ ] No gated file is left in `teaport-get`. The Worker is routed on
+      `get.teaspoon.tech/dl/engine/*` and `/dl/models/*`, and a percent-encoded path
+      (`dl%2Fengine%2F…`, `dl/engine%2F…`) matches neither route, so the public bucket
+      answers it: a copy left there is served to anyone, around the gate. The `publish`
+      check asks for every gated file that way on every run, and fails on a 2xx.
+- [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves a gated
+      file to a request without a token (marked `x-teaport-gate: open`), and is for the
+      switchover only. While it is open, every `publish` run warns on every gated file,
+      and the weekly run fails (`check.py --require-enforce`). The switchover, in order:
+      1. Done: the private bucket `teaport-engine-dist` holds the gated files, the D1
+         database and the Worker's secrets (`TOKEN_KEY`, `CHECK_TOKEN`, and the repo
+         secret `DL_CHECK_TOKEN`) are set, the notices are in `teaport-get` under
+         `dl/notices/`, and the Worker is deployed with `GATE = "open"`. An anonymous
+         download is served (`curl -sI` on a gated URL: 200, `x-teaport-gate: open`), so
+         the installer on main, which predates the gate, still downloads, through the
+         Worker.
+      2. Before the merge: delete `dl/engine/*` and `dl/models/*` from `teaport-get`.
+         main's installer already downloads them through the Worker, so nothing reads
+         those copies; until they go, the encoded-path check fails. Then
+         `curl -sI 'https://get.teaspoon.tech/dl%2Fengine%2Fteaport-engine-1.6-pos.bin'`
+         answers 404.
+      3. Merge the installer that accepts through the Worker.
+      4. In a follow-up PR, set `GATE = "enforce"`; merge it and deploy
+         (`cd worker && npx wrangler deploy`). Only now is a gated file refused without a
+         token: `curl -sI` on one answers 401. Then check accept → token → a ranged
+         download with a real install.
+      5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
+         `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
+         merge names the notices under `dl/engine/`, which the open Worker serves from
+         there. The notices' place is `teaport-get` `dl/notices/`; once the gate enforces,
+         nothing should read the copy.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

@@ -65,10 +65,19 @@ to get a new token.
 ## Who else sees it
 
 - **Cloudflare** hosts the database and the Worker, and acts as Teaspoon AI's processor.
-- **Workers Logs** (observability is on in `worker/wrangler.toml`) keeps request metadata
-  for Cloudflare's log retention period for the plan, a few days. That metadata includes the
-  client IP and the request URL. It does not include the request body, so the name and email
-  are not logged.
+- **Workers Logs** (observability is on in `worker/wrangler.toml`). For each request the
+  Worker handles, Cloudflare keeps an invocation log that "contains details such as the
+  Request, Response, and related metadata", enriched with "information available to
+  Cloudflare in the context of the invocation"; for a request, the log's message is its
+  method and URL
+  ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)).
+  That page does not list the fields and says nothing about redacting any, so assume the
+  request's headers are among them: the client's IP address, the user agent, and, on a
+  download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
+  it say whether the request body is recorded. The Worker itself writes nothing to the
+  logs (it has no `console.log`); the name and email travel only in the body of
+  `POST /api/accept`. Setting `invocation_logs = false` under `[observability.logs]` turns
+  the invocation logs off.
 
 ## How long
 
@@ -81,7 +90,8 @@ to get a new token.
   installer asks for acceptance again.
   **This period is a proposal to confirm with counsel. It is an open item of the engine
   license work.** If the period changes, change `RETENTION_DAYS` and this note together.
-- **Workers Logs:** Cloudflare's retention for the plan, a few days.
+- **Workers Logs:** Cloudflare's retention for the plan: 3 days on Workers Free, 7 days
+  on Workers Paid (the same page).
 - **The box's copy:** until the box is wiped. It is the owner's own record.
 
 ## Why (for the privacy notice)
