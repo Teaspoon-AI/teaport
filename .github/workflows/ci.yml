@@ -218,6 +218,18 @@ jobs:
         working-directory: plugin
         run: npm test
 
+  worker:
+    # The download gate Worker (worker/), against fake R2 buckets and a real SQLite D1
+    # built from its migrations. node:sqlite needs Node 22.13 or later.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Test the download gate
+        run: node --test worker/test/*.test.mjs
+
   formal:
     # brain/formal/check.sh model-checks every row in brain/formal/*.tla and gates on
     # the expectation each row declares (see the script's header) -- an "expected:
