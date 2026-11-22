@@ -58,7 +58,7 @@ const WORDS = [
 ];
 
 // Lowercase words that may stay capitalized inside a sentence-case heading.
-const PROPER = /^(teaport|Jetson|Orin|Nano|NX|AGX|JetPack|NVIDIA|CUDA|OpenClaw|NemoClaw|Pipecat|Discord|ReSpeaker|XVF3800|Linux|Ubuntu|SSH|SIP|LLM|STT|TTS|AEC|API|URL|USB|GPU|CPU|RAM|JSON|HTTP|HTTPS|Wi-Fi|OLED|I2C|ALSA|L4T|SDK|ISO|OpenRouter|Groq|Cerebras|OpenAI|Node\.js|MAXN|SUPER|FAQ|CLI|IP|DNS|VAD|G2P|Kokoro|Voxtral|Dev|Kit|I|systemd)$/;
+const PROPER = /^(teaport|Jetson|Orin|Nano|NX|AGX|JetPack|NVIDIA|CUDA|OpenClaw|NemoClaw|Pipecat|Discord|ReSpeaker|XVF3800|Linux|Ubuntu|SSH|SIP|LLM|STT|TTS|AEC|API|URL|USB|GPU|CPU|RAM|JSON|HTTP|HTTPS|Wi-Fi|OLED|I2C|ALSA|L4T|SDK|ISO|OpenRouter|Groq|Cerebras|OpenAI|Node\.js|MAXN|SUPER|FAQ|CLI|IP|DNS|VAD|G2P|Kokoro|Voxtral|Mandarin|Dev|Kit|I|systemd)$/;
 
 // Source comments. A comment cites the product files a page states facts from:
 //   <!-- source: install.sh:375-386#3f9a2c1b; brain/x.py:1-4,9#aa11bb22 -->
