@@ -346,53 +346,26 @@ async def test_a_control_call_goes_to_the_relay_and_its_result_is_said_in_plain_
 
 async def test_a_control_that_cancelled_tells_the_owed_book():
     """The model's cancel aborted the session's lane: an empty consult whose run returned
-    first gets no "cancelled" of its own, so the cancel is noted (Owed.note_cancel). A
-    control that did not cancel notes nothing."""
+    first gets no "cancelled" of its own, so the cancel is noted (Owed.note_cancel), read
+    from the result's fields. A control that did not cancel, or a status, notes nothing."""
     class Owed:
         def __init__(self):
-            self.asked, self.answers = [], []
+            self.noted = 0
 
-        def cancel_asked(self, wait):
-            self.asked.append(wait)
-            return "token"
+        def note_cancel(self):
+            self.noted += 1
 
-        def cancel_answered(self, token, aborted):
-            self.answers.append((token, aborted))
-
-    for answer, aborted in ((_CANCELLED, True),
-                            ({**_CANCELLED, "ok": False, "aborted": False,
-                              "message": "OpenClaw could not cancel the active run."}, False)):
+    for args, answer, noted in (
+            ({"text": "cancel that", "mode": "cancel"}, _CANCELLED, 1),
+            ({"text": "cancel that", "mode": "cancel"},
+             {**_CANCELLED, "ok": False, "aborted": False,
+              "message": "OpenClaw could not cancel the active run."}, 0),
+            ({"text": "how long?", "mode": "status"},
+             {"ok": True, "mode": "status", "message": "Still working."}, 0)):
         owed, llm = Owed(), _LLM(answer=lambda msg, a=answer: a)
-        params, _ = _params(llm, {"text": "cancel that", "mode": "cancel"})
+        params, _ = _params(llm, args)
         await tools._openclaw_agent_control(params, owed=owed)
-        assert owed.asked == [tools.CONTROL_TIMEOUT_S], "asked as it is sent"
-        assert owed.answers == [("token", aborted)], (answer["message"], owed.answers)
-    # An explicit cancel with no result in time may have gone through: counted as one.
-    # A mode-less call that times out is not presumed a cancel.
-    saved = tools.CONTROL_TIMEOUT_S
-    tools.CONTROL_TIMEOUT_S = 0.05
-    try:
-        for args, aborted in (({"text": "cancel that", "mode": "cancel"}, True),
-                              ({"text": "and the prices"}, False)):
-            owed, llm = Owed(), _LLM(answer=lambda msg: None)
-            params, _ = _params(llm, args)
-            await tools._openclaw_agent_control(params, owed=owed)
-            assert owed.answers == [("token", aborted)], (args, owed.answers)
-    finally:
-        tools.CONTROL_TIMEOUT_S = saved
-    # Never sent (the client cannot be reached): OpenClaw was asked nothing.
-    class Down(_LLM):
-        async def push_frame(self, frame, direction=None):
-            raise RuntimeError("the pipeline is gone")
-
-    owed, llm = Owed(), Down()
-    params, _ = _params(llm, {"text": "cancel that", "mode": "cancel"})
-    await tools._openclaw_agent_control(params, owed=owed)
-    assert owed.asked == [], "a call never sent is no cancel asked"
-    owed, llm = Owed(), _LLM(answer=lambda msg: _CANCELLED)
-    params, _ = _params(llm, {"text": "how long?", "mode": "status"})
-    await tools._openclaw_agent_control(params, owed=owed)
-    assert owed.asked == [], "a status is no cancel asked"
+        assert owed.noted == noted, (args, answer["message"], owed.noted)
 
 
 async def test_a_control_with_nothing_in_progress_leaves_a_new_request_to_be_done():

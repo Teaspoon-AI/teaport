@@ -425,12 +425,6 @@ _HELD = "held for its placeholder"
 # it is not to be started again unless the user asks.
 CANCELLED_NOTE = ("OpenClaw stopped this before it finished, so there is no result. Don't "
                   "start it again unless the user asks.")
-# What a superseded consult's tool result says (Owed.dispatch): it came back empty while
-# the same request was asked again, and that later call is the one to wait on.
-SUPERSEDED_NOTE = ("The same request was asked again before this one's result was in; "
-                   "its result is that later call's.")
-# What settle_empty returns for a superseded consult.
-SUPERSEDED = "superseded"
 
 
 # A billing failure -- out of credit, or a bare 402 -- where open_settings is offered
@@ -1074,20 +1068,10 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
-        # When OpenClaw cancelled runs in this session lately, as spans (time.monotonic()
-        # from, to): the moment itself for a cancel seen, or from the model's ask to its
-        # answer for one it asked (cancel_answered), the abort lying somewhere inside. Kept
-        # for CANCEL_TIMES_KEPT_S; and the event that wakes a settle_empty (note_cancel).
-        self._cancel_spans: list = []
+        # When OpenClaw cancelled runs in this session lately (time.monotonic(), kept for
+        # CANCEL_TIMES_KEPT_S), and the event that wakes a settle_empty (note_cancel).
+        self._cancel_times: list = []
         self._cancel_seen = asyncio.Event()
-        # token -> (asked at, wait until): the model's cancels not answered yet
-        # (cancel_asked).
-        self._cancels_asked: dict = {}
-        # Settling consults whose words were asked again during their grace (dispatch):
-        # the re-ask runs, and the settling one closes without a record, superseded.
-        self._superseded: set = set()
-        # re-ask key -> the settling key it will supersede once its waiter runs.
-        self._to_supersede: dict = {}
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1240,7 +1224,7 @@ class Owed:
 
     # ---- Land ---------------------------------------------------------------------
 
-    def dispatch(self, key: str, request: str, *, supersede: bool = True) -> Optional[str]:
+    def dispatch(self, key: str, request: str) -> Optional[str]:
         """A consult is asked for (tools.openclaw_agent_consult). None: it runs, and its
         placeholder is in the context until land() rewrites it or the session ends
         (close_session). Otherwise the key of the consult already running for this exact
@@ -1248,16 +1232,10 @@ class Owed:
         one's outcome answers both (land() rewrites this placeholder to point at it).
         Not one settling (settle_empty): its run has ended, empty, so there is nothing to
         share -- the same words asked again run again, as they did when an empty landed
-        at once, and a sibling's cancel does not close the re-ask with it. The settling
-        one is superseded once the re-ask's waiter runs (waiter_started): it then closes
-        without a record (settle_empty), so the caller is not told "it found nothing" of a
-        request already running again -- and a re-ask whose handler never got that far
-        leaves it to land as what it is. `supersede` False (asked as the session ends,
-        with no waiter to land it): never superseded."""
+        at once, and a sibling's cancel does not close the re-ask with it; the settling one
+        lands as what it is."""
         running = self._running.get(request)
         if running in self._settling:
-            if supersede:
-                self._to_supersede[key] = running
             running = None
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
@@ -1268,26 +1246,8 @@ class Owed:
         self._running[request] = key
         return None
 
-    def waiter_started(self, key) -> None:
-        """The consult `key`'s waiter is running (tools._consult_and_land), so it will be
-        landed: a settling empty its dispatch is a re-ask of is superseded now, if it has
-        not landed meanwhile."""
-        superseded = self._to_supersede.pop(key, None)
-        if superseded is None or superseded not in self._settling:
-            return
-        self._superseded.add(superseded)
-        # It and its duplicates are this re-ask's now: the superseded one has no result.
-        # Its waiter is woken: nothing is left to wait for.
-        for answer in self._answers.values():
-            if answer.record == superseded:   # it, and any an earlier supersede moved
-                answer.record = key
-        for dup in [d for d, of in self._duplicates.items() if of == superseded]:
-            self._duplicates[dup] = key
-        self._cancel_seen.set()
-        self._cancel_seen = asyncio.Event()
-
     def land(self, request, text, key, *, failure=None, detail="",
-             ask=True, by_openclaw=True, superseded=False) -> Optional[Record]:
+             ask=True, by_openclaw=True) -> Optional[Record]:
         """The consult landed: rewrite its placeholder to the cleaned outcome (the only
         context write delivery makes; one that lands before its placeholder is in the
         context is written when it comes in: _rewrite), make the record owed, and ask the
@@ -1306,10 +1266,8 @@ class Owed:
         if self._running.get(request) == key:
             del self._running[request]
         self._settling.pop(key, None)
-        self._superseded.discard(key)
         if failure == "cancelled":
-            self._cancelled(key, detail, by_openclaw=by_openclaw and not superseded,
-                            superseded=superseded)
+            self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
         outcome = clean_outcome(text) if text else None
         status = "complete"
@@ -1339,8 +1297,7 @@ class Owed:
             self.gate.ask([key], RUN, self.context)
         return rec
 
-    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True,
-                   superseded: bool = False) -> None:
+    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True) -> None:
         """OpenClaw stopped the consult (consult_bridge.classify): the caller called it
         off, and the relay's spoken run control cancelled the run and says so itself; or
         the run was aborted. Its placeholder becomes the cancellation, so the model neither
@@ -1351,71 +1308,35 @@ class Owed:
         self._questions.pop(key, None)
         if by_openclaw:
             self.note_cancel()
-        rewrote = self._rewrite(key, {"status": "superseded", "note": SUPERSEDED_NOTE}
-                                if superseded else
-                                {"status": "cancelled", "note": CANCELLED_NOTE})
+        rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
-        why = ("superseded by the same request asked again" if superseded
-               else "cancelled by OpenClaw" if by_openclaw
-               else "read as an OpenClaw cancel's sibling")
+        why = "cancelled by OpenClaw" if by_openclaw else "read as an OpenClaw cancel's sibling"
         logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
 
-    def cancel_asked(self, wait: float) -> object:
-        """The model asked OpenClaw to cancel (tools._openclaw_agent_control), now: a token
-        for cancel_answered. A settling empty whose window holds this moment waits for the
-        answer, up to `wait` (settle_empty): the abort comes after the ask and before its
-        result, which the Control UI can hold while audio plays."""
-        token = object()
+    def note_cancel(self) -> None:
+        """OpenClaw cancelled a run in this session's lane, now: noted for settle_empty,
+        and a waiting one woken. From a consult that came back cancelled (_cancelled), the
+        run control's own status for a cancel in the relay's host note "Cancelled the
+        active OpenClaw run." (ClientNotes `on_cancel`) -- the only word of a cancel whose
+        consult returned its empty final first -- and the model's own control result that
+        aborted the run (tools._openclaw_agent_control), when it reaches the brain."""
         now = time.monotonic()
-        self._cancels_asked = {t: v for t, v in self._cancels_asked.items() if v[1] > now}
-        self._cancels_asked[token] = (now, now + wait)
-        # A settling empty already waiting sees the ask now, and waits for its answer.
-        self._cancel_seen.set()
-        self._cancel_seen = asyncio.Event()
-        return token
-
-    def cancel_answered(self, token, aborted: bool) -> None:
-        """The answer to cancel_asked: an abort is noted as the span from the ask to now,
-        since OpenClaw aborted somewhere in it (the Control UI can hold the result while
-        audio plays, and the control can wait on the run's queue). A consult sent after
-        the answer is not read beside it. Not aborted: nothing noted, and a waiter is
-        woken. Never answered (no result came): the ask lapses at its wait."""
-        entry = self._cancels_asked.pop(token, None)
-        if entry is None:
-            return
-        if aborted:
-            self.note_cancel(since=entry[0])
-        else:
-            self._cancel_seen.set()
-            self._cancel_seen = asyncio.Event()
-
-    def note_cancel(self, since: Optional[float] = None) -> None:
-        """OpenClaw cancelled a run in this session's lane: noted for settle_empty, and a
-        waiting one woken. From a consult that came back cancelled (_cancelled), and from
-        the run control's own status for a cancel, the relay's host note "Cancelled the
-        active OpenClaw run." (ClientNotes `on_cancel`): the only word of a cancel whose
-        consult returned its empty final first. `since`: the cancel happened between then
-        and now (cancel_answered); else at this moment."""
-        now = time.monotonic()
-        self._cancel_spans = [(a, z) for a, z in self._cancel_spans
-                              if z >= now - CANCEL_TIMES_KEPT_S]
-        self._cancel_spans.append((now if since is None else since, now))
+        self._cancel_times = [t for t in self._cancel_times if t >= now - CANCEL_TIMES_KEPT_S]
+        self._cancel_times.append(now)
         self._cancel_seen.set()
         self._cancel_seen = asyncio.Event()
 
     async def settle_empty(self, request, key, since: float,
                            grace: Optional[float] = None, *,
-                           detail: str = "") -> "bool | str | None":
+                           detail: str = "") -> Optional[bool]:
         """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
         of a run OpenClaw just cancelled (cancelled_since)? tools._consult_and_land's entry
         point: it registers the wait for dispatch and close_session. While it waits
         no dispatch folds into it (dispatch). The session's end closes it with the
         outcome it has by then, read on the same window (close_session), and None says
         so: it is landed, and the caller lands nothing. On a book already closed it
-        waits for nothing: False, landed as it is, as before. SUPERSEDED (a
-        truthy string: compare to it before reading the result as a bool) when the same
-        words were asked again during the grace, whatever cancel came.
+        waits for nothing: False, landed as it is, as before.
 
         It waits even with no other consult open: OpenClaw's relay submits a consult's
         result when its run returns, and a run the spoken cancel aborted can return its
@@ -1432,19 +1353,14 @@ class Owed:
         # Cancelled mid-wait, the entry stays: that is the session's teardown
         # (end_with_session cancels the consult's task before close_session runs), and
         # close_session lands it from it, as empty or a cancel's sibling.
-        sibling = await self.cancelled_since(since, grace, window=window, key=key)
-        if self._closed:
-            return None
-        # Superseded first: the same request runs again, and must not be told it was
-        # stopped (CANCELLED_NOTE) even with a cancel in the window.
-        return SUPERSEDED if key in self._superseded else sibling
+        sibling = await self.cancelled_since(since, grace, window=window)
+        return None if self._closed else sibling
 
     def _cancel_in(self, floor: float, deadline: float) -> bool:
-        """A cancel whose span overlaps [floor, deadline]."""
-        return any(a <= deadline and z >= floor for a, z in self._cancel_spans)
+        return any(floor <= t <= deadline for t in self._cancel_times)
 
     async def cancelled_since(self, since: float, grace: Optional[float] = None, *,
-                              window: Optional[tuple] = None, key=None) -> bool:
+                              window: Optional[tuple] = None) -> bool:
         """Did OpenClaw cancel a consult in this session within `grace` seconds of now,
         before or after, and not before `since` (a time.monotonic() reading: when the
         asking consult started)? `window` (floor, deadline): the one settle_empty
@@ -1455,8 +1371,7 @@ class Owed:
         stays empty. Only cancels OpenClaw reported count (note_cancel): a consult that
         came back "cancelled" (_cancelled `by_openclaw`), the run control's cancel status
         in a host note (ClientNotes on_cancel), and the model's own control result that
-        aborted the run (tools._openclaw_agent_control, at the time it was asked: a
-        settling empty waits for that answer, cancel_asked).
+        aborted the run (tools._openclaw_agent_control), as each reaches the brain.
         Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
         transition.
 
@@ -1472,25 +1387,19 @@ class Owed:
         while True:
             if self._cancel_in(floor, deadline):
                 return True
-            now = time.monotonic()
-            # A cancel the model asked before the window ends, not answered yet: its abort
-            # can come any time until its answer, inside the window too, so the answer is
-            # waited for (cancel_asked).
-            held = [until for at, until in self._cancels_asked.values()
-                    if at <= deadline and until > now]
-            left = max(deadline, *held) - now if held else deadline - now
-            if left <= 0 or self._closed or key in self._superseded:
+            left = deadline - time.monotonic()
+            if left <= 0 or self._closed:
                 return False
             try:
                 await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)
             except asyncio.TimeoutError:
-                continue  # read again: a cancel, or an ask made meanwhile, is counted
+                continue  # read again: a cancel noted as the wait ran out still counts
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
         for dup in [d for d, of in self._duplicates.items() if of == key]:
             self._rewrite(dup, {"status": "duplicate",
-                                "note": "The same request as another call; its result "
+                                "note": "The same request as an earlier call; its result "
                                         "is that call's."})
             del self._duplicates[dup]
 
@@ -2196,18 +2105,14 @@ class Owed:
         # window is cut at the close: a cancel still on its way no longer counts. Only the
         # room keeps records past a session, and it has no relay, so none settle there.
         for key, (request, floor, deadline, detail) in list(self._settling.items()):
-            superseded = key in self._superseded
-            sibling = not superseded and self._cancel_in(floor, deadline)
+            sibling = self._cancel_in(floor, deadline)
             if sibling:
                 # Warned as tools._consult_and_land warns it: the read is by timing.
                 logger.warning(f"OWED: {key}'s empty came beside OpenClaw cancelling a run "
                                f"in this session -- closed with the session as cancelled")
-            self.land(request, None, key,
-                      failure="cancelled" if sibling or superseded else "empty",
+            self.land(request, None, key, failure="cancelled" if sibling else "empty",
                       detail="empty beside an OpenClaw cancel in this session" if sibling
-                      else "empty, the same request asked again" if superseded
-                      else detail,
-                      by_openclaw=False, superseded=superseded)
+                      else detail, by_openclaw=False)
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()

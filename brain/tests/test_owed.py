@@ -849,9 +849,8 @@ async def test_a_settling_empty_is_no_dispatch_target_and_closes_with_the_sessio
     waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", began, grace=5.0))
     await asyncio.sleep(0)
     assert b.dispatch("b", HN_REQ) is None, "a finished run is no fold target"
-    b.waiter_started("b")
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
-    assert await waiting == "superseded", "asked again: superseded, whatever cancel came"
+    assert await waiting is True, "the cancel's sibling, re-ask or not"
     b.close_session()
     owed = {r.key: r.failure for r in b.owed()}
     assert "a" not in owed and owed.get("b") == "unknown", owed
@@ -892,14 +891,14 @@ async def test_a_cancel_burst_does_not_hide_one_inside_the_window():
     b.dispatch("a", HN_REQ)
     b.dispatch("c", "something else")
     b.land("something else", None, "c", failure="cancelled", detail="Cancelled.")
-    first = b._cancel_spans[-1][1]
+    first = b._cancel_times[-1]
     await asyncio.sleep(0.01)
     for k in range(5):                           # the rest of the burst, after it
         b.dispatch(f"x{k}", f"more {k}")
         b.land(f"more {k}", None, f"x{k}", failure="cancelled", detail="Cancelled.")
     for _ in range(40):
         b.note_cancel()                          # a burst far past any count
-    assert b._cancel_spans[-1][1] > first
+    assert b._cancel_times[-1] > first
     assert b._cancel_in(first, first), "the first cancel is still known after the burst"
 
 
@@ -954,101 +953,6 @@ async def test_teardown_cancelling_a_settle_first_still_lands_it_as_what_it_is()
     assert owed == {"a": "empty", "c": "unknown"}, owed
 
 
-async def test_a_superseded_ones_duplicates_point_at_the_re_ask():
-    """A duplicate folded into a consult later superseded answers to the re-ask now, not
-    to a call that has no result."""
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("d") + tool_round("b") + tool_round("c"))
-    b.dispatch("a", HN_REQ)
-    assert b.dispatch("d", HN_REQ) == "a"
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
-    await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) is None
-    b.waiter_started("b")
-    assert b._duplicates["d"] == "b" and b._answers["d"].record == "b"
-    assert b._answers["a"].record == "b", "the superseded call's own answer follows too"
-    await waiting
-    # A chain: b comes back empty and the words are asked again as c.
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "b", time.monotonic(), grace=0.05))
-    await asyncio.sleep(0)
-    assert b.dispatch("c", HN_REQ) is None
-    b.waiter_started("c")
-    assert {k: b._answers[k].record for k in ("a", "b", "d")} == {"a": "c", "b": "c", "d": "c"}
-    await waiting
-
-
-async def test_a_superseded_empty_stops_waiting_at_once():
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
-    b.dispatch("a", HN_REQ)
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
-    await asyncio.sleep(0)
-    t0 = time.monotonic()
-    b.dispatch("b", HN_REQ)
-    b.waiter_started("b")
-    assert await waiting == "superseded" and time.monotonic() - t0 < 1.0
-
-
-async def test_a_re_ask_whose_handler_never_started_its_waiter_supersedes_nothing():
-    """The re-ask was dispatched but its handler left (cancelled mid-send) before its
-    waiter ran: the settling empty is left to land as what it is, and is told."""
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
-    b.dispatch("a", HN_REQ)
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
-    await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) is None       # and no waiter_started("b")
-    assert await waiting is False, "not superseded: it lands as the empty it was"
-
-
-async def test_a_re_ask_as_the_session_ends_supersedes_nothing():
-    """Asked as the session ends, with no waiter to land it: the settling empty is left
-    to land as what it is (it did report back), and the re-ask runs on its own."""
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
-    b.dispatch("a", HN_REQ)
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=5.0))
-    await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ, supersede=False) is None
-    assert "a" not in b._superseded
-    b.close_session()
-    assert await waiting is None
-    assert b.record("a").failure == "empty", "it came back empty, and says so"
-
-
-async def test_superseded_wins_over_a_cancel_in_the_window():
-    """Asked again during the grace AND a cancel in the window: superseded, never told it
-    was stopped, since the same request is running again."""
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
-    b.dispatch("a", HN_REQ)
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.2))
-    await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) is None
-    b.waiter_started("b")
-    b.note_cancel()
-    assert await waiting == "superseded"
-
-
-async def test_a_settling_empty_asked_again_is_superseded_not_owed():
-    """The words asked again during an empty's grace: the re-ask runs, and the settling
-    one closes without a record, so the caller is not told it found nothing while the
-    same request runs again. A duplicate of a running consult still folds."""
-    import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("b") + tool_round("c") + tool_round("d"))
-    b.dispatch("c", "something else")
-    assert b.dispatch("d", "something else") == "c", "a duplicate of a running one folds"
-    b.dispatch("a", HN_REQ)
-    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.1))
-    await asyncio.sleep(0)
-    assert b.dispatch("b", HN_REQ) is None
-    b.waiter_started("b")
-    assert await waiting == "superseded", "superseded: closed silently, not as a cancel"
-    b.land(HN_REQ, None, "a", failure="cancelled", detail="x", by_openclaw=False,
-           superseded=True)
-    assert b.record("a") is None and not b._cancel_spans, "no record, and no cancel noted"
-
-
 async def test_settle_empty_on_a_closed_book_lands_as_before():
     """close_session landed the running consult "unknown"; its empty arriving after is
     landed over it, as before this PR (it did report back)."""
@@ -1059,79 +963,19 @@ async def test_settle_empty_on_a_closed_book_lands_as_before():
     assert await b.settle_empty(HN_REQ, "a", time.monotonic()) is False
 
 
-async def test_a_lone_empty_waits_for_the_models_cancel_held_past_the_grace():
-    """The model asked a cancel; OpenClaw aborted, its run returned empty first, and the
-    Control UI held the result while audio played -- past the grace. The empty waits for
-    the answer and counts the abort at the ask; a consult sent after the ask does not."""
+async def test_a_re_ask_during_the_grace_runs_and_the_empty_lands_as_it_is():
+    """The same words asked again while an empty waits out its grace: the re-ask runs as
+    a consult of its own, and the settling one lands as the empty it was -- as main does
+    when an empty lands at once."""
     import time
-    b, _, _ = book(msgs=tool_round("a") + tool_round("c"))
+    b, _, _ = book(msgs=tool_round("a") + tool_round("b"))
     b.dispatch("a", HN_REQ)
-    a_sent = time.monotonic()
-    token = b.cancel_asked(5.0)
-
-    async def answer_late():
-        await asyncio.sleep(0.15)                # past the 0.05 grace
-        b.cancel_answered(token, True)
-
-    t = asyncio.create_task(answer_late())
-    assert await b.settle_empty(HN_REQ, "a", a_sent, grace=0.05) is True
-    await t
-    b.dispatch("c", "something sent after the ask")
-    assert await b.settle_empty("something sent after the ask", "c", time.monotonic(),
-                                grace=0.05) is False, "sent after the ask: not its sibling"
-
-    b2, _, _ = book(msgs=tool_round("a"))
-    b2.dispatch("a", HN_REQ)
-    token = b2.cancel_asked(5.0)
-    t0 = time.monotonic()
-
-    async def answer_no():
-        await asyncio.sleep(0.05)
-        b2.cancel_answered(token, False)
-
-    t = asyncio.create_task(answer_no())
-    assert await b2.settle_empty(HN_REQ, "a", t0 - 0.01, grace=0.02) is False
-    assert time.monotonic() - t0 < 1.0, "woken by the answer, not the ask's whole wait"
-    await t
-
-
-async def test_a_model_cancel_that_aborted_long_after_its_ask_still_counts():
-    """Asked at T; OpenClaw aborted at T+1.5 (the control waited on the run's queue), and
-    the run returned its empty at T+1.4: the ask is before the empty's window, but its
-    span reaches into it, so the empty is the cancel's sibling."""
-    import time
-    b, _, _ = book(msgs=tool_round("a"))
-    b.dispatch("a", HN_REQ)
-    a_sent = time.monotonic()
-    token = b.cancel_asked(5.0)
-    await asyncio.sleep(0.15)                    # longer than the empty's grace
-
-    async def answer_soon():
-        await asyncio.sleep(0.05)
-        b.cancel_answered(token, True)
-
-    t = asyncio.create_task(answer_soon())
-    assert await b.settle_empty(HN_REQ, "a", a_sent, grace=0.1) is True
-    await t
-
-
-async def test_a_cancel_asked_while_an_empty_waits_extends_its_wait():
-    """The empty is already waiting when the model asks a cancel: the ask wakes it, and it
-    waits for the answer, whose abort at the ask is inside its window."""
-    import time
-    b, _, _ = book(msgs=tool_round("a"))
-    b.dispatch("a", HN_REQ)
-    t0 = time.monotonic()
-
-    async def ask_then_answer():
-        await asyncio.sleep(0.03)
-        token = b.cancel_asked(5.0)
-        await asyncio.sleep(0.2)                 # the answer comes past the grace
-        b.cancel_answered(token, True)
-
-    t = asyncio.create_task(ask_then_answer())
-    assert await b.settle_empty(HN_REQ, "a", t0, grace=0.1) is True
-    await t
+    waiting = asyncio.create_task(b.settle_empty(HN_REQ, "a", time.monotonic(), grace=0.05))
+    await asyncio.sleep(0)
+    assert b.dispatch("b", HN_REQ) is None
+    assert await waiting is False
+    b.land(HN_REQ, None, "a", failure="empty")
+    assert b.record("a").failure == "empty"
 
 
 async def test_a_lone_empty_waits_for_the_run_controls_word_of_a_cancel():
@@ -1163,7 +1007,7 @@ async def test_a_cancel_landing_as_the_grace_runs_out_still_counts():
     class Late:
         """A cancel time lands inside the window with no wake-up, as the wait runs out."""
         async def wait(self):
-            b._cancel_spans.append((time.monotonic(), time.monotonic()))
+            b._cancel_times.append(time.monotonic())
             await asyncio.sleep(10)
 
     b._cancel_seen = Late()
