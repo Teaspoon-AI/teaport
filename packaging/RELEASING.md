@@ -110,9 +110,31 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] `brain.tag` is the release tag, not `main`: `teaport update` runs that tag's
       `install.sh` as root, and refuses a branch (it moves) and any installer without
       `UPDATE_PROTOCOL=1`. The Discord bridge is cloned from the same tag.
+- [ ] With `access` in the manifest (the engine license gate), `brain.tag` is a tag cut
+      at or after the gate's merge commit. `teaport update` runs that tag's
+      `install.sh --only engine` as root, and an installer from before the gate ignores
+      `access`: every gated download gets a 401 once the gate enforces, so every engine or
+      model update fails and rolls back. `brain-v0.1.0`, `brain-v0.1.1-rc1` and
+      `brain-v0.1.1-rc2` all predate it. `manifest/check.py` refuses such a tag: it reads
+      the tag's `install.sh`, which must say `ACCESS_PROTOCOL=1` (the gate's installer
+      does). It reads the installer rather than comparing commits because a PR may be
+      squash-merged, so the gate's merge commit is not known in advance.
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.
+- [ ] For a gated file (the engine's files and models), a pull request's `publish` run has
+      no `DL_CHECK_TOKEN`. It checks only that the file refuses an anonymous download and
+      is not served at an encoded path, not its sha256; the merge's run compares it, but
+      only after the merge. So before merging a release PR, run the full check locally,
+      with the token read from a prompt, which keeps it out of your shell history:
+
+      ```sh
+      read -rsp 'DL_CHECK_TOKEN: ' DL_CHECK_TOKEN && echo && export DL_CHECK_TOKEN
+      python3 manifest/check.py manifest/<channel>.json   # beta: add --placeholders-ok
+      unset DL_CHECK_TOKEN
+      ```
+
+      It downloads every artifact (~4.6 GB), and the gate logs those downloads as `ci`.
 - [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
       manifest without one fails the check. The beta channel's `TODO` passes only under
       `--placeholders-ok`.
@@ -126,6 +148,47 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       the engine release is the only thing that tells a newer set of models from an older
       one; a channel that changes `models` under the same engine can take a box's models
       back.
+- [ ] The engine's files and models (every URL under the manifest's `access.gated`:
+      `dl/engine/`, `dl/models/`) go to the private bucket `teaport-engine-dist`, never
+      `teaport-get`. The download gate Worker (`worker/`) serves them only after the
+      engine license is accepted; a copy in `teaport-get` would be public. Its
+      `THIRD_PARTY_NOTICES.txt` goes to `teaport-get` under `dl/notices/`, public on
+      purpose.
+- [ ] No gated file is left in `teaport-get`. The Worker is routed on
+      `get.teaspoon.tech/dl/engine/*` and `/dl/models/*`, and a percent-encoded path
+      (`dl%2Fengine%2F…`, `dl/engine%2F…`) matches neither route, so the public bucket
+      answers it: a copy left there is served to anyone, around the gate. The `publish`
+      check asks for every gated file that way on every run, and fails on a 2xx.
+- [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves a gated
+      file to a request without a token (marked `x-teaport-gate: open`), and is for the
+      switchover only. While it is open, every `publish` run warns on every gated file,
+      and the weekly run fails (`check.py --require-enforce`). The switchover, in order:
+      1. Done: the private bucket `teaport-engine-dist` holds the gated files, the D1
+         database and the Worker's secrets (`TOKEN_KEY`, `CHECK_TOKEN`, and the repo
+         secret `DL_CHECK_TOKEN`) are set, the notices are in `teaport-get` under
+         `dl/notices/`, and the Worker is deployed with `GATE = "open"`. An anonymous
+         download is served (`curl -sI` on a gated URL: 200, `x-teaport-gate: open`), so
+         the installer on main, which predates the gate, still downloads, through the
+         Worker.
+      2. Before the merge: delete `dl/engine/*` and `dl/models/*` from `teaport-get`.
+         main's installer already downloads them through the Worker, so nothing reads
+         those copies; until they go, the encoded-path check fails. Then
+         `curl -sI 'https://get.teaspoon.tech/dl%2Fengine%2Fteaport-engine-1.6-pos.bin'`
+         answers 404.
+      3. Merge the installer that accepts through the Worker. The live Worker was
+         deployed at 8c377de2, before the request-body cap, the `no-store` ordering and
+         the license sha256 in the token: redeploy it from main's HEAD after this merge
+         (`cd worker && npx wrangler deploy`, still `GATE = "open"`).
+      4. In a follow-up PR, set `GATE = "enforce"`; merge it and deploy it from main's
+         HEAD (`cd worker && npx wrangler deploy`). If step 3's redeploy was skipped, this
+         one brings the live Worker up to main: no later than this. Only now is a gated file refused without a
+         token: `curl -sI` on one answers 401. Then check accept → token → a ranged
+         download with a real install.
+      5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
+         `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
+         merge names the notices under `dl/engine/`, which the open Worker serves from
+         there. The notices' place is `teaport-get` `dl/notices/`; once the gate enforces,
+         nothing should read the copy.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 

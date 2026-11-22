@@ -12,13 +12,27 @@
 #   - every entry in REQUIRED (and engine.watermark from engine 1.7 on) is present with
 #     a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
-#   - a url with no sha256 (models.voxtral.aux) must answer;
+#   - a url with no sha256 (models.voxtral.aux in a manifest without aux_sha256) must answer;
 #   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
 #     branch or tag (what `git clone --branch` takes); a private repo fails;
+#   - with access, a brain.tag that is a release tag must be an installer that reads it:
+#     its install.sh says ACCESS_PROTOCOL=1. `teaport update` runs that tag's installer as
+#     root, and one from before the gate would download the gated files without a token.
 #   - openclaw names the OpenClaw release this one is tested with, a version npm has,
 #     and its Node.js major (the guide installs both, install.sh compares the box's).
 #     Required in every manifest, and checked against registry.npmjs.org: a manifest
 #     without it, or an npm registry that does not answer, fails the check.
+#   - access.gated (the engine license gate's download prefixes) and access.api are
+#     https URLs on the download host. A gated artifact must refuse an anonymous download
+#     (HTTP 401), asked on every run; one served without a token means the gate is not in
+#     front of it, an error, and one the gate serves open (its switchover) is a warning.
+#     Then it is fetched with DL_CHECK_TOKEN (the download gate Worker's CHECK_TOKEN) and
+#     its sha256 compared; without the token (a pull request's run) the refusal is all
+#     that is checked of it. --require-enforce (the weekly run) makes an open gate an error.
+#   - a gated artifact is also asked for with the slashes of its path percent-encoded
+#     (dl%2Fengine%2Fx, dl/engine%2Fx): the Worker's routes do not match those, so the
+#     public bucket answers them, and a copy of the file left there would be served around
+#     the gate. Either form answering 2xx is an error; a 404 (any refusal) passes.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -39,10 +53,11 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 # Every artifact is served from the download bucket (the manifest's own _note).
 HOST = "get.teaspoon.tech"
@@ -69,6 +84,9 @@ REQUIRED = (
 WATERMARK_FROM = "1.7"
 # The {repo, tag} entries install.sh clones (brain: the Discord bridge's source).
 REQUIRED_REPOS = ("brain",)
+GITHUB = "https://github.com"
+# What an installer that reads access says (install.sh, beside UPDATE_PROTOCOL=1).
+ACCESS_PROTOCOL = "\nACCESS_PROTOCOL=1\n"
 NPM_REGISTRY = "https://registry.npmjs.org"
 
 
@@ -109,11 +127,15 @@ def entries(node, path=""):
             if key.startswith("_") or key in ("url", "sha256"):
                 continue
             sub = f"{path}.{key}" if path else key
+            if key == "aux_sha256":
+                continue   # read with aux, below
             if key == "aux" and isinstance(value, dict):
-                # models.voxtral.aux: {filename: url}, no hash (install.sh downloads as-is).
+                # models.voxtral.aux: {filename: url}, its hashes beside it in aux_sha256
+                # (an older manifest has none: install.sh downloads them as-is).
+                hashes = node.get("aux_sha256") if isinstance(node.get("aux_sha256"), dict) else {}
                 for name, url in value.items():
                     if isinstance(url, str):
-                        yield f"{sub}.{name}", url, None
+                        yield f"{sub}.{name}", url, hashes.get(name)
                     else:
                         yield f"{sub}.{name}", None, f"url is not a string: {url!r}"
             else:
@@ -133,13 +155,16 @@ def repos(node, path=""):
                 yield from repos(value, f"{path}.{key}" if path else key)
 
 
-def fetch(url, digest):
-    """GET url, hashing the body into digest (None: just open it). Retries a failed
-    transfer from the start, as a fresh digest."""
+def fetch(url, digest, token=None):
+    """GET url, hashing the body into digest (None: just open it), with a download token
+    when given. Retries a failed transfer from the start, as a fresh digest."""
+    headers = {"User-Agent": "teaport-manifest-check"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     for attempt in range(1, ATTEMPTS + 1):
         d = digest.copy() if digest is not None else None
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"})
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 while d is not None and (chunk := resp.read(CHUNK)):
                     d.update(chunk)
@@ -154,20 +179,112 @@ def fetch(url, digest):
         time.sleep(5 * attempt)
 
 
+# refused(): the gate serves it without a token because its GATE is "open", for the
+# switchover only (worker/src/index.js).
+GATE_OPEN = "gate open"
+
+
+def refused(url):
+    """None when url refuses an anonymous download (HTTP 401), as a gated artifact must;
+    GATE_OPEN when the gate serves it during the switchover; else what it did. A HEAD: an
+    open gate would otherwise start sending the file. Retried as fetch() is: it runs before
+    every upload, where one blip would leave the manifest unpublished."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            # A HEAD answers at once: a shorter timeout than a download's, so a gate that
+            # is down fails the run in minutes, not past the job's timeout.
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.headers.get("x-teaport-gate") == "open":
+                    return GATE_OPEN
+            return "served without a download token: the license gate is not in front of it"
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == ATTEMPTS:
+                return None if e.code == 401 else f"HTTP {e.code}"
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt == ATTEMPTS:
+                return str(e)
+        except Exception as e:  # noqa: BLE001 -- anything else: a problem listed, not a traceback
+            return str(e)
+        time.sleep(5 * attempt)
+
+
+def encoded_forms(url, prefix):
+    """The gated url under prefix with the slashes of its path percent-encoded: all of them
+    (/dl%2Fengine%2Fx) and the one ending the prefix (/dl/engine%2Fx). The Worker is routed
+    on get.teaspoon.tech/dl/engine/* and /dl/models/*, which match neither, so the public
+    bucket teaport-get answers them: from a copy of the file left there, it serves it to
+    anyone, around the gate."""
+    u, p = urlparse(url), urlparse(prefix).path
+    base, rest = f"{u.scheme}://{u.netloc}", u.path[len(p):]
+    forms = [base + "/" + quote(u.path[1:], safe=""), base + p[:-1] + "%2F" + quote(rest, safe="")]
+    return list(dict.fromkeys(forms))
+
+
+def bypassed(url):
+    """None when url (an encoded_forms() URL) is refused, as it must be: a 404, or any other
+    4xx. Else what it did: a 2xx serves the file around the gate; a 5xx or no answer, after
+    the retries refused() makes, leaves it unknown, and fails too. A HEAD."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return (f"HTTP {resp.status}: served without the license gate (a copy of the file "
+                        "is public in the bucket; delete it)")
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                return None
+            if attempt == ATTEMPTS:
+                return f"HTTP {e.code}: cannot tell whether it is served around the license gate"
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt == ATTEMPTS:
+                return f"cannot tell whether it is served around the license gate ({e})"
+        except Exception as e:  # noqa: BLE001 -- anything else: a problem listed, not a traceback
+            return str(e)
+        time.sleep(5 * attempt)
+
+
+def gate(manifest):
+    """(gated URL prefixes, problems) of the manifest's access entry."""
+    access = manifest.get("access")
+    if access is None:
+        return [], []
+    problems, prefixes = [], []
+    if not isinstance(access, dict):
+        return [], [f"access: not an object ({access!r})"]
+    api, gated = access.get("api"), access.get("gated")
+    if not isinstance(api, str) or urlparse(api).scheme != "https" or urlparse(api).hostname != HOST:
+        problems.append(f"access.api: not an https URL on {HOST} ({api!r})")
+    elif api.endswith("/"):
+        # install.sh POSTs to <api>/accept: <api>/ would be //accept, which the gate 404s.
+        problems.append(f"access.api: ends in / (install.sh appends /accept and /token) ({api!r})")
+    if not isinstance(gated, list) or not gated:
+        problems.append(f"access.gated: not a list of URL prefixes ({gated!r})")
+    else:
+        for p in gated:
+            if (not isinstance(p, str) or urlparse(p).scheme != "https" or urlparse(p).hostname != HOST
+                    or not p.endswith("/")):
+                problems.append(f"access.gated: not an https URL prefix on {HOST} ending in / ({p!r})")
+            else:
+                prefixes.append(p)
+    return prefixes, problems
+
+
+def git(*args, cwd="/", timeout=60):
+    """git, anonymously, as on a fresh box: no credential helper or token from this
+    machine's git config (cwd "/" keeps a repository's own config out too), and no prompt."""
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, timeout=timeout, cwd=cwd,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
+             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+
+
 def resolves(repo, tag):
     """Whether an anonymous clone of github.com/<repo> at <tag> would work, as
     install.sh's `git clone --branch <tag>` does it. None if so, else why not."""
     # Exact refs: ls-remote matches a pattern's tail, so a bare "main" would also
     # accept refs/heads/heads/main or refs/tags/release/main, which clone rejects.
-    p = subprocess.run(
-        ["git", "ls-remote", "--exit-code", f"https://github.com/{repo}.git",
-         f"refs/heads/{tag}", f"refs/tags/{tag}"],
-        capture_output=True, text=True, timeout=60, cwd="/",
-        # Anonymous, as on a fresh box: no credential helper or token from this
-        # machine's git config (cwd "/" keeps a repository's own config out too), and
-        # no prompt.
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
-             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    p = git("ls-remote", "--exit-code", f"{GITHUB}/{repo}.git", f"refs/heads/{tag}", f"refs/tags/{tag}")
     if p.returncode == 0:
         return None
     if p.returncode == 2:
@@ -176,10 +293,38 @@ def resolves(repo, tag):
             f"({(p.stderr.strip().splitlines() or ['?'])[-1]})")
 
 
-def check(manifest_path, placeholders_ok):
+def reads_access(repo, tag):
+    """None when the installer at <tag> of github.com/<repo> reads the manifest's access
+    (its install.sh says ACCESS_PROTOCOL=1), or when <tag> is not a release tag; else why
+    not. `teaport update` (packaging/deb/update_apply.py) runs only a release tag's
+    installer, the one it clones at the tag, and refuses a branch: so only a tag is asked.
+    One commit, without its other files: install.sh alone is read."""
+    url = f"{GITHUB}/{repo}.git"
+    p = git("ls-remote", "--exit-code", url, f"refs/tags/{tag}")
+    if p.returncode == 2:
+        return None   # a branch: teaport update installs nothing from it
+    if p.returncode != 0:
+        return f"cannot ask github.com/{repo} for tag {tag!r} ({(p.stderr.strip().splitlines() or ['?'])[-1]})"
+    with tempfile.TemporaryDirectory() as tmp:
+        p = git("clone", "--quiet", "--depth", "1", "--filter=blob:none", "--no-checkout",
+                "--branch", tag, url, tmp, timeout=120)
+        if p.returncode == 0:
+            p = git("show", "HEAD:install.sh", cwd=tmp, timeout=120)
+        if p.returncode != 0:
+            return f"cannot read install.sh at {tag} ({(p.stderr.strip().splitlines() or ['?'])[-1]})"
+    if ACCESS_PROTOCOL not in p.stdout:
+        return (f"{tag}'s install.sh predates the license gate (no ACCESS_PROTOCOL=1), and this "
+                "manifest has access: `teaport update` would run it, and every gated download "
+                "would fail. Name a release tag cut after the gate merged (packaging/RELEASING.md)")
+    return None
+
+
+def check(manifest_path, placeholders_ok, require_enforce=False):
     with open(manifest_path) as f:
         manifest = json.load(f)
     problems, checked = [], 0
+    prefixes, problems = gate(manifest)
+    token = os.environ.get("DL_CHECK_TOKEN", "")
 
     def placeholder(where, value):
         if not placeholders_ok:
@@ -206,8 +351,38 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
+        prefix = next((p for p in prefixes if url.startswith(p)), None)
+        gated, around = prefix is not None, []
+        if gated:
+            # Around the gate: the same file, asked for at paths the Worker is not routed on,
+            # on every run (a copy left in the public bucket is served there).
+            for u in encoded_forms(url, prefix):
+                if (how := bypassed(u)):
+                    around.append(f"{where}: {u} -> {how}")
+            problems.extend(around)
+            # Asked without a token on every run, token or not: a gate left open after the
+            # switchover shows up here, on pushes and the weekly run as well as on PRs.
+            why = refused(url)
+            if why == GATE_OPEN and require_enforce:
+                problems.append(f"{where}: {url} is served without a download token: the gate's GATE "
+                                "is still open (the switchover). Set GATE = \"enforce\" in "
+                                "worker/wrangler.toml and deploy (packaging/RELEASING.md)")
+            elif why == GATE_OPEN:
+                print(f"::warning::{where}: {url} is served without a download token: the gate's "
+                      "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
+                      "and deploy, in the PR after the installer that accepts is merged "
+                      "(packaging/RELEASING.md); the weekly run fails until then")
+            elif why:
+                problems.append(f"{where}: {url} -> {why}")
+                continue
+            if not token:
+                checked += 1
+                if not why and not around:
+                    print(f"ok {where} (gated: refused without a token; its contents are checked "
+                          "with DL_CHECK_TOKEN)")
+                continue
         try:
-            digest = fetch(url, hashlib.sha256() if sha else None)
+            digest = fetch(url, hashlib.sha256() if sha else None, token if gated else None)
         except Exception as e:  # HTTPError, URLError, timeouts: all mean "not published"
             problems.append(f"{where}: {url} -> {e}")
             continue
@@ -215,7 +390,7 @@ def check(manifest_path, placeholders_ok):
         if digest is not None and digest.hexdigest() != sha:
             problems.append(f"{where}: {url} serves sha256 {digest.hexdigest()}, "
                             f"the manifest says {sha}")
-        else:
+        elif not around:
             print(f"ok {where}" + ("" if sha else " (no sha256 to check; it answers)"))
 
     for where, repo, tag in repos(manifest):
@@ -223,6 +398,8 @@ def check(manifest_path, placeholders_ok):
             placeholder(where, f"{repo}@{tag}")
             continue
         why = resolves(repo, tag)
+        if not why and where == "brain" and "access" in manifest:
+            why = reads_access(repo, tag)
         if why:
             problems.append(f"{where}: {why}")
         else:
@@ -263,8 +440,11 @@ def main():
     ap.add_argument("manifests", nargs="+")
     ap.add_argument("--placeholders-ok", action="store_true",
                     help='allow "TODO" entries (a channel with nothing released yet)')
+    ap.add_argument("--require-enforce", action="store_true",
+                    help="an open license gate (GATE = \"open\", the switchover) is an error, not a "
+                         "warning: the weekly run, so a gate left open goes red within a week")
     args = ap.parse_args()
-    ok = all([check(m, args.placeholders_ok) for m in args.manifests])
+    ok = all([check(m, args.placeholders_ok, args.require_enforce) for m in args.manifests])
     sys.exit(0 if ok else 1)
 
 

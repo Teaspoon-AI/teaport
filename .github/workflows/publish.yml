@@ -20,6 +20,14 @@ name: publish
 #   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  an R2 API token with write access to the
 #                                           teaport-get bucket
 #   R2_ENDPOINT                             https://<account id>.r2.cloudflarestorage.com
+#
+# The engine's files and models are gated (manifest access.gated: the download gate Worker
+# in worker/ serves them from a private bucket, only with a token). The check downloads them
+# with DL_CHECK_TOKEN, a repository secret equal to the Worker's CHECK_TOKEN, on every run
+# but a pull request's; a pull request's run checks only that each refuses a download
+# without a token. Every run also checks that none is served at a percent-encoded path
+# around the Worker's routes (a copy left in teaport-get), and the weekly run fails while
+# the gate is still open.
 
 on:
   push:
@@ -60,9 +68,23 @@ jobs:
         run: bash -n install-bootstrap.sh
       - name: The manifests name everything install.sh needs, published as named
         # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
+        env:
+          DL_CHECK_TOKEN: ${{ github.event_name != 'pull_request' && secrets.DL_CHECK_TOKEN || '' }}
+          EVENT: ${{ github.event_name }}
         run: |
-          python3 manifest/check.py manifest/stable.json
-          python3 manifest/check.py --placeholders-ok manifest/beta.json
+          # Without the token the gated files are checked only for refusing a download: a
+          # pull request's run. Any other run must compare them, so it needs the secret.
+          if [ "$EVENT" != pull_request ] && [ -z "$DL_CHECK_TOKEN" ]; then
+            echo "::error::DL_CHECK_TOKEN is not set: the gated engine files cannot be checked (see the header)"
+            exit 1
+          fi
+          # The weekly run: a license gate still open (the switchover's GATE = "open") is an
+          # error there, so a gate left open after the switchover goes red within a week.
+          # Every other run warns (packaging/RELEASING.md).
+          strict=()
+          if [ "$EVENT" = schedule ]; then strict=(--require-enforce); fi
+          python3 manifest/check.py "${strict[@]}" manifest/stable.json
+          python3 manifest/check.py "${strict[@]}" --placeholders-ok manifest/beta.json
 
   publish:
     needs: artifacts
