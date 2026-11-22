@@ -176,8 +176,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       3. Done: the installer that accepts through the Worker is merged (#439), and the
          Worker is redeployed from main's HEAD with `GATE = "open"`. Accept → token → a
          ranged download was checked against it.
-      4. `GATE = "enforce"` in `worker/wrangler.toml`. After that merges, deploy it from
-         main's HEAD (`cd worker && npx wrangler deploy`). Then, in this order:
+      4. `GATE = "enforce"` in `worker/wrangler.toml`. After that merges, note the live
+         Worker's version id, the open one (`cd worker && npx wrangler deployments status`),
+         then deploy from main's HEAD (`npx wrangler deploy`). Then, in this order:
          - Without a token: `curl -sI` on a gated URL answers 401, with no
            `x-teaport-gate` header. This is the check that the gate enforces: the
            two below pass with the gate open too (the publish check only warns).
@@ -190,11 +191,10 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
            fetches every gated file with `DL_CHECK_TOKEN` and compares its sha256. On
            main it also uploads the manifests and the bootstrap again, unchanged.
          If enforcing breaks installs, the way back is a Worker version with the gate open:
-         `npx wrangler deployments list` (the last 10; `npx wrangler versions list` goes
-         further back), then `npx wrangler rollback <version-id>` with step 3's version (a
-         bare `rollback` takes the deployment before the current one, which a later
-         `wrangler secret put` changes; wrangler asks before rolling back over changed
-         secrets), or a deploy with `GATE = "open"`.
+         `npx wrangler rollback <version-id>` with the open version noted before the
+         deploy (a bare `rollback` takes the deployment before the current one, which a
+         later `wrangler secret put` changes; wrangler asks before rolling back over
+         changed secrets), or, with the id lost, a deploy with `GATE = "open"`.
          The weekly check fails while it is open. Then fix main and deploy main again.
       5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
          `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
