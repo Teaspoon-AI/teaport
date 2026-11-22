@@ -197,8 +197,8 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
          changed secrets), or, with the id lost, a deploy with `GATE = "open"`.
          The weekly check fails while it is open. Then fix main and deploy main again.
       5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
-         `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
-         merge names the notices under `dl/engine/`, which the open Worker serves from
+         `teaport-engine-dist`. It is a switchover-only copy: main's manifest before #439's
+         merge named the notices under `dl/engine/`, which the open Worker serves from
          there. The notices' place is `teaport-get` `dl/notices/`; once the gate enforces,
          nothing should read the copy.
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
