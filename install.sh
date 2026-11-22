@@ -510,7 +510,7 @@ eula_gate() {
   ver="$(mget engine.eula.version 2>/dev/null || echo 1.0)"
   url="$(mget engine.eula.url 2>/dev/null || echo "")"
   sha="$(mget engine.eula.sha256 2>/dev/null || echo "")"
-  api="$(mget access.api 2>/dev/null || echo "")"
+  api="$(mget access.api 2>/dev/null || echo "")"; api="${api%/}"   # <api>/accept, not <api>//accept
 
   # Idempotent re-run: this license version is already accepted -> no prompt; with a
   # license server, a new token for that acceptance.

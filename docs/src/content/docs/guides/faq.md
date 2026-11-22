@@ -27,7 +27,7 @@ teaport targets the NVIDIA Jetson Orin family (Nano, NX, and AGX) and needs JetP
 
 The brain and the plugin are MIT. The engine is a separate component with its own license. The installer displays the full text, asks you to accept it, and remembers the accepted version, so a re-run prompts again only after the license changes. The license prompt is part of [Install teaport](/getting-started/installation/).
 
-<!-- source: README.md:54-55#db00dcd0; install.sh:508-537,562-572#c6141f02 -->
+<!-- source: README.md:54-55#db00dcd0; install.sh:508-537,562-572#310577bb -->
 
 ## Can I run teaport without NemoClaw?
 

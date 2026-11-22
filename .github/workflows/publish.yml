@@ -25,7 +25,9 @@ name: publish
 # in worker/ serves them from a private bucket, only with a token). The check downloads them
 # with DL_CHECK_TOKEN, a repository secret equal to the Worker's CHECK_TOKEN, on every run
 # but a pull request's; a pull request's run checks only that each refuses a download
-# without a token.
+# without a token. Every run also checks that none is served at a percent-encoded path
+# around the Worker's routes (a copy left in teaport-get), and the weekly run fails while
+# the gate is still open.
 
 on:
   push:
@@ -76,8 +78,13 @@ jobs:
             echo "::error::DL_CHECK_TOKEN is not set: the gated engine files cannot be checked (see the header)"
             exit 1
           fi
-          python3 manifest/check.py manifest/stable.json
-          python3 manifest/check.py --placeholders-ok manifest/beta.json
+          # The weekly run: a license gate still open (the switchover's GATE = "open") is an
+          # error there, so a gate left open after the switchover goes red within a week.
+          # Every other run warns (packaging/RELEASING.md).
+          strict=()
+          if [ "$EVENT" = schedule ]; then strict=(--require-enforce); fi
+          python3 manifest/check.py "${strict[@]}" manifest/stable.json
+          python3 manifest/check.py "${strict[@]}" --placeholders-ok manifest/beta.json
 
   publish:
     needs: artifacts

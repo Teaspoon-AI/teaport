@@ -25,7 +25,11 @@
 #     front of it, an error, and one the gate serves open (its switchover) is a warning.
 #     Then it is fetched with DL_CHECK_TOKEN (the download gate Worker's CHECK_TOKEN) and
 #     its sha256 compared; without the token (a pull request's run) the refusal is all
-#     that is checked of it.
+#     that is checked of it. --require-enforce (the weekly run) makes an open gate an error.
+#   - a gated artifact is also asked for with the slashes of its path percent-encoded
+#     (dl%2Fengine%2Fx, dl/engine%2Fx): the Worker's routes do not match those, so the
+#     public bucket answers them, and a copy of the file left there would be served around
+#     the gate. Either form answering 2xx is an error; a 404 (any refusal) passes.
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -49,7 +53,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 # Every artifact is served from the download bucket (the manifest's own _note).
 HOST = "get.teaspoon.tech"
@@ -198,6 +202,41 @@ def refused(url):
         time.sleep(5 * attempt)
 
 
+def encoded_forms(url, prefix):
+    """The gated url under prefix with the slashes of its path percent-encoded: all of them
+    (/dl%2Fengine%2Fx) and the one ending the prefix (/dl/engine%2Fx). The Worker is routed
+    on get.teaspoon.tech/dl/engine/* and /dl/models/*, which match neither, so the public
+    bucket teaport-get answers them: from a copy of the file left there, it serves it to
+    anyone, around the gate."""
+    u, p = urlparse(url), urlparse(prefix).path
+    base, rest = f"{u.scheme}://{u.netloc}", u.path[len(p):]
+    forms = [base + "/" + quote(u.path[1:], safe=""), base + p[:-1] + "%2F" + quote(rest, safe="")]
+    return list(dict.fromkeys(forms))
+
+
+def bypassed(url):
+    """None when url (an encoded_forms() URL) is refused, as it must be: a 404, or any other
+    4xx. Else what it did: a 2xx serves the file around the gate; a 5xx or no answer, after
+    the retries refused() makes, leaves it unknown, and fails too. A HEAD."""
+    req = urllib.request.Request(url, headers={"User-Agent": "teaport-manifest-check"}, method="HEAD")
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return (f"HTTP {resp.status}: served without the license gate (a copy of the file "
+                        f"is public in the bucket; delete it)")
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                return None
+            if attempt == ATTEMPTS:
+                return f"HTTP {e.code}: cannot tell whether it is served around the license gate"
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt == ATTEMPTS:
+                return f"cannot tell whether it is served around the license gate ({e})"
+        except Exception as e:  # noqa: BLE001 -- anything else: a problem listed, not a traceback
+            return str(e)
+        time.sleep(5 * attempt)
+
+
 def gate(manifest):
     """(gated URL prefixes, problems) of the manifest's access entry."""
     access = manifest.get("access")
@@ -209,6 +248,9 @@ def gate(manifest):
     api, gated = access.get("api"), access.get("gated")
     if not isinstance(api, str) or urlparse(api).scheme != "https" or urlparse(api).hostname != HOST:
         problems.append(f"access.api: not an https URL on {HOST} ({api!r})")
+    elif api.endswith("/"):
+        # install.sh POSTs to <api>/accept: <api>/ would be //accept, which the gate 404s.
+        problems.append(f"access.api: ends in / (install.sh appends /accept and /token) ({api!r})")
     if not isinstance(gated, list) or not gated:
         problems.append(f"access.gated: not a list of URL prefixes ({gated!r})")
     else:
@@ -243,7 +285,7 @@ def resolves(repo, tag):
             f"({(p.stderr.strip().splitlines() or ['?'])[-1]})")
 
 
-def check(manifest_path, placeholders_ok):
+def check(manifest_path, placeholders_ok, require_enforce=False):
     with open(manifest_path) as f:
         manifest = json.load(f)
     problems, checked = [], 0
@@ -275,21 +317,33 @@ def check(manifest_path, placeholders_ok):
         if urlparse(url).hostname != HOST or urlparse(url).scheme != "https":
             problems.append(f"{where}: not served from https://{HOST}/ ({url})")
             continue
-        gated = any(url.startswith(p) for p in prefixes)
+        prefix = next((p for p in prefixes if url.startswith(p)), None)
+        gated, around = prefix is not None, []
         if gated:
+            # Around the gate: the same file, asked for at paths the Worker is not routed on,
+            # on every run (a copy left in the public bucket is served there).
+            for u in encoded_forms(url, prefix):
+                if (how := bypassed(u)):
+                    around.append(f"{where}: {u} -> {how}")
+            problems.extend(around)
             # Asked without a token on every run, token or not: a gate left open after the
             # switchover shows up here, on pushes and the weekly run as well as on PRs.
             why = refused(url)
-            if why == GATE_OPEN:
+            if why == GATE_OPEN and require_enforce:
+                problems.append(f"{where}: {url} is served without a download token: the gate's GATE "
+                                "is still open (the switchover). Set GATE = \"enforce\" in "
+                                "worker/wrangler.toml and deploy (packaging/RELEASING.md)")
+            elif why == GATE_OPEN:
                 print(f"::warning::{where}: {url} is served without a download token: the gate's "
                       "GATE is open (the switchover). Set GATE = \"enforce\" in worker/wrangler.toml "
-                      "and deploy once the installer that accepts is merged")
+                      "and deploy, in the PR after the installer that accepts is merged "
+                      "(packaging/RELEASING.md); the weekly run fails until then")
             elif why:
                 problems.append(f"{where}: {url} -> {why}")
                 continue
             if not token:
                 checked += 1
-                if not why:
+                if not why and not around:
                     print(f"ok {where} (gated: refused without a token; its contents are checked "
                           "with DL_CHECK_TOKEN)")
                 continue
@@ -302,7 +356,7 @@ def check(manifest_path, placeholders_ok):
         if digest is not None and digest.hexdigest() != sha:
             problems.append(f"{where}: {url} serves sha256 {digest.hexdigest()}, "
                             f"the manifest says {sha}")
-        else:
+        elif not around:
             print(f"ok {where}" + ("" if sha else " (no sha256 to check; it answers)"))
 
     for where, repo, tag in repos(manifest):
@@ -350,8 +404,11 @@ def main():
     ap.add_argument("manifests", nargs="+")
     ap.add_argument("--placeholders-ok", action="store_true",
                     help='allow "TODO" entries (a channel with nothing released yet)')
+    ap.add_argument("--require-enforce", action="store_true",
+                    help="an open license gate (GATE = \"open\", the switchover) is an error, not a "
+                         "warning: the weekly run, so a gate left open goes red within a week")
     args = ap.parse_args()
-    ok = all([check(m, args.placeholders_ok) for m in args.manifests])
+    ok = all([check(m, args.placeholders_ok, args.require_enforce) for m in args.manifests])
     sys.exit(0 if ok else 1)
 
 

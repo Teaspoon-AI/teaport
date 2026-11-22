@@ -164,6 +164,22 @@ def test_the_record_names_the_installers_commit():
     assert _api(tmp_path)[-1][1]["installer"] == "unknown"
 
 
+def test_an_api_with_a_trailing_slash_is_asked_without_a_double_one():
+    """access.api "…/api/" (manifest/check.py refuses it): /api/accept and /api/token, not
+    /api//accept, which the gate 404s."""
+    tmp_path = pathlib.Path(tempdir())
+    m = _manifest(tmp_path)
+    data = json.loads(m.read_text())
+    data["access"]["api"] = API + "/"
+    m.write_text(json.dumps(data))
+    assert _run(tmp_path, GATE, ACCEPT_EULA="1.0", **WHO)[0] == 0
+    rc, out = _run(tmp_path, GATE)
+    assert rc == 0 and "TOKEN=tok-again" in out, out
+    urls = [ln.split(" ")[1] for ln in pathlib.Path(tmp_path, "curl.log").read_text().splitlines()]
+    assert f"{API}/accept" in urls and f"{API}/token" in urls and not any("//accept" in u or "//token" in u for u in urls), urls
+    assert _receipt(tmp_path)["recorded_with"] == API
+
+
 def test_licensed_use_sends_its_license_id():
     tmp_path = pathlib.Path(tempdir())
     _manifest(tmp_path)

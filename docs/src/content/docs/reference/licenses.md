@@ -42,7 +42,7 @@ The installer records your acceptance with Teaspoon AI, together with the licens
 
 To accept without the prompt, name the version you read: `--accept-eula=<version>`, with the version the license's title names, and give `--name` and `--email`, plus `--license-id` for licensed use. A bare `--accept-eula`, or another version, stops the installer.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:114,142-149,407-440,508-598#4b0e2125; worker/src/index.js:178-184,229-234#54f49ee8; install.sh:475-486#bffd8d4a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:114,142-149,407-440,508-598#3cc96147; worker/src/index.js:178-184,229-234#54f49ee8; install.sh:475-486#bffd8d4a -->
 
 ## The LGPL libraries
 
