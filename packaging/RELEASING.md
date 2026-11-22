@@ -160,8 +160,8 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       answers it: a copy left there is served to anyone, around the gate. The `publish`
       check asks for every gated file that way on every run, and fails on a 2xx.
 - [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves a gated
-      file to a request without a token (marked `x-teaport-gate: open`), and is for the
-      switchover only. While it is open, every `publish` run warns on every gated file,
+      file to a request without a token (marked `x-teaport-gate: open`): it served the
+      switchover, and is the way back below. While it is open, every `publish` run warns,
       and the weekly run fails (`check.py --require-enforce`). The switchover, in order:
       1. Done: the private bucket `teaport-engine-dist` holds the gated files, the D1
          database and the Worker's secrets (`TOKEN_KEY`, `CHECK_TOKEN`, and the repo
@@ -179,19 +179,21 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       4. `GATE = "enforce"` in `worker/wrangler.toml`. After that merges, deploy it from
          main's HEAD (`cd worker && npx wrangler deploy`). Then, in this order:
          - Without a token: `curl -sI` on a gated URL answers 401, with no
-           `x-teaport-gate` header. This is the check that the gate enforces; the
-           others below still pass while it is open (they only warn).
-         - A customer's token: `POST /api/token` with an existing acceptance id (from a
-           box's `/var/lib/teaport/eula-accepted.json`, or a test acceptance), then a
-           ranged GET of a gated file with that token: 206. This takes the path every
-           install takes: the D1 lookup of the acceptance and the current license read
-           from the manifest. It records no new acceptance.
+           `x-teaport-gate` header. This is the check that the gate enforces: the
+           two below pass with the gate open too (the publish check only warns).
+         - A customer's token: `POST /api/token` with a test acceptance's id, then
+           `curl -sI -r 0-0` on a gated file with that token: 206. This takes the path
+           every install takes: the D1 lookup of the acceptance and the current license
+           read from the manifest. It records no new acceptance, and a HEAD records no
+           download (a GET would, against that acceptance: use a test one, not a box's).
          - `CHECK_TOKEN`: run a `publish` check (Actions → publish → Run workflow), which
            fetches every gated file with `DL_CHECK_TOKEN` and compares its sha256. On
-           main it also uploads the manifests again, unchanged.
-         If enforcing breaks installs, the way back is the previous Worker version
-         (`npx wrangler rollback`), or a deploy with `GATE = "open"`, which the Worker
-         keeps for this. Then fix main and deploy main again.
+           main it also uploads the manifests and the bootstrap again, unchanged.
+         If enforcing breaks installs, the way back is a Worker version with the gate open:
+         `npx wrangler deployments list`, then `npx wrangler rollback <version-id>` with
+         step 3's version (a bare `rollback` takes the deployment before the current one,
+         which a later `wrangler secret put` changes), or a deploy with `GATE = "open"`.
+         The weekly check fails while it is open. Then fix main and deploy main again.
       5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
          `teaport-engine-dist`. It is a switchover-only copy: main's manifest before the
          merge names the notices under `dl/engine/`, which the open Worker serves from
