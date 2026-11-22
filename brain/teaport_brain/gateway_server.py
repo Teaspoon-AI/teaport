@@ -755,11 +755,13 @@ async def talk_status(request: Request):
     "asleep" for a sleeping room mic and "held" the kind of a conversation on hold for a
     call (or null). "call" is true from the moment a call asks for the engine, not only
     once it has it. The local audio bridge, refused or
-    ended, polls it to stay off the box while that lasts. Same token as /talk (and the
+    ended, polls it to stay off the box while that lasts. "wanted": the brain asking the
+    room's bridge to open a session by itself ({"why", "id"}, first_boot.want_room, #457),
+    or null; the bridge, waiting for a voice, polls it too. Same token as /talk (and the
     config page, whose check this is): who is talking is nobody else's business. The
     bridge sends it as a bearer header, out of the access log."""
     config_ui._authorize(request)
-    return arb.ARBITER.status()
+    return {**arb.ARBITER.status(), "wanted": first_boot.room_wanted()}
 
 
 @app.websocket("/talk")
