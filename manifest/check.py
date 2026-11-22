@@ -223,7 +223,7 @@ def bypassed(url):
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return (f"HTTP {resp.status}: served without the license gate (a copy of the file "
-                        f"is public in the bucket; delete it)")
+                        "is public in the bucket; delete it)")
         except urllib.error.HTTPError as e:
             if e.code < 500:
                 return None
