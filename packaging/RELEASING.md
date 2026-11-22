@@ -110,9 +110,31 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] `brain.tag` is the release tag, not `main`: `teaport update` runs that tag's
       `install.sh` as root, and refuses a branch (it moves) and any installer without
       `UPDATE_PROTOCOL=1`. The Discord bridge is cloned from the same tag.
+- [ ] With `access` in the manifest (the engine license gate), `brain.tag` is a tag cut
+      at or after the gate's merge commit. `teaport update` runs that tag's
+      `install.sh --only engine` as root, and an installer from before the gate ignores
+      `access`: every gated download gets a 401 once the gate enforces, so every engine or
+      model update fails and rolls back. `brain-v0.1.0`, `brain-v0.1.1-rc1` and
+      `brain-v0.1.1-rc2` all predate it. `manifest/check.py` refuses such a tag: it reads
+      the tag's `install.sh`, which must say `ACCESS_PROTOCOL=1` (the gate's installer
+      does). It reads the installer rather than comparing commits because a PR may be
+      squash-merged, so the gate's merge commit is not known in advance.
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.
+- [ ] For a gated file (the engine's files and models), a pull request's `publish` run has
+      no `DL_CHECK_TOKEN`. It checks only that the file refuses an anonymous download and
+      is not served at an encoded path, not its sha256; the merge's run compares it, but
+      only after the merge. So before merging a release PR, run the full check locally,
+      with the token read from a prompt, which keeps it out of your shell history:
+
+      ```sh
+      read -rsp 'DL_CHECK_TOKEN: ' DL_CHECK_TOKEN && echo && export DL_CHECK_TOKEN
+      python3 manifest/check.py manifest/<channel>.json   # beta: add --placeholders-ok
+      unset DL_CHECK_TOKEN
+      ```
+
+      It downloads every artifact (~4.6 GB), and the gate logs those downloads as `ci`.
 - [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
       manifest without one fails the check. The beta channel's `TODO` passes only under
       `--placeholders-ok`.
@@ -153,9 +175,13 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
          those copies; until they go, the encoded-path check fails. Then
          `curl -sI 'https://get.teaspoon.tech/dl%2Fengine%2Fteaport-engine-1.6-pos.bin'`
          answers 404.
-      3. Merge the installer that accepts through the Worker.
-      4. In a follow-up PR, set `GATE = "enforce"`; merge it and deploy
-         (`cd worker && npx wrangler deploy`). Only now is a gated file refused without a
+      3. Merge the installer that accepts through the Worker. The live Worker was
+         deployed at 8c377de2, before the request-body cap, the `no-store` ordering and
+         the license sha256 in the token: redeploy it from main's HEAD after this merge
+         (`cd worker && npx wrangler deploy`, still `GATE = "open"`).
+      4. In a follow-up PR, set `GATE = "enforce"`; merge it and deploy it from main's
+         HEAD (`cd worker && npx wrangler deploy`). If step 3's redeploy was skipped, this
+         one brings the live Worker up to main: no later than this. Only now is a gated file refused without a
          token: `curl -sI` on one answers 401. Then check accept → token → a ranged
          download with a real install.
       5. Delete `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
