@@ -30,7 +30,7 @@ The brain package installs these files. The table lists where each one is and wh
 
 The configuration page has an Open-source licenses link at the bottom. It opens a page with the notices the package installs, and the Python packages in the brain with each one's version and license. Select a package to read its license text. The page is `/settings/licenses` on the Settings site and `http://127.0.0.1:7861/licenses` on the device itself. Like the configuration page, it loads its data with the Settings session or the token.
 
-<!-- source: brain/teaport_brain/static/config.html:336#8731c6bc; brain/teaport_brain/config_ui.py:483-494#526a7abf; brain/teaport_brain/gateway_server.py:704#db147ffa; brain/teaport_brain/config_ui.py:102-118#6e4abba8 -->
+<!-- source: brain/teaport_brain/static/config.html:389#8731c6bc; brain/teaport_brain/config_ui.py:501-512#526a7abf; brain/teaport_brain/gateway_server.py:704#db147ffa; brain/teaport_brain/config_ui.py:102-118#6e4abba8 -->
 
 `teaport licenses` shows the same on the command line. See the [teaport licenses](/reference/cli/#teaport-licenses) reference.
 

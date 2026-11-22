@@ -495,7 +495,7 @@ async def config_font(name: str):
     if name not in _FONTS:
         raise HTTPException(status_code=404)
     return FileResponse(os.path.join(STATIC_DIR, "font-" + name), media_type="font/woff2",
-                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                        headers={"Cache-Control": "public, max-age=86400"})  # a day: the names carry no version
 
 
 @router.get("/licenses", include_in_schema=False)
