@@ -1,0 +1,8 @@
+{
+  "name": "teaport-worker-deploy-tool",
+  "private": true,
+  "description": "The wrangler that .github/workflows/worker-deploy.yml deploys the download gate with, with every dependency locked (package-lock.json): the deploy steps hold the Cloudflare token.",
+  "dependencies": {
+    "wrangler": "4.166.0"
+  }
+}

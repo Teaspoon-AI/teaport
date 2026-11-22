@@ -73,12 +73,15 @@ jobs:
         with:
           node-version: "24"
       - name: Install wrangler, without the Cloudflare token in reach
-        # Pinned: a deploy tool that changes under the gate is a change to the gate. Its
-        # install scripts (esbuild, workerd) run here, where no Cloudflare secret is set; the
-        # token is handed only to the steps below that call Cloudflare.
+        # Locked, with every dependency (.github/wrangler/package-lock.json): the deploy steps
+        # run this code with the Cloudflare token, so a deploy tool that changes under the
+        # gate is a change to the gate. Its install scripts (esbuild, workerd) run here,
+        # where no Cloudflare secret is set; the token goes only to the steps that call
+        # Cloudflare.
+        working-directory: .github/wrangler
         run: |
-          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/wrangler" wrangler@4.166.0
-          echo "$RUNNER_TEMP/wrangler/node_modules/.bin" >> "$GITHUB_PATH"
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: The environment is set up
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -88,7 +91,7 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set in the worker-deploy environment: nothing was deployed"
             exit 1
           fi
-          wrangler --version
+          wrangler --version 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
       - name: The live version, for a rollback
         # Only the version ids, their traffic and the time: the JSON also names the author's
         # email, and this repo's job logs and summaries are public.
@@ -96,7 +99,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          live=$(wrangler deployments status --json \
+          live=$(wrangler deployments status --json 2> >(sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g' >&2) \
                  | jq -r '.created_on as $t | .versions[] | "\(.version_id) (\(.percentage)%), deployed \($t)"')
           if [ -z "$live" ]; then
             echo "::error::no live version id read: not deploying without a rollback target"
@@ -109,16 +112,19 @@ jobs:
             echo '```'
             echo "To go back: \`cd worker && npx wrangler rollback <the version id above>\` (packaging/RELEASING.md)."
           } | tee -a "$GITHUB_STEP_SUMMARY"
+      # Both through a mask: on an authentication error wrangler prints the account's name
+      # (by default "<email>'s Account"), and this repo's job logs are public. pipefail keeps
+      # wrangler's exit status.
       - name: D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: wrangler d1 migrations apply teaport-gate --remote
+        run: wrangler d1 migrations apply teaport-gate --remote 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: wrangler deploy
+        run: wrangler deploy 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
       - name: The live gate does what wrangler.toml says
         # An engine file from the published stable manifest, asked for without a token.
         # "enforce" (or anything but "open"): 401 and no x-teaport-gate header. "open": served,

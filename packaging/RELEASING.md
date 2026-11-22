@@ -195,7 +195,8 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
          `npx wrangler rollback <version-id>` with the open version noted before the
          deploy (a bare `rollback` takes the deployment before the current one, which a
          later `wrangler secret put` changes; wrangler asks before rolling back over
-         changed secrets), or, with the id lost, a deploy with `GATE = "open"`.
+         changed secrets), or, with the id lost, a PR to main that sets `GATE = "open"`
+         (the workflow deploys it).
          The weekly check fails while it is open. Then fix main and deploy main again.
       5. Done: deleted `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
          `teaport-engine-dist`. It is a switchover-only copy: main's manifest before #439's
@@ -208,7 +209,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       migrations, deploys, and checks that an anonymous gated download answers as
       `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. To go back, use
       step 4's way back (`npx wrangler rollback <version-id>`, the id the job printed),
-      not a deploy by hand.
+      not a deploy by hand. A rollback does not undo D1 migrations, which the job applies
+      before it deploys: a migration must leave the schema usable by the version before
+      it (add, never rename or drop).
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
 
@@ -237,7 +240,11 @@ lets through.
   - deployment branches: `main` only;
   - secret `CLOUDFLARE_API_TOKEN`, an environment secret so no other workflow reads
     it: an API token for this account only, with Workers Scripts: Edit, Workers
-    Routes: Edit (zone `teaspoon.tech`) and D1: Edit;
+    Routes: Edit (zone `teaspoon.tech`) and D1: Edit, and no User Details or
+    Memberships permission (wrangler prints what those can read when a call fails, and
+    the job logs are public; the workflow masks email addresses in wrangler's output
+    too). The account's name should not be an email address either: Cloudflare's
+    default is "<email>'s Account";
   - variable `CLOUDFLARE_ACCOUNT_ID`.
 - **`.github/CODEOWNERS`** names who answers for the paths that ship to users or serve
   them. No rule requires the owner's review.
