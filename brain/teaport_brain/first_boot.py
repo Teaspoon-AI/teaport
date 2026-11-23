@@ -427,9 +427,11 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
             room = await _a_room()
             if room is None:
                 continue
+            if not await _settled(sleep):
+                return False
             if not is_new():
-                return False  # online while the room session came
-            if not await _settled(sleep) or (taken or _taken_by_another)():
+                return False  # online while the room session came, or the slot settled
+            if (taken or _taken_by_another)():
                 logger.info("first boot: a call or another conversation has the box — not "
                             "handing the room session the setup")
                 return False
@@ -437,9 +439,9 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
             if how != GONE:
                 return how == STARTED
         room_answered()  # no more asks: a late dial would open a session nobody waits for
-        if not is_new():
+        if not await _settled(sleep) or not is_new():
             return False
-        if not await _settled(sleep) or (busy or _box_busy)():
+        if (busy or _box_busy)():
             logger.info("first boot: no room session took the setup, and the box is in a "
                         "conversation or a call — not taking it off its network")
             return False
@@ -469,6 +471,8 @@ async def _settled(sleep) -> bool:
     waited = 0.0
     while _settling():
         if waited >= SETTLE_WAIT_SECS:
+            logger.info(f"first boot: the box is still changing conversations after "
+                        f"{SETTLE_WAIT_SECS:g} s — taking it as busy")
             return False
         await sleep(SETTLE_POLL_SECS)
         waited += SETTLE_POLL_SECS

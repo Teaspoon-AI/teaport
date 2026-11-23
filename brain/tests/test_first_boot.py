@@ -1134,5 +1134,36 @@ def test_a_room_that_ended_as_the_slot_changed_hands_is_not_handed_it(box, monke
     asyncio.run(run())
 
 
+def test_online_while_the_slot_settled_starts_nothing(box, monkeypatch):
+    """The box came online while the brain waited out the slot changing hands: neither the
+    room session's setup nor the voiceless start follows."""
+    def online_meanwhile():
+        first_boot.reached_online("synthetic")
+        return False
+    monkeypatch.setattr(first_boot, "_settling", online_meanwhile)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        assert not await _run(session, "none")
+        assert session.wifi.said == [] and session.wifi.calls == [] and _run.headless == 0
+    asyncio.run(run())
+
+
+def test_no_voiceless_start_once_online_while_the_slot_settled(box, monkeypatch):
+    def online_meanwhile():
+        first_boot.reached_online("synthetic")
+        return False
+    monkeypatch.setattr(first_boot, "_settling", online_meanwhile)
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert not await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                              headless=_no_headless)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
