@@ -241,13 +241,13 @@ applies. The waiting time still counts from the ring, so with the question
 asked twice and nobody answering, the call is picked up about 16 to 18 seconds
 after it rings.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:25-31,605-679#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1974-1996#1d703178 -->
+<!-- source: brain/teaport_brain/session_arbiter.py:25-31,614-688#68c78975; brain/teaport_brain/call_prompt.py:25-56,67-92#b0101221; brain/teaport_brain/config_schema.toml:1974-1996#1d703178 -->
 
 With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0`, nobody is asked. A Talk session hears
 *"Sorry, a phone call is coming in and I have to take it…"* and closes; a
 conversation at the device keeps it, and the caller hears the busy line.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1766-1773#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,564-567#56213afb -->
+<!-- source: brain/teaport_brain/config_schema.toml:1766-1773#20ccb9f2; brain/teaport_brain/session_arbiter.py:40-43,573-576#56213afb -->
 
 A call that is already connected is not asked about, because the caller waits on
 a silent line: a configuration with `auto_answer=true`, or a call that was up
@@ -260,7 +260,7 @@ While a call is live, the brain refuses a Talk client with
 second call with `486 Busy Here`; the caller's phone handles that, as voicemail
 or a busy tone.
 
-<!-- source: brain/teaport_brain/session_arbiter.py:32-34,506-510#f32279bb; brain/tests/fake_sip_gateway.py:19-20#704657fc -->
+<!-- source: brain/teaport_brain/session_arbiter.py:32-34,515-519#f32279bb; brain/tests/fake_sip_gateway.py:19-20#704657fc -->
 
 To dedicate a device to the phone, turn off the other front-ends, not the
 brain, which is what answers calls: the local audio bridge, the Discord bridge,

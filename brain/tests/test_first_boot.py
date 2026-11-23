@@ -51,6 +51,7 @@ def box(monkeypatch):
         monkeypatch.setattr(first_boot, name, value)
     monkeypatch.setattr(first_boot, "_box_busy", lambda: False)
     monkeypatch.setattr(first_boot, "_taken_by_another", lambda: False)
+    monkeypatch.setattr(first_boot, "_settling", lambda: False)
 
     boots = iter(range(1, 1000))
 
@@ -1062,6 +1063,74 @@ def test_no_ask_is_left_out_for_the_voiceless_start(box, monkeypatch):
         finally:
             wv.connectivity = _real_connectivity
         assert len(asks) == first_boot.ROOM_ASKS and wanted == [None], (asks, wanted)
+    asyncio.run(run())
+
+
+def _settles_after(monkeypatch, looks):
+    """The arbiter's slot changing hands for `looks` looks, then settled."""
+    seen = []
+
+    def settling():
+        seen.append(len(seen) < looks)
+        return seen[-1]
+    monkeypatch.setattr(first_boot, "_settling", settling)
+    return seen
+
+
+def test_the_hand_over_waits_out_the_slot_changing_hands(box, monkeypatch):
+    """A room coming back from hold after a call reads as a plain room in its own
+    conversation: the brain looks only once the resume is over."""
+    seen = _settles_after(monkeypatch, 3)
+    looked = []
+    monkeypatch.setattr(first_boot, "_taken_by_another",
+                        lambda: looked.append(len(seen)) or False)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        assert await _run(session, "none")
+        assert looked == [4], (looked, seen)                  # after the 3 unsettled looks
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_a_slot_that_never_settles_starts_nothing(box, monkeypatch):
+    """Still changing hands after SETTLE_WAIT_SECS: taken as busy, for the room session's
+    setup and for the voiceless start alike."""
+    monkeypatch.setattr(first_boot, "_settling", lambda: True)
+    monkeypatch.setattr(first_boot, "SETTLE_WAIT_SECS", 0.5)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        assert not await _run(session, "none")
+        assert session.wifi.said == [] and session.wifi.calls == [] and _run.headless == 0
+        box.reboot()
+        wv.connectivity = _online("none")
+        try:
+            assert not await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                              headless=_no_headless)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+
+
+def test_a_room_that_ended_as_the_slot_changed_hands_is_not_handed_it(box, monkeypatch):
+    """The room session ended while the brain waited out the slot (a resume that failed):
+    it starts nothing when handed the setup (run's own check), and the brain goes on
+    without it."""
+    session, _ = _room(asleep=False)
+    ended = []
+
+    def settling():
+        ended.append(True)
+        session.task.has_finished = lambda: True
+        return len(ended) == 1
+    monkeypatch.setattr(first_boot, "_settling", settling)
+
+    async def run():
+        async def headless():
+            return True
+        assert not await _run(session, "none", headless=headless)
+        assert session.wifi.said == [] and _run.headless == 1
     asyncio.run(run())
 
 

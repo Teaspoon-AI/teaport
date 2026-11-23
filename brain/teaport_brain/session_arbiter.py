@@ -494,6 +494,15 @@ class SessionArbiter:
             # caller hung up as the room said "back in a moment").
             self._resume_held()
 
+    def settling(self) -> bool:
+        """The slot is changing hands: a newcomer's acquire is under way (a sleeping room
+        being ended for a Talk session), or the holder is being ended, put on hold or
+        resumed after a call. status() shows the before or the after, not this; who
+        must not start something under a conversation (first_boot) waits it out."""
+        h = self._holder
+        return self._lock.locked() or (h is not None and (
+            h in self._endings or h in self._holdings or h in self._resumes))
+
 
 # The one arbiter of this process.
 ARBITER = SessionArbiter()

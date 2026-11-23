@@ -1141,6 +1141,121 @@ async def test_hold_says_it_played_its_line_only_once_it_has():
     session._keeper.cancel()
 
 
+async def test_settling_is_the_slot_changing_hands():
+    """settling(): a sleeping room being ended for Talk (the newcomer's acquire under
+    way), a conversation coming back from hold after its call -- the moments status()
+    shows as the before or the after. At rest, it is not."""
+    saved = arb.SETTLE_SECS
+    arb.SETTLE_SECS = 0.2
+    try:
+        a, seen = arb.SessionArbiter(), []
+
+        async def room_end(why):
+            seen.append(("ending", a.settling(), a.status()["holder"]))
+            await asyncio.sleep(0.01)
+            a.release(room)
+        room = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: True, end=room_end)
+        assert await a.acquire(room) is None and not a.settling()
+        talk = arb.Claim(arb.TALK, client="app")
+        taking = asyncio.ensure_future(a.acquire(talk))
+        for _ in range(100):                                  # the room gone, Talk not in
+            if room.released.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert a.status()["holder"] is None and not taking.done()
+        assert a.settling(), "the room is gone and Talk not in yet: status() reads free"
+        assert await taking is None
+        assert seen == [("ending", True, arb.ROOM)], seen     # status: still the room
+        assert not a.settling()
+        a.release(talk)
+        arb.SETTLE_SECS = 0.01
+
+        back = asyncio.Event()
+
+        async def yes(_call):
+            return True
+
+        async def nothing():
+            pass
+
+        async def resume():
+            await back.wait()                                 # "where were we?" playing
+        awake = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: False,
+                          ask=yes, hold=nothing, resume=resume)
+        assert await a.acquire(awake) is None and not a.settling()
+        call = arb.Claim(arb.CALL, client="sip")
+        assert await a.acquire(call) is None
+        assert a.status()["held"] == arb.ROOM and not a.settling()
+        a.release(call)
+        await asyncio.sleep(0)
+        assert a.status()["holder"] == arb.ROOM and a.status()["held"] is None
+        assert a.settling(), "the room is resuming: status() shows it back already"
+        back.set()
+        for _ in range(50):
+            if not a.settling():
+                break
+            await asyncio.sleep(0.005)
+        assert not a.settling()
+    finally:
+        arb.SETTLE_SECS = saved
+
+
+async def test_first_boots_wait_ends_with_a_session_the_brain_ends():
+    """A room session first boot is waiting on (first_boot.run) that the brain ends itself
+    -- on_client_disconnected never fires then -- takes that wait with it."""
+    from teaport_brain import first_boot, wake_gate
+    _fresh()
+    waits = []
+
+    async def run(session):
+        try:
+            await asyncio.Event().wait()                      # the hand-over that never came
+        except asyncio.CancelledError:
+            waits.append("cancelled")
+            raise
+    handlers = {}
+
+    class Transport:
+        def __init__(self, **kw):
+            pass
+
+        def event_handler(self, name):
+            def register(fn):
+                handlers[name] = fn
+                return fn
+            return register
+
+    class Runner:
+        def __init__(self, **kw):
+            pass
+
+        async def run(self, task):
+            await handlers["on_client_connected"](None, None)
+            await asyncio.sleep(0)                            # then the brain ends it
+
+    async def greet(**kw):
+        pass
+
+    def build(transport, **kw):
+        return SimpleNamespace(task=_Task(ws), tts=_TTS(), followup_gate=_gate(),
+                               client_notes=SimpleNamespace(limits=lambda: {}),
+                               greet=greet, should_end=False)
+
+    saved = (gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner,
+             arb.tts_for, first_boot.run, first_boot.listening, wake_gate.MIC)
+    gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner = Transport, build, Runner
+    arb.tts_for, first_boot.run, first_boot.listening = _TTS, run, lambda: True
+    wake_gate.MIC = wake_gate.MicConversation()
+    ws = _WS({"client": "local-audio", "features": "local", "wake": "hey teaport"})
+    try:
+        await gs.run_relay_bot(ws)
+        await asyncio.sleep(0)
+    finally:
+        (gs.TalkWebsocketTransport, gs.build_agent_session, gs.PipelineRunner,
+         arb.tts_for, first_boot.run, first_boot.listening, wake_gate.MIC) = saved
+    assert waits == ["cancelled"], waits
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
