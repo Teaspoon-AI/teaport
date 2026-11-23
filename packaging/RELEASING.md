@@ -286,16 +286,17 @@ runs it is the review.
   the password manager, nowhere else (apart from Workers Logs, below). It is never a
   GitHub secret or variable: no workflow needs it, and CI never sees it (the Worker's
   tests use a made-up one). It is never on a box either.
-  - **What it does:** as the station provisions each box (teaport-factory's
-    `device_provision`, which writes the box's serial into its root filesystem), it sends
-    `POST /api/factory` with `FACTORY_TOKEN`, the box's `device_id` and the installer
-    revision the box will run. The Worker records a maker acceptance for that box
+  - **What it does:** when a box provisions itself at its first boot in the factory (it
+    asks the station's `/provision` for its serial), the station sends `POST
+    /api/factory` with `FACTORY_TOKEN`, the box's `device_id` and the installer revision
+    the box will run. The Worker records a maker acceptance for that box
     (`maker_acceptances`: Teaspoon AI installing its own box, no one's acceptance of the
-    license) and returns its id. The station writes only that id into the box, as its
-    receipt (below). At first boot `install.sh` gets download tokens with it, whatever
-    the license's version, for `MAKER_MAX_DAYS` (14, in `worker/wrangler.toml`) after
-    provisioning. After that the box's owner accepts the license (teaport#465), and
-    until they do, an engine update stops at the license prompt.
+    license) and returns its id, which reaches the box in the `/provision` answer. The
+    box writes it as its license receipt (below). Its first-boot `install.sh` gets
+    download tokens with it, whatever the license's version, for `MAKER_MAX_DAYS` (14, in
+    `worker/wrangler.toml`) after provisioning. The seal removes the receipt, so the box
+    ships without one and its owner accepts the license (teaport#465) before its first
+    engine download or update.
   - **What a leak exposes:** whoever holds it can record maker acceptances for made-up
     boxes, and each gets every gated file (all of `dl/engine/` and `dl/models/`, the same
     files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
@@ -330,23 +331,38 @@ runs it is the review.
   - It travels in the `Authorization` header of `POST /api/factory`, so Workers Logs may
     keep it for their retention (docs/engine-license-data.md, "Who else sees it"), as
     they may `CHECK_TOKEN`.
-  - **What the station does (teaport-factory, not built yet):**
-    - `device_id` is SHA-256 of `teaport-appliance:` plus the appliance serial it assigns
-      (as in the box's `/etc/appliance-id`, without its trailing newline), in lowercase
-      hex. There is no `/etc/machine-id` at provisioning. The Worker cannot check how it
-      was made.
-    - It records the box at provisioning, per box, never in the shared baked image, and
-      writes the receipt into the box's root filesystem at
-      `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600:
-      `{"version": "<the license version at provisioning>", "method": "factory",
-      "acceptance_id": "maker-…", "recorded_with": "<the manifest's access.api>"}`. No
-      name or email. `install.sh` reads `method` and `acceptance_id` from it.
-    - It retries a 429 (the per-IP limit, or the daily cap) after a minute, not at once.
-    - A box that waits longer than `MAKER_MAX_DAYS` between provisioning and a finished
-      first-boot install needs provisioning again (a new record).
-  - **After the factory:** the receipt stays until the owner accepts (teaport#465), whose
-    acceptance replaces it with one `install.sh` takes as its own (`version`,
-    `acceptance_id`), or every later engine update asks again.
+  - **What teaport-factory does (not built yet):**
+    - **The station** (`handle_provision`), for a box it provisions: `device_id` is
+      SHA-256 of `teaport-appliance:` plus the appliance serial it assigns (as in the
+      box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
+      no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
+      It calls `POST <access.api>/factory` (`Authorization: Bearer <FACTORY_TOKEN>`,
+      `{"device_id", "installer": "git:<12 hex of TEAPORT_PIN>"}`) and puts the returned
+      `acceptance_id` in its `/provision` answer (a new key in `ProvisionConfig`'s set).
+      So the station needs the internet at provisioning, as the box's install does just
+      after. When the call fails (no network, 429 from the per-IP limit or the daily cap,
+      401 or 503 for a wrong secret or setting), the station answers the box non-200, so
+      the box's own retry loop asks again later; nothing waits inside the box's 10-second
+      request.
+    - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
+      marks the box provisioned for good, so a crash between the two must not leave a box
+      without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
+      `{"version": "<the license version then>", "method": "factory", "acceptance_id":
+      "maker-…", "recorded_with": "<the manifest's access.api>"}`. No name or email.
+      `install.sh` reads `method` and `acceptance_id` from it; `version` is only a note.
+      The receipt is never in the shared, baked image.
+    - **The first-boot unit** runs an installer revision with this support (the
+      `TEAPORT_PIN` bump) and no longer sets `TEAPORT_ACCEPT_EULA`: with it set,
+      `install.sh` accepts the license instead of using the factory record, and stops on
+      a version that names no license.
+    - **The seal** removes `/var/lib/teaport/eula-accepted.json` (and checks the install
+      finished: a box whose install outlasts `MAKER_MAX_DAYS` needs provisioning again).
+      A box that ships with it would download engine updates for its owner, within the
+      window, with no license accepted, recorded under the maker's id.
+  - **After the factory:** the owner's acceptance (teaport#465) writes a receipt
+    `install.sh` takes as its own (`version`, `acceptance_id`), or every engine update
+    asks again. The maker record itself stays in `maker_acceptances`, with its age past
+    `MAKER_MAX_DAYS` soon after; nothing needs to revoke it.
 
 ## Release candidates
 

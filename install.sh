@@ -450,7 +450,7 @@ eula_identity() {
 }
 
 # eula_token <api> <acceptance id> — a new download token for an acceptance recorded
-# earlier (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
+# earlier, or a factory install record's (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
 # license changed, or it has no such acceptance): accept again; 2 when it cannot be asked
 # now (no answer, busy, failing). Dies for a revoked acceptance. The id gets tokens until
 # the license changes, so it goes to python in its environment, never its arguments.
@@ -528,23 +528,27 @@ eula_gate() {
 
   # A box the factory installed (teaport#464): the receipt holds the station's maker
   # acceptance ("method": "factory"), no one's acceptance of any license version, so its
-  # version is not compared: the license server says whether the record still gets
-  # downloads (for MAKER_MAX_DAYS after the box was provisioned). When it does not, the
-  # box's owner accepts the license, below, on a terminal.
-  if [ -n "$api" ] && [ "$(receipt_get method)" = factory ] && [ -n "$(receipt_get acceptance_id)" ]; then
+  # version never counts as accepted. The license server says whether the record still
+  # gets downloads (for MAKER_MAX_DAYS after the box was provisioned); when it does not, or
+  # there is no license server to ask, or --accept-eula says someone accepts now, the
+  # license is accepted below, as on any box.
+  if [ "$(receipt_get method)" = factory ]; then
     local mid; mid="$(receipt_get acceptance_id)"
-    if [ "$DRY_RUN" = 1 ]; then
-      printf '  [dry-run] factory install record: get a download token from %s
-' "$api"; return
+    if [ -n "$ACCEPT_EULA" ]; then
+      log "a factory install record is here, but --accept-eula was given: the license is accepted instead"
+    elif [ -n "$api" ] && [ -n "$mid" ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        printf '  [dry-run] factory install record: get a download token from %s\n' "$api"; return
+      fi
+      local mrc=0
+      eula_token "$api" "$mid" || mrc=$?
+      if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
+        EULA_API="$api" EULA_ID="$mid"
+        log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"
+        return
+      fi
     fi
-    local mrc=0
-    eula_token "$api" "$mid" || mrc=$?
-    if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
-      EULA_API="$api" EULA_ID="$mid"
-      log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"
-      return
-    fi
-    prev=""   # the record is done with: accept, as on any box
+    prev=""
   fi
   if [ -n "$prev" ] && [ "$prev" = "$ver" ]; then
     if [ -z "$api" ]; then log "engine license v$ver already accepted"; return; fi

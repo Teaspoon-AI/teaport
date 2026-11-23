@@ -74,9 +74,12 @@ tokens for `MAKER_MAX_DAYS` (14, in `worker/wrangler.toml`) after it is recorded
 the license's version: long enough for the box's first-boot install at the factory.
 
 When they are written, these rows describe Teaspoon AI's own unsold hardware on Teaspoon
-AI's network: nobody's personal data. The exception is a leak: rows recorded with a leaked
+AI's network: nobody's personal data. Two exceptions. A leak: rows recorded with a leaked
 `FACTORY_TOKEN`, and the downloads made with them, hold the IP address and country of
-whoever used it. After the box is sold, its `device_id` can be linked to its owner:
+whoever used it. And a box that leaves the factory with its maker receipt (the seal is to
+remove it: packaging/RELEASING.md, "Worker secrets"): within `MAKER_MAX_DAYS` of its
+provisioning, its owner's engine downloads are recorded under the maker's id, with the
+owner's IP address and country. After the box is sold, its `device_id` can be linked to its owner:
 through Teaspoon AI's sales records (serial to buyer), and through the owner's acceptance
 if that sends the same `device_id` (teaport#465 decides). From then on, treat them as the
 box's serial, and so as personal data of its owner. What they are for: which engine files
@@ -114,10 +117,10 @@ token itself (it is signed, not stored). A new token for an existing acceptance
 `install.sh` keeps a copy in `/var/lib/teaport/eula-accepted.json`, readable only by root
 (mode 600). It holds the version, the hash, the box's timestamp, the local run user, the
 method, the acceptance `id`, the server's URL, the email, the use, and the license ID for
-licensed use. Next to it, the installer keeps the accepted text as
-`EULA-v<version>.txt`. Neither file leaves the box, apart from the `id`, which the box sends
-to get a new token. A box the factory installed has, until its owner accepts, the receipt
-the factory station wrote instead: the license version at provisioning, `"method":
+licensed use. Next to it, the installer keeps the accepted text as `EULA-v<version>.txt`.
+Neither file leaves the box, apart from the `id`, which the box sends to get a new token.
+A box being installed at the factory has, instead, the receipt the factory wrote (the seal
+removes it before the box ships): the license version at provisioning, `"method":
 "factory"`, the maker acceptance's `id` and the server's URL; no name or email, and no
 license text.
 

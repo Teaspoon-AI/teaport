@@ -437,14 +437,14 @@ def test_a_factory_receipt_the_server_no_longer_takes_means_the_owner_accepts():
     expired = '409 {"error": "maker_expired", "message": "this box\'s factory install record no longer gets downloads"}'
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN=expired)   # no terminal: nobody to accept
     assert rc == 1 and "no longer gets downloads" in out and "pass --accept-eula" in out, out
+    # The record asked once, not again as if it were an acceptance of this version.
+    assert [w for w, _ in _api(tmp_path)] == ["token"], _api(tmp_path)
     pathlib.Path(tmp_path, "api.log").unlink()
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN=expired, ACCEPT_EULA="1.0", **WHO)   # the owner accepts
     assert rc == 0 and "TOKEN=tok-first" in out, out
     r = _receipt(tmp_path)
     assert (r["method"], r["acceptance_id"]) == ("flag", "acc-0123456789"), r
-    # The record asked once (not again as if it were an acceptance of this version), then
-    # the owner's acceptance recorded.
-    assert [w for w, _ in _api(tmp_path)] == ["token", "accept"], _api(tmp_path)
+    assert [w for w, _ in _api(tmp_path)] == ["accept"], _api(tmp_path)
     # Revoked: refused outright, as a revoked acceptance is.
     _factory_receipt(tmp_path)
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN='403 {"message": "this box\'s factory install record was revoked"}')
@@ -460,6 +460,30 @@ def test_a_factory_receipt_with_the_server_down_stops_only_a_download_that_needs
     rc, out = _run(tmp_path, GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n', FAKE_TOKEN='503 {}')
     assert rc == 1 and "without a token" in out, out
     assert [w for w, b in _api(tmp_path)][-2:] == ["token", "token"]
+
+
+def test_a_factory_receipt_is_never_an_acceptance_of_its_version():
+    """Without a license server to ask, or with no record id in it, a factory receipt
+    whose version matches the manifest's still is no one's acceptance."""
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path, access=False)
+    _factory_receipt(tmp_path, version="1.0")
+    rc, out = _run(tmp_path, GATE)
+    assert rc == 1 and "already accepted" not in out and "pass --accept-eula" in out, out
+    _manifest(tmp_path)
+    (tmp_path / "state/eula-accepted.json").write_text(json.dumps({"version": "1.0", "method": "factory"}))
+    rc, out = _run(tmp_path, GATE)
+    assert rc == 1 and "already accepted" not in out and _api(tmp_path) == [], out
+
+
+def test_an_owner_accepting_with_the_flag_is_recorded_even_while_the_factory_record_works():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    _factory_receipt(tmp_path)
+    rc, out = _run(tmp_path, GATE, ACCEPT_EULA="1.0", **WHO)
+    assert rc == 0 and "the license is accepted instead" in out and "TOKEN=tok-first" in out, out
+    assert [w for w, _ in _api(tmp_path)] == ["accept"]
+    assert _receipt(tmp_path)["method"] == "flag"
 
 
 def test_a_factory_dry_run_asks_nothing():
