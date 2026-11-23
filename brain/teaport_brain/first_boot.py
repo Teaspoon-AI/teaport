@@ -257,3 +257,41 @@ async def watch(connectivity=None, sleep=asyncio.sleep) -> None:
         if state is None:
             return
         await sleep(WATCH_SECS)
+
+
+# The brain asking for the room (#457). Without wake words the local audio bridge
+# dials once at start and then only when it hears a voice, and nobody talks to a box
+# fresh out of its packaging -- so a first session that ended early (the engine still
+# loading at boot) left it waiting, and setup mode never began. While this is set, the
+# brain wants the bridge to open a session by itself: /talk/status carries it as
+# "wanted" ({"why": ..., "id": ...}) while nothing holds the engine, and the bridge,
+# waiting for a voice, dials once per id (local_audio.Asks), with no voice. Its rules:
+#   * Each want_room() is a new ask, dialled once more: call it once per attempt, not
+#     on every tick of a loop (each would be a dial).
+#   * The bridge takes an ask as it dials. A dial the brain refused (a Talk session or a
+#     call took the box meanwhile), or a session that ended before it began (its STT
+#     was not up), spends it: the brain asks again (a new id) if it still wants the
+#     room. Only a dial that never reached the brain is retried by the bridge itself.
+#   * room_answered() once a room session has really started (past its STT check), or
+#     the brain no longer wants one; a brain restart starts from none.
+_wanted: dict | None = None
+
+
+def want_room(why: str) -> str:
+    """Ask the room's bridge to open a session (a new ask, dialled once); returns the
+    ask's id."""
+    import uuid
+    global _wanted
+    _wanted = {"why": why, "id": uuid.uuid4().hex}
+    return _wanted["id"]
+
+
+def room_answered() -> None:
+    """A room session came, or nobody needs one any more: the ask is over."""
+    global _wanted
+    _wanted = None
+
+
+def room_wanted() -> dict | None:
+    """The brain's ask for the room (/talk/status "wanted"), or None."""
+    return dict(_wanted) if _wanted else None

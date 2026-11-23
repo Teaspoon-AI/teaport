@@ -500,6 +500,7 @@ def _fake_card(monkeypatch, capture_script):
     async def unknown():
         return None                              # a brain that cannot say (no /talk/status here)
     monkeypatch.setattr(la, "talk_active", unknown)
+    monkeypatch.setattr(la, "_wanted_sync", lambda: None)   # ...nor asks for the room
     return flag
 
 
@@ -577,6 +578,206 @@ def test_first_session_dials_at_once_later_ones_wait_for_a_voice(monkeypatch):
     assert asyncio.run(run()) == 2
     # >= the WAKE_SECS of voice that woke it (24 kHz mono = 48 bytes/ms), sent as a burst.
     assert got["preroll"] >= 48 * la.WAKE_SECS * 1000 * 0.9, got
+
+
+def test_talk_status_carries_the_brains_ask_for_the_room(monkeypatch):
+    # #457: the brain asks the room's bridge to open a session by itself
+    from types import SimpleNamespace
+    gs = _gateway()
+    from teaport_brain import first_boot
+    monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
+    req = SimpleNamespace(query_params={}, headers={})
+    from teaport_brain import session_arbiter as arb
+    monkeypatch.setattr(arb, "ARBITER", arb.SessionArbiter())
+    monkeypatch.setattr(first_boot, "_wanted", None)
+    ask = first_boot.want_room("first-boot")
+    assert asyncio.run(gs.talk_status(req))["wanted"] == {"why": "first-boot", "id": ask}
+    assert first_boot.want_room("first-boot") != ask          # each ask its own id
+    # not while anything holds the engine: a room dial then is refused, and the refusal
+    # spoken to the room (the busy line, to nobody)
+    a = arb.SessionArbiter()
+    monkeypatch.setattr(arb, "ARBITER", a)
+    a._holder = arb.Claim(arb.TALK)
+    assert asyncio.run(gs.talk_status(req))["wanted"] is None
+    a._holder = None
+    a._calls_waiting = 1                                       # a call asking for it
+    assert asyncio.run(gs.talk_status(req))["wanted"] is None
+    a._calls_waiting = 0
+    assert asyncio.run(gs.talk_status(req))["wanted"] is not None
+    first_boot.room_answered()
+    assert asyncio.run(gs.talk_status(req))["wanted"] is None
+
+
+def test_status_polls_stay_out_of_the_access_log():
+    import logging
+    gs = _gateway()
+    f = gs._QuietStatusPolls()
+
+    def rec(method, path, code):
+        return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
+                                 '%s - "%s %s HTTP/%s" %d',
+                                 ("127.0.0.1:5", method, path, "1.1", code), None)
+    assert not f.filter(rec("GET", "/talk/status", 200))       # every few seconds: left out
+    assert f.filter(rec("GET", "/talk/status", 401))           # a refused one is logged
+    assert f.filter(rec("GET", "/health", 200))
+    assert f.filter(rec("POST", "/talk/status", 200))
+
+
+def test_wanted_is_read_only_when_it_names_an_ask(monkeypatch):
+    for status, want in (
+            (None, None),                                       # a brain that cannot say
+            ({"active": False}, None),                          # one that predates it
+            ({"wanted": None}, None),
+            ({"wanted": "first-boot"}, None),                   # not an ask
+            ({"wanted": {"why": "first-boot"}}, None),          # no id: not dialled
+            ({"wanted": {"why": "first-boot", "id": ""}}, None),
+            ({"wanted": {"why": "first-boot", "id": "a1"}}, {"why": "first-boot", "id": "a1"}),
+            # someone has the box: an older brain may still show its ask
+            ({"active": True, "wanted": {"why": "first-boot", "id": "a1"}}, None),
+            ({"call": True, "wanted": {"why": "first-boot", "id": "a1"}}, None)):
+        monkeypatch.setattr(la, "_talk_status_sync", lambda status=status: status)
+        assert la._wanted_sync() == want, status
+
+
+def test_each_ask_is_taken_once(monkeypatch):
+    seq = iter([None, {"why": "first-boot", "id": "a"}, {"why": "first-boot", "id": "a"},
+                {"why": "first-boot", "id": "a"}, {"id": "b"}])
+    monkeypatch.setattr(la, "_wanted_sync", lambda: next(seq))
+
+    async def run():
+        asks = la.Asks(poll=0)
+        return [await asks.next(), await asks.next()]
+
+    # "a" once, though it stayed set; then the new ask, whatever it is for
+    assert asyncio.run(run()) == [{"why": "first-boot", "id": "a"}, {"why": "the brain", "id": "b"}]
+
+
+def test_an_ask_whose_dial_never_reached_the_brain_is_given_back(monkeypatch):
+    monkeypatch.setattr(la, "_wanted_sync", lambda: {"why": "first-boot", "id": "a"})
+
+    async def run():
+        asks = la.Asks(poll=0)
+        ask = await asks.next()
+        asks.release(ask)
+        return await asyncio.wait_for(asks.next(), 1)
+
+    assert asyncio.run(run())["id"] == "a"
+
+
+class _OneAsk:
+    """Asks that hands out one ask at its first step (no await), and records what is
+    given back."""
+    def __init__(self):
+        self.released = []
+
+    async def next(self):
+        return {"why": "first-boot", "id": "a"}
+
+    def release(self, ask):
+        self.released.append(ask["id"])
+
+
+def test_a_voice_with_an_ask_is_voiced_and_still_names_the_ask(monkeypatch):
+    # a voice and an ask on the same tick: the dial is pre-rolled, and the ask it spends
+    # is still named, so a dial that fails can give it back
+    monkeypatch.setattr(la, "DEVICE", "fake")
+
+    async def run():
+        card = la.Card(la.FaceTap(os.path.join(tempdir(), "face.sock")))
+        card.voice.set()                 # someone is speaking as the wait begins
+        card.voice.clear = lambda: None  # (the wait clears it first: keep it set)
+        return await card.wait_for_voice_or_ask(_OneAsk())
+
+    assert asyncio.run(run()) == (True, {"why": "first-boot", "id": "a"})
+
+
+def test_a_card_that_fails_gives_its_ask_back(monkeypatch):
+    monkeypatch.setattr(la, "DEVICE", "fake")
+
+    async def run():
+        card = la.Card(la.FaceTap(os.path.join(tempdir(), "face.sock")))
+        asks = _OneAsk()
+        card.failed.set_exception(la.CardError("unplugged"))
+        with pytest.raises(la.CardError):
+            await card.wait_for_voice_or_ask(asks)
+        return asks.released
+
+    assert asyncio.run(run()) == ["a"]      # nothing was dialled for it: the ask stands
+
+
+def test_bridge_dials_an_ask_again_after_a_dial_error(monkeypatch):
+    _fake_card(monkeypatch, ARECORD)
+    monkeypatch.setattr(la, "WANTED_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "_wanted_sync", lambda: {"why": "first-boot", "id": "a"})
+    dials = []
+
+    async def run_session(card, preroll, wake=False, awake=False):
+        dials.append(preroll)
+        if len(dials) == 2:
+            raise la.DialError("refused")        # the brain restarting, say
+        return None
+
+    monkeypatch.setattr(la, "run_session", run_session)
+
+    async def run():
+        bridge = asyncio.create_task(la.run_bridge())
+        await asyncio.sleep(2.0)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+
+    asyncio.run(run())
+    # the start dial; the ask's, which failed; the ask's again; then nothing more
+    assert dials == [False, False, False], dials
+
+
+def test_bridge_dials_when_the_brain_asks_for_the_room(monkeypatch):
+    # #457: nobody speaks to a box fresh out of its packaging. A first session that ended
+    # (the engine still loading) used to leave the bridge waiting for a voice for good.
+    _fake_card(monkeypatch, ARECORD)
+    monkeypatch.setattr(la, "WANTED_POLL_SECS", 0.05)
+    wanted = {"v": None}
+    monkeypatch.setattr(la, "_wanted_sync", lambda: wanted["v"])
+    got = {}
+
+    async def run():
+        async def on_connect(ws, n):
+            if n == 2:   # an asked dial carries no pre-roll: nothing woke it
+                total = len(await asyncio.wait_for(ws.recv(), 2))
+                t0 = asyncio.get_running_loop().time()
+                while asyncio.get_running_loop().time() - t0 < 0.05:
+                    total += len(await asyncio.wait_for(ws.recv(), 1))
+                got["burst"] = total
+            await ws.close()
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+
+        async def until(n):
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                if count[0] >= n:
+                    return
+
+        await until(1)
+        assert count[0] == 1                     # dialled at start; the brain hung up
+        await asyncio.sleep(0.5)
+        assert count[0] == 1                     # silence: no redial
+        wanted["v"] = {"why": "first-boot", "id": "ask-1"}
+        await until(2)
+        assert count[0] == 2                     # the brain asked: dialled, no voice
+        await asyncio.sleep(1.0)
+        assert count[0] == 2                     # the same ask, still set: not again
+        wanted["v"] = {"why": "first-boot", "id": "ask-2"}
+        await until(3)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    assert asyncio.run(run()) == 3               # a new ask is dialled again
+    # live audio from the dial on, not a second of it from before (24 kHz mono = 48 B/ms)
+    assert got["burst"] < 48 * 1000 * la.PREROLL_SECS * 0.25, got
 
 
 # ------------------------------------- back-off when another Talk client takes the box
@@ -860,10 +1061,11 @@ def test_talk_status_says_who_holds_the_engine(monkeypatch):
     a = arb.SessionArbiter()
     monkeypatch.setattr(arb, "ARBITER", a)
     assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False, "live": False,
-                                                  "holder": None, "asleep": False, "held": None}
+                                                  "holder": None, "asleep": False, "held": None,
+                                                  "wanted": None}
     a._holder = arb.Claim(arb.TALK)
     live = {"active": True, "call": False, "live": True, "holder": "talk", "asleep": False,
-            "held": None}
+            "held": None, "wanted": None}
     assert asyncio.run(gs.talk_status(req())) == live
     monkeypatch.setenv("GATEWAY_TOKEN", "secret")
     for bad in (req(), req(token="nope"), req(bearer="nope")):
@@ -905,8 +1107,9 @@ def test_uvicorn_request_lines_never_carry_the_token():
             log.addHandler(h)
             log.setLevel(logging.INFO)
             log.propagate = False
+        # A refused one: a /talk/status answered 200 is not logged at all (_QuietStatusPolls).
         access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5", "GET",
-                    "/talk/status?token=s3cr%2Bet&x=1", "1.1", 200)
+                    "/talk/status?token=s3cr%2Bet&x=1", "1.1", 401)
         error.info('%s - "WebSocket %s" [accepted]', "127.0.0.1:6",
                    "/talk?features=volume,restart,local&token=s3cr%2Bet")
         # A pairing code is the path itself (pairing.py, /p/<code>).
@@ -916,7 +1119,7 @@ def test_uvicorn_request_lines_never_carry_the_token():
             log.removeHandler(h)
             log.setLevel(saved[log][0])
             log.propagate = saved[log][1]
-    assert lines == ['127.0.0.1:5 - "GET /talk/status?token=<redacted>&x=1 HTTP/1.1" 200 OK',
+    assert lines == ['127.0.0.1:5 - "GET /talk/status?token=<redacted>&x=1 HTTP/1.1" 401 Unauthorized',
                      '127.0.0.1:6 - "WebSocket /talk?features=volume,restart,local&token=<redacted>" [accepted]',
                      '127.0.0.1:7 - "GET /p/<redacted> HTTP/1.1" 302 Found'], lines
 

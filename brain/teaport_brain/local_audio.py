@@ -1559,6 +1559,31 @@ class Card:
         self.voice.clear()
         await self._until(self.voice.wait())
 
+    async def wait_for_voice_or_ask(self, asks: "Asks") -> tuple[bool, dict | None]:
+        """Until a voice in the room or the brain asking for the room (Asks.next):
+        (voiced, the ask or None). Both may come on the same tick: the dial is then
+        pre-rolled (a voice), and the ask it spends is still named, so a dial that never
+        reaches the brain gives it back. A card that fails meanwhile gives a taken ask
+        back too: nothing was dialled for it."""
+        self.gate.reset()
+        self.voice.clear()
+        voice = asyncio.ensure_future(self.voice.wait())
+        ask = asyncio.ensure_future(asks.next())
+        try:
+            await self._until(asyncio.wait([voice, ask], return_when=asyncio.FIRST_COMPLETED))
+        except CardError:
+            if ask.done() and not ask.cancelled() and ask.exception() is None:
+                asks.release(ask.result())
+            raise
+        finally:
+            for t in (voice, ask):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(voice, ask, return_exceptions=True)
+        voiced = voice.done() and not voice.cancelled()
+        got = ask.result() if ask.done() and not ask.cancelled() else None
+        return voiced, got
+
     async def idle_for(self, secs: float) -> None:
         await self._until(asyncio.sleep(secs))
 
@@ -1610,6 +1635,52 @@ def _talk_active_sync() -> bool | None:
     # "active": any session holds the engine (a call included), not just a /talk one.
     status = _talk_status_sync()
     return None if status is None else bool(status.get("active"))
+
+
+# Without wake words the bridge, waiting for a voice, also dials when the brain asks for
+# the room (/talk/status "wanted"): a new box going into setup mode by itself
+# (first_boot.py, #457), which nobody has spoken to yet. It asks the brain this often;
+# each ask is dialled once (its id), with no voice and no pre-roll.
+WANTED_POLL_SECS = 3.0
+
+
+def _wanted_sync() -> dict | None:
+    """The brain's ask for the room (/talk/status "wanted"), or None (none, or a brain
+    that cannot say or predates it)."""
+    status = _talk_status_sync()
+    if not status or status.get("active") or status.get("call"):
+        # Someone has the box (a Talk session, a call): a dial now is refused, and the
+        # refusal spoken to the room. The brain says so too; an older one may not.
+        return None
+    wanted = status.get("wanted")
+    if isinstance(wanted, dict) and isinstance(wanted.get("id"), str) and wanted["id"]:
+        return wanted
+    return None
+
+
+class Asks:
+    """The brain's asks for the room (#457), each taken once: an ask is dialled by its id,
+    so one still set when its session has ended (or was refused) is not dialled again on
+    a loop; the brain makes a new one to be dialled again (first_boot.want_room). A dial
+    that never reached the brain gives its ask back (release): it is dialled again once
+    the brain answers. Outlives a card reopen."""
+
+    def __init__(self, poll: float | None = None):
+        self._poll = WANTED_POLL_SECS if poll is None else poll
+        self._taken: set[str] = set()
+
+    async def next(self) -> dict:
+        """Until the brain asks for the room anew: the ask ({"why", "id"})."""
+        while True:
+            wanted = await asyncio.to_thread(_wanted_sync)
+            if wanted is not None and wanted["id"] not in self._taken:
+                self._taken.add(wanted["id"])
+                return {"why": str(wanted.get("why") or "the brain"), "id": wanted["id"]}
+            await asyncio.sleep(self._poll)
+
+    def release(self, ask: dict) -> None:
+        """The dial for `ask` never reached the brain: it may be taken again."""
+        self._taken.discard(ask["id"])
 
 
 async def talk_active() -> bool | None:
@@ -2190,6 +2261,7 @@ async def run_bridge() -> None:
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
+    asks = Asks()  # the brain's asks for the room, each dialled once (#457)
     if BACKOFF_SECS > 0 and await taken_at_start():
         # A restart (a crash, the config page) must not evict a session in use either.
         connect_now, backoff = False, Backoff()
@@ -2219,11 +2291,16 @@ async def run_bridge() -> None:
                         backoff = None
                         logger.info(f"no other Talk session for {BACKOFF_SECS:g} s — "
                                     "back-off over, waiting for voice")
+                    voiced, asked = False, None
                     if not connect_now:
-                        await card.wait_for_voice()
-                        logger.info("voice detected — connecting")
+                        # Or the brain asks for the room: a new box going into setup mode
+                        # by itself (#457), which nobody would ever have spoken to.
+                        voiced, asked = await card.wait_for_voice_or_ask(asks)
+                        logger.info("voice detected — connecting" if voiced else
+                                    f"the brain asks for the room ({asked['why']}) — "
+                                    "connecting")
                     try:
-                        ended = await run_session(card, preroll=not connect_now)
+                        ended = await run_session(card, preroll=voiced)
                         if ended == "restart":
                             # Dial straight back: a fresh context and a greeting, no voice wait.
                             connect_now = True
@@ -2246,6 +2323,14 @@ async def run_bridge() -> None:
                     except DialError as e:
                         if connect_now:
                             logger.warning(f"brain not reachable ({e}) — retrying in {dial_wait:g} s")
+                            await card.idle_for(dial_wait)
+                            dial_wait = min(dial_wait * 2, RETRY_MAX_SECS)
+                        elif asked is not None:
+                            # The ask never reached the brain: give it back, to be dialled
+                            # once the brain answers -- not in a tight loop meanwhile.
+                            asks.release(asked)
+                            logger.warning(f"brain not reachable ({e}) — its ask stands; "
+                                           f"waiting {dial_wait:g} s")
                             await card.idle_for(dial_wait)
                             dial_wait = min(dial_wait * 2, RETRY_MAX_SECS)
                         else:

@@ -755,11 +755,19 @@ async def talk_status(request: Request):
     "asleep" for a sleeping room mic and "held" the kind of a conversation on hold for a
     call (or null). "call" is true from the moment a call asks for the engine, not only
     once it has it. The local audio bridge, refused or
-    ended, polls it to stay off the box while that lasts. Same token as /talk (and the
+    ended, polls it to stay off the box while that lasts. "wanted": the brain asking the
+    room's bridge to open a session by itself ({"why", "id"}, first_boot.want_room, #457),
+    or null; the bridge, waiting for a voice, polls it too. Same token as /talk (and the
     config page, whose check this is): who is talking is nobody else's business. The
     bridge sends it as a bearer header, out of the access log."""
     config_ui._authorize(request)
-    return arb.ARBITER.status()
+    status = arb.ARBITER.status()
+    # The ask only while nothing holds the engine: the arbiter refuses a room dial against
+    # a live Talk session or a call, and without wake words it speaks the refusal -- the
+    # busy line, to a room nobody asked it in.
+    status["wanted"] = (first_boot.room_wanted()
+                        if not (status["active"] or status["call"]) else None)
+    return status
 
 
 @app.websocket("/talk")
@@ -852,12 +860,30 @@ class _RedactTokens(logging.Filter):
         return True
 
 
+class _QuietStatusPolls(logging.Filter):
+    """Leave out the access lines of /talk/status answered 200: the local audio bridge,
+    waiting for a voice, asks it every few seconds (local_audio.WANTED_POLL_SECS), which
+    would bury the journal in identical lines. A refused one (401) is still logged."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5:  # uvicorn: addr, method, path, http, status
+            _addr, method, path, _http, code = args
+            if method == "GET" and str(path).split("?")[0] == "/talk/status" and code == 200:
+                return False
+        return True
+
+
 def redact_tokens_in_uvicorn_logs() -> None:
-    """After uvicorn.Config, which (re)configures these loggers."""
+    """After uvicorn.Config, which (re)configures these loggers. Also quiets the bridge's
+    /talk/status polls (_QuietStatusPolls)."""
     for name in ("uvicorn.access", "uvicorn.error"):
         log = logging.getLogger(name)
         if not any(isinstance(f, _RedactTokens) for f in log.filters):
             log.addFilter(_RedactTokens())
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _QuietStatusPolls) for f in access.filters):
+        access.addFilter(_QuietStatusPolls())
 
 
 def serve(host: str, port: int) -> None:
