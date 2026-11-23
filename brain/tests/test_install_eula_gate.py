@@ -407,5 +407,68 @@ def test_the_acceptance_id_and_who_accepted_never_reach_a_command_line():
             assert secret not in body.replace('TEAPORT_ACCEPTANCE_ID="$2"', ""), (fn, secret)
 
 
+MAKER_ID = "maker-" + "A" * 24
+
+
+def _factory_receipt(tmp, version="1.0"):
+    """The receipt the factory station writes into a box it provisions (teaport#464)."""
+    (tmp / "state").mkdir(exist_ok=True)
+    (tmp / "state/eula-accepted.json").write_text(json.dumps(
+        {"version": version, "method": "factory", "acceptance_id": MAKER_ID, "recorded_with": API}))
+
+
+def test_a_factory_receipt_gets_tokens_whatever_the_license_version_without_a_prompt():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path, version="2.0")   # the license moved on since the box was provisioned
+    _factory_receipt(tmp_path, version="1.0")
+    body = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n'
+    rc, out = _run(tmp_path, body)   # no terminal, no flag, no email
+    assert rc == 0 and "GOT" in out and "TOKEN=tok-again" in out, out
+    assert "factory install: the engine's files download under Teaspoon AI's record" in out, out
+    assert _api(tmp_path) == [("token", {"acceptance_id": MAKER_ID})]
+    assert "/eula/" not in pathlib.Path(tmp_path, "curl.log").read_text()   # no license shown
+    assert _receipt(tmp_path)["method"] == "factory"                         # and the receipt kept
+
+
+def test_a_factory_receipt_the_server_no_longer_takes_means_the_owner_accepts():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    _factory_receipt(tmp_path)
+    expired = '409 {"error": "maker_expired", "message": "this box\'s factory install record no longer gets downloads"}'
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN=expired)   # no terminal: nobody to accept
+    assert rc == 1 and "no longer gets downloads" in out and "pass --accept-eula" in out, out
+    pathlib.Path(tmp_path, "api.log").unlink()
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN=expired, ACCEPT_EULA="1.0", **WHO)   # the owner accepts
+    assert rc == 0 and "TOKEN=tok-first" in out, out
+    r = _receipt(tmp_path)
+    assert (r["method"], r["acceptance_id"]) == ("flag", "acc-0123456789"), r
+    # The record asked once (not again as if it were an acceptance of this version), then
+    # the owner's acceptance recorded.
+    assert [w for w, _ in _api(tmp_path)] == ["token", "accept"], _api(tmp_path)
+    # Revoked: refused outright, as a revoked acceptance is.
+    _factory_receipt(tmp_path)
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='403 {"message": "this box\'s factory install record was revoked"}')
+    assert rc == 1 and "was revoked" in out, out
+
+
+def test_a_factory_receipt_with_the_server_down_stops_only_a_download_that_needs_it():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    _factory_receipt(tmp_path)
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='503 {"message": "down"}')
+    assert rc == 0 and "factory install" in out and "TOKEN=\n" in out, out
+    rc, out = _run(tmp_path, GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n', FAKE_TOKEN='503 {}')
+    assert rc == 1 and "without a token" in out, out
+    assert [w for w, b in _api(tmp_path)][-2:] == ["token", "token"]
+
+
+def test_a_factory_dry_run_asks_nothing():
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    _factory_receipt(tmp_path)
+    rc, out = _run(tmp_path, "DRY_RUN=1\n" + GATE)
+    assert rc == 0 and f"factory install record: get a download token from {API}" in out and _api(tmp_path) == [], out
+
+
 if __name__ == "__main__":
     appliance.run_tests([v for k, v in sorted(globals().items()) if k.startswith("test_")])

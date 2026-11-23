@@ -21,9 +21,10 @@ name: worker-deploy
 # deployment branches limited to main (packaging/RELEASING.md, "GitHub settings"). Its secrets are read
 # by the deploy job only, never on a pull request.
 #
-# The Worker's own secrets (TOKEN_KEY, CHECK_TOKEN) are not touched: wrangler deploy keeps
-# them. The way back from a bad deploy is in packaging/RELEASING.md (wrangler rollback to
-# the version this job prints before it deploys).
+# The Worker's own secrets (TOKEN_KEY, CHECK_TOKEN, FACTORY_TOKEN) are not touched: wrangler
+# deploy keeps them, and none of them is ever in this workflow (packaging/RELEASING.md,
+# "Worker secrets"). The way back from a bad deploy is in packaging/RELEASING.md (wrangler
+# rollback to the version this job prints before it deploys).
 
 on:
   push:

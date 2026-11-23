@@ -66,8 +66,10 @@ beforeEach(() => {
   resetCache();
   waits = [];
   env = {
-    TOKEN_KEY: "test-token-key-0123456789abcdef",
-    CHECK_TOKEN: "ci-check-token-0123456789",
+    TOKEN_KEY: "test-token-key-0123456789abcdef-0123",   // 32+, as FACTORY_TOKEN must be: the
+    CHECK_TOKEN: "ci-check-token-0123456789-abcdefgh",   // equality checks are the ones tested
+    FACTORY_TOKEN: "factory-station-token-0123456789",
+    MAKER_MAX_DAYS: "14",
     DIST: bucket(new Map([[ENGINE, { bytes: BYTES }]])),
     PUBLIC: bucket(new Map([["manifest/stable.json", manifest()], ["manifest/beta.json", manifest("1.1", "b".repeat(64))]])),
     DB: d1(),
@@ -243,6 +245,208 @@ test("a changed license, an unknown or a revoked acceptance gets no token", asyn
   assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 403);
 });
 
+// --- /api/factory: maker acceptances --------------------------------------------------------
+
+const BOX = "cd".repeat(32);
+const FACTORY = { device_id: BOX, installer: "git:0123456789ab" };
+const box = (n) => n.toString(16).padStart(2, "0").repeat(16);
+const ago = (secs) => new Date(Date.now() - secs * 1000).toISOString();
+
+async function maker(extra = {}, secret = env.FACTORY_TOKEN) {
+  const res = await call("POST", "/api/factory", { body: { ...FACTORY, ...extra }, headers: bearer(secret) });
+  assert.equal(res.status, 200, await res.clone().text());
+  return res.json();
+}
+
+async function makerToken(acceptance_id) {
+  const res = await call("POST", "/api/token", { body: { acceptance_id } });
+  assert.equal(res.status, 200, await res.clone().text());
+  return res.json();
+}
+
+const askFactory = async (extra = {}, secret = env.FACTORY_TOKEN) =>
+  call("POST", "/api/factory", { body: { ...FACTORY, ...extra }, headers: bearer(secret) });
+
+test("the station records a maker acceptance for a box; the box gets tokens with it, and its downloads are logged under it", async () => {
+  const { acceptance_id, expires_at } = await maker();
+  assert.match(acceptance_id, /^maker-[A-Za-z0-9_-]{24}$/);
+  assert.ok(Math.abs(Date.parse(expires_at) - (Date.now() + 14 * 86400 * 1000)) < 5000);
+  const row = env.DB.db.prepare("SELECT * FROM maker_acceptances").get();
+  assert.deepEqual([row.id, row.device_id, row.installer, row.ip, row.revoked_at],
+                   [acceptance_id, BOX, "git:0123456789ab", "203.0.113.7", null]);
+  assert.match(row.mark, /^[0-9a-f]{16}$/);
+  assert.equal(env.DB.db.prepare("SELECT count(*) AS n FROM acceptances").get().n, 0);   // nobody's acceptance
+  const { token } = await makerToken(acceptance_id);
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+  assert.deepEqual([claims.a, claims.k], [acceptance_id, "maker"]);
+  const res = await call("GET", `/${ENGINE}`, { headers: { ...bearer(token), range: "bytes=15-" } });
+  assert.equal(res.status, 206);
+  assert.equal(new TextDecoder().decode(await res.arrayBuffer()), "fghij");
+  const log = env.DB.db.prepare("SELECT acceptance_id, status FROM downloads").all();
+  assert.deepEqual(log.map((r) => ({ ...r })), [{ acceptance_id, status: 206 }]);
+  assert.ok(env.DB.db.prepare("SELECT last_token_at FROM maker_acceptances").get().last_token_at);
+});
+
+test("a maker acceptance is no one's acceptance of a license: a license change does not touch it", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  env.PUBLIC.objects.set("manifest/stable.json", manifest("2.0", "d".repeat(64)));
+  resetCache();
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
+  assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 200);
+});
+
+test("past MAKER_MAX_DAYS a maker acceptance gets no token and downloads nothing: the owner accepts", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  // A token never outlives its record: one asked for a minute before the end ends with it.
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(14 * 86400 - 60));
+  const late = await makerToken(acceptance_id);
+  assert.ok(Date.parse(late.expires_at) - Date.now() < 61 * 1000, late.expires_at);
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(14 * 86400 + 1));
+  for (const res of [await call("POST", "/api/token", { body: { acceptance_id } }),
+                     await call("GET", `/${ENGINE}`, { headers: bearer(token) })]) {
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).error, "maker_expired");
+  }
+  // Without MAKER_MAX_DAYS, none gets any: it fails closed.
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(60));
+  for (const v of [undefined, "0", "x", "1.5"]) {
+    env.MAKER_MAX_DAYS = v;
+    assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 409, String(v));
+  }
+});
+
+test("a revoked maker acceptance gets no token and downloads nothing, the gate open or not", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  env.DB.db.prepare("UPDATE maker_acceptances SET revoked_at = 'now'").run();
+  assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 403);
+  for (const gate of [undefined, "open"]) {
+    env.GATE = gate;
+    assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 403, String(gate));
+  }
+});
+
+test("only FACTORY_TOKEN records one, and only with a box and an installer", async () => {
+  const count = () => env.DB.db.prepare("SELECT count(*) AS n FROM maker_acceptances").get().n;
+  const { token } = await accepted();
+  for (const headers of [{}, bearer("wrong"), bearer(env.CHECK_TOKEN), bearer(token),
+                         { authorization: `Basic ${env.FACTORY_TOKEN}` }]) {
+    const res = await call("POST", "/api/factory", { body: FACTORY, headers });
+    assert.equal(res.status, 401, JSON.stringify(headers));
+    assert.equal((await res.json()).error, "bad_factory_token");
+  }
+  for (const bad of [{ device_id: undefined }, { device_id: "AB".repeat(16) }, { device_id: "ab".repeat(7) },
+                     { device_id: "ab".repeat(65) }, { device_id: 12345678901234567890 }, { installer: undefined },
+                     { installer: "has spaces" }]) {
+    assert.equal((await askFactory(bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await call("POST", "/api/factory", { body: "[]", headers: bearer(env.FACTORY_TOKEN) })).status, 400);
+  assert.equal((await call("GET", "/api/factory", { headers: bearer(env.FACTORY_TOKEN) })).status, 405);
+  assert.equal(count(), 0);
+  delete env.FACTORY_TOKEN;   // unset: nothing records one
+  assert.equal((await askFactory({}, "factory-station-token-0123456789")).status, 401);
+  assert.equal(count(), 0);
+});
+
+test("FACTORY_TOKEN downloads nothing and gets no token itself", async () => {
+  for (const gate of [undefined, "open"]) {
+    env.GATE = gate;
+    const res = await call("GET", `/${ENGINE}`, { headers: bearer(env.FACTORY_TOKEN) });
+    assert.equal(res.status, 401, String(gate));
+  }
+  assert.equal((await call("POST", "/api/token", { body: { acceptance_id: env.FACTORY_TOKEN } })).status, 404);
+});
+
+test("a maker token is signed like any other; a maker id is never taken for an acceptance's, nor the reverse", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+  const now = Math.floor(Date.now() / 1000);
+  const sig = token.split(".")[2];
+  const tampered = `v1.${Buffer.from(JSON.stringify({ ...claims, a: `maker-${"x".repeat(24)}` })).toString("base64url")}.${sig}`;
+  for (const t of [await makeToken(env, { ...claims, exp: now - 1 }), await makeToken({ TOKEN_KEY: "another key" }, claims), tampered]) {
+    assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(t) })).status, 401);
+  }
+  // "maker" on an acceptance's id, or a maker id without it, finds nothing.
+  const { acceptance_id: person } = await accepted();
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(await makeToken(env, { a: person, k: "maker", exp: now + 60 })) })).status, 401);
+  const plain = await makeToken(env, { a: acceptance_id, v: "1.0", s: SHA, c: "stable", exp: now + 60 });
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(plain) })).status, 403);
+  assert.equal((await call("POST", "/api/token", { body: { acceptance_id: `maker-${"y".repeat(24)}` } })).status, 404);
+});
+
+test("rotating FACTORY_TOKEN stops new records, not the boxes already provisioned", async () => {
+  const { acceptance_id } = await maker();
+  const old = env.FACTORY_TOKEN;
+  env.FACTORY_TOKEN = "the-rotated-factory-station-token-0";
+  assert.equal((await askFactory({}, old)).status, 401);
+  const { token } = await makerToken(acceptance_id);
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
+  await maker({ device_id: box(2) });
+});
+
+test("the mark is keyed with TOKEN_KEY: nothing in a row tests guesses at FACTORY_TOKEN", async () => {
+  await maker();
+  const mark = () => env.DB.db.prepare("SELECT mark FROM maker_acceptances ORDER BY rowid DESC").get().mark;
+  const f = mark();
+  const plain = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`teaport-factory:${env.FACTORY_TOKEN}`));
+  assert.notEqual(f, Buffer.from(plain).subarray(0, 8).toString("hex"));
+  env.TOKEN_KEY = "another-token-key-0123456789abcdef";
+  await maker({ device_id: box(2) });
+  assert.notEqual(mark(), f);
+});
+
+test("the cap counts boxes, not records: a box provisioned again and again does not use it up", async () => {
+  env.FACTORY_DAILY_MAX = "2";
+  for (let i = 0; i < 5; i++) await maker({ device_id: box(1) });
+  await maker({ device_id: box(2) });
+  const res = await askFactory({ device_id: box(3) });
+  assert.equal(res.status, 429);
+  assert.equal((await res.json()).error, "factory_cap");
+  await maker({ device_id: box(2) });   // still a box it has seen today
+  for (const v of [undefined, "0"]) {
+    env.FACTORY_DAILY_MAX = v;
+    await maker({ device_id: box(9) });
+  }
+});
+
+test("the cap's window is 24 hours, for the count and for a box seen before; rotating starts the count again", async () => {
+  env.FACTORY_DAILY_MAX = "1";
+  await maker({ device_id: box(1) });
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(23 * 3600));
+  assert.equal((await askFactory({ device_id: box(2) })).status, 429);   // 23 hours ago still counts
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(25 * 3600));
+  assert.equal((await askFactory({ device_id: box(2) })).status, 200);   // 25 hours ago does not
+  assert.equal((await askFactory({ device_id: box(1) })).status, 429);   // nor does it make box 1 seen today
+  env.DB.db.exec("DELETE FROM maker_acceptances");
+  await maker({ device_id: box(1) });   // a leak used the cap up...
+  env.FACTORY_TOKEN = "the-rotated-factory-station-token-0";
+  assert.equal((await askFactory({ device_id: box(1) })).status, 200);   // ...the new secret starts again
+  assert.equal((await askFactory({ device_id: box(2) })).status, 429);
+});
+
+test("set up wrong, the factory records nothing", async () => {
+  for (const [k, v] of [["FACTORY_DAILY_MAX", "two hundred"], ["FACTORY_DAILY_MAX", "-1"], ["FACTORY_DAILY_MAX", "Infinity"],
+                        ["FACTORY_DAILY_MAX", "1.5"], ["MAKER_MAX_DAYS", undefined], ["MAKER_MAX_DAYS", "0"],
+                        ["MAKER_MAX_DAYS", "fourteen"], ["FACTORY_TOKEN", env.CHECK_TOKEN],
+                        ["FACTORY_TOKEN", env.TOKEN_KEY], ["FACTORY_TOKEN", "short-but-sent-right"]]) {
+    const saved = env[k];
+    env[k] = v;
+    const res = await askFactory();
+    assert.equal(res.status, 503, `${k}=${v}`);
+    assert.equal((await res.json()).error, "factory_misconfigured");
+    env[k] = saved;
+  }
+  assert.equal(env.DB.db.prepare("SELECT count(*) AS n FROM maker_acceptances").get().n, 0);
+});
+
+test("the rate limit comes before the factory secret is checked", async () => {
+  env.ACCEPT_LIMIT = { async limit() { return { success: false }; } };
+  for (const secret of ["wrong", env.FACTORY_TOKEN]) assert.equal((await askFactory({}, secret)).status, 429, secret);
+});
+
 // --- /dl -----------------------------------------------------------------------------------
 
 test("no token, no file: the refusal says how to get one", async () => {
@@ -362,7 +566,7 @@ test("the check token downloads, logged as ci; other paths and methods are refus
   assert.equal(res.status, 200);
   assert.equal(env.DB.db.prepare("SELECT acceptance_id FROM downloads").get().acceptance_id, "ci");
   delete env.CHECK_TOKEN;
-  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("ci-check-token-0123456789") })).status, 401);
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer("ci-check-token-0123456789-abcdefgh") })).status, 401);
   const { token } = await accepted();
   assert.equal((await call("GET", "/dl/engine/missing", { headers: bearer(token) })).status, 404);
   assert.equal((await call("GET", "/dl/engine/a/../b", { headers: bearer(token) })).status, 404);
@@ -434,6 +638,22 @@ test("the retention cron deletes acceptances and downloads past RETENTION_DAYS, 
   const gone = await call("GET", `/${ENGINE}`, { headers: bearer(token) });
   assert.equal(gone.status, 403);
   assert.equal((await gone.json()).error, "unknown_acceptance");
+});
+
+test("the retention cron deletes maker acceptances and their downloads past RETENTION_DAYS", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  assert.equal((await call("GET", `/${ENGINE}`, { headers: bearer(token) })).status, 200);
+  const count = (table) => env.DB.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
+  const now = Math.floor(Date.now() / 1000);
+  env.RETENTION_DAYS = "30";
+  await expire(env, now + 29 * 86400);
+  assert.deepEqual([count("maker_acceptances"), count("downloads")], [1, 1]);
+  // A recent download goes with its old record.
+  env.DB.db.prepare("INSERT INTO downloads (at, acceptance_id, key, status) VALUES (?, ?, 'k', 200)")
+    .run(new Date((now + 30 * 86400) * 1000).toISOString(), acceptance_id);
+  await expire(env, now + 31 * 86400);
+  assert.deepEqual([count("maker_acceptances"), count("downloads")], [0, 0]);
 });
 
 test("parseRange takes one bytes= range and serves anything else whole", () => {

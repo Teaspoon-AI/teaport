@@ -63,7 +63,10 @@
 # $STATE/eula-accepted.json, so a later run gets a new token without asking again until the
 # license changes. Without a terminal, --accept-eula=<version> accepts it: the version must
 # be the one the license's title names, and --email (and --license-id for licensed use)
-# says who accepts it.
+# says who accepts it. A box the factory installed (teaport#464) has a receipt the factory
+# station wrote instead ("method": "factory"): Teaspoon AI's record for installing its own
+# box, no one's acceptance. Its downloads need no prompt while the license server still
+# takes that record; after, the box's owner accepts as above.
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -522,6 +525,27 @@ eula_gate() {
   # Idempotent re-run: this license version is already accepted -> no prompt; with a
   # license server, a new token for that acceptance.
   local prev; prev="$(receipt_get version)"
+
+  # A box the factory installed (teaport#464): the receipt holds the station's maker
+  # acceptance ("method": "factory"), no one's acceptance of any license version, so its
+  # version is not compared: the license server says whether the record still gets
+  # downloads (for MAKER_MAX_DAYS after the box was provisioned). When it does not, the
+  # box's owner accepts the license, below, on a terminal.
+  if [ -n "$api" ] && [ "$(receipt_get method)" = factory ] && [ -n "$(receipt_get acceptance_id)" ]; then
+    local mid; mid="$(receipt_get acceptance_id)"
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '  [dry-run] factory install record: get a download token from %s
+' "$api"; return
+    fi
+    local mrc=0
+    eula_token "$api" "$mid" || mrc=$?
+    if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
+      EULA_API="$api" EULA_ID="$mid"
+      log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"
+      return
+    fi
+    prev=""   # the record is done with: accept, as on any box
+  fi
   if [ -n "$prev" ] && [ "$prev" = "$ver" ]; then
     if [ -z "$api" ]; then log "engine license v$ver already accepted"; return; fi
     local id; id="$(receipt_get acceptance_id)"

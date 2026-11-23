@@ -261,10 +261,92 @@ lets through.
   workflow on any branch could read them.
 - **Repository secret `DL_CHECK_TOKEN`**: equal to the download gate Worker's
   `CHECK_TOKEN`; the publish check downloads the gated files with it on every run but a
-  pull request's. Change both together (`cd worker && npx wrangler secret put
-  CHECK_TOKEN`, then the secret), or the next check fails.
+  pull request's. Change both together (`wrangler secret put CHECK_TOKEN` with the locked
+  wrangler, under "Worker secrets", then the secret), or the next check fails.
 - **`.github/CODEOWNERS`** names who answers for the paths that ship to users or serve
   them. No rule requires the owner's review.
+
+## Worker secrets
+
+The download gate Worker's secrets are set on the Worker, from `worker/`, with the locked
+wrangler: `../.github/wrangler/node_modules/.bin/wrangler secret put <NAME>`, after `(cd
+.github/wrangler && npm ci)` from the repository's root (`wrangler` below means that one).
+They are never in `worker/wrangler.toml`, and the `worker-deploy` workflow leaves them
+alone. A `secret put` takes effect at once, as a new Worker version, without CI: whoever
+runs it is the review.
+
+- **`TOKEN_KEY`** signs every download token. Changing it stops every token issued (a box
+  gets a new one on its next run, from its receipt). It also keys the mark of
+  `FACTORY_TOKEN` in `maker_acceptances`, so the daily cap counts from zero again.
+- **`CHECK_TOKEN`** is the publish check's (the repository secret `DL_CHECK_TOKEN`, under
+  GitHub settings).
+- **`FACTORY_TOKEN`** is the factory station's (teaport#464), set by the product owner:
+  `openssl rand -hex 32` (the Worker records nothing for one shorter than 32 characters,
+  or one equal to `CHECK_TOKEN` or `TOKEN_KEY`), put on the Worker, on the station and in
+  the password manager, nowhere else (apart from Workers Logs, below). It is never a
+  GitHub secret or variable: no workflow needs it, and CI never sees it (the Worker's
+  tests use a made-up one). It is never on a box either.
+  - **What it does:** as the station provisions each box (teaport-factory's
+    `device_provision`, which writes the box's serial into its root filesystem), it sends
+    `POST /api/factory` with `FACTORY_TOKEN`, the box's `device_id` and the installer
+    revision the box will run. The Worker records a maker acceptance for that box
+    (`maker_acceptances`: Teaspoon AI installing its own box, no one's acceptance of the
+    license) and returns its id. The station writes only that id into the box, as its
+    receipt (below). At first boot `install.sh` gets download tokens with it, whatever
+    the license's version, for `MAKER_MAX_DAYS` (14, in `worker/wrangler.toml`) after
+    provisioning. After that the box's owner accepts the license (teaport#465), and
+    until they do, an engine update stops at the license prompt.
+  - **What a leak exposes:** whoever holds it can record maker acceptances for made-up
+    boxes, and each gets every gated file (all of `dl/engine/` and `dl/models/`, the same
+    files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
+    `CHECK_TOKEN` reaches the same files. It downloads nothing itself and gets no token.
+  - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (200) boxes
+    are recorded in any 24 hours (a box recorded again within the day is not counted
+    again, so the cap limits made-up boxes, not records), and 20 requests a minute per IP
+    address. Each record holds its time, box, IP address and country, so records from
+    outside the factory's network, or for boxes it never built, stand out: `wrangler d1
+    execute teaport-gate --remote --command "SELECT created_at, device_id, ip, country
+    FROM maker_acceptances ORDER BY created_at DESC LIMIT 50"`. Neither brake stops one
+    holder: one record downloads everything.
+  - **Rotating it:** `wrangler secret put FACTORY_TOKEN` with a new value, then the
+    station's copy. That stops new records; boxes already provisioned keep theirs. The
+    daily cap counts from zero for the new secret. Rotate it when anyone who held it
+    leaves, and on any doubt. To stop records a leak made, revoke them:
+    `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP, by time, or all
+    since the leak; a revoked box's next run gets 403 and its owner has to accept). A
+    Worker version carries the secrets it was deployed with, so a rollback (`wrangler
+    rollback`, the way back above) to a version from before a rotation brings the old
+    `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by redeploying a
+    fixed main and then `secret put` (a plain `secret put` is refused while the deployed
+    version is not the latest), or with `wrangler versions upload` from the rolled-back
+    commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler versions deploy
+    <the id that last command printed>@100%`. A rollback to a Worker from before the
+    factory kind refuses every maker acceptance (and its retention cron leaves them
+    alone) until main is deployed again.
+  - **Turning it off:** `wrangler secret delete FACTORY_TOKEN`. The factory then records
+    nothing until a new one is set and on the station; rotate instead to keep it going.
+    Never fall back to an ordinary acceptance in Teaspoon AI's name: it records the
+    maker as the box's licensee.
+  - It travels in the `Authorization` header of `POST /api/factory`, so Workers Logs may
+    keep it for their retention (docs/engine-license-data.md, "Who else sees it"), as
+    they may `CHECK_TOKEN`.
+  - **What the station does (teaport-factory, not built yet):**
+    - `device_id` is SHA-256 of `teaport-appliance:` plus the appliance serial it assigns
+      (as in the box's `/etc/appliance-id`, without its trailing newline), in lowercase
+      hex. There is no `/etc/machine-id` at provisioning. The Worker cannot check how it
+      was made.
+    - It records the box at provisioning, per box, never in the shared baked image, and
+      writes the receipt into the box's root filesystem at
+      `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600:
+      `{"version": "<the license version at provisioning>", "method": "factory",
+      "acceptance_id": "maker-…", "recorded_with": "<the manifest's access.api>"}`. No
+      name or email. `install.sh` reads `method` and `acceptance_id` from it.
+    - It retries a 429 (the per-IP limit, or the daily cap) after a minute, not at once.
+    - A box that waits longer than `MAKER_MAX_DAYS` between provisioning and a finished
+      first-boot install needs provisioning again (a new record).
+  - **After the factory:** the receipt stays until the owner accepts (teaport#465), whose
+    acceptance replaces it with one `install.sh` takes as its own (`version`,
+    `acceptance_id`), or every later engine update asks again.
 
 ## Release candidates
 
