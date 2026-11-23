@@ -520,7 +520,7 @@ async def run_relay_bot(websocket: WebSocket):
     def _first_boot(session):
         """The room's session: a new box offline at boot goes into setup mode by itself,
         and this session is where it goes (first_boot.run; first_boot.drive decides). A
-        task: it waits for the hand-over. Cancelled with the session."""
+        task: it waits for the hand-over. Cancelled with the session, however it ends."""
         if room and first_boot.listening():
             session_holder["first_boot"] = asyncio.ensure_future(first_boot.run(session))
 
@@ -547,6 +547,9 @@ async def run_relay_bot(websocket: WebSocket):
     try:
         await PipelineRunner(handle_sigint=False).run(session.task)
     finally:
+        # Ended by the brain (on_client_disconnected never fires): first boot's wait too.
+        if (pending := session_holder.get("first_boot")) is not None:
+            pending.cancel()
         arb.ARBITER.release(claim)
         credit.MONITOR.poke()  # after each conversation: read the trial credit again
         if gate is not None:

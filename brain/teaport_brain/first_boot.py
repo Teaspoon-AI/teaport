@@ -341,6 +341,10 @@ ROOM_ASKS = 3
 # How long a room session may take to say the welcome and start the unit
 # (begin_first_boot) before drive() stops waiting -- and stops: it may have started.
 HANDOVER_SECS = 120.0
+# How long drive() waits out the slot changing hands before it looks (_settled): an end
+# takes up to session_arbiter.END_WAIT_SECS, a resume its "where were we?".
+SETTLE_WAIT_SECS = 30.0
+SETTLE_POLL_SECS = 0.25
 # How a room session answered the hand-over (_Room.answer).
 STARTED, BUSY, GONE, FAILED = "started", "busy", "gone", "failed"
 
@@ -394,12 +398,17 @@ def listening() -> bool:
 
 
 async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
-                headless=None, busy=None) -> bool:
+                headless=None, busy=None, taken=None) -> bool:
     """First boot, from the brain's start-up: when due, hand the setup to a room session,
-    or start it with no voice (above) -- never under a conversation or a call (`busy`):
-    the setup network would take the box off the network they are on. True when this
-    started setup mode, either way. Runs as a task nobody awaits, so whatever goes wrong
-    is logged here."""
+    or start it with no voice (above) -- never under a conversation or a call: the setup
+    network would take the box off the network they are on. The voiceless start needs
+    no conversation at all on the box (`busy`); the room session's, none but its own
+    (`taken`): a room in its own conversation says the welcome itself, while one on hold
+    for a call would play it into the hold and start the network under the call. Each
+    looks once, after the slot has stopped changing hands (_settled), and a busy box
+    means not before the brain starts again. True when this started setup mode, either
+    way. Runs as a task nobody awaits, so whatever
+    goes wrong is logged here."""
     global _driving, _room_came, _driven
     if not could_be_due():
         return False
@@ -418,10 +427,19 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
             room = await _a_room()
             if room is None:
                 continue
+            if not await _settled(sleep):
+                return False
+            if not is_new():
+                return False  # online while the room session came, or the slot settled
+            if (taken or _taken_by_another)():
+                logger.info("first boot: a call or another conversation has the box — not "
+                            "handing the room session the setup")
+                return False
             how = await _hand_over(room)
             if how != GONE:
                 return how == STARTED
-        if not is_new():
+        room_answered()  # no more asks: a late dial would open a session nobody waits for
+        if not await _settled(sleep) or not is_new():
             return False
         if (busy or _box_busy)():
             logger.info("first boot: no room session took the setup, and the box is in a "
@@ -446,10 +464,40 @@ def _box_busy() -> bool:
     return bool(status["live"] or status["call"])
 
 
+async def _settled(sleep) -> bool:
+    """Wait out the slot changing hands (session_arbiter's settling: a sleeping room being
+    ended for Talk, a conversation going on hold or coming back from it), when status()
+    shows the before or the after. False when it has not within SETTLE_WAIT_SECS."""
+    waited = 0.0
+    while _settling():
+        if waited >= SETTLE_WAIT_SECS:
+            logger.info(f"first boot: the box is still changing conversations after "
+                        f"{SETTLE_WAIT_SECS:g} s — taking it as busy")
+            return False
+        await sleep(SETTLE_POLL_SECS)
+        waited += SETTLE_POLL_SECS
+    return True
+
+
+def _settling() -> bool:
+    from teaport_brain import session_arbiter as arb
+    return arb.ARBITER.settling()
+
+
+def _taken_by_another() -> bool:
+    """Something other than the room's own session has the box: a call in or asking, a
+    conversation on hold for one, or a live Talk session (session_arbiter)."""
+    from teaport_brain import session_arbiter as arb
+    status = arb.ARBITER.status()
+    return bool(status["call"] or status["held"]
+                or (status["live"] and status["holder"] != arb.ROOM))
+
+
 async def _engine(up, sleep) -> bool:
-    """Wait for the speech engine to answer, ENGINE_WAIT_SECS at most: a room session
-    without its STT ends before it begins. Late, it goes on all the same (a box without a
-    room mic needs no engine for its setup network)."""
+    """Wait for the speech engine to answer: ENGINE_WAIT_SECS of waiting between looks at
+    most (each look takes up to a second more). A room session without its STT ends
+    before it begins. Late, it goes on all the same (a box without a room mic needs no
+    engine for its setup network)."""
     waited = 0.0
     while not await up():
         if waited >= ENGINE_WAIT_SECS:
