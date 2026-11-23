@@ -27,7 +27,7 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 | `channel` | `stable` or `beta`: whose manifest named the license | No |
 | `eula_version` | The license version accepted, such as `1.0` | No |
 | `eula_sha256` | SHA-256 of the exact text accepted. The server only takes the current one. | No |
-| `name` | Always empty. Kept only so a rollback to an older Worker, which writes it, still works; a later release drops it. | No |
+| `name` | Empty from the Worker deployed with migration 0002 on: it writes `''` whatever the installer sends, and 0002 blanks the names stored before. The column stays so a rollback to an earlier Worker still works; a later release drops it. | No, from then on |
 | `email` | The email address the person typed or passed with `--email`. Not verified. | **Yes** |
 | `use_type` | `personal` or `licensed` | No |
 | `license_id` | For licensed use: the Teaspoon AI license's ID | Linked to the licensee |
@@ -50,14 +50,22 @@ way back), `key` (which file),
 
 ## What is not stored
 
-No name. Acceptances recorded one until 2026-11-23; counsel advised dropping it, since an
-unverified typed name adds nothing to the email, the use and the accepted text's hash.
-Migration `0002_drop_acceptance_name.sql` blanked every name recorded before, and the Worker
-writes the `name` column empty. The column stays until a later release, because a migration
-must leave the schema usable by the Worker before it (packaging/RELEASING.md), and that
-Worker still writes a name. An installer from before then still sends a name: the Worker
-ignores it, and `install.sh --name` is taken and ignored. A box set up before then may still hold the
-name in its own receipt (On the box, below); that copy is the owner's and never leaves the box.
+No name, from the Worker deployed with migration `0002_drop_acceptance_name.sql`. Earlier
+installers asked for one and earlier Workers stored it; counsel advised dropping it, since
+an unverified typed name adds nothing to the email, the use and the accepted text's hash.
+
+- That Worker discards any name an installer sends. `install.sh` no longer asks for one or
+  sends one; `--name` and `TEAPORT_NAME` are taken and ignored, so older scripts keep
+  working. A box that cloned `main` before this change still sends one, which is discarded.
+  No release tag's installer has the acceptance flow.
+- 0002 blanks the names stored before it. They stay recoverable through D1 Time Travel
+  until its restore window has passed (30 days on Workers Paid, 7 on Free).
+- A rollback to an earlier Worker stores names again, and D1 records 0002 as applied, so it
+  will not run again by itself. After rolling forward, blank them by hand:
+  `UPDATE acceptances SET name = '' WHERE name <> ''`. Since this installer sends no name,
+  such a rollback also makes every fresh install fail: do not roll back past that Worker.
+- A box set up before this change may still hold the name in its own receipt (On the box,
+  below); that copy is the owner's and never leaves the box.
 
 Also not stored: the box's hostname or local user, the manifest, the request bodies of downloads, and the
 token itself (it is signed, not stored). A new token for an existing acceptance
@@ -85,7 +93,8 @@ to get a new token.
   request's headers are among them: the client's IP address, the user agent, and, on a
   download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
   it say whether the request body is recorded. The Worker itself writes nothing to the
-  logs (it has no `console.log`); the email travels only in the body of
+  logs (it has no `console.log`); the email (and, from an older `install.sh`, a name the
+  Worker discards) travel only in the body of
   `POST /api/accept`. Setting `invocation_logs = false` under `[observability.logs]` turns
   the invocation logs off.
 
