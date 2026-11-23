@@ -203,12 +203,15 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
          merge named the notices under `dl/engine/`, which the open Worker serves from
          there. The notices' place is `teaport-get` `dl/notices/`; once the gate enforces,
          nothing should read the copy.
-- [ ] A change to `worker/` deploys through the `worker-deploy` workflow once it is on main:
+- [ ] A change to `worker/`, to the deploy tool (`.github/wrangler/`) or to the workflow
+      deploys through the `worker-deploy` workflow once it is on main:
       Actions → worker-deploy, approve the `worker-deploy` environment. The job runs the
       Worker's tests, prints the live version id first (the rollback target), applies D1
       migrations, deploys, and checks that an anonymous gated download answers as
       `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. To go back, use
-      step 4's way back (`npx wrangler rollback <version-id>`, the id the job printed),
+      step 4's way back (`wrangler rollback <version-id>`, the id the job printed, with
+      the locked tool: `(cd .github/wrangler && npm ci)`, then from `worker/`
+      `../.github/wrangler/node_modules/.bin/wrangler rollback <version-id>`),
       not a deploy by hand. To deploy main again (the first time, or after fixing the
       environment), use Run workflow from main, not Re-run on an older run: a re-run
       deploys that run's commit. A rollback does not undo D1 migrations, which the job applies

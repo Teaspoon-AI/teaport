@@ -129,7 +129,7 @@ jobs:
             echo '```'
             echo "$live"
             echo '```'
-            echo "To go back: \`cd worker && npx wrangler rollback <the version id above>\` (packaging/RELEASING.md)."
+            echo "To go back, with the locked wrangler: \`(cd .github/wrangler && npm ci) && cd worker && ../.github/wrangler/node_modules/.bin/wrangler rollback <the version id above>\` (packaging/RELEASING.md)."
           } | tee -a "$GITHUB_STEP_SUMMARY"
       # Both through a mask: on an authentication error wrangler prints the account's name
       # (by default "<email>'s Account"), and this repo's job logs are public. pipefail keeps
