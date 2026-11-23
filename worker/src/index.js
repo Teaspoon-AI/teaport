@@ -218,8 +218,9 @@ async function accept(request, env, now) {
     return fail(409, "eula_changed", `the current license is version ${eula.version}: read and accept that one`,
                 {}, { eula_version: eula.version, eula_sha256: eula.sha256 });
   }
-  // No name is recorded (migrations/0002): an installer from before that still sends one,
-  // and it is ignored rather than refused, so released installers keep working.
+  // No name is recorded (migrations/0002): the column stays for rollbacks and is written
+  // empty. An installer from before that still sends one; it is ignored rather than refused,
+  // so released installers keep working.
   const email = text(b.email, 254);
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return fail(400, "bad_request", "email: an email address");
@@ -247,9 +248,9 @@ async function accept(request, env, now) {
   const id = randomId();
   const c = client(request);
   await env.DB.prepare(
-    `INSERT INTO acceptances (id, created_at, channel, eula_version, eula_sha256, email, use_type,
+    `INSERT INTO acceptances (id, created_at, channel, eula_version, eula_sha256, name, email, use_type,
        license_id, device_id, method, installer, ip, country, user_agent, last_token_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?2)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?2)`,
   ).bind(id, new Date(now * 1000).toISOString(), channel, eula.version, eula.sha256, email, b.use,
          license, device, b.method, b.installer, c.ip, c.country, c.ua).run();
   return json(200, { acceptance_id: id, ...(await issue(env, id, channel, eula, now)) });

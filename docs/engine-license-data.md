@@ -27,6 +27,7 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 | `channel` | `stable` or `beta`: whose manifest named the license | No |
 | `eula_version` | The license version accepted, such as `1.0` | No |
 | `eula_sha256` | SHA-256 of the exact text accepted. The server only takes the current one. | No |
+| `name` | Always empty. Kept only so a rollback to an older Worker, which writes it, still works; a later release drops it. | No |
 | `email` | The email address the person typed or passed with `--email`. Not verified. | **Yes** |
 | `use_type` | `personal` or `licensed` | No |
 | `license_id` | For licensed use: the Teaspoon AI license's ID | Linked to the licensee |
@@ -51,9 +52,11 @@ way back), `key` (which file),
 
 No name. Acceptances recorded one until 2026-11-23; counsel advised dropping it, since an
 unverified typed name adds nothing to the email, the use and the accepted text's hash.
-Migration `0002_drop_acceptance_name.sql` removed the column, and with it every name
-recorded before. An installer from before then still sends a name: the Worker ignores it,
-and `install.sh --name` is taken and ignored. A box set up before then may still hold the
+Migration `0002_drop_acceptance_name.sql` blanked every name recorded before, and the Worker
+writes the `name` column empty. The column stays until a later release, because a migration
+must leave the schema usable by the Worker before it (packaging/RELEASING.md), and that
+Worker still writes a name. An installer from before then still sends a name: the Worker
+ignores it, and `install.sh --name` is taken and ignored. A box set up before then may still hold the
 name in its own receipt (On the box, below); that copy is the owner's and never leaves the box.
 
 Also not stored: the box's hostname or local user, the manifest, the request bodies of downloads, and the

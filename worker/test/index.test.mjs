@@ -98,8 +98,23 @@ const bearer = (t) => ({ authorization: `Bearer ${t}` });
 test("no name is recorded: an installer that still sends one is accepted, and the name dropped", async () => {
   const r = await accepted({ name: "Ada Lovelace" });
   const row = env.DB.db.prepare("SELECT * FROM acceptances WHERE id = ?").get(r.acceptance_id);
-  assert.ok(!("name" in row), "acceptances has no name column");
+  assert.equal(row.name, "", "the column stays (rollbacks) and is written empty");
   assert.ok(!Object.values(row).includes("Ada Lovelace"));
+});
+
+test("migration 0002 blanks the names recorded before it and leaves the schema the old Worker needs", () => {
+  const db = new DatabaseSync(":memory:");
+  const files = readdirSync(MIGRATIONS).filter((f) => f.endsWith(".sql")).sort();
+  db.exec(readFileSync(new URL(files[0], MIGRATIONS), "utf8"));
+  db.prepare(`INSERT INTO acceptances (id, created_at, channel, eula_version, eula_sha256, name, email,
+                use_type, method, installer) VALUES ('a', 't', 'stable', '1.0', 'x', 'Ada Lovelace',
+                'ada@example.com', 'personal', 'tty', 'unknown')`).run();
+  db.exec(readFileSync(new URL("0002_drop_acceptance_name.sql", MIGRATIONS), "utf8"));
+  assert.equal(db.prepare("SELECT name FROM acceptances").get().name, "");
+  // The Worker before 0002 still inserts a name: a rollback to it must keep working.
+  db.prepare(`INSERT INTO acceptances (id, created_at, channel, eula_version, eula_sha256, name, email,
+                use_type, method, installer) VALUES ('b', 't', 'stable', '1.0', 'x', 'Grace Hopper',
+                'grace@example.com', 'personal', 'tty', 'unknown')`).run();
 });
 
 test("an acceptance is recorded with who, what and from where, and returns a token", async () => {
