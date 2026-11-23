@@ -862,7 +862,19 @@ def test_no_setup_unit_no_first_boot(box, monkeypatch):
         assert not await _run(session, "none")
         assert _run.check.asked == 0 and not first_boot.tried_this_boot()
         assert session.wifi.said == []
+        assert not first_boot.listening(), "room sessions wait on a driver that has given up"
     asyncio.run(run())
+
+
+def test_busy_is_a_live_conversation_or_a_call_not_a_sleeping_room(monkeypatch):
+    """_box_busy reads the arbiter: a live holder, one on hold, or a call in or asking.
+    A room mic asleep, or one nobody has spoken to (not live), leaves the box free."""
+    from teaport_brain import session_arbiter as arb
+    cases = [({"live": False, "call": False}, False), ({"live": True, "call": False}, True),
+             ({"live": False, "call": True}, True), ({"live": True, "call": True}, True)]
+    for status, busy in cases:
+        monkeypatch.setattr(arb.ARBITER, "status", lambda status=status: dict(status))
+        assert first_boot._box_busy() is busy, status  # no box fixture: the real one
 
 
 def test_a_room_session_without_spoken_setup_does_not_offer_itself(box):

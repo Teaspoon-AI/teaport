@@ -329,8 +329,9 @@ def room_wanted() -> dict | None:
 # room without spoken setup), and the setup network starts without a voice
 # (_start_headless): its screen shows the network's name, password and code
 # (wifi_setup.py), and its own time limit puts things back -- unless a conversation or a
-# call holds the box (a LAN with no internet reads as offline too), which it would cut
-# off its network unannounced. Still one try a boot: due() marked this one tried before
+# call holds the box at that moment (a LAN with no internet reads as offline too), which
+# it would cut off its network unannounced: then not before the brain starts again. Still
+# one try a boot: due() marked this one tried before
 # any of this. drive() looks once per start of the brain; a look that cannot tell
 # ("unknown": every check timed out) waits for the next.
 ENGINE_WAIT_SECS = 300.0
@@ -387,7 +388,8 @@ def _withdraw(room: _Room) -> None:
 def listening() -> bool:
     """Should a room session offer itself to first boot (run)? While first boot could be
     due, and while drive() is at work (which has marked this boot tried by then): not
-    once it is done, so no room session waits on a hand-over that will not come."""
+    once it is done, so no room session that comes after waits on a hand-over that will
+    not come (one that came before waits until it ends, cancelled with it)."""
     return ENABLED and is_new() and (_driving or not (_driven or tried_this_boot()))
 
 
