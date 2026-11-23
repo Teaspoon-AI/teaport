@@ -209,7 +209,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       migrations, deploys, and checks that an anonymous gated download answers as
       `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. To go back, use
       step 4's way back (`npx wrangler rollback <version-id>`, the id the job printed),
-      not a deploy by hand. A rollback does not undo D1 migrations, which the job applies
+      not a deploy by hand. To deploy main again (the first time, or after fixing the
+      environment), use Run workflow from main, not Re-run on an older run: a re-run
+      deploys that run's commit. A rollback does not undo D1 migrations, which the job applies
       before it deploys: a migration must leave the schema usable by the version before
       it (add, never rename or drop).
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from

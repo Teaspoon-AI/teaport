@@ -375,13 +375,13 @@ def check(manifest_path, placeholders_ok, require_enforce=False):
             if why == GATE_OPEN and require_enforce:
                 problems.append(f"{where}: {url} is served without a download token: the gate's GATE "
                                 "is open. main's worker/wrangler.toml enforces: deploy main's Worker "
-                                "(cd worker && npx wrangler deploy), unless it was opened as the "
-                                "way back (packaging/RELEASING.md)")
+                                "(Actions → worker-deploy → Run workflow, from main), unless it was "
+                                "opened as the way back (packaging/RELEASING.md)")
             elif why == GATE_OPEN:
                 print(f"::warning::{where}: {url} is served without a download token: the gate's "
                       "GATE is open. main's worker/wrangler.toml enforces: deploy main's Worker "
-                      "(cd worker && npx wrangler deploy), unless it was opened as the way back "
-                      "(packaging/RELEASING.md); the weekly run fails until then")
+                      "(Actions → worker-deploy → Run workflow, from main), unless it was opened "
+                      "as the way back (packaging/RELEASING.md); the weekly run fails until then")
             elif why:
                 problems.append(f"{where}: {url} -> {why}")
                 continue

@@ -94,9 +94,9 @@ jobs:
       - name: Install wrangler, without the Cloudflare token in reach
         # Locked, with every dependency (.github/wrangler/package-lock.json): the deploy steps
         # run this code with the Cloudflare token, so a deploy tool that changes under the
-        # gate is a change to the gate. Its install scripts (esbuild, workerd) run here,
-        # where no Cloudflare secret is set; the token goes only to the steps that call
-        # Cloudflare.
+        # gate is a change to the gate. Whatever install scripts npm runs (esbuild's,
+        # workerd's) run here, where no Cloudflare secret is set; the token goes only to the
+        # steps that call Cloudflare.
         working-directory: .github/wrangler
         run: |
           npm ci --no-audit --no-fund
