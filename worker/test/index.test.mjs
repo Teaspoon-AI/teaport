@@ -7,7 +7,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import worker, { expire, makeToken, parseRange, resetCache, TOKEN_TTL_SECS } from "../src/index.js";
+import worker, { MAKER_PER_BOX_DAY, expire, makeToken, parseRange, resetCache, TOKEN_TTL_SECS } from "../src/index.js";
 
 const MIGRATIONS = new URL("../migrations/", import.meta.url);
 const SHA = "33334d85d3f087da738131fcfe5ee6f862859c8130c4bbdd0aad441aff34effb";
@@ -309,11 +309,17 @@ test("past MAKER_MAX_DAYS a maker acceptance gets no token and downloads nothing
     assert.equal(res.status, status);   // 409: the installer has the owner accept; 403: refused
     assert.equal((await res.json()).error, "maker_expired");
   }
-  // Without MAKER_MAX_DAYS, none gets any: it fails closed.
+  // Without MAKER_MAX_DAYS, none gets any: it fails closed, as the server's fault (503:
+  // the installer tries again later) rather than the record's.
   env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(60));
+  const fresh = (await makerToken(acceptance_id)).token;
   for (const v of [undefined, "0", "x", "1.5"]) {
     env.MAKER_MAX_DAYS = v;
-    assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 409, String(v));
+    for (const res of [await call("POST", "/api/token", { body: { acceptance_id } }),
+                       await call("GET", `/${ENGINE}`, { headers: bearer(fresh) })]) {
+      assert.equal(res.status, 503, String(v));
+      assert.equal((await res.json()).error, "factory_misconfigured");
+    }
   }
 });
 
@@ -410,6 +416,22 @@ test("the cap counts boxes, not records: a box provisioned again and again does 
     env.FACTORY_DAILY_MAX = v;
     await maker({ device_id: box(9) });
   }
+});
+
+test("a box gets at most MAKER_PER_BOX_DAY records in 24 hours, whatever the cap", async () => {
+  for (const cap of [undefined, "200"]) {
+    env.DB.db.exec("DELETE FROM maker_acceptances");
+    env.FACTORY_DAILY_MAX = cap;
+    for (let i = 0; i < MAKER_PER_BOX_DAY; i++) await maker({ device_id: box(1) });
+    assert.equal((await askFactory({ device_id: box(1) })).status, 429, String(cap));
+    await maker({ device_id: box(2) });                        // another box is not held up
+  }
+  env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(25 * 3600));
+  await maker({ device_id: box(1) });                          // a day later, it may again
+  env.DB.db.exec("DELETE FROM maker_acceptances");
+  for (let i = 0; i < MAKER_PER_BOX_DAY; i++) await maker({ device_id: box(1) });
+  env.FACTORY_TOKEN = "the-rotated-factory-station-token-0";  // a new secret starts again
+  await maker({ device_id: box(1) });
 });
 
 test("the cap's window is 24 hours, for the count and for a box seen before; rotating starts the count again", async () => {

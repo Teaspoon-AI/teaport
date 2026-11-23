@@ -541,7 +541,7 @@ eula_gate() {
   if [ "$(receipt_get method)" = factory ]; then
     local mid; mid="$(receipt_get acceptance_id)"
     if [ -n "$ACCEPT_EULA" ]; then
-      log "a factory install record is here, but --accept-eula was given: the license is accepted instead"
+      log "a factory install record is here, but --accept-eula (TEAPORT_ACCEPT_EULA) was given: the license is accepted instead"
     elif [ -n "$api" ] && [ -n "$mid" ]; then
       if [ "$DRY_RUN" = 1 ]; then
         printf '  [dry-run] factory install record: get a download token from %s\n' "$api"; return

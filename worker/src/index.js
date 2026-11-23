@@ -28,8 +28,9 @@
 //                      on its own hardware, so this is no one's acceptance of the license:
 //                      the box's owner is to accept it at setup (teaport#465). The station
 //                      writes the id into the box's receipt, and install.sh's first-boot run
-//                      gets tokens with it. One row per box in maker_acceptances; at most
-//                      FACTORY_DAILY_MAX boxes in any 24 hours.
+//                      gets tokens with it. One row each time (a box provisioned again gets
+//                      a new one); at most FACTORY_DAILY_MAX boxes, and MAKER_PER_BOX_DAY
+//                      records a box, in any 24 hours.
 //   GET|HEAD /dl/engine/*, /dl/models/*   Authorization: Bearer <token>. Streams the file
 //                      from teaport-engine-dist, with byte ranges (curl -C - resumes the
 //                      multi-GB models), and logs the download against the acceptance.
@@ -71,6 +72,10 @@ const DEVICE = /^[0-9a-f]{16,128}$/;
 // A maker acceptance's id: "maker-" and the 24 characters of randomId(). An acceptance's id
 // is those 24 characters alone, so the two never meet.
 const MAKER_ID = /^maker-[A-Za-z0-9_-]{24}$/;
+// The most maker acceptances one box gets in any 24 hours, under one FACTORY_TOKEN: the
+// station records one each time a box provisions, a few for a box retried or provisioned
+// again; more is a leaked secret minting them.
+export const MAKER_PER_BOX_DAY = 10;
 
 const manifests = new Map();   // channel -> {at, eula: {version, sha256}}
 
@@ -165,8 +170,11 @@ function makerState(env, row, now, expired = 409) {
   if (!row) return { refuse: fail(404, "unknown_acceptance", "no acceptance is recorded under this id: accept the license") };
   if (row.revoked_at) return { refuse: fail(403, "revoked", "this box's factory install record was revoked: contact stefano@teaspoon.tech") };
   const ttl = makerTtl(env);
-  const until = Math.floor(Date.parse(row.created_at) / 1000) + (ttl ?? 0);
-  if (ttl === null || !(until > now)) {
+  if (ttl === null) {   // set up wrong: the server's fault, not the box's
+    return { refuse: fail(503, "factory_misconfigured", "the license server's MAKER_MAX_DAYS is not set up right: try again later") };
+  }
+  const until = Math.floor(Date.parse(row.created_at) / 1000) + ttl;
+  if (!(until > now)) {
     return { refuse: fail(expired, "maker_expired", "this box's factory install record no longer gets downloads: its owner accepts the Teaport Engine License (run the installer on a terminal, or the setup page)") };
   }
   return { until };
@@ -369,8 +377,14 @@ async function factory(request, env, now) {
   // so a box provisioned again never uses it up; a box recorded in the last 24 hours always
   // gets another. Only the current FACTORY_TOKEN's rows count. Unset or 0: no cap.
   // (Counted, then written: k requests at once can go k-1 over.)
+  const since = new Date((now - 86400) * 1000).toISOString();
+  const { k } = await env.DB.prepare(
+    "SELECT count(*) AS k FROM maker_acceptances WHERE device_id = ?1 AND created_at >= ?2 AND mark = ?3",
+  ).bind(b.device_id, since, mark).first();
+  if (k >= MAKER_PER_BOX_DAY) {
+    return fail(429, "factory_cap", `this box was recorded ${k} times in the last 24 hours, the most there may be`);
+  }
   if (max > 0) {
-    const since = new Date((now - 86400) * 1000).toISOString();
     const seen = await env.DB.prepare(
       "SELECT 1 AS y FROM maker_acceptances WHERE device_id = ?1 AND created_at >= ?2 AND mark = ?3 LIMIT 1",
     ).bind(b.device_id, since, mark).first();

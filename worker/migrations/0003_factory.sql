@@ -3,7 +3,8 @@
 -- Additive only: the Worker before it still runs against this schema (a rollback).
 -- What each column holds, and how long it is kept: docs/engine-license-data.md.
 
--- One row per box the factory station provisions (POST /api/factory): Teaspoon AI installing
+-- One row each time the factory station provisions a box (POST /api/factory; a box
+-- provisioned again gets a new one): Teaspoon AI installing
 -- its own software on its own hardware, not anyone's acceptance of the license (the box's
 -- owner is to accept it at setup, teaport#465). The station writes id into the box's receipt;
 -- install.sh gets download tokens with it (POST /api/token) until it is MAKER_MAX_DAYS old.

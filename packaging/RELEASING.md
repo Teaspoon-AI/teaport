@@ -306,7 +306,8 @@ runs it is the review.
     the station flashed (below).
   - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (200) boxes
     are recorded in any 24 hours (a box recorded again within the day is not counted
-    again, so the cap limits made-up boxes, not records, nor how far the table grows), and
+    again, so the cap limits made-up boxes; records for one box are limited to 10 in 24
+    hours), and
     20 requests a minute per IP address. That limit is shared: the station's calls and its
     boxes' token requests come from one address through its NAT, so a batch of boxes can
     meet a 429, which their retries ride out. Each record holds its time, box, IP address
@@ -356,16 +357,16 @@ runs it is the review.
       firewall rule; today it listens on every interface, the factory Wi-Fi included),
       and records maker acceptances only for modules it flashed and has not sealed (today
       an unknown `module_serial` gets a new unit).
-    - **Retries and provisioning again:** the station keeps the maker id with the unit and
-      sends the same one back while it still stands, so a box whose answer was lost (it
-      gives up after 10 seconds and asks again) still gets its receipt. It records a new
-      one only when the stored one is past `MAKER_MAX_DAYS` or revoked, or when an
-      operator provisions an unsealed box again; the daily cap counts boxes, so that does
-      not use it up. It calls the Worker after the unit's row is committed, not inside
-      the serial allocation.
-    - **Where it keeps `FACTORY_TOKEN`:** a file or environment only root reads on the
-      station; never in `StationConfig`'s config (sent to every box), its event log or
-      its logs.
+    - **Retries and provisioning again:** the station records a new maker acceptance on
+      every `/provision` it answers, and never hands a stored one back: it cannot tell
+      whether a stored one still stands (revoked, or near its end), nor a box retrying
+      after a lost answer (it gives up after 10 seconds and asks again) from one an
+      operator provisions again. The Worker takes that: the daily cap counts boxes, and
+      a box gets up to 10 records in 24 hours. It calls the Worker after the unit's row is
+      committed, not inside the serial allocation.
+    - **Where it keeps `FACTORY_TOKEN`:** a file or environment only the station service's
+      account reads; never in `StationConfig`'s config (sent to every box), its event log
+      or its logs.
     - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
       marks the box provisioned for good, so a crash between the two must not leave a box
       without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
@@ -379,9 +380,11 @@ runs it is the review.
       that names no license), and runs only once the box is provisioned
       (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt.
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
-      it checks `setup-done` (and checks the install
-      finished: a box whose install outlasts `MAKER_MAX_DAYS` needs provisioning again,
-      by removing its `/etc/appliance-id`, as the provisioning unit runs only without it).
+      it checks `setup-done`. It refuses a box whose receipt is anything but a factory one
+      (`"method": "factory"`): another means someone accepted the license on it at the
+      factory, in Teaspoon AI's name. It also checks the install finished: a box whose
+      install outlasts `MAKER_MAX_DAYS` needs provisioning again, by removing its
+      `/etc/appliance-id`, as the provisioning unit runs only without it.
       A box that ships with it would download engine updates for its owner, within the
       window, with no license accepted, recorded under the maker's id.
   - **After the factory:** the owner's acceptance (teaport#465) writes a receipt
