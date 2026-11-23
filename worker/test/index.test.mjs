@@ -323,6 +323,16 @@ test("past MAKER_MAX_DAYS a maker acceptance gets no token and downloads nothing
   }
 });
 
+test("a maker token whose record is gone downloads nothing: 403, as an acceptance's", async () => {
+  const { acceptance_id } = await maker();
+  const { token } = await makerToken(acceptance_id);
+  env.DB.db.exec("DELETE FROM maker_acceptances");
+  const res = await call("GET", `/${ENGINE}`, { headers: bearer(token) });
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error, "unknown_acceptance");
+  assert.equal((await call("POST", "/api/token", { body: { acceptance_id } })).status, 404);
+});
+
 test("a revoked maker acceptance gets no token and downloads nothing, the gate open or not", async () => {
   const { acceptance_id } = await maker();
   const { token } = await makerToken(acceptance_id);

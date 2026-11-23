@@ -347,16 +347,17 @@ runs it is the review.
       returned `acceptance_id` at the top level of its `/provision` answer, beside
       `ProvisionConfig`'s keys, not among them (`ProvisionConfig.from_payload` refuses a key
       outside its set, so an agent baked before the change would never provision; and
-      teaport-factory's docs/09 §4 names the new key). So the station needs the internet
+      teaport-factory's docs/09 §4 is to name the new key). So the station needs the internet
       at provisioning, as the box's install does just after. Its call times out well
       under the box's 10-second request (say 5 s). When it fails (no network, 429 from the
       per-IP limit or the daily cap, 401 or 503 for a wrong secret or setting), the
       station answers the box non-200, so the box's own retry loop asks again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station serves it only on the boxes' USB network (bound to its address there, or a
-      firewall rule; today it listens on every interface, the factory Wi-Fi included),
-      and records maker acceptances only for modules it flashed and has not sealed (today
-      an unknown `module_serial` gets a new unit).
+      firewall rule; today it listens on every interface, the factory Wi-Fi included):
+      there, only the box being provisioned, on the USB link, can ask. (The station keeps
+      no record of what it flashed or sealed by module today, so "only modules it
+      flashed" cannot be checked yet; if it comes to, the station should add it.)
     - **Retries and provisioning again:** the station records a new maker acceptance on
       every `/provision` it answers, and never hands a stored one back: it cannot tell
       whether a stored one still stands (revoked, or near its end), nor a box retrying
@@ -370,10 +371,12 @@ runs it is the review.
     - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
       marks the box provisioned for good, so a crash between the two must not leave a box
       without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
-      `{"method": "factory", "acceptance_id": "maker-…"}`, with `version` and
-      `recorded_with` too if the station sends them (notes; `install.sh` reads only
-      `method` and `acceptance_id`). No name or email.
-      The receipt is never in the shared, baked image.
+      `{"method": "factory", "acceptance_id": "maker-…"}` and nothing else (no license
+      version, which would read as an acceptance of it; no name or email). An answer
+      without an `acceptance_id`, or with one not matching `^maker-[A-Za-z0-9_-]{24}$`
+      (a station from before the change, say), is a failed attempt: the agent writes
+      nothing, not `/etc/appliance-id` either, and asks again. The receipt is never in
+      the shared, baked image.
     - **The first-boot unit** runs an installer revision with this support (the
       `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
       accepts the license instead of using the factory record, and stops on a version
@@ -382,11 +385,13 @@ runs it is the review.
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
       it checks `setup-done`. It refuses a box whose receipt is anything but a factory one
       (`"method": "factory"`): another means someone accepted the license on it at the
-      factory, in Teaspoon AI's name. It also checks the install finished: a box whose
-      install outlasts `MAKER_MAX_DAYS` needs provisioning again, by removing its
-      `/etc/appliance-id`, as the provisioning unit runs only without it.
-      A box that ships with it would download engine updates for its owner, within the
-      window, with no license accepted, recorded under the maker's id.
+      factory, in Teaspoon AI's name. It also refuses a box whose install has not
+      finished. A box that ships with the receipt would download engine updates for its
+      owner, within `MAKER_MAX_DAYS`, with no license accepted, recorded under the
+      maker's id.
+    - **Provisioning a box again** (its install outlasted `MAKER_MAX_DAYS`, or its record
+      was revoked): remove its `/etc/appliance-id` (the provisioning unit runs only
+      without it), and it records a new maker acceptance at its next boot.
   - **After the factory:** the owner's acceptance (teaport#465) writes a receipt
     `install.sh` takes as its own (`version`, `acceptance_id`), or every engine update
     asks again. The maker record itself stays in `maker_acceptances`, with its age past

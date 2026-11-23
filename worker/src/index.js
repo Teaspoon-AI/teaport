@@ -163,11 +163,11 @@ function makerTtl(env) {
 }
 
 // A maker acceptance row's state at <now>: {refuse: a Response refusing it}, or {until}
-// when it gets tokens until <until> (seconds). <expired>: the status for one past its
-// time: 409 on /api/token (the installer then has the owner accept), 403 on a download
-// (refused, as any download whose token no longer stands).
-function makerState(env, row, now, expired = 409) {
-  if (!row) return { refuse: fail(404, "unknown_acceptance", "no acceptance is recorded under this id: accept the license") };
+// when it gets tokens until <until> (seconds). On /api/token a gone or past-its-time record
+// is 404 or 409, so the installer has the owner accept; on a download (<download>), 403,
+// refused as any download whose token no longer stands.
+function makerState(env, row, now, download = false) {
+  if (!row) return { refuse: fail(download ? 403 : 404, "unknown_acceptance", "no acceptance is recorded under this id: accept the license") };
   if (row.revoked_at) return { refuse: fail(403, "revoked", "this box's factory install record was revoked: contact stefano@teaspoon.tech") };
   const ttl = makerTtl(env);
   if (ttl === null) {   // set up wrong: the server's fault, not the box's
@@ -175,7 +175,7 @@ function makerState(env, row, now, expired = 409) {
   }
   const until = Math.floor(Date.parse(row.created_at) / 1000) + ttl;
   if (!(until > now)) {
-    return { refuse: fail(expired, "maker_expired", "this box's factory install record no longer gets downloads: its owner accepts the Teaport Engine License (run the installer on a terminal, or the setup page)") };
+    return { refuse: fail(download ? 403 : 409, "maker_expired", "this box's factory install record no longer gets downloads: its owner accepts the Teaport Engine License (run the installer on a terminal, or the setup page)") };
   }
   return { until };
 }
@@ -427,7 +427,7 @@ async function authorize(request, env, now) {
     // No license to check: the maker accepted none. Its record must still be live.
     if (!MAKER_ID.test(claims.a)) return bad();
     const row = await env.DB.prepare("SELECT created_at, revoked_at FROM maker_acceptances WHERE id = ?1").bind(claims.a).first();
-    const st = makerState(env, row, now, 403);
+    const st = makerState(env, row, now, true);
     if (st.refuse) return st.refuse;
     return claims.a;
   }
