@@ -1473,7 +1473,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # reply nobody asked for, and its answer the not-set-up line.
     client_notes = (ClientNotes(context, followup_gate, followup_trigger,
                                 drop_messages=heard_corrector.drop_messages,
-                                reactions=llm is not None)
+                                reactions=llm is not None,
+                                on_cancel=owed.note_cancel)
                     if context_notes else None)
     if wifi is not None:
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
