@@ -18,12 +18,16 @@ import sys
 
 PREFIX = "/opt/teaport"
 DOC_DIR = "/usr/share/doc/teaport-brain"
+# The licenses the package carries inside itself, next to the files they cover (the fonts).
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-# (id, title, directory it is in: "doc" or "prefix", file name), in the order they are shown.
+# (id, title, directory it is in: "doc", "prefix" or "static", file name), in the order they are shown.
 DOCUMENTS = (
     ("third-party", "Third-party components and their licenses", "doc", "THIRD_PARTY_LICENSES.md"),
     ("copyright", "teaport's license (the package's copyright file)", "doc", "copyright"),
     ("engine", "The engine's notices", "prefix", "THIRD_PARTY_NOTICES.txt"),
+    ("font-dm-sans", "DM Sans font license (SIL Open Font License 1.1)", "static", "OFL-dm-sans.txt"),
+    ("font-archivo", "Archivo font license (SIL Open Font License 1.1)", "static", "OFL-archivo.txt"),
 )
 
 MAX_BYTES = 256 * 1024  # of any one file: the page and the terminal show text, not archives
@@ -45,10 +49,11 @@ def _read(path: str) -> str | None:
     return text + "\n\n[... cut here: the file is longer ...]\n" if len(data) > MAX_BYTES else text
 
 
-def documents(doc_dir: str | None = None, prefix: str | None = None) -> list[dict]:
+def documents(doc_dir: str | None = None, prefix: str | None = None,
+              static_dir: str | None = None) -> list[dict]:
     """The license documents this device has, each {id, title, path, text}. A file that is
     not there (a brain not installed from the package, an engine not installed) is left out."""
-    where = {"doc": doc_dir or DOC_DIR, "prefix": prefix or PREFIX}
+    where = {"doc": doc_dir or DOC_DIR, "prefix": prefix or PREFIX, "static": static_dir or STATIC_DIR}
     out = []
     for key, title, base, name in DOCUMENTS:
         path = os.path.join(where[base], name)
@@ -169,16 +174,17 @@ def main(argv: list[str] | None = None) -> int:
                                  description="The licenses of the software on this device.")
     ap.add_argument("package", nargs="?", help="show this Python package's license text")
     ap.add_argument("--notices", action="store_true",
-                    help="show the third-party notices, teaport's license and the engine's notices")
+                    help="show the third-party notices, teaport's license, the engine's notices and the font licenses")
     ap.add_argument("--json", action="store_true", help="the package list (or the notices) as JSON")
     ap.add_argument("--prefix", default=PREFIX)
     ap.add_argument("--doc-dir", default=DOC_DIR)
+    ap.add_argument("--static-dir", default=STATIC_DIR)  # where the font licenses are
     a = ap.parse_args(argv)
     if a.package and a.notices:
         ap.error("a package name and --notices do not go together")
 
     if a.notices:
-        docs = documents(a.doc_dir, a.prefix)
+        docs = documents(a.doc_dir, a.prefix, a.static_dir)
         if not docs:
             print(f"no license documents found in {a.doc_dir} or {a.prefix} "
                   "(this brain was not installed from the teaport-brain package)", file=sys.stderr)
@@ -210,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
           f"The brain holds {len(pkgs)} Python packages, each under its own license:\n")
     print(_table(pkgs))
     print("\n  teaport licenses <package>   the license text of one package"
-          "\n  teaport licenses --notices   the third-party notices, teaport's license and the engine's notices")
+          "\n  teaport licenses --notices   the third-party notices, teaport's license, the engine's notices"
+          " and the font licenses")
     return 0
 
 
