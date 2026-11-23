@@ -60,17 +60,9 @@ export default defineConfig({
 			description: 'Docs for teaport, a local voice assistant for the NVIDIA Jetson Orin.',
 			// Styled after the Teaport pages of the marketing site; see the
 			// header of src/styles/teaport.css for the files it follows.
-			customCss: ['./src/styles/teaport.css'],
+			// Fonts are self-hosted (EU GDPR): no requests to Google.
+			customCss: ['./src/styles/fonts.css', './src/styles/fonts-teaport.css', './src/styles/teaport.css'],
 			head: [
-				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
-				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
-				{
-					tag: 'link',
-					attrs: {
-						rel: 'stylesheet',
-						href: 'https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Archivo:wght@700&display=swap',
-					},
-				},
 				{
 					// Tag pointer-driven focus on the theme select; see the
 					// themeFocusFlag note above and teaport.css.

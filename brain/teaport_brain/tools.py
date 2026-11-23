@@ -81,7 +81,7 @@ from teaport_brain import common_words
 from teaport_brain import consult_bridge
 from teaport_brain import i18n
 from teaport_brain import openclaw_client as oc
-from teaport_brain.owed import CANCELLED_NOTE
+from teaport_brain.owed import CANCELLED_NOTE, clean_outcome
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES, VOICE_NAMES, offered_voices
@@ -965,7 +965,7 @@ def _ran_on(run) -> None:
 
 
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
-                            message=None, tts=None, status_phrase=None):
+                            message=None, tts=None, status_phrase=None, started=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
     caller's question, `message` the whole call for the CLI lane (_consult_message; the
     question when not given), `status_phrase` the model's CONSULT_STATUS, which the
@@ -980,11 +980,16 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     straight to the agent."""
     from teaport_brain import consult_bridge
 
+    # For owed.settle_empty: a cancel after this is ours too. From when the relay call was
+    # sent (`started`, _openclaw_agent_consult), not when this task first runs.
+    if started is None:
+        started = time.monotonic()
     progress = (asyncio.create_task(_consult_progress(llm, status_phrase=status_phrase,
                                                       gate=gate, tts=tts))
                 if llm is not None else None)
 
     answered = False    # the outcome landed is an answer (not a timeout, error or nothing)
+    closed_out = False  # the book closed this consult while its empty waited (settle_empty)
 
     async def working(done: bool) -> None:
         # Tell the client an answer is still owed (and, at the end, that it no longer
@@ -1004,8 +1009,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         except Exception:  # noqa: BLE001
             pass
 
-    async def deliver(outcome: oc.ConsultOutcome):
-        """Land the outcome (owed.Owed), narrator first."""
+    async def deliver(outcome: oc.ConsultOutcome, relayed: bool = False):
+        """Land the outcome (owed.Owed), narrator first. `relayed`: the relay ran it, so
+        OpenClaw's run control could have cancelled a run beside it (settle_empty);
+        the direct lane has no relay and never hears a cancel, and does not wait for one."""
         # Stop the narrator BEFORE the answer is told, not in the finally below. It is a
         # countdown against dead air, and there is no dead air once the outcome is
         # known. Observed live 2026-08-26 09:44, when the follow-up waited for its
@@ -1014,9 +1021,39 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         nonlocal answered
         if progress is not None:
             progress.cancel()
-        answered = bool(outcome.text)
+        sibling = False
+        settle_empty = getattr(owed, "settle_empty", None)
+        # Empty as land() will read it: no answer, or one that cleans to nothing (only an
+        # address, say), which a lane abort can leave as well. Every relayed empty waits
+        # up to EMPTY_CANCEL_GRACE_S (settle_empty), and meanwhile the consult still
+        # counts as running (_count_consult) and the client's "done" waits.
+        empty = outcome.failure == "empty" or (outcome.text and not clean_outcome(outcome.text))
+        if relayed and empty and settle_empty is not None:
+            sibling = await settle_empty(request, tool_call_id, started,
+                                         detail=outcome.detail)
+            if sibling is None:
+                nonlocal closed_out
+                closed_out = True
+                # The session ended during the grace: close_session already landed this
+                # consult as what it was by then (empty, or a cancel's sibling), and the
+                # room's sleep may have saved the book.
+                logger.info("openclaw_agent_consult(async): an empty result as the session "
+                            "ended -- dropped, the session closed it")
+                return
+        if sibling:
+            # OpenClaw cancelled a run in this session within the grace of this empty,
+            # since this consult began: this empty is that cancel's sibling (#450), not a
+            # request that came back with nothing. Landed as cancelled, nothing is owed.
+            # A warning: the read is by timing alone, and if it ever closes a genuine
+            # empty, this line is how that is traced.
+            logger.warning(f"openclaw_agent_consult(async): {tool_call_id}'s empty result "
+                           f"came beside OpenClaw cancelling a run in this session -- "
+                           f"landed as cancelled, nothing owed")
+            outcome = oc.ConsultOutcome(None, "cancelled",
+                                        "empty beside an OpenClaw cancel in this session")
+        answered = bool(outcome.text) and not empty  # an answer that cleans to nothing is none
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
-                  detail=outcome.detail)
+                  detail=outcome.detail, **({"by_openclaw": False} if sibling else {}))
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
@@ -1063,7 +1100,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
             logger.info(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
         else:
             logger.warning(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
-        await deliver(outcome)
+        await deliver(outcome, relayed=True)
     except asyncio.TimeoutError:
         logger.warning(f"openclaw_agent_consult(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
@@ -1083,10 +1120,11 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
-        if asyncio.current_task().cancelling():
-            # The session is ending (#122): nothing more goes into its pipeline, not even
-            # the "done" -- the client is gone or going. The owed book closes the consult
-            # with the session (Owed.close_session), as it did one that ran on.
+        if asyncio.current_task().cancelling() or closed_out:
+            # The session is ending (#122), or its book closed this consult while its
+            # empty waited (settle_empty): nothing more goes into its pipeline, not even
+            # the "done", since the client is gone or going. The owed book closes the
+            # consult with the session (Owed.close_session), as it did one that ran on.
             _count_consult(gate, -1)
         else:
             await working(True)
@@ -1191,6 +1229,7 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
     # agent is asked directly, as it is when a relay does not ack.
     over = owed is not None and getattr(params.llm, "session_over", False) is True
     fut = None
+    sent_at = time.monotonic()
     if relay and not over:
         fut = consult_bridge.create(call_id)
         # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by
@@ -1218,7 +1257,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         _log_status_phrase(status_phrase, tts)
         consult = params.llm.create_task(_consult_and_land(
             call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
-            message=_consult_message(args), tts=tts, status_phrase=status_phrase))
+            message=_consult_message(args), tts=tts, status_phrase=status_phrase,
+            started=sent_at))
         # Cancelled when the session ends, not left running into its teardown (#122).
         end_with_session = getattr(params.llm, "end_with_session", None)
         if end_with_session is not None:
@@ -1385,7 +1425,11 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
     retires the call). Otherwise the run went on without a waiter, and OpenClaw's spoken run
     control still acted on it -- a "cancel that" the brain no longer asked the plugin about
     (no consult running, run_control.py) was answered by the model and acted on by the
-    relay. Best effort: a torn-down pipeline cannot send it."""
+    relay. Best effort: a torn-down pipeline cannot send it.
+
+    It aborts that run only, by its id (OpenClaw 2026.10.5
+    cancelTalkRealtimeRelayProviderToolCall -> abortChatRunById), not the session's lane:
+    no sibling comes back empty from it, so it is no cancel for Owed.settle_empty."""
     if llm is None:
         return
     try:
@@ -1556,6 +1600,13 @@ def _control_args(arguments) -> dict | None:
     return args
 
 
+def _control_aborted(result) -> bool:
+    """A control result for a cancel that aborted the run, read from its fields
+    (RealtimeVoiceAgentControlResult: mode "cancel", aborted true), not its wording."""
+    return (isinstance(result, dict) and result.get("mode") == "cancel"
+            and result.get("aborted") is True)
+
+
 def _control_result(result, failure) -> dict:
     """What the model gets for a control call: whether it went through, the mode, and the
     update (OpenClaw's message, RealtimeVoiceAgentControlResult.message), with the order to
@@ -1589,7 +1640,7 @@ def _control_result(result, failure) -> dict:
     return out
 
 
-async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
+async def _openclaw_agent_control(params: FunctionCallParams, notes=None, owed=None):
     args = _control_args(params.arguments)
     if args is None:
         await params.result_callback({"ok": False, "error": "text required"})
@@ -1610,6 +1661,12 @@ async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {quoted(out['update'][:80])}")
+    if owed is not None and _control_aborted(result):
+        # The model's cancel aborted the session's lane: a consult whose run returned its
+        # empty final first gets no "cancelled" of its own (Owed.settle_empty). Noted as
+        # its result reaches the brain; one that comes past the grace, or after a barge-in
+        # cancelled the call (told_late, not counted), is the follow-up's (#456).
+        owed.note_cancel()
     await params.result_callback(out)
 
 
@@ -1905,7 +1962,8 @@ TOOLS: tuple[Tool, ...] = (
     # Talk only ("run_control"), and only with the consult it controls ("consult"). Its
     # ceiling sits above the handler's own wait (CONTROL_TIMEOUT_S).
     Tool(OPENCLAW_AGENT_CONTROL,
-         lambda ctx: functools.partial(_openclaw_agent_control, notes=ctx.notes),
+         lambda ctx: functools.partial(_openclaw_agent_control, notes=ctx.notes,
+                                       owed=ctx.owed),
          setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL"),
          frozenset({"agent", "consult", "run_control"}),
          timeout_secs=CONTROL_TIMEOUT_S + 5,

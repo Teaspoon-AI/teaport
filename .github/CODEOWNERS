@@ -1,0 +1,23 @@
+# Who answers for what ships to users and what serves them. With one account, GitHub
+# never requests the owner's review (it does not ask a PR's author), and main's ruleset
+# does not require it (an author cannot approve their own PR): this marks ownership, it
+# does not gate merges (packaging/RELEASING.md, "GitHub settings").
+# The last matching line wins, so the broad lines come first.
+
+# The workflows, and this file.
+/.github/                             @teaspoonai
+
+# The download gate: the Worker, its deploy, and the license and data records it keeps.
+/worker/                              @teaspoonai
+/.github/workflows/worker-deploy.yml  @teaspoonai
+/docs/engine-license-data.md          @teaspoonai
+
+# What get.teaspoon.tech serves: the release manifests (and anything that signs or checks
+# them), their publish workflow, and the packaging and runbook behind each release.
+/manifest/                            @teaspoonai
+/.github/workflows/publish.yml        @teaspoonai
+/packaging/                           @teaspoonai
+
+# What a box runs as root: the installer (its license acceptance included) and its bootstrap.
+/install.sh                           @teaspoonai
+/install-bootstrap.sh*                @teaspoonai

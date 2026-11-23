@@ -110,9 +110,31 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
 - [ ] `brain.tag` is the release tag, not `main`: `teaport update` runs that tag's
       `install.sh` as root, and refuses a branch (it moves) and any installer without
       `UPDATE_PROTOCOL=1`. The Discord bridge is cloned from the same tag.
+- [ ] With `access` in the manifest (the engine license gate), `brain.tag` is a tag cut
+      at or after the gate's merge commit. `teaport update` runs that tag's
+      `install.sh --only engine` as root, and an installer from before the gate ignores
+      `access`: every gated download gets a 401 once the gate enforces, so every engine or
+      model update fails and rolls back. `brain-v0.1.0`, `brain-v0.1.1-rc1` and
+      `brain-v0.1.1-rc2` all predate it. `manifest/check.py` refuses such a tag: it reads
+      the tag's `install.sh`, which must say `ACCESS_PROTOCOL=1` (the gate's installer
+      does). It reads the installer rather than comparing commits because a PR may be
+      squash-merged, so the gate's merge commit is not known in advance.
 - [ ] The PR's `publish` check downloads the package and compares its sha256
       (`manifest/check.py`); it fails when the upload is missing or differs. That is why the
       upload comes first.
+- [ ] For a gated file (the engine's files and models), a pull request's `publish` run has
+      no `DL_CHECK_TOKEN`. It checks only that the file refuses an anonymous download and
+      is not served at an encoded path, not its sha256; the merge's run compares it, but
+      only after the merge. So before merging a release PR, run the full check locally,
+      with the token read from a prompt, which keeps it out of your shell history:
+
+      ```sh
+      read -rsp 'DL_CHECK_TOKEN: ' DL_CHECK_TOKEN && echo && export DL_CHECK_TOKEN
+      python3 manifest/check.py manifest/<channel>.json   # beta: add --placeholders-ok
+      unset DL_CHECK_TOKEN
+      ```
+
+      It downloads every artifact (~4.6 GB), and the gate logs those downloads as `ci`.
 - [ ] `brain.deb` is in `REQUIRED` in `manifest/check.py` (since 0.1.0), so a stable
       manifest without one fails the check. The beta channel's `TODO` passes only under
       `--placeholders-ok`.
@@ -126,8 +148,123 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
       the engine release is the only thing that tells a newer set of models from an older
       one; a channel that changes `models` under the same engine can take a box's models
       back.
+- [ ] The engine's files and models (every URL under the manifest's `access.gated`:
+      `dl/engine/`, `dl/models/`) go to the private bucket `teaport-engine-dist`, never
+      `teaport-get`. The download gate Worker (`worker/`) serves them only after the
+      engine license is accepted; a copy in `teaport-get` would be public. Its
+      `THIRD_PARTY_NOTICES.txt` goes to `teaport-get` under `dl/notices/`, public on
+      purpose.
+- [ ] No gated file is left in `teaport-get`. The Worker is routed on
+      `get.teaspoon.tech/dl/engine/*` and `/dl/models/*`, and a percent-encoded path
+      (`dl%2Fengine%2F…`, `dl/engine%2F…`) matches neither route, so the public bucket
+      answers it: a copy left there is served to anyone, around the gate. The `publish`
+      check asks for every gated file that way on every run, and fails on a 2xx.
+- [ ] The gate's `GATE` in `worker/wrangler.toml` is `"enforce"`. `"open"` serves a gated
+      file to a request without a token (marked `x-teaport-gate: open`): it served the
+      switchover, and is the way back below. While it is open, every `publish` run warns,
+      and the weekly run fails (`check.py --require-enforce`). The switchover, in order:
+      1. Done: the private bucket `teaport-engine-dist` holds the gated files, the D1
+         database and the Worker's secrets (`TOKEN_KEY`, `CHECK_TOKEN`, and the repo
+         secret `DL_CHECK_TOKEN`) are set, the notices are in `teaport-get` under
+         `dl/notices/`, and the Worker was deployed with `GATE = "open"`. An anonymous
+         download was served (`curl -sI` on a gated URL: 200, `x-teaport-gate: open`), so
+         the installer on main from before the gate still downloaded, through the
+         Worker.
+      2. Done: `dl/engine/*` and `dl/models/*` are deleted from `teaport-get`, so
+         `curl -sI 'https://get.teaspoon.tech/dl%2Fengine%2Fteaport-engine-1.6-pos.bin'`
+         answers 404.
+      3. Done: the installer that accepts through the Worker is merged (#439), and the
+         Worker is redeployed from main's HEAD with `GATE = "open"`. Accept → token → a
+         ranged download was checked against it.
+      4. Done (#460, Worker version 30ffbbee): `GATE = "enforce"` in
+         `worker/wrangler.toml`, deployed from main's HEAD after noting the live, open
+         version id (`cd worker && npx wrangler deployments status`). These checks passed,
+         and they are the checks after any deploy of the Worker, in this order:
+         - Without a token: `curl -sI` on a gated URL answers 401, with no
+           `x-teaport-gate` header. This is the check that the gate enforces: the
+           two below pass with the gate open too (the publish check only warns).
+         - A customer's token: `POST /api/token` with a test acceptance's id, then
+           `curl -sI -r 0-0` on a gated file with that token: 206. This takes the path
+           every install takes: the D1 lookup of the acceptance and the current license
+           read from the manifest. It records no new acceptance, and a HEAD records no
+           download (a GET would, against that acceptance: use a test one, not a box's).
+         - `CHECK_TOKEN`: run a `publish` check (Actions → publish → Run workflow), which
+           fetches every gated file with `DL_CHECK_TOKEN` and compares its sha256. On
+           main it also uploads the manifests and the bootstrap again, unchanged.
+         If enforcing breaks installs, the way back is a Worker version with the gate open:
+         `wrangler rollback <version-id>`, with the locked tool (`(cd .github/wrangler &&
+         npm ci)`, then from `worker/` `../.github/wrangler/node_modules/.bin/wrangler
+         rollback <version-id>`), to the open version noted before the
+         deploy (a bare `rollback` takes the deployment before the current one, which a
+         later `wrangler secret put` changes; wrangler asks before rolling back over
+         changed secrets), or, with the id lost, a PR to main that sets `GATE = "open"`
+         (the workflow deploys it).
+         The weekly check fails while it is open. Then fix main and deploy main again.
+      5. Done: deleted `dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt` from
+         `teaport-engine-dist`. It is a switchover-only copy: main's manifest before #439's
+         merge named the notices under `dl/engine/`, which the open Worker serves from
+         there. The notices' place is `teaport-get` `dl/notices/`; once the gate enforces,
+         nothing should read the copy.
+- [ ] A change to `worker/`, to the deploy tool (`.github/wrangler/`) or to the workflow
+      deploys through the `worker-deploy` workflow once it is on main:
+      Actions → worker-deploy, approve the `worker-deploy` environment. The job runs the
+      Worker's tests, prints the live version id first (the rollback target), applies D1
+      migrations, deploys, and checks that an anonymous gated download answers as
+      `GATE` says. After it, run step 4's token and `CHECK_TOKEN` checks. To go back, use
+      step 4's way back (`wrangler rollback <version-id>`, the id the job printed, with
+      the locked tool: `(cd .github/wrangler && npm ci)`, then from `worker/`
+      `../.github/wrangler/node_modules/.bin/wrangler rollback <version-id>`),
+      not a deploy by hand. To deploy main again (the first time, or after fixing the
+      environment), use Run workflow from main, not Re-run on an older run: a re-run
+      deploys that run's commit. A rollback does not undo D1 migrations, which the job applies
+      before it deploys: a migration must leave the schema usable by the version before
+      it (add, never rename or drop).
 - [ ] Merge. The `publish` workflow uploads the manifests and reads each back from
       get.teaspoon.tech.
+
+## GitHub settings
+
+What the release path relies on outside the repo's files (Settings on GitHub). teaport
+pushes from one account, `teaspoonai`, so no rule here may need a second person: a PR's
+author cannot approve it, and an environment with "Prevent self-review" ticked never
+deploys a run its only reviewer started. The same account is the one the coding agents
+on the development machine use, so an environment's reviewer is a step a person sees,
+not a barrier an agent cannot cross. What protects a box is elsewhere: each file's
+sha256 in the manifest (and, with manifest signing, the signature the box verifies), and
+the review of what merges to main, which is also what decides what the download gate
+lets through.
+
+- **`main`**: ruleset "main: PRs and green CI". No deletion, no force push, a change
+  only through a PR with the required checks green: `brain (ubuntu-latest)`,
+  `brain (ubuntu-24.04-arm)`, `brain-deb`, `plugin`, `formal`, `installer`, `worker`
+  and `docs`. No approvals. The admin role bypasses it only by merging a PR, never by
+  pushing.
+- **`worker-deploy` environment** (`.github/workflows/worker-deploy.yml`). GitHub creates
+  it, unprotected, the first time the workflow names it; set its protections before its
+  secret, or the next change to `worker/` deploys unapproved:
+  - required reviewer `teaspoonai`, "Prevent self-review" unticked;
+  - "Allow administrators to bypass configured protection rules" unticked;
+  - deployment branches: `main` only;
+  - secret `CLOUDFLARE_API_TOKEN`, an environment secret so no other workflow reads
+    it: an API token for this account only, with Workers Scripts: Edit, Workers
+    Routes: Edit and Zone: Read (zone `teaspoon.tech`: wrangler looks the zone up by
+    name for the routes, after it uploads the script) and D1: Edit, and no User Details or
+    Memberships permission (wrangler prints what those can read when a call fails, and
+    the job logs are public; the workflow masks email addresses in wrangler's output
+    too). The account's name should not be an email address either: Cloudflare's
+    default is "<email>'s Account";
+  - variable `CLOUDFLARE_ACCOUNT_ID`.
+- **`r2-publish` environment** (`.github/workflows/publish.yml`'s upload job): deployment
+  branches `main` only, no reviewer; secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+  `R2_ENDPOINT`, an R2 token with write access to `teaport-get`, the bucket that serves
+  the manifests and the bootstrap a box runs as root. Without the branch policy, a
+  workflow on any branch could read them.
+- **Repository secret `DL_CHECK_TOKEN`**: equal to the download gate Worker's
+  `CHECK_TOKEN`; the publish check downloads the gated files with it on every run but a
+  pull request's. Change both together (`cd worker && npx wrangler secret put
+  CHECK_TOKEN`, then the secret), or the next check fails.
+- **`.github/CODEOWNERS`** names who answers for the paths that ship to users or serve
+  them. No rule requires the owner's review.
 
 ## Release candidates
 

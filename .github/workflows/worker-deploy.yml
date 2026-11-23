@@ -1,0 +1,172 @@
+name: worker-deploy
+
+# Deploys the download gate Worker (worker/) to Cloudflare from main, so the live Worker is
+# main's and nothing else: before this it was deployed by hand from a working tree, which
+# could differ from main without anyone noticing.
+#
+# On a push to main that touches worker/, the deploy tool (.github/wrangler/) or this file,
+# and by hand (Actions → worker-deploy → Run workflow, from main only): the Worker's tests
+# and a dry-run bundle with the locked wrangler, then, after a reviewer approves the
+# worker-deploy environment, D1 migrations, the deploy, and a check that the live gate does
+# what wrangler.toml says (GATE = "enforce": an anonymous gated download answers 401). On a
+# pull request that touches the same paths: the tests and the dry run only, with no secret.
+#
+# The worker-deploy environment (Settings → Environments; GitHub creates it, unprotected, on
+# the first run that names it: set its reviewer and branches before its secret) holds:
+#   CLOUDFLARE_API_TOKEN   an API token for this account only, with Workers Scripts: Edit,
+#                          Workers Routes: Edit and Zone: Read (the teaspoon.tech zone),
+#                          D1: Edit; no User Details or Memberships
+#   CLOUDFLARE_ACCOUNT_ID  the account's id (a variable, not a secret)
+# and requires a reviewer ("Prevent self-review" unticked: teaport has one account), with
+# deployment branches limited to main (packaging/RELEASING.md, "GitHub settings"). Its secrets are read
+# by the deploy job only, never on a pull request.
+#
+# The Worker's own secrets (TOKEN_KEY, CHECK_TOKEN) are not touched: wrangler deploy keeps
+# them. The way back from a bad deploy is in packaging/RELEASING.md (wrangler rollback to
+# the version this job prints before it deploys).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - worker/**
+      - .github/wrangler/**
+      - .github/workflows/worker-deploy.yml
+  pull_request:
+    paths:
+      - worker/**
+      - .github/wrangler/**
+      - .github/workflows/worker-deploy.yml
+  workflow_dispatch:
+
+# One deploy at a time on main, and never cancel one halfway; a pull request's runs have a
+# group of their own, so they never displace a deploy waiting for approval.
+concurrency:
+  group: worker-deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Test the download gate
+        run: node --test worker/test/*.test.mjs
+      - name: The locked wrangler installs and bundles the Worker
+        # The same install the deploy job does, and a bundle that stops before any Cloudflare
+        # call: a broken lockfile or a wrangler that cannot build the Worker shows here, on the
+        # pull request, not after an approval. No credentials in this job.
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          (cd .github/wrangler && npm ci --no-audit --no-fund)
+          cd worker && ../.github/wrangler/node_modules/.bin/wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle"
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: worker-deploy
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    defaults:
+      run:
+        # bash, not the default bash -e: pipefail, so a failed command in a pipe fails its step.
+        shell: bash
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Install wrangler, without the Cloudflare token in reach
+        # Locked, with every dependency (.github/wrangler/package-lock.json): the deploy steps
+        # run this code with the Cloudflare token, so a deploy tool that changes under the
+        # gate is a change to the gate. Whatever install scripts npm runs (esbuild's,
+        # workerd's) run here, where no Cloudflare secret is set; the token goes only to the
+        # steps that call Cloudflare.
+        working-directory: .github/wrangler
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: The environment is set up
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not set in the worker-deploy environment: nothing was deployed"
+            exit 1
+          fi
+          wrangler --version 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
+      - name: The live version, for a rollback
+        # Only the version ids, their traffic and the time: the JSON also names the author's
+        # email, and this repo's job logs and summaries are public.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          live=$(wrangler deployments status --json 2> >(sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g' >&2) \
+                 | jq -r '.created_on as $t | .versions[] | "\(.version_id) (\(.percentage)%), deployed \($t)"')
+          if [ -z "$live" ]; then
+            echo "::error::no live version id read: not deploying without a rollback target"
+            exit 1
+          fi
+          {
+            echo "### Before this deploy"
+            echo '```'
+            echo "$live"
+            echo '```'
+            echo "To go back, with the locked wrangler: \`(cd .github/wrangler && npm ci) && cd worker && ../.github/wrangler/node_modules/.bin/wrangler rollback <the version id above>\` (packaging/RELEASING.md)."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      # Both through a mask: on an authentication error wrangler prints the account's name
+      # (by default "<email>'s Account"), and this repo's job logs are public. pipefail keeps
+      # wrangler's exit status.
+      - name: D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler d1 migrations apply teaport-gate --remote 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy 2>&1 | sed -E 's/[^[:space:]@]+@[^[:space:]]+/<email>/g'
+      - name: The live gate does what wrangler.toml says
+        # An engine file from the published stable manifest, asked for without a token.
+        # "enforce" (or anything but "open"): 401 and no x-teaport-gate header. "open": served,
+        # marked x-teaport-gate: open. A few tries: a new version takes seconds to reach
+        # every edge.
+        working-directory: .
+        run: |
+          gate=$(sed -n 's/^GATE *= *"\([^"]*\)".*/\1/p' worker/wrangler.toml)
+          if ! url=$(curl -fsS https://get.teaspoon.tech/manifest/stable.json \
+                     | python3 -c 'import json,sys; print(json.load(sys.stdin)["engine"]["pos_model"]["url"])'); then
+            echo "::error::could not read the stable manifest's engine.pos_model url: the deploy happened, the gate is unchecked"
+            exit 1
+          fi
+          for i in 1 2 3 4 5 6; do
+            head=$(curl -sS -o /dev/null -D - -I "$url" | tr -d '\r' || true)
+            code=$(printf '%s\n' "$head" | awk 'NR==1{print $2}')
+            mark=$(printf '%s\n' "$head" | awk 'tolower($1)=="x-teaport-gate:"{print $2}')
+            if [ "$gate" = open ]; then
+              [ "$code" = 200 ] && [ "$mark" = open ] && { echo "ok: GATE open, $url served open"; exit 0; }
+            else
+              [ "$code" = 401 ] && [ -z "$mark" ] && { echo "ok: GATE enforces, $url answers 401 without a token"; exit 0; }
+            fi
+            sleep 10
+          done
+          echo "::error::after the deploy, $url answered ${code:-nothing} (x-teaport-gate: ${mark:-none}) for GATE = \"${gate:-unset}\": see packaging/RELEASING.md for the way back"
+          exit 1

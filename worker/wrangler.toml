@@ -1,0 +1,61 @@
+# teaport download gate (src/index.js). Deployed from main by .github/workflows/
+# worker-deploy.yml, after a reviewer approves its environment (D1 migrations, then
+# wrangler deploy). Set up once, by hand from worker/:
+#
+#   npx wrangler d1 create teaport-gate            # once: put its id in database_id below
+#   npx wrangler secret put TOKEN_KEY              # once: openssl rand -hex 32
+#   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
+#
+# GATE is "enforce": a gated download without a token answers 401. The switchover
+# (packaging/RELEASING.md) ran with GATE = "open" until the installer that accepts through
+# this Worker was on main. Deploy from main's HEAD, so the live Worker is main's (the way
+# back, if enforcing breaks installs, is in packaging/RELEASING.md).
+# The routes put this Worker in front of get.teaspoon.tech for /api/* and the gated
+# download paths only; everything else there is still the public bucket teaport-get.
+name = "teaport-download-gate"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = false
+preview_urls = false
+
+routes = [
+  { pattern = "get.teaspoon.tech/api/*", zone_name = "teaspoon.tech" },
+  { pattern = "get.teaspoon.tech/dl/engine/*", zone_name = "teaspoon.tech" },
+  { pattern = "get.teaspoon.tech/dl/models/*", zone_name = "teaspoon.tech" },
+]
+
+[vars]
+# "enforce": a download needs a token. "open": one without an Authorization header is
+# served too: the switchover's, and the way back (src/index.js). Anything else enforces.
+GATE = "enforce"
+# Acceptances and downloads older than this are deleted daily. 2557 days, 7 years: a
+# PROPOSAL to confirm with counsel (docs/engine-license-data.md); change both together.
+RETENTION_DAYS = "2557"
+
+[triggers]
+crons = ["17 4 * * *"]   # daily, 04:17 UTC: the retention cron
+
+# The gated files: private, no public URL. Only this Worker reads it.
+[[r2_buckets]]
+binding = "DIST"
+bucket_name = "teaport-engine-dist"
+
+# The public bucket, read for manifest/<channel>.json: which license is current.
+[[r2_buckets]]
+binding = "PUBLIC"
+bucket_name = "teaport-get"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "teaport-gate"
+database_id = "b0da844a-354c-4907-bdcc-11b94c7630db"
+migrations_dir = "migrations"
+
+# /api/accept and /api/token: 20 requests a minute per IP address.
+[[ratelimits]]
+name = "ACCEPT_LIMIT"
+namespace_id = "4301"
+simple = { limit = 20, period = 60 }
+
+[observability]
+enabled = true

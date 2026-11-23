@@ -113,6 +113,25 @@ MAX_RENDERED = 3
 # when its end arrives (Owed.settled), which errs owed.
 SETTLE_WAIT_S = 2.0
 
+# How long an empty consult waits for OpenClaw to cancel a run in this session before it
+# lands as empty (Owed.settle_empty; #450). "Cancel that" while two consults share the
+# session's run lane: OpenClaw aborts the lane, the consult whose run it cancelled comes
+# back "cancelled", and the other can come back an empty final ("OpenClaw finished with
+# no text.") a moment BEFORE that cancel lands (live 2026-11-20 14:48:42: empty at .332,
+# cancelled at .437). Landed empty, it was owed, and the re-offer told the caller the
+# lookup "didn't return any information" -- of a request they had just called off.
+# Read by timing, session-wide: every consult the relay runs in a Talk session shares the
+# session's one run lane, and a cancel aborts that lane, so the brain cannot tell which
+# runs a cancel took and does not try. Only relayed consults wait (the direct lane runs a
+# fresh OpenClaw session per consult, openclaw_client.agent_consult, which a spoken cancel
+# never reaches). The race seen was ~0.1 s; the grace is the dead air a genuine empty on
+# the relay costs before it is told.
+EMPTY_CANCEL_GRACE_S = 1.0
+# How long a cancel time is kept: by age, not count, so a burst of them (one per open
+# consult, the host note, the model's control result) never pushes out one a settling
+# empty's window still holds, however long close_session comes after.
+CANCEL_TIMES_KEPT_S = 600.0
+
 # The lull before the one re-offer (§4 (a), the user's choice 2026-10-16): the line has
 # been quiet this long, with the caller's turn answered. setting(): brain.env.
 REOFFER_QUIET_S = setting("TEAPORT_REOFFER_AFTER_QUIET_S")
@@ -1026,6 +1045,11 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
+        # key -> (request, floor, deadline, detail): consults whose run has ended, empty,
+        # waiting out the grace for a cancel beside them (settle_empty; a cancel counts in
+        # [floor, deadline]; `detail` the empty's, for close_session). Their run is over:
+        # no dispatch folds into one (dispatch).
+        self._settling: dict = {}
         # Tool results written by a landing (_rewrite) that have not yet replaced their
         # placeholder in the context: tool_call_id -> the JSON written (place_landed).
         self._landing: dict = {}
@@ -1044,6 +1068,10 @@ class Owed:
         self._settled.set()
         self._lull = None
         self._closed = False
+        # When OpenClaw cancelled runs in this session lately (time.monotonic(), kept for
+        # CANCEL_TIMES_KEPT_S), and the event that wakes a settle_empty (note_cancel).
+        self._cancel_times: list = []
+        self._cancel_seen = asyncio.Event()
         # The caller's last turn was only a stop, held, and no turn of theirs has started
         # since: they asked the box to wait (caller_waits; Owed.tla `cwait`).
         self._waits = False
@@ -1201,8 +1229,14 @@ class Owed:
         placeholder is in the context until land() rewrites it or the session ends
         (close_session). Otherwise the key of the consult already running for this exact
         request: gpt-oss sometimes asks the same thing twice a few seconds apart, and that
-        one's outcome answers both (land() rewrites this placeholder to point at it)."""
+        one's outcome answers both (land() rewrites this placeholder to point at it).
+        Not one settling (settle_empty): its run has ended, empty, so there is nothing to
+        share -- the same words asked again run again, as they did when an empty landed
+        at once, and a sibling's cancel does not close the re-ask with it; the settling one
+        lands as what it is."""
         running = self._running.get(request)
+        if running in self._settling:
+            running = None
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
         self._questions.setdefault(running or key, _caller_turns(msgs, len(msgs)))
@@ -1213,7 +1247,7 @@ class Owed:
         return None
 
     def land(self, request, text, key, *, failure=None, detail="",
-             ask=True) -> Optional[Record]:
+             ask=True, by_openclaw=True) -> Optional[Record]:
         """The consult landed: rewrite its placeholder to the cleaned outcome (the only
         context write delivery makes; one that lands before its placeholder is in the
         context is written when it comes in: _rewrite), make the record owed, and ask the
@@ -1225,11 +1259,15 @@ class Owed:
         the note.
 
         A consult OpenClaw cancelled (failure "cancelled", consult_bridge.classify) makes
-        no record and returns None: see _cancelled."""
+        no record and returns None: see _cancelled. `by_openclaw` False: the cancelled
+        outcome is the brain's own reading of an empty beside such a cancel
+        (settle_empty), not one OpenClaw reported, so it is not one more cancel for
+        another consult's empty to be read beside."""
         if self._running.get(request) == key:
             del self._running[request]
+        self._settling.pop(key, None)
         if failure == "cancelled":
-            self._cancelled(key, detail)
+            self._cancelled(key, detail, by_openclaw=by_openclaw)
             return None
         outcome = clean_outcome(text) if text else None
         status = "complete"
@@ -1259,7 +1297,7 @@ class Owed:
             self.gate.ask([key], RUN, self.context)
         return rec
 
-    def _cancelled(self, key, detail: str) -> None:
+    def _cancelled(self, key, detail: str, *, by_openclaw: bool = True) -> None:
         """OpenClaw stopped the consult (consult_bridge.classify): the caller called it
         off, and the relay's spoken run control cancelled the run and says so itself; or
         the run was aborted. Its placeholder becomes the cancellation, so the model neither
@@ -1268,10 +1306,94 @@ class Owed:
         whose Land never fires (Land is not fair): the record stays "none", and no row
         speaks of such a one."""
         self._questions.pop(key, None)
+        if by_openclaw:
+            self.note_cancel()
         rewrote = self._rewrite(key, {"status": "cancelled", "note": CANCELLED_NOTE})
         self._rewrite_duplicates(key)
-        logger.info(f"OWED: {key} cancelled by OpenClaw ({detail[:60]!r}) -- nothing owed; "
+        why = "cancelled by OpenClaw" if by_openclaw else "read as an OpenClaw cancel's sibling"
+        logger.info(f"OWED: {key} {why} ({detail[:60]!r}) -- nothing owed; "
                     f"tool result {'rewritten' if rewrote else _HELD}")
+
+    def note_cancel(self) -> None:
+        """OpenClaw cancelled a run in this session's lane, now: noted for settle_empty,
+        and a waiting one woken. From a consult that came back cancelled (_cancelled), the
+        run control's own status for a cancel in the relay's host note "Cancelled the
+        active OpenClaw run." (ClientNotes `on_cancel`) -- the only word of a cancel whose
+        consult returned its empty final first -- and the model's own control result that
+        aborted the run (tools._openclaw_agent_control), when it reaches the brain."""
+        now = time.monotonic()
+        self._cancel_times = [t for t in self._cancel_times if t >= now - CANCEL_TIMES_KEPT_S]
+        self._cancel_times.append(now)
+        self._cancel_seen.set()
+        self._cancel_seen = asyncio.Event()
+
+    async def settle_empty(self, request, key, since: float,
+                           grace: Optional[float] = None, *,
+                           detail: str = "") -> Optional[bool]:
+        """An EMPTY outcome of the relayed consult `key`, before it lands: is it a sibling
+        of a run OpenClaw just cancelled (cancelled_since)? tools._consult_and_land's entry
+        point: it registers the wait for dispatch and close_session. While it waits
+        no dispatch folds into it (dispatch). The session's end closes it with the
+        outcome it has by then, read on the same window (close_session), and None says
+        so: it is landed, and the caller lands nothing. On a book already closed it
+        waits for nothing: False, landed as it is, as before.
+
+        It waits even with no other consult open: OpenClaw's relay submits a consult's
+        result when its run returns, and a run the spoken cancel aborted can return its
+        empty final before the relay's abort of the consult (runConsult, 2026.10.5), so no
+        "cancelled" ever comes for it. The cancel is known then only from the run
+        control's own word (note_cancel from ClientNotes), which can come just after."""
+        if self._closed:
+            # Landed as before this PR: over close_session's "unknown", it did report back.
+            return False
+        grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
+        now = time.monotonic()
+        window = (max(since, now - grace), now + grace)
+        self._settling[key] = (request, *window, detail)
+        # Cancelled mid-wait, the entry stays: that is the session's teardown
+        # (end_with_session cancels the consult's task before close_session runs), and
+        # close_session lands it from it, as empty or a cancel's sibling.
+        sibling = await self.cancelled_since(since, grace, window=window)
+        return None if self._closed else sibling
+
+    def _cancel_in(self, floor: float, deadline: float) -> bool:
+        return any(floor <= t <= deadline for t in self._cancel_times)
+
+    async def cancelled_since(self, since: float, grace: Optional[float] = None, *,
+                              window: Optional[tuple] = None) -> bool:
+        """Did OpenClaw cancel a consult in this session within `grace` seconds of now,
+        before or after, and not before `since` (a time.monotonic() reading: when the
+        asking consult started)? `window` (floor, deadline): the one settle_empty
+        registered, read as is. Asked of an EMPTY outcome on a relayed consult before it
+        lands, through settle_empty: such an empty is a sibling of the run the
+        caller called off (EMPTY_CANCEL_GRACE_S), and lands as cancelled -- owed nothing,
+        told nothing. A cancel further off is another request's, and a genuine empty
+        stays empty. Only cancels OpenClaw reported count (note_cancel): a consult that
+        came back "cancelled" (_cancelled `by_openclaw`), the run control's cancel status
+        in a host note (ClientNotes on_cancel), and the model's own control result that
+        aborted the run (tools._openclaw_agent_control), as each reaches the brain.
+        Owed.tla: a later Land, or a Land that never fires (_cancelled); neither is a new
+        transition.
+
+        A "cancelled" from OpenClaw is not told apart by cause: the spoken run control's
+        and an aborted run's are the same result (buildRealtimeVoiceAgentCancelProviderResult,
+        its default message for both), and an abort of the session's lane is what leaves
+        a sibling empty either way."""
+        if window is None:
+            grace = EMPTY_CANCEL_GRACE_S if grace is None else grace
+            now = time.monotonic()
+            window = (max(since, now - grace), now + grace)
+        floor, deadline = window
+        while True:
+            if self._cancel_in(floor, deadline):
+                return True
+            left = deadline - time.monotonic()
+            if left <= 0 or self._closed:
+                return False
+            try:
+                await asyncio.wait_for(self._cancel_seen.wait(), timeout=left)
+            except asyncio.TimeoutError:
+                continue  # read again: a cancel noted as the wait ran out still counts
 
     def _rewrite_duplicates(self, key) -> None:
         """The placeholders of the duplicate dispatches `key`'s consult answers for."""
@@ -1974,8 +2096,23 @@ class Owed:
         placeholder becomes its failure record, so no "will arrive later" outlives the
         session, and the record is owed in a conversation that is continued. Idempotent."""
         self._closed = True
+        self._cancel_seen.set()  # a settle_empty waiting sees the close now
         for request, key in list(self._running.items()):
-            self.land(request, None, key, failure="unknown")
+            if key not in self._settling:
+                self.land(request, None, key, failure="unknown")
+        # An empty still waiting out its grace lands as what it is by now: the sibling of
+        # a cancel already seen, or empty -- not "didn't report back", since it did. Its
+        # window is cut at the close: a cancel still on its way no longer counts. Only the
+        # room keeps records past a session, and it has no relay, so none settle there.
+        for key, (request, floor, deadline, detail) in list(self._settling.items()):
+            sibling = self._cancel_in(floor, deadline)
+            if sibling:
+                # Warned as tools._consult_and_land warns it: the read is by timing.
+                logger.warning(f"OWED: {key}'s empty came beside OpenClaw cancelling a run "
+                               f"in this session -- closed with the session as cancelled")
+            self.land(request, None, key, failure="cancelled" if sibling else "empty",
+                      detail="empty beside an OpenClaw cancel in this session" if sibling
+                      else detail, by_openclaw=False)
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()

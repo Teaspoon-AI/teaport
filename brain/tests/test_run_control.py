@@ -344,6 +344,30 @@ async def test_a_control_call_goes_to_the_relay_and_its_result_is_said_in_plain_
     assert call["call_id"] not in consult_bridge._pending, "the call's future is gone"
 
 
+async def test_a_control_that_cancelled_tells_the_owed_book():
+    """The model's cancel aborted the session's lane: an empty consult whose run returned
+    first gets no "cancelled" of its own, so the cancel is noted (Owed.note_cancel), read
+    from the result's fields. A control that did not cancel, or a status, notes nothing."""
+    class Owed:
+        def __init__(self):
+            self.noted = 0
+
+        def note_cancel(self):
+            self.noted += 1
+
+    for args, answer, noted in (
+            ({"text": "cancel that", "mode": "cancel"}, _CANCELLED, 1),
+            ({"text": "cancel that", "mode": "cancel"},
+             {**_CANCELLED, "ok": False, "aborted": False,
+              "message": "OpenClaw could not cancel the active run."}, 0),
+            ({"text": "how long?", "mode": "status"},
+             {"ok": True, "mode": "status", "message": "Still working."}, 0)):
+        owed, llm = Owed(), _LLM(answer=lambda msg, a=answer: a)
+        params, _ = _params(llm, args)
+        await tools._openclaw_agent_control(params, owed=owed)
+        assert owed.noted == noted, (args, answer["message"], owed.noted)
+
+
 async def test_a_control_with_nothing_in_progress_leaves_a_new_request_to_be_done():
     """OpenClaw answers a control with no run active:false ("There is no active OpenClaw
     run to cancel."). The words may have been a new request ("cancel my two o'clock"): the

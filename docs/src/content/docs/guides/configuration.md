@@ -15,20 +15,20 @@ You can make the edit in two places: the brain's configuration page, or the conf
 - The gateway token `GATEWAY_TOKEN`, if you set one: the shared secret that clients use at `/talk`. You enter it on the page once, and the browser remembers it after that. The installer writes the same token into the plugin configuration.
 - An SSH connection to the device, for the procedure that edits files. On a device that ships ready to set up, sign in as `teaport`, the login you created during setup; see [Create your login in the settings](#create-your-login-in-the-settings) if you have none yet.
 
-<!-- source: brain/teaport_brain/config_ui.py:19-26#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:3150#31d4462b -->
+<!-- source: brain/teaport_brain/config_ui.py:19-26#3f5d74ac; brain/teaport_brain/config_schema.toml:2244-2253#38d9c1ca; install.sh:3432#31d4462b -->
 
 ## Change a setting in the configuration page
 
 The brain serves the page at `https://DEVICE_NAME.local:8443/settings/config`, on the device's settings site (see [Open the settings from your phone](/guides/configuration/#open-the-settings-from-your-phone)). On the device itself it also serves the page at `http://127.0.0.1:7861/config` (port 7861 is the default; if you changed `BRAIN_PORT`, the page moves with it). That plain-HTTP address answers only the device itself, so the token never crosses the network unencrypted; from another computer without the settings site, tunnel to it over SSH, for example `ssh -L 7861:127.0.0.1:7861 DEVICE_IP`, and open `http://127.0.0.1:7861/config`. The page edits the env files and the secret files where the settings live, and shows each value as the running services read it. It never displays a secret: for a secret it shows whether one is set, and it accepts a new value.
 
-<!-- source: brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,36-42#a24a491a; brain/teaport_brain/config_schema.toml:2219-2229#39346419; brain/teaport_brain/static/config.html:383-393#2b63b6f7 -->
+<!-- source: brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/settings_access.py:221-233#82127577; brain/teaport_brain/config_ui.py:8-12,36-42#a24a491a; brain/teaport_brain/config_schema.toml:2219-2229#39346419; brain/teaport_brain/static/config.html:436-446#2b63b6f7 -->
 
 To change a setting there:
 
 1. Open `https://DEVICE_NAME.local:8443/settings/config#token` and enter `GATEWAY_TOKEN`. The browser remembers it. Over the SSH tunnel, open `http://127.0.0.1:7861/config`, which asks for the same token. If you did not set a token, the tunnelled address opens without one, and the brain warns about that at startup; the settings site never opens without a token or a phone session.
 2. Find the setting: type its name or words from its description in the search field, or open the group that covers it. At first the page shows the settings most devices need. Turn on **Show tuning & diagnostics** to list the rest, along with the groups for parts the device has not set up. The page shows each value as the services read it, which is not always the way the file spells it.
 
-   <!-- source: brain/teaport_brain/static/config.html:326,328,928,932#316e5355 -->
+   <!-- source: brain/teaport_brain/static/config.html:379,381,981,985#316e5355 -->
 3. Enter the new value and save. The page checks the value against the schema, its type and its bounds, before it writes anything.
 4. The page then lists every service that still runs the old values: a service whose configuration file changed after the unit started. Restart each one from the page, or apply the restarts yourself as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
@@ -44,7 +44,7 @@ On a device with a front door, the owner can reach the same page from a phone wi
 
 When a model is set up, you can also ask in your own words, for example "I need to change my AI key". The model then opens the settings the same way the phrase does, with the same code on the screen. This works in the room and in Talk on a device whose settings site is set up, never on a phone call or through the Discord bridge, and `TEAPORT_TOOL_OPEN_SETTINGS` turns it off.
 
-<!-- source: brain/teaport_brain/tools.py:1949-1955#c2a8ba3d -->
+<!-- source: brain/teaport_brain/tools.py:2007-2013#c2a8ba3d -->
 
 1. The device shows a QR code under the title "Settings", with the code itself under it. Scan the QR code with the phone's camera, then tap the link that the camera shows. A device without a screen that draws QR codes reads out an address, `DEVICE_NAME.local/settings` for example, and a six-character code instead: open the address in the phone's browser and enter the code there.
 2. Tap **Continue**. You can use the code one time, within five minutes. Asking again replaces it.
@@ -68,7 +68,7 @@ If the device is on no network at all and spoken Wi-Fi setup is on, the device a
 
 On a device that ships ready to set up, such as a Teaspoon AI device, you create the device's login yourself: an administrator account named `teaport` that signs in with SSH and runs commands with `sudo`. The Wi-Fi setup page offers this step (see [Create your login](/guides/wifi-setup/#create-your-login)). A device that went online another way, over Ethernet or with Wi-Fi setup by voice, never shows that page, so the settings offer the same step instead: a **Create your login** card at the top, until a login exists. A device that you installed yourself never shows the card.
 
-<!-- source: brain/teaport_brain/config_ui.py:850-894#fcb536fc; brain/teaport_brain/static/config.html:316#aad8baf1; brain/teaport_brain/static/config.html:813-843#26d9b68e -->
+<!-- source: brain/teaport_brain/config_ui.py:868-912#fcb536fc; brain/teaport_brain/static/config.html:369#aad8baf1; brain/teaport_brain/static/config.html:866-896#26d9b68e -->
 
 To create your login in the settings, follow these steps:
 
@@ -112,7 +112,7 @@ The [Settings reference](/reference/settings/) names the file that holds each se
 
 The env files are root-owned, so edit them with sudo. Keep one `KEY=value` line per setting; comments and blank lines are fine. A boolean reads `0`, `false`, `no`, or `off` as off, and `1`, `true`, `yes`, or `on` as on. An empty value means the setting is unset, and the default applies; space around the value is not part of it. A flag that is off says so in the journal at startup. A few settings treat an empty value as a value in its own right, off for example; the Settings reference marks them.
 
-<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2713#f2ca1efb -->
+<!-- source: brain/teaport_brain/settings.py:26-44#2c73b0c4; install.sh:2995#f2ca1efb -->
 
 To change a setting this way:
 
@@ -140,11 +140,11 @@ To change a setting this way:
 
 The secret files live in `~/.config/teaport/`: `llm_key`, `openclaw_token`, `discord_bot_token`, `persona.md`, and `teaport-sip.conf`. The installer creates the directory with mode 700 and writes each secret with mode 600, and it keeps the secrets out of the units and images.
 
-<!-- source: install.sh:3187,3344#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:2393-2395,2501-2502,2546-2548#d7455a4b -->
+<!-- source: install.sh:3469,3626#999850dd; brain/teaport_brain/config_schema.toml:76,104-105#74b8d898; install.sh:2675-2677,2783-2784,2828-2830#d7455a4b -->
 
 You edit `persona.md` whenever you like. A repair writes the starter persona only when the file is missing, so your changes to it survive.
 
-<!-- source: install.sh:3197-3210#7403c329 -->
+<!-- source: install.sh:3479-3492#7403c329 -->
 
 For every secret, an environment variable that is set wins over the file: every reader checks the environment first. A secret that is also set in an env file is a trap, because a new value in the file changes nothing while the variable is set. If you edit the file, remove the matching line from the env file too, or empty its value. The configuration page does this for you: saving a secret writes the file and drops the env-file copy of the same name. The units that read the secret at startup then show as pending, because their environment holds the old value until the restart.
 
@@ -166,7 +166,7 @@ Restart the service that reads the file you changed. The table lists each config
 | `/etc/teaport/bridge.env` | `sudo systemctl restart teaport-discord-bridge` | Restarts the bridge. |
 | `/etc/teaport/local-audio.env` | `sudo systemctl restart teaport-local-audio` | Ends the local audio session, and the bridge dials the brain again at once. |
 
-<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1353#38ebb95b -->
+<!-- source: brain/teaport_brain/config_schema.toml:61-102#bddd0583; brain/teaport_brain/sip_server.py:45-52#9213415f; install.sh:1635#38ebb95b -->
 
 A change to `wifi-setup.env` needs no restart: the Wi-Fi setup unit reads the file each time it runs, and the unit runs only on request. To fix a new setup password in it and print it for a card, run `teaport setup-card --new-password`; see [teaport setup-card](/reference/cli/#teaport-setup-card).
 
@@ -204,7 +204,7 @@ Groq stays second, for when BaseTen does not answer. Write `LLM_EXTRA_BODY` in `
 4. Enter the model name in `LLM_MODEL`, or leave it empty for the default, `gpt-oss-120b`.
 5. Save. The page lists the brain as still running the old values; restart it from the page, or as [Apply the change](/guides/configuration/#apply-the-change) describes.
 
-<!-- source: brain/teaport_brain/config_ui.py:50-55#bb168482; brain/teaport_brain/config_schema.toml:244-263#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:678-695#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
+<!-- source: brain/teaport_brain/config_ui.py:50-55#bb168482; brain/teaport_brain/config_schema.toml:244-263#4b586e90; brain/teaport_brain/ai_account.py:177-187#7532ad3d; brain/teaport_brain/config_ui.py:696-713#3511862a; brain/teaport_brain/ai_account.py:499-534#c7fe96e5 -->
 
 ### From the command line
 
@@ -241,7 +241,7 @@ In a terminal on the device, the command asks for the key without showing it. It
 
    The mode keeps the file readable only by you, as the installer writes it. A key written this way is not checked, and OpenClaw doesn't get it; [teaport key set](/reference/cli/#teaport-key-set) checks it and, where OpenClaw shares the brain's key, gives it to OpenClaw too.
 
-   <!-- source: install.sh:2546-2548#37da8b7d -->
+   <!-- source: install.sh:2828-2830#37da8b7d -->
 
 4. If `brain.env` also sets `LLM_API_KEY`, remove that line or empty its value; the environment wins over the file.
 5. Restart the brain as [Apply the change](/guides/configuration/#apply-the-change) describes.

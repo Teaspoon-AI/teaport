@@ -21,7 +21,7 @@ You need:
   repository, and the service runs `~/teaport-sip/build/teaport-sip`.
 - Access to the device as the user the teaport services run as.
 
-<!-- source: install.sh:3701-3702#439739d4; cli/teaport:37-39#8d57683f -->
+<!-- source: install.sh:3983-3984#439739d4; cli/teaport:37-39#8d57683f -->
 
 ## Turn on telephony
 
@@ -287,7 +287,7 @@ Three other settings decide the typing on calls as well:
 - In agent-first mode, `TEAPORT_AGENT_FIRST`, calls play the typing whatever
   `SIP_THINKING_SOUND` and `SIP_HALF_DUPLEX` say.
 
-<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1496-1498#d7433986; brain/teaport_brain/sip_server.py:878,898#79c52b1b -->
+<!-- source: brain/teaport_brain/thinking_sound.py:445-458#d998c996; brain/teaport_brain/agent_session.py:1497-1499#d7433986; brain/teaport_brain/sip_server.py:878,898#79c52b1b -->
 
 On a call, the typing plays only after the line has been quiet for
 `TEAPORT_THINKING_GRACE_S`, 1.5 seconds by default, and it stops when the

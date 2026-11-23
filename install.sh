@@ -12,6 +12,8 @@
 #   ./install.sh --only engine     update just the engine from the manifest (see below)
 #   ./install.sh --rollback engine put the previous engine back
 #   ./install.sh --dry-run         print what would happen; touch nothing
+#   ./install.sh --accept-eula=<version> --name <name> --email <email> [--license-id <id>]
+#                                  accept the engine license without a terminal (see below)
 #   ./install.sh --help
 #
 # --only brain is how a brain change reaches an appliance that is already installed. The
@@ -36,7 +38,7 @@
 #
 # --only engine does the same for an engine release (#158): `./install.sh --only engine`,
 # from a checkout or the one-liner. Of the engine's files (binary, G2P dict, POS tagger,
-# watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
+# Mandarin dict, watermark weights, THIRD_PARTY_NOTICES.txt) and its two models it downloads the ones whose sha256 differs
 # from the manifest's beside the live ones, and checks them as a full run does (ldd, and
 # cuDNN, OpenBLAS and espeak-ng on the system). Then it keeps the live engine for a
 # rollback (with any model it replaces), moves the new files in, renders
@@ -52,13 +54,27 @@
 # run that changes the engine keeps one there too. Every run that changes anything holds
 # $STATE/install.lock, so a second one started meanwhile stops at once (installer_lock).
 #
+# The engine license: every run that installs or updates the engine shows it and asks for
+# it to be accepted (typing "accept" after reading it), once per license version. The
+# engine's files and models download only after that: the manifest's access.api records
+# the acceptance with Teaspoon AI (who accepted it: a name, an email, and personal use or
+# the id of a Teaspoon AI license) and returns a token the gated downloads
+# (access.gated) carry, good for a day. The acceptance's id is kept in
+# $STATE/eula-accepted.json, so a later run gets a new token without asking again until the
+# license changes. Without a terminal, --accept-eula=<version> accepts it: the version must
+# be the one the license's title names, and --name and --email (and --license-id for
+# licensed use) say who accepts it.
+#
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
 #   TEAPORT_PREFIX         install root (default /opt/teaport; the brain package only installs there)
 #   TEAPORT_ETC            non-secret env dir (default /etc/teaport)
 #   TEAPORT_BRAIN_DEB      install the brain from this teaport-brain .deb (default: the manifest's)
 #   TEAPORT_PLUGIN_SRC     install the plugin from this local dir instead of npm
-#   TEAPORT_ACCEPT_EULA=1  accept the engine EULA non-interactively
+#   TEAPORT_ACCEPT_EULA=<version>  accept the engine license non-interactively: as
+#                          --accept-eula=<version>, the version its title names
+#   TEAPORT_NAME / TEAPORT_EMAIL / TEAPORT_LICENSE_ID  who accepts it (--name, --email,
+#                          --license-id); asked on a terminal when not given
 #   TEAPORT_ALLOW_NON_JETSON=1   skip the Jetson/L4T gate (dev only; no real install)
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
@@ -91,6 +107,12 @@ set -euo pipefail
 # it says this: it keeps the install trees root's and takes the run user's home as data.
 # shellcheck disable=SC2034  # read by update_apply.py, not here
 UPDATE_PROTOCOL=1
+# And this: it reads the manifest's access (the engine license gate) and downloads the gated
+# files with a token. manifest/check.py refuses a manifest with access whose brain.tag is a
+# release tag without it: `teaport update` would run that tag's installer, and its gated
+# downloads would all fail.
+# shellcheck disable=SC2034  # read by manifest/check.py, not here
+ACCESS_PROTOCOL=1
 
 MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
@@ -103,7 +125,10 @@ RUN_USER="${TEAPORT_USER:-$(id -un)}"
 # from a home the run user writes (a ~/.curlrc, a Python user site, a ~/.gitconfig).
 RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"; RUN_HOME="${RUN_HOME:-$HOME}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$RUN_HOME/.config/teaport}"
-ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-0}"
+ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-}"   # the license version accepted without a terminal
+ACCEPT_NAME="${TEAPORT_NAME:-}"
+ACCEPT_EMAIL="${TEAPORT_EMAIL:-}"
+ACCEPT_LICENSE_ID="${TEAPORT_LICENSE_ID:-}"
 ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_DEB_SRC="${TEAPORT_BRAIN_DEB:-}"
 PLUGIN_SRC="${TEAPORT_PLUGIN_SRC:-}"
@@ -120,7 +145,14 @@ usage_err() { printf '%s (see --help)\n' "$*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
-    --accept-eula) ACCEPT_EULA=1 ;;
+    --accept-eula) usage_err "--accept-eula needs the license's version: --accept-eula=<version>, the version its title names" ;;
+    --accept-eula=*) ACCEPT_EULA="${1#*=}"; [ -n "$ACCEPT_EULA" ] || usage_err "--accept-eula needs the license's version: --accept-eula=<version>" ;;
+    --name|--email|--license-id)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a value"
+      case "$1" in --name) ACCEPT_NAME="$2" ;; --email) ACCEPT_EMAIL="$2" ;; *) ACCEPT_LICENSE_ID="$2" ;; esac; shift ;;
+    --name=*) ACCEPT_NAME="${1#*=}" ;;
+    --email=*) ACCEPT_EMAIL="${1#*=}" ;;
+    --license-id=*) ACCEPT_LICENSE_ID="${1#*=}" ;;
     --only|--rollback)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a component (brain or engine)"
       if [ "$1" = --only ]; then ONLY="$2"; else ROLLBACK="$2"; fi; shift ;;
@@ -256,6 +288,8 @@ brain_tree_needed() {
 
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
+GATED=()     # the manifest's access.gated: URL prefixes that download only with DL_TOKEN
+DL_TOKEN=""  # eula_gate's: the download token for this run's acceptance
 fetch_manifest() {
   MF="$(mktemp)"
   case "$MANIFEST_URL" in
@@ -263,6 +297,13 @@ fetch_manifest() {
     *) curl -q -fsSL --retry 3 -o "$MF" "$MANIFEST_URL" || die "cannot fetch manifest: $MANIFEST_URL" ;;
   esac
   python3 -I -c "import json;json.load(open('$MF'))" 2>/dev/null || die "manifest is not valid JSON"
+  mapfile -t GATED < <(python3 -I - "$MF" <<'PY'
+import json, sys
+for p in (json.load(open(sys.argv[1])).get("access") or {}).get("gated") or []:
+    if isinstance(p, str) and p.startswith("https://"):
+        print(p)
+PY
+)
 }
 # mget <dotted.key.path> — read a string leaf out of the manifest (python3 = always present).
 mget() { python3 -I - "$MF" "$1" <<'PY'
@@ -272,6 +313,13 @@ for k in sys.argv[2].split("."):
     d = d[k]
 print(d)
 PY
+}
+
+# gated <url> — whether <url> downloads only with the license gate's token (access.gated).
+gated() {
+  local p
+  for p in "${GATED[@]}"; do case "$1" in "$p"*) return 0 ;; esac; done
+  return 1
 }
 
 # download <url> <dest> <sha256> — resumable, verified, idempotent.
@@ -284,14 +332,41 @@ download() {
   if [ -f "$dest" ] && [ -n "$sha" ] && echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
     log "have $(basename "$dest") (sha ok)"; return
   fi
-  log "download $(basename "$dest")"
-  SUDO curl -q -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
-  if [ "$DRY_RUN" != 1 ]; then
-    # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
-    # stage is kept across runs, #158), and fail the same way each time.
-    [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
-    SUDO mv "$dest.part" "$dest"
+  if [ "$DRY_RUN" = 1 ]; then
+    log "download $(basename "$dest")"
+    SUDO curl -q -fL --retry 3 -C - -o "$dest.part" "$url"
+    return
   fi
+  # A .part a stopped run left whole (curl had finished, the check had not): asking for the
+  # bytes after its end is refused (416), so it is taken as it is.
+  if [ -n "$sha" ] && [ -f "$dest.part" ] && echo "$sha  $dest.part" | sha256sum -c --status 2>/dev/null; then
+    SUDO mv "$dest.part" "$dest"; log "have $(basename "$dest") (sha ok)"; return
+  fi
+  log "download $(basename "$dest")"
+  if gated "$url" && [ -z "$DL_TOKEN" ]; then dl_token "$url"; fi
+  local code rc attempt
+  for attempt in 1 2; do
+    rc=0
+    if gated "$url"; then
+      # The token goes in on curl's stdin, never its arguments: those show in ps.
+      code="$(printf 'Authorization: Bearer %s\n' "$DL_TOKEN" \
+                | SUDO curl -q -fL --retry 3 -H @- -C - -w '%{http_code}' -o "$dest.part" "$url")" || rc=$?
+    else
+      code="$(SUDO curl -q -fL --retry 3 -C - -w '%{http_code}' -o "$dest.part" "$url")" || rc=$?
+    fi
+    [ "$rc" != 0 ] || break
+    # 416: the .part is as long as the file or longer, yet not it (checked above), so no
+    # resume can finish it: start again, once.
+    if [ "$code" = 416 ] && [ "$attempt" = 1 ]; then SUDO rm -f "$dest.part"; continue; fi
+    case "$code" in
+      401|403) die "download refused (HTTP $code): $url — run the installer again (a download token lasts a day)" ;;
+      *) die "download failed${code:+ (HTTP $code)} (is get.teaspoon.tech live?): $url" ;;
+    esac
+  done
+  # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
+  # stage is kept across runs, #158), and fail the same way each time.
+  [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
+  SUDO mv "$dest.part" "$dest"
 }
 
 # --- EULA --------------------------------------------------------------------
@@ -299,23 +374,177 @@ download() {
 # (engine.eula.{version,url,sha256}); acceptance is recorded per version in
 # $STATE/eula-accepted.json, so re-runs repair silently and a changed license
 # re-gates. The full text is displayed and explicitly accepted (clickwrap) —
-# a URL pointer alone shows nobody anything on a headless box.
+# a URL pointer alone shows nobody anything on a headless box. With access.api in the
+# manifest, the acceptance is also recorded with Teaspoon AI, and the gated downloads
+# (access.gated) need the token that returns (see the header).
+EULA_RECEIPT="$STATE/eula-accepted.json"
+
+# receipt_get <field> — a field of the receipt, "" when it has none. The receipt is root's
+# and 0600 (it holds the acceptance's id): read privileged when the plain read fails.
+# Plain `sudo`, not SUDO: a read, so --dry-run does it too.
+receipt_get() {
+  [ -e "$EULA_RECEIPT" ] || return 0
+  local py='import json,sys
+v = json.load(open(sys.argv[1])).get(sys.argv[2])
+print(v if isinstance(v, str) else "")'
+  if [ -r "$EULA_RECEIPT" ]; then python3 -I -c "$py" "$EULA_RECEIPT" "$1" 2>/dev/null || true
+  else sudo python3 -I -c "$py" "$EULA_RECEIPT" "$1" 2>/dev/null || true; fi
+}
+
+# api_post <url> <json> <out> — POST <json> to <url>, the response body into <out>; prints
+# the HTTP status (000: no answer).
+api_post() {
+  local code
+  code="$(printf '%s' "$2" | curl -q -sS --retry 3 --max-time 30 -o "$3" -w '%{http_code}' \
+            -H 'content-type: application/json' --data-binary @- "$1" 2>/dev/null)" || true
+  printf '%s\n' "${code:-000}"
+}
+
+# api_field <file> <field> — a string field of a JSON response, "" when absent.
+api_field() {
+  python3 -I -c 'import json,sys
+try: v = json.load(open(sys.argv[1])).get(sys.argv[2])
+except Exception: v = None
+print(v if isinstance(v, str) else "")' "$1" "$2"
+}
+
+# device_id — a hash of this machine's id (not the id itself): which box an acceptance was
+# made on, "" when it has none.
+device_id() {
+  [ -r /etc/machine-id ] || return 0
+  printf 'teaport-device:%s' "$(tr -d '[:space:]' </etc/machine-id)" | sha256sum | cut -d' ' -f1
+}
+
+# eula_identity — who accepts: ACCEPT_NAME, ACCEPT_EMAIL, and ACCEPT_USE (personal, or
+# licensed with ACCEPT_LICENSE_ID). Asked on a terminal for what --name, --email and
+# --license-id did not give; without one, they must all be given.
+ACCEPT_USE=""
+eula_identity() {
+  if [ -n "$ACCEPT_LICENSE_ID" ]; then ACCEPT_USE=licensed; fi
+  if [ ! -t 0 ]; then
+    [ -n "$ACCEPT_NAME" ] && [ -n "$ACCEPT_EMAIL" ] \
+      || die "accepting the engine license without a terminal needs who accepts it: --name and --email (and --license-id for licensed use)"
+    ACCEPT_USE="${ACCEPT_USE:-personal}"
+    return
+  fi
+  printf '\n  Teaspoon AI records who accepted the license.\n'
+  while [ -z "$ACCEPT_NAME" ]; do read -r -p '  Your full name: ' ACCEPT_NAME || die "license not accepted — aborting"; done
+  while [ -z "$ACCEPT_EMAIL" ]; do read -r -p '  Your email address: ' ACCEPT_EMAIL || die "license not accepted — aborting"; done
+  if [ -z "$ACCEPT_USE" ]; then
+    local ans=""
+    printf '  How will the engine be used?\n'
+    printf '    1) personal use by an individual (free)\n'
+    printf '    2) under a Teaspoon AI license (organizations, commercial use)\n'
+    while :; do
+      read -r -p '  1 or 2: ' ans || die "license not accepted — aborting"
+      case "$ans" in 1) ACCEPT_USE=personal; break ;; 2) ACCEPT_USE=licensed; break ;; esac
+    done
+    if [ "$ACCEPT_USE" = licensed ]; then
+      while [ -z "$ACCEPT_LICENSE_ID" ]; do read -r -p '  Your license id: ' ACCEPT_LICENSE_ID || die "license not accepted — aborting"; done
+    fi
+  fi
+}
+
+# eula_token <api> <acceptance id> — a new download token for an acceptance recorded
+# earlier (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
+# license changed, or it has no such acceptance): accept again; 2 when it cannot be asked
+# now (no answer, busy, failing). Dies for a revoked acceptance. The id gets tokens until
+# the license changes, so it goes to python in its environment, never its arguments.
+eula_token() {
+  local out code why; out="$(mktemp)"
+  code="$(api_post "$1/token" "$(TEAPORT_ACCEPTANCE_ID="$2" python3 -I -c 'import json,os
+print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$out")"
+  why="$(api_field "$out" message)"
+  if [ "$code" = 200 ]; then DL_TOKEN="$(api_field "$out" token)"; fi
+  rm -f "$out"
+  case "$code" in
+    200) [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
+    409|404|400) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
+    403) die "the license server refuses this box's acceptance of the engine license${why:+: $why}" ;;
+    *) warn "cannot get a download token from $1/token now (HTTP $code${why:+: $why})"; return 2 ;;
+  esac
+}
+
+# dl_token <url> — the download token, got when the first gated download needs it: the
+# license server could not be asked when eula_gate ran (EULA_API, EULA_ID).
+EULA_API="" EULA_ID=""
+dl_token() {
+  [ -n "$EULA_API" ] && [ -n "$EULA_ID" ] || die "no download token for $1: the engine license gate did not run"
+  local rc=0
+  eula_token "$EULA_API" "$EULA_ID" || rc=$?
+  [ "$rc" = 0 ] || die "cannot download $1 without a token from the license server: run the installer again"
+}
+
+# eula_record <api> <version> <sha256> <method> — record this acceptance with Teaspoon AI:
+# sets ACCEPTANCE_ID and DL_TOKEN. No record, no download: dies when it cannot.
+ACCEPTANCE_ID=""
+# installer_revision — this checkout's commit, for the acceptance record: git:<12 hex>, or
+# unknown (no git, or a copy that is not a checkout).
+installer_revision() {
+  # Only this installer's own checkout: an install.sh copied into another repository is
+  # "unknown", not that repository's commit.
+  local r top
+  top="$(git_read -C "$HERE" rev-parse --show-toplevel 2>/dev/null)" \
+    && [ "$(cd "$top" && pwd -P)" = "$(cd "$HERE" && pwd -P)" ] \
+    && r="$(git_read -C "$HERE" rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$r" ] \
+    && { printf 'git:%s' "$r"; return; }
+  printf unknown
+}
+
+eula_record() {
+  local out code body why
+  # Who accepts goes to python in its environment, not its arguments (ps shows those).
+  body="$(TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" \
+          python3 -I -c 'import json,os,sys
+a, e = sys.argv[1:], os.environ
+d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3], "name": e["TEAPORT_NAME"],
+     "email": e["TEAPORT_EMAIL"], "use": a[4], "device_id": a[5], "installer": a[6]}
+if a[4] == "licensed":
+    d["license_id"] = e["TEAPORT_LICENSE_ID"]
+print(json.dumps(d))' "$(mget channel 2>/dev/null || echo stable)" "$2" "$3" "$4" "$ACCEPT_USE" "$(device_id)" \
+          "$(installer_revision)")"
+  out="$(mktemp)"
+  code="$(api_post "$1/accept" "$body" "$out")"
+  why="$(api_field "$out" message)"
+  if [ "$code" != 200 ]; then rm -f "$out"; die "the license server did not record the acceptance (HTTP $code${why:+: $why})"; fi
+  ACCEPTANCE_ID="$(api_field "$out" acceptance_id)"; DL_TOKEN="$(api_field "$out" token)"; rm -f "$out"
+  [ -n "$ACCEPTANCE_ID" ] && [ -n "$DL_TOKEN" ] || die "the license server answered without an acceptance id or download token"
+}
+
 eula_gate() {
-  local ver url sha
+  local ver url sha api
   ver="$(mget engine.eula.version 2>/dev/null || echo 1.0)"
   url="$(mget engine.eula.url 2>/dev/null || echo "")"
   sha="$(mget engine.eula.sha256 2>/dev/null || echo "")"
-  local receipt="$STATE/eula-accepted.json"
+  api="$(mget access.api 2>/dev/null || echo "")"; api="${api%/}"   # <api>/accept, not <api>//accept
 
-  # Idempotent re-run: this license version is already accepted -> no prompt.
-  if [ -f "$receipt" ]; then
-    local prev; prev="$(python3 -I -c "import json;print(json.load(open('$receipt')).get('version',''))" 2>/dev/null || true)"
-    if [ "$prev" = "$ver" ]; then log "engine license v$ver already accepted"; return; fi
-    [ -n "$prev" ] && warn "engine license changed (accepted: v$prev, current: v$ver) — re-acceptance required"
+  # Idempotent re-run: this license version is already accepted -> no prompt; with a
+  # license server, a new token for that acceptance.
+  local prev; prev="$(receipt_get version)"
+  if [ -n "$prev" ] && [ "$prev" = "$ver" ]; then
+    if [ -z "$api" ]; then log "engine license v$ver already accepted"; return; fi
+    local id; id="$(receipt_get acceptance_id)"
+    if [ -n "$id" ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        printf '  [dry-run] engine license v%s already accepted: get a download token from %s\n' "$ver" "$api"; return
+      fi
+      local rc=0
+      eula_token "$api" "$id" || rc=$?
+      # 2: the server cannot be asked now. Nothing may need downloading (a repair); the
+      # first download that does asks again (dl_token).
+      if [ "$rc" = 0 ] || [ "$rc" = 2 ]; then
+        EULA_API="$api" EULA_ID="$id"; log "engine license v$ver already accepted"; return
+      fi
+    else
+      warn "this box's acceptance of engine license v$ver is not recorded with Teaspoon AI — accept it again"
+    fi
+  elif [ -n "$prev" ]; then
+    warn "engine license changed (accepted: v$prev, current: v$ver) — re-acceptance required"
   fi
 
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] display engine license v%s and require acceptance (type "accept")\n' "$ver"
+    printf '  [dry-run] display engine license v%s and require acceptance (type "accept")%s\n' "$ver" \
+      "${api:+, then record it with $api}"
     return
   fi
   if [[ -z "$url" || "$url" == *TODO* ]]; then
@@ -330,11 +559,15 @@ eula_gate() {
   fi
 
   local method="tty"
-  if [ "$ACCEPT_EULA" = 1 ]; then
-    log "engine license v$ver accepted non-interactively (TEAPORT_ACCEPT_EULA=1 — you confirm you have read it: $url)"
-    method="env"
+  if [ -n "$ACCEPT_EULA" ]; then
+    # The version, not a yes: whoever accepts this way names the license they read. A
+    # mismatch does not say the current version, which is in the text's title.
+    [ "$ACCEPT_EULA" = "$ver" ] \
+      || die "--accept-eula=$ACCEPT_EULA does not name the current engine license: read $url, then pass the version its title names"
+    log "engine license v$ver accepted non-interactively (--accept-eula=$ver — you confirm you have read it: $url)"
+    method="flag"
   else
-    [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula"
+    [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula=<its version>"
     printf '\n  Teaport Engine License v%s — summary (the full text below governs):\n' "$ver"
     printf '    - personal use by individuals: free\n'
     printf '    - any organizational or commercial use: requires a written license (stefano@teaspoon.tech)\n\n'
@@ -344,14 +577,30 @@ eula_gate() {
     read -r -p '  Type "accept" to accept the Teaport Engine License v'"$ver"' (anything else aborts): ' ans
     [ "$ans" = "accept" ] || die "license not accepted — aborting"
   fi
+  local actual_sha; actual_sha="$(sha256sum "$txt" | cut -d' ' -f1)"
+  if [ -n "$api" ]; then
+    eula_identity
+    eula_record "$api" "$ver" "$actual_sha" "$method"
+  fi
 
   # Record the acceptance + keep the exact accepted text (both sides get a durable record).
+  # The receipt is root's and 0600: its acceptance id gets download tokens.
   own_dir "$STATE"
   SUDO install -m 0644 "$txt" "$STATE/EULA-v$ver.txt"
-  local actual_sha; actual_sha="$(sha256sum "$txt" | cut -d' ' -f1)"
-  printf '{"version":"%s","sha256":"%s","date":"%s","user":"%s","method":"%s"}\n' \
-    "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" | SUDO tee "$receipt" >/dev/null
-  log "engine license v$ver accepted (recorded in $receipt)"
+  local rec; rec="$(TEAPORT_ACCEPTANCE_ID="$ACCEPTANCE_ID" TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" \
+    TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" python3 -I -c 'import json,os,sys
+a, e = sys.argv[1:], os.environ
+d = {"version": a[0], "sha256": a[1], "date": a[2], "user": a[3], "method": a[4]}
+if e["TEAPORT_ACCEPTANCE_ID"]:
+    d.update(acceptance_id=e["TEAPORT_ACCEPTANCE_ID"], recorded_with=a[5], name=e["TEAPORT_NAME"],
+             email=e["TEAPORT_EMAIL"], use=a[6])
+    if a[6] == "licensed":
+        d["license_id"] = e["TEAPORT_LICENSE_ID"]
+print(json.dumps(d))' "$ver" "$actual_sha" "$(date -Is)" "$RUN_USER" "$method" "$api" "$ACCEPT_USE")"
+  # 0600 before the id is written into it: tee keeps the mode of the file it truncates.
+  SUDO install -m 0600 /dev/null "$EULA_RECEIPT"
+  printf '%s\n' "$rec" | SUDO tee "$EULA_RECEIPT" >/dev/null
+  log "engine license v$ver accepted (recorded in $EULA_RECEIPT${api:+ and with Teaspoon AI})"
 }
 
 # --- phases ------------------------------------------------------------------
@@ -559,8 +808,8 @@ setup_logs() {
 # --- engine: staged, swapped in whole, one rollback away ---------------------------------
 # The engine is a binary and the files of its own release (the manifest's g2p_dict note:
 # "Must be the same engine release as the binary"): the G2P dict and POS tagger it reads
-# from <exe_dir>/g2p/, from 1.7 on the AI watermark's weights it reads from
-# <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
+# from <exe_dir>/g2p/, from 1.7 on the Mandarin dict beside them and the AI watermark's
+# weights it reads from <exe_dir>/watermark/, and the THIRD_PARTY_NOTICES.txt for what it is built from. Its two
 # models go with it here too: a release that changes one changes what the binary loads.
 # phase_engine used to download each over the live one in turn, so a run that failed half
 # way (the dict's download, the binary's ldd) left a box whose next engine start mixed two
@@ -602,7 +851,7 @@ ENGINE_STAGE="$PREFIX/engine.staged"
 ENGINE_ROLLBACKS="$PREFIX/engine.rollback"
 ENGINE_SWAP_MARK="$PREFIX/engine.swapping"
 ENGINE_KEEP=2
-ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
+ENGINE_FILES=(bin/voxtral bin/g2p/kokoro_g2p.v2.dict bin/g2p/kokoro_pos.bin bin/g2p/kokoro_zh.v1.dict bin/watermark/perth_implicit.v2.bin THIRD_PARTY_NOTICES.txt)
 ENGINE_MODELS=(models/voxtral/consolidated.safetensors models/kokoro/Kokoro_espeak_F16.gguf)
 ENGINE_UNIT=/etc/systemd/system/teaport-engine.service   # where render_unit writes it
 ENGINE_CHANGED=""   # the files this run staged (engine_fetch), as " <file> <file>..."
@@ -627,14 +876,18 @@ engine_fetch() {
   ENGINE_CHANGED="$ENGINE_CHANGED $rel"
 }
 
-# engine_release_marks <release> — whether that engine release puts the AI watermark on its
-# speech, and so cannot be installed without engine.watermark: 1.7 on (the first release cut
-# from teagram-engine main@bd5974a or later). One that is not a dotted number (a
-# placeholder, "unknown", empty) counts as marking: the check fails closed.
-# manifest/check.py holds the same line (WATERMARK_FROM); keep the two in step.
+# engine_release_from <release> <first> — whether that engine release is <first> or later,
+# and so cannot be installed without the files that release on reads. One that is not a
+# dotted number (a placeholder, "unknown", empty) counts as later: the check fails closed.
+#   ENGINE_WATERMARK_FROM  engine.watermark: the release puts the AI watermark on its
+#                          speech (the first cut from teagram-engine main@bd5974a or later)
+#   ENGINE_ZH_FROM         engine.zh_dict: the release reads the Mandarin dict
+#                          (teagram-engine #122)
+# manifest/check.py holds the same lines (WATERMARK_FROM, ZH_FROM); keep the two in step.
 ENGINE_WATERMARK_FROM=1.7
-engine_release_marks() {
-  python3 -I - "$1" "$ENGINE_WATERMARK_FROM" <<'PY'
+ENGINE_ZH_FROM=1.7
+engine_release_from() {
+  python3 -I - "$1" "$2" <<'PY'
 import re, sys
 rel, first = sys.argv[1], sys.argv[2]
 num = lambda v: tuple(int(x) for x in v.split("."))
@@ -949,6 +1202,24 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     engine_fetch "$pos_url" bin/g2p/kokoro_pos.bin "$pos_sha"
   fi
+  # The Mandarin dict beside them (kokoro_zh.v1.dict: jieba's dictionary and HMM
+  # probabilities, pypinyin's readings and misaki's spelling of each syllable, built by
+  # teagram-engine tools/g2p_zh_build.py; attribution in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 the zf_/zm_ voices read Mandarin
+  # through it (teagram-engine #122); the engine probes <exe_dir>/g2p/kokoro_zh.v1.dict, and
+  # without it those voices fall back to espeak, whose tones Kokoro cannot read, with one
+  # journal line saying so. Fail-fast like the tagger for a release that reads it.
+  local zh_url zh_sha zh_rel
+  zh_rel="$(mget engine.release 2>/dev/null)" || zh_rel=""
+  zh_url="$(mget engine.zh_dict.url 2>/dev/null)" || zh_url=""
+  zh_sha="$(mget engine.zh_dict.sha256 2>/dev/null)" || zh_sha=""
+  if [ -n "$zh_url" ] && [ -n "$zh_sha" ]; then
+    engine_fetch "$zh_url" bin/g2p/kokoro_zh.v1.dict "$zh_sha"
+  elif engine_release_from "$zh_rel" "$ENGINE_ZH_FROM"; then
+    local zh_msg="manifest has no engine.zh_dict (url+sha256) for engine ${zh_rel:-?} — a box installed without it speaks Mandarin in tones Kokoro cannot read; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$zh_msg"; else die "$zh_msg"; fi
+  else
+    log "engine $zh_rel predates the Mandarin dict: no Mandarin dict to install"
+  fi
   # The AI watermark's weights (perth_implicit.v2.bin: the embedder of Resemble AI's Perth
   # implicit watermarker, MIT, converted by teagram-engine tools/wm_convert.py; attribution
   # in the engine's THIRD_PARTY_NOTICES.txt). From engine 1.7 every TTS output carries
@@ -963,7 +1234,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   wm_sha="$(mget engine.watermark.sha256 2>/dev/null)" || wm_sha=""
   if [ -n "$wm_url" ] && [ -n "$wm_sha" ]; then
     engine_fetch "$wm_url" bin/watermark/perth_implicit.v2.bin "$wm_sha"
-  elif engine_release_marks "$wm_rel"; then
+  elif engine_release_from "$wm_rel" "$ENGINE_WATERMARK_FROM"; then
     local wm_msg="manifest has no engine.watermark (url+sha256) for engine ${wm_rel:-?} — a box installed without it speaks synthetic audio with no AI watermark; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$wm_msg"; else die "$wm_msg"; fi
   else
@@ -990,10 +1261,14 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   # itself, right before its restart, so that it can check the result and put the previous
   # engine back, models included (engine_swap).
   if [ "$ONLY" != engine ]; then engine_swap_in; fi
-  # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
+  # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*),
+  # with their sha256 in aux_sha256: one in place is not downloaded again (and asks the
+  # license server for no token).
   for aux in tekken.json params.json; do
-    local u; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
-    [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" ""
+    local u s; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
+    s="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux_sha256',{}).get('$aux',''))")"
+    [ "$s" != TODO ] || s=""
+    [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" "$s"
   done
   # --only engine records what it installed once the engine has come up on it (main_engine_only).
   if [ "$ONLY" != engine ]; then
@@ -1063,7 +1338,8 @@ wait_for_idle() {
 # Restart= would otherwise hide. Then it must stay up through a settle window. Last, this
 # start's own journal must not say the G2P dict failed to load (phase_verify's check, here
 # scoped to the one invocation): that engine speaks robotic en-us (2026-08-05). A missing
-# POS tagger only reads homographs in their default form; it is said, and does not fail.
+# POS tagger only reads homographs in their default form, and a missing Mandarin dict only
+# degrades the zf_/zm_ voices; each is said, and does not fail.
 # Not a live turn: the engine serves one session at a time, and a real one may hold it.
 engine_verify() {
   local port envtxt id now st i up=0 line sel
@@ -1101,6 +1377,12 @@ engine_verify() {
   line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$line"; then
     warn "the engine is running WITHOUT the POS tagger (homographs read in their default form): $line"
+  fi
+  # From 1.7 the engine says where its Mandarin dict is ("TTS: Mandarin G2P at <path>"), or
+  # that it has none ("unavailable"); an older one says nothing.
+  line="$(SUDO journalctl "${sel[@]}" 2>/dev/null | grep -E 'TTS: Mandarin G2P (at|ready|unavailable)' | tail -1 || true)"
+  if contains "Mandarin G2P unavailable" "$line"; then
+    warn "the engine is running WITHOUT the Mandarin dict (the zf_/zm_ voices fall back to espeak, whose tones Kokoro cannot read): $line"
   fi
   # From 1.7 the engine says whether it marks its speech (an older one says nothing): "AI
   # watermark on", "off" (VOX_TTS_WATERMARK=0), "unavailable", or "watermark needs <rate>"
@@ -3883,6 +4165,10 @@ phase_verify() {
   local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: POS tagger (ready|unavailable)' | tail -1 || true)"
   if contains "POS tagger unavailable" "$pos_log"; then
     warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
+  fi
+  local zh_log; zh_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep -E 'TTS: Mandarin G2P (at|ready|unavailable)' | tail -1 || true)"
+  if contains "Mandarin G2P unavailable" "$zh_log"; then
+    warn "engine is running WITHOUT the Mandarin dict (the zf_/zm_ voices fall back to espeak, whose tones Kokoro cannot read): $zh_log"; ok=0
   fi
   # And unmarked: from 1.7, without bin/watermark/ (and with VOX_REQUIRE_WATERMARK=0 in
   # engine.env, or it would not be listening) it speaks with no AI watermark. The status
