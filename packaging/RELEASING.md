@@ -254,6 +254,15 @@ lets through.
     too). The account's name should not be an email address either: Cloudflare's
     default is "<email>'s Account";
   - variable `CLOUDFLARE_ACCOUNT_ID`.
+- **`r2-publish` environment** (`.github/workflows/publish.yml`'s upload job): deployment
+  branches `main` only, no reviewer; secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+  `R2_ENDPOINT`, an R2 token with write access to `teaport-get`, the bucket that serves
+  the manifests and the bootstrap a box runs as root. Without the branch policy, a
+  workflow on any branch could read them.
+- **Repository secret `DL_CHECK_TOKEN`**: equal to the download gate Worker's
+  `CHECK_TOKEN`; the publish check downloads the gated files with it on every run but a
+  pull request's. Change both together (`cd worker && npx wrangler secret put
+  CHECK_TOKEN`, then the secret), or the next check fails.
 - **`.github/CODEOWNERS`** names who answers for the paths that ship to users or serve
   them. No rule requires the owner's review.
 
