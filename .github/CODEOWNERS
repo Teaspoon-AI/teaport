@@ -1,7 +1,7 @@
-# Who answers for what ships to users and what serves them. GitHub requests the owner's
-# review on a PR that touches these paths. main's ruleset does not require that review
-# (teaport has one account, and an author cannot approve their own PR), so this marks
-# ownership rather than gating merges (packaging/RELEASING.md, "GitHub settings").
+# Who answers for what ships to users and what serves them. With one account, GitHub
+# never requests the owner's review (it does not ask a PR's author), and main's ruleset
+# does not require it (an author cannot approve their own PR): this marks ownership, it
+# does not gate merges (packaging/RELEASING.md, "GitHub settings").
 # The last matching line wins, so the broad lines come first.
 
 # The workflows, and this file.

@@ -192,7 +192,9 @@ In a PR, set in `manifest/stable.json` (the beta channel keeps its `TODO` until 
            fetches every gated file with `DL_CHECK_TOKEN` and compares its sha256. On
            main it also uploads the manifests and the bootstrap again, unchanged.
          If enforcing breaks installs, the way back is a Worker version with the gate open:
-         `npx wrangler rollback <version-id>` with the open version noted before the
+         `wrangler rollback <version-id>`, with the locked tool (`(cd .github/wrangler &&
+         npm ci)`, then from `worker/` `../.github/wrangler/node_modules/.bin/wrangler
+         rollback <version-id>`), to the open version noted before the
          deploy (a bare `rollback` takes the deployment before the current one, which a
          later `wrangler secret put` changes; wrangler asks before rolling back over
          changed secrets), or, with the id lost, a PR to main that sets `GATE = "open"`
