@@ -12,7 +12,7 @@
 #   ./install.sh --only engine     update just the engine from the manifest (see below)
 #   ./install.sh --rollback engine put the previous engine back
 #   ./install.sh --dry-run         print what would happen; touch nothing
-#   ./install.sh --accept-eula=<version> --email <email> [--license-id <id>]
+#   ./install.sh --accept-eula=<version> --name <name> --email <email> [--license-id <id>]
 #                                  accept the engine license without a terminal (see below)
 #   ./install.sh --help
 #
@@ -57,13 +57,13 @@
 # The engine license: every run that installs or updates the engine shows it and asks for
 # it to be accepted (typing "accept" after reading it), once per license version. The
 # engine's files and models download only after that: the manifest's access.api records
-# the acceptance with Teaspoon AI (who accepted it: an email, and personal use or the id
-# of a Teaspoon AI license; no name) and returns a token the gated downloads
+# the acceptance with Teaspoon AI (who accepted it: a name, an email, and personal use or
+# the id of a Teaspoon AI license) and returns a token the gated downloads
 # (access.gated) carry, good for a day. The acceptance's id is kept in
 # $STATE/eula-accepted.json, so a later run gets a new token without asking again until the
 # license changes. Without a terminal, --accept-eula=<version> accepts it: the version must
-# be the one the license's title names, and --email (and --license-id for licensed use)
-# says who accepts it.
+# be the one the license's title names, and --name and --email (and --license-id for
+# licensed use) say who accepts it.
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -73,8 +73,8 @@
 #   TEAPORT_PLUGIN_SRC     install the plugin from this local dir instead of npm
 #   TEAPORT_ACCEPT_EULA=<version>  accept the engine license non-interactively: as
 #                          --accept-eula=<version>, the version its title names
-#   TEAPORT_EMAIL / TEAPORT_LICENSE_ID  who accepts it (--email, --license-id); asked on
-#                          a terminal when not given
+#   TEAPORT_NAME / TEAPORT_EMAIL / TEAPORT_LICENSE_ID  who accepts it (--name, --email,
+#                          --license-id); asked on a terminal when not given
 #   TEAPORT_ALLOW_NON_JETSON=1   skip the Jetson/L4T gate (dev only; no real install)
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
@@ -126,6 +126,7 @@ RUN_USER="${TEAPORT_USER:-$(id -un)}"
 RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"; RUN_HOME="${RUN_HOME:-$HOME}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$RUN_HOME/.config/teaport}"
 ACCEPT_EULA="${TEAPORT_ACCEPT_EULA:-}"   # the license version accepted without a terminal
+ACCEPT_NAME="${TEAPORT_NAME:-}"
 ACCEPT_EMAIL="${TEAPORT_EMAIL:-}"
 ACCEPT_LICENSE_ID="${TEAPORT_LICENSE_ID:-}"
 ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
@@ -146,13 +147,10 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --accept-eula) usage_err "--accept-eula needs the license's version: --accept-eula=<version>, the version its title names" ;;
     --accept-eula=*) ACCEPT_EULA="${1#*=}"; [ -n "$ACCEPT_EULA" ] || usage_err "--accept-eula needs the license's version: --accept-eula=<version>" ;;
-    --email|--license-id)
+    --name|--email|--license-id)
       [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a value"
-      case "$1" in --email) ACCEPT_EMAIL="$2" ;; *) ACCEPT_LICENSE_ID="$2" ;; esac; shift ;;
-    # No name is recorded any more. Scripts written for the installers that asked for one
-    # still pass it: take it and drop it (noted once: installer_lock runs us twice).
-    --name) [ $# -ge 2 ] && shift; [ -n "${TEAPORT_INSTALL_LOCKED:-}" ] || printf 'note: --name is no longer used; ignored\n' >&2 ;;
-    --name=*) [ -n "${TEAPORT_INSTALL_LOCKED:-}" ] || printf 'note: --name is no longer used; ignored\n' >&2 ;;
+      case "$1" in --name) ACCEPT_NAME="$2" ;; --email) ACCEPT_EMAIL="$2" ;; *) ACCEPT_LICENSE_ID="$2" ;; esac; shift ;;
+    --name=*) ACCEPT_NAME="${1#*=}" ;;
     --email=*) ACCEPT_EMAIL="${1#*=}" ;;
     --license-id=*) ACCEPT_LICENSE_ID="${1#*=}" ;;
     --only|--rollback)
@@ -417,19 +415,20 @@ device_id() {
   printf 'teaport-device:%s' "$(tr -d '[:space:]' </etc/machine-id)" | sha256sum | cut -d' ' -f1
 }
 
-# eula_identity — who accepts: ACCEPT_EMAIL, and ACCEPT_USE (personal, or licensed with
-# ACCEPT_LICENSE_ID). Asked on a terminal for what --email and --license-id did not give;
-# without one, they must be given. No name is asked for: counsel's advice (2026-11-23).
+# eula_identity — who accepts: ACCEPT_NAME, ACCEPT_EMAIL, and ACCEPT_USE (personal, or
+# licensed with ACCEPT_LICENSE_ID). Asked on a terminal for what --name, --email and
+# --license-id did not give; without one, they must all be given.
 ACCEPT_USE=""
 eula_identity() {
   if [ -n "$ACCEPT_LICENSE_ID" ]; then ACCEPT_USE=licensed; fi
   if [ ! -t 0 ]; then
-    [ -n "$ACCEPT_EMAIL" ] \
-      || die "accepting the engine license without a terminal needs who accepts it: --email (and --license-id for licensed use)"
+    [ -n "$ACCEPT_NAME" ] && [ -n "$ACCEPT_EMAIL" ] \
+      || die "accepting the engine license without a terminal needs who accepts it: --name and --email (and --license-id for licensed use)"
     ACCEPT_USE="${ACCEPT_USE:-personal}"
     return
   fi
   printf '\n  Teaspoon AI records who accepted the license.\n'
+  while [ -z "$ACCEPT_NAME" ]; do read -r -p '  Your full name: ' ACCEPT_NAME || die "license not accepted — aborting"; done
   while [ -z "$ACCEPT_EMAIL" ]; do read -r -p '  Your email address: ' ACCEPT_EMAIL || die "license not accepted — aborting"; done
   if [ -z "$ACCEPT_USE" ]; then
     local ans=""
@@ -495,10 +494,10 @@ installer_revision() {
 eula_record() {
   local out code body why
   # Who accepts goes to python in its environment, not its arguments (ps shows those).
-  body="$(TEAPORT_EMAIL="$ACCEPT_EMAIL" TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" \
+  body="$(TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" \
           python3 -I -c 'import json,os,sys
 a, e = sys.argv[1:], os.environ
-d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3],
+d = {"channel": a[0], "eula_version": a[1], "eula_sha256": a[2], "method": a[3], "name": e["TEAPORT_NAME"],
      "email": e["TEAPORT_EMAIL"], "use": a[4], "device_id": a[5], "installer": a[6]}
 if a[4] == "licensed":
     d["license_id"] = e["TEAPORT_LICENSE_ID"]
@@ -588,12 +587,12 @@ eula_gate() {
   # The receipt is root's and 0600: its acceptance id gets download tokens.
   own_dir "$STATE"
   SUDO install -m 0644 "$txt" "$STATE/EULA-v$ver.txt"
-  local rec; rec="$(TEAPORT_ACCEPTANCE_ID="$ACCEPTANCE_ID" TEAPORT_EMAIL="$ACCEPT_EMAIL" \
+  local rec; rec="$(TEAPORT_ACCEPTANCE_ID="$ACCEPTANCE_ID" TEAPORT_NAME="$ACCEPT_NAME" TEAPORT_EMAIL="$ACCEPT_EMAIL" \
     TEAPORT_LICENSE_ID="$ACCEPT_LICENSE_ID" python3 -I -c 'import json,os,sys
 a, e = sys.argv[1:], os.environ
 d = {"version": a[0], "sha256": a[1], "date": a[2], "user": a[3], "method": a[4]}
 if e["TEAPORT_ACCEPTANCE_ID"]:
-    d.update(acceptance_id=e["TEAPORT_ACCEPTANCE_ID"], recorded_with=a[5],
+    d.update(acceptance_id=e["TEAPORT_ACCEPTANCE_ID"], recorded_with=a[5], name=e["TEAPORT_NAME"],
              email=e["TEAPORT_EMAIL"], use=a[6])
     if a[6] == "licensed":
         d["license_id"] = e["TEAPORT_LICENSE_ID"]

@@ -27,7 +27,7 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 | `channel` | `stable` or `beta`: whose manifest named the license | No |
 | `eula_version` | The license version accepted, such as `1.0` | No |
 | `eula_sha256` | SHA-256 of the exact text accepted. The server only takes the current one. | No |
-| `name` | Always empty. Kept only so a rollback to an older Worker, which writes it, still works; a later release drops it. | No |
+| `name` | Always empty: the Worker writes `''` whatever the installer sends, and migration 0002 blanked the names recorded before. The column stays so a rollback to an older Worker, which writes it, still works; a later release drops it. | No |
 | `email` | The email address the person typed or passed with `--email`. Not verified. | **Yes** |
 | `use_type` | `personal` or `licensed` | No |
 | `license_id` | For licensed use: the Teaspoon AI license's ID | Linked to the licensee |
@@ -52,12 +52,8 @@ way back), `key` (which file),
 
 No name. Acceptances recorded one until 2026-11-23; counsel advised dropping it, since an
 unverified typed name adds nothing to the email, the use and the accepted text's hash.
-Migration `0002_drop_acceptance_name.sql` blanked every name recorded before, and the Worker
-writes the `name` column empty. The column stays until a later release, because a migration
-must leave the schema usable by the Worker before it (packaging/RELEASING.md), and that
-Worker still writes a name. An installer from before then still sends a name: the Worker
-ignores it, and `install.sh --name` is taken and ignored. A box set up before then may still hold the
-name in its own receipt (On the box, below); that copy is the owner's and never leaves the box.
+The Worker discards any name an installer sends, including the installers released so far,
+which still ask for one; a following change stops the installer asking.
 
 Also not stored: the box's hostname or local user, the manifest, the request bodies of downloads, and the
 token itself (it is signed, not stored). A new token for an existing acceptance
@@ -67,8 +63,8 @@ token itself (it is signed, not stored). A new token for an existing acceptance
 
 `install.sh` keeps a copy in `/var/lib/teaport/eula-accepted.json`, readable only by root
 (mode 600). It holds the version, the hash, the box's timestamp, the local run user, the
-method, the acceptance `id`, the server's URL, the email, the use, and the license ID for
-licensed use. Next to it, the installer keeps the accepted text as
+method, the acceptance `id`, the server's URL, the name, the email, the use, and the license
+ID for licensed use. Next to it, the installer keeps the accepted text as
 `EULA-v<version>.txt`. Neither file leaves the box, apart from the `id`, which the box sends
 to get a new token.
 
@@ -85,7 +81,7 @@ to get a new token.
   request's headers are among them: the client's IP address, the user agent, and, on a
   download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
   it say whether the request body is recorded. The Worker itself writes nothing to the
-  logs (it has no `console.log`); the email travels only in the body of
+  logs (it has no `console.log`); the email (and, from older installers, a name the Worker discards) travel only in the body of
   `POST /api/accept`. Setting `invocation_logs = false` under `[observability.logs]` turns
   the invocation logs off.
 
