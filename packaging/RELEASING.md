@@ -240,7 +240,8 @@ lets through.
   - deployment branches: `main` only;
   - secret `CLOUDFLARE_API_TOKEN`, an environment secret so no other workflow reads
     it: an API token for this account only, with Workers Scripts: Edit, Workers
-    Routes: Edit (zone `teaspoon.tech`) and D1: Edit, and no User Details or
+    Routes: Edit and Zone: Read (zone `teaspoon.tech`: wrangler looks the zone up by
+    name for the routes, after it uploads the script) and D1: Edit, and no User Details or
     Memberships permission (wrangler prints what those can read when a call fails, and
     the job logs are public; the workflow masks email addresses in wrangler's output
     too). The account's name should not be an email address either: Cloudflare's

@@ -4,15 +4,18 @@ name: worker-deploy
 # main's and nothing else: before this it was deployed by hand from a working tree, which
 # could differ from main without anyone noticing.
 #
-# On a push to main that touches worker/ (or this file), and by hand (Actions → worker-deploy
-# → Run workflow, from main only): the Worker's tests, then, after a reviewer approves the
+# On a push to main that touches worker/, the deploy tool (.github/wrangler/) or this file,
+# and by hand (Actions → worker-deploy → Run workflow, from main only): the Worker's tests
+# and a dry-run bundle with the locked wrangler, then, after a reviewer approves the
 # worker-deploy environment, D1 migrations, the deploy, and a check that the live gate does
-# what wrangler.toml says (GATE = "enforce": an anonymous gated download answers 401).
+# what wrangler.toml says (GATE = "enforce": an anonymous gated download answers 401). On a
+# pull request that touches the same paths: the tests and the dry run only, with no secret.
 #
 # The worker-deploy environment (Settings → Environments; GitHub creates it, unprotected, on
 # the first run that names it: set its reviewer and branches before its secret) holds:
 #   CLOUDFLARE_API_TOKEN   an API token for this account only, with Workers Scripts: Edit,
-#                          Workers Routes: Edit (the teaspoon.tech zone), D1: Edit
+#                          Workers Routes: Edit and Zone: Read (the teaspoon.tech zone),
+#                          D1: Edit; no User Details or Memberships
 #   CLOUDFLARE_ACCOUNT_ID  the account's id (a variable, not a secret)
 # and requires a reviewer ("Prevent self-review" unticked: teaport has one account), with
 # deployment branches limited to main (packaging/RELEASING.md, "GitHub settings"). Its secrets are read
@@ -27,13 +30,20 @@ on:
     branches: [main]
     paths:
       - worker/**
+      - .github/wrangler/**
+      - .github/workflows/worker-deploy.yml
+  pull_request:
+    paths:
+      - worker/**
+      - .github/wrangler/**
       - .github/workflows/worker-deploy.yml
   workflow_dispatch:
 
-# One deploy at a time, and never cancel one halfway.
+# One deploy at a time on main, and never cancel one halfway; a pull request's runs have a
+# group of their own, so they never displace a deploy waiting for approval.
 concurrency:
-  group: worker-deploy
-  cancel-in-progress: false
+  group: worker-deploy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -51,10 +61,19 @@ jobs:
           node-version: "24"
       - name: Test the download gate
         run: node --test worker/test/*.test.mjs
+      - name: The locked wrangler installs and bundles the Worker
+        # The same install the deploy job does, and a bundle that stops before any Cloudflare
+        # call: a broken lockfile or a wrangler that cannot build the Worker shows here, on the
+        # pull request, not after an approval. No credentials in this job.
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          (cd .github/wrangler && npm ci --no-audit --no-fund)
+          cd worker && ../.github/wrangler/node_modules/.bin/wrangler deploy --dry-run --outdir "$RUNNER_TEMP/bundle"
 
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: worker-deploy
