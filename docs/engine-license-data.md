@@ -120,8 +120,8 @@ method, the acceptance `id`, the server's URL, the email, the use, and the licen
 licensed use. Next to it, the installer keeps the accepted text as `EULA-v<version>.txt`.
 Neither file leaves the box, apart from the `id`, which the box sends to get a new token.
 A box being installed at the factory has, instead, the receipt the factory wrote (the seal
-removes it before the box ships): the license version at provisioning, `"method":
-"factory"`, the maker acceptance's `id` and the server's URL; no name or email, and no
+removes it before the box ships): `"method": "factory"` and the maker acceptance's `id`
+(perhaps with the license version then and the server's URL); no name or email, and no
 license text.
 
 ## Who else sees it

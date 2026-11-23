@@ -354,21 +354,32 @@ runs it is the review.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station serves it only on the boxes' USB network (bound to its address there, or a
       firewall rule; today it listens on every interface, the factory Wi-Fi included),
-      and records a maker acceptance only for a module it flashed and has not yet
-      provisioned (today an unknown `module_serial` gets a new unit).
+      and records maker acceptances only for modules it flashed and has not sealed (today
+      an unknown `module_serial` gets a new unit).
+    - **Retries and provisioning again:** the station keeps the maker id with the unit and
+      sends the same one back while it still stands, so a box whose answer was lost (it
+      gives up after 10 seconds and asks again) still gets its receipt. It records a new
+      one only when the stored one is past `MAKER_MAX_DAYS` or revoked, or when an
+      operator provisions an unsealed box again; the daily cap counts boxes, so that does
+      not use it up. It calls the Worker after the unit's row is committed, not inside
+      the serial allocation.
+    - **Where it keeps `FACTORY_TOKEN`:** a file or environment only root reads on the
+      station; never in `StationConfig`'s config (sent to every box), its event log or
+      its logs.
     - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
       marks the box provisioned for good, so a crash between the two must not leave a box
       without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
-      `{"version": "<the license version then>", "method": "factory", "acceptance_id":
-      "maker-…", "recorded_with": "<the manifest's access.api>"}`. No name or email.
-      `install.sh` reads `method` and `acceptance_id` from it; `version` is only a note.
+      `{"method": "factory", "acceptance_id": "maker-…"}`, with `version` and
+      `recorded_with` too if the station sends them (notes; `install.sh` reads only
+      `method` and `acceptance_id`). No name or email.
       The receipt is never in the shared, baked image.
     - **The first-boot unit** runs an installer revision with this support (the
       `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
       accepts the license instead of using the factory record, and stops on a version
       that names no license), and runs only once the box is provisioned
       (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt.
-    - **The seal** removes `/var/lib/teaport/eula-accepted.json` (and checks the install
+    - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
+      it checks `setup-done` (and checks the install
       finished: a box whose install outlasts `MAKER_MAX_DAYS` needs provisioning again,
       by removing its `/etc/appliance-id`, as the provisioning unit runs only without it).
       A box that ships with it would download engine updates for its owner, within the

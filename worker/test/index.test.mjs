@@ -304,9 +304,9 @@ test("past MAKER_MAX_DAYS a maker acceptance gets no token and downloads nothing
   const late = await makerToken(acceptance_id);
   assert.ok(Date.parse(late.expires_at) - Date.now() < 61 * 1000, late.expires_at);
   env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(14 * 86400 + 1));
-  for (const res of [await call("POST", "/api/token", { body: { acceptance_id } }),
-                     await call("GET", `/${ENGINE}`, { headers: bearer(token) })]) {
-    assert.equal(res.status, 409);
+  for (const [res, status] of [[await call("POST", "/api/token", { body: { acceptance_id } }), 409],
+                               [await call("GET", `/${ENGINE}`, { headers: bearer(token) }), 403]]) {
+    assert.equal(res.status, status);   // 409: the installer has the owner accept; 403: refused
     assert.equal((await res.json()).error, "maker_expired");
   }
   // Without MAKER_MAX_DAYS, none gets any: it fails closed.
@@ -425,6 +425,13 @@ test("the cap's window is 24 hours, for the count and for a box seen before; rot
   env.FACTORY_TOKEN = "the-rotated-factory-station-token-0";
   assert.equal((await askFactory({ device_id: box(1) })).status, 200);   // ...the new secret starts again
   assert.equal((await askFactory({ device_id: box(2) })).status, 429);
+  // A box seen under the old secret only is a new box to the new one.
+  env.DB.db.exec("DELETE FROM maker_acceptances");
+  env.FACTORY_TOKEN = "factory-station-token-0123456789";
+  await maker({ device_id: box(1) });
+  env.FACTORY_TOKEN = "the-rotated-factory-station-token-0";
+  await maker({ device_id: box(2) });
+  assert.equal((await askFactory({ device_id: box(1) })).status, 429);
 });
 
 test("set up wrong, the factory records nothing", async () => {

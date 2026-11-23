@@ -37,8 +37,8 @@ GATE = "enforce"
 # PROPOSAL to confirm with counsel (docs/engine-license-data.md); change both together.
 RETENTION_DAYS = "2557"
 # The factory (POST /api/factory, teaport#464). How long a box's maker acceptance gets
-# download tokens: from its provisioning through its first-boot install, with room for a box
-# that waits before it is first switched on; after it, the box's owner accepts. Unset or not
+# download tokens: from its provisioning (at the box's first boot in the factory) through its
+# first-boot install and the seal, with room for retries; after it, the box's owner accepts. Unset or not
 # a whole number over 0: the factory records nothing.
 MAKER_MAX_DAYS = "14"
 # The most boxes the factory records in any 24 hours: a brake on a leaked FACTORY_TOKEN, to

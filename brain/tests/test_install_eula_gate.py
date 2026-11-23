@@ -86,7 +86,7 @@ def _manifest(tmp, access=True, version="1.0"):
 def _script(tmp, body, **env):
     head = STUBS + FAKE_CURL + "".join(_fn(f) for f in FNS)
     head += ('HERE="${HERE:-$T}"; STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
-             'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID=""\n'
+             'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID="" EULA_FACTORY=""\n'
              'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
              'ACCEPT_LICENSE_ID="${ACCEPT_LICENSE_ID:-}"\n')
     # TMPDIR: the functions' own mktemp files (the manifest, the license text) land in the
@@ -466,6 +466,11 @@ def test_a_factory_receipt_with_the_server_down_stops_only_a_download_that_needs
     rc, out = _run(tmp_path, GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n', FAKE_TOKEN='503 {}')
     assert rc == 1 and "without a token" in out, out
     assert [w for w, b in _api(tmp_path)][-2:] == ["token", "token"]
+    # The server back, but the record revoked meanwhile: said as the factory record's, not
+    # as an acceptance this box never made.
+    body = GATE + 'FAKE_TOKEN=\'403 {"message": "revoked"}\'\ndownload https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n'
+    rc, out = _run(tmp_path, body, FAKE_TOKEN='503 {}')
+    assert rc == 1 and "factory install record" in out and "refuses this box's acceptance" not in out, out
 
 
 def test_a_factory_receipt_is_never_an_acceptance_of_its_version():

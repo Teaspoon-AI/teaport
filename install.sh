@@ -477,11 +477,11 @@ print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$o
 
 # dl_token <url> — the download token, got when the first gated download needs it: the
 # license server could not be asked when eula_gate ran (EULA_API, EULA_ID).
-EULA_API="" EULA_ID=""
+EULA_API="" EULA_ID="" EULA_FACTORY=""
 dl_token() {
   [ -n "$EULA_API" ] && [ -n "$EULA_ID" ] || die "no download token for $1: the engine license gate did not run"
   local rc=0
-  eula_token "$EULA_API" "$EULA_ID" || rc=$?
+  eula_token "$EULA_API" "$EULA_ID" "$EULA_FACTORY" || rc=$?
   [ "$rc" = 0 ] || die "cannot download $1 without a token from the license server: run the installer again"
 }
 
@@ -549,7 +549,7 @@ eula_gate() {
       local mrc=0
       eula_token "$api" "$mid" factory || mrc=$?
       if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
-        EULA_API="$api" EULA_ID="$mid"
+        EULA_API="$api" EULA_ID="$mid" EULA_FACTORY=factory
         log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"
         return
       fi
