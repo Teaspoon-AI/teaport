@@ -518,10 +518,10 @@ async def run_relay_bot(websocket: WebSocket):
         _first_boot(session)
 
     def _first_boot(session):
-        """The room's session: a new box offline at boot goes into setup mode by itself
-        (first_boot.py; the setting, the marker and this boot's try decide). A task: it
-        waits out the boot's grace period. Cancelled with the session."""
-        if room and first_boot.could_be_due():
+        """The room's session: a new box offline at boot goes into setup mode by itself,
+        and this session is where it goes (first_boot.run; first_boot.drive decides). A
+        task: it waits for the hand-over. Cancelled with the session."""
+        if room and first_boot.listening():
             session_holder["first_boot"] = asyncio.ensure_future(first_boot.run(session))
 
     @transport.event_handler("on_client_disconnected")
@@ -665,6 +665,8 @@ async def _lifespan(_app):
     # While a new box has never been online: write the marker the first time it is
     # (first_boot.watch; nothing without TEAPORT_SETUP_ON_FIRST_BOOT).
     watcher = asyncio.create_task(first_boot.watch())
+    # ... and while it is offline, the setup it goes into by itself (first_boot.drive).
+    driver = asyncio.create_task(first_boot.drive())
     # The trial credit's reader (credit.py, #280): beside the sessions, never in a turn.
     monitor = asyncio.create_task(credit.MONITOR.run())
     # Whether a newer release is out (updates.py): one small read a day, never in a turn.
@@ -685,6 +687,7 @@ async def _lifespan(_app):
         yield
     finally:
         for name, t in (("busy lamp", lamp), ("first-boot watcher", watcher),
+                        ("first-boot setup", driver),
                         ("credit monitor", monitor), ("update check", updater),
                         ("browser idle stop", browser), ("engine voice list", voices),
                         ("agent key restarter", restarter)):

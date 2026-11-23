@@ -41,6 +41,14 @@ def box(monkeypatch):
     monkeypatch.setattr(first_boot, "_tried_here", False)
     monkeypatch.setattr(wv, "POLL_SECS", 0.01)
     monkeypatch.setattr(wv, "LIVENESS_SECS", 0.05)
+    # The setup unit is "installed" (first_boot.drive), the driver's waits are short, and
+    # nothing is left from another test's driver or room session (another event loop's).
+    monkeypatch.setattr(wv, "available", lambda: True)
+    monkeypatch.setattr(first_boot, "ROOM_WAIT_SECS", 0.05)
+    monkeypatch.setattr(first_boot, "HANDOVER_SECS", 2.0)
+    for name, value in (("_room", None), ("_room_came", None), ("_driving", False),
+                        ("_wanted", None)):
+        monkeypatch.setattr(first_boot, name, value)
 
     boots = iter(range(1, 1000))
 
@@ -88,15 +96,35 @@ def _messages(voice, kind):
             and f.message.get("type") == kind]
 
 
-async def _run(session, *states):
-    """first_boot.run with the connectivity check faked."""
+async def _engine_up():
+    return True
+
+
+async def _run(session, *states, headless=None):
+    """First boot as the brain runs it, with the connectivity check faked: `session` is
+    the room session up (gateway_server starts first_boot.run on it while
+    first_boot.listening()), and first_boot.drive decides and hands it the setup. True
+    when the setup began on `session`. No voiceless start unless `headless` is given (an
+    async fake): `_run.headless` counts the starts asked for."""
     orig = wv.connectivity
     wv.connectivity = check = _online(*states)
+    _run.check, _run.headless = check, 0
+
+    async def no_room():
+        _run.headless += 1
+        return headless is not None and await headless()
+    took = asyncio.ensure_future(first_boot.run(session)) if first_boot.listening() else None
     try:
-        return await first_boot.run(session)
+        await asyncio.sleep(0)  # it offers itself, as a session past its STT check does
+        await first_boot.drive(engine_up=_engine_up, headless=no_room)
+        if took is None or not took.done():
+            return False
+        return took.result()
     finally:
         wv.connectivity = orig
-        _run.check = check
+        if took is not None and not took.done():
+            took.cancel()
+            await asyncio.gather(took, return_exceptions=True)
 
 
 # ---- the four cases ---------------------------------------------------------------------
@@ -146,7 +174,8 @@ def test_set_up_and_offline_does_nothing_by_itself(box):
         check = _online("none")
         orig, wv.connectivity = wv.connectivity, check
         try:
-            assert not await first_boot.run(session)
+            assert not first_boot.listening(), "a set-up box's room waits for first boot"
+            assert not await first_boot.drive(engine_up=_engine_up)
         finally:
             wv.connectivity = orig
         assert check.asked == 0, "a set-up box asked about connectivity at all"
@@ -227,15 +256,22 @@ def test_it_waits_out_the_boot_grace_period_first(box):
     asyncio.run(run())
 
 
-def test_a_session_that_ended_during_the_grace_period_leaves_the_try_to_the_next(box):
+def test_a_room_session_that_ended_before_the_hand_over_is_not_handed_it(box):
+    """The room session that was up ended while the grace period ran (the bridge
+    redialled, the engine restarted): the setup is not given to it -- drive() asks the
+    bridge for a new one, and none coming, starts the setup network without a voice."""
     async def run():
         session, _ = _room()
         session.task.has_finished = lambda: True
-        assert not await _run(session, "none")
-        assert not first_boot.tried_this_boot() and session.wifi.said == []
-        fresh, _ = _room()
-        assert await _run(fresh, "none")
-        await fresh.wifi._stop_following()
+        started = []
+
+        async def headless():
+            started.append(True)
+            return True
+        assert not await _run(session, "none", headless=headless)
+        assert session.wifi.said == [] and session.wifi.calls == []
+        assert _run.headless == 1 and started == [True]
+        assert first_boot.tried_this_boot(), "the boot's try is drive()'s, spent when due"
     asyncio.run(run())
 
 
@@ -574,6 +610,257 @@ def test_the_markers_live_in_the_users_state_directory(box):
     with open(os.path.join(first_boot.state_dir(), "setup-done")) as f:
         stamp = f.read()
     assert stamp.endswith("synthetic\n") and time.strftime("%Y") in stamp
+
+
+# ---- #457: the brain starts first boot, with or without a room mic ----------------------
+
+async def _quick(_secs):
+    await asyncio.sleep(0)
+
+
+def _asks(monkeypatch, then=None):
+    """Record each ask for the room (first_boot.want_room); `then(id)` after each."""
+    asks, real = [], first_boot.want_room
+
+    def want_room(why):
+        ask = real(why)
+        asks.append(ask)
+        if then is not None:
+            then(ask)
+        return ask
+    monkeypatch.setattr(first_boot, "want_room", want_room)
+    return asks
+
+
+def _bridge(sessions):
+    """The room mic's bridge, as far as first boot sees it: each ask it sees in
+    /talk/status (first_boot.room_wanted) dialled once, and the next of `sessions` comes
+    up past its STT check (gateway_server starts first_boot.run on it)."""
+    started, seen = [], set()
+
+    async def bridge():
+        while True:
+            wanted = first_boot.room_wanted()
+            if wanted is not None and wanted["id"] not in seen and sessions:
+                seen.add(wanted["id"])
+                started.append(asyncio.ensure_future(first_boot.run(sessions.pop(0))))
+            await asyncio.sleep(0.005)
+    return bridge, started
+
+
+def test_the_brain_asks_the_room_mic_once_the_engine_answers(box, monkeypatch):
+    """Nobody has spoken to the box, and the bridge's first session at boot ended for want
+    of the engine: no room session is up. The brain waits for the engine, asks the bridge
+    for one (/talk/status "wanted"), and the session that comes takes the setup."""
+    asks = _asks(monkeypatch)
+    session, _ = _room(asleep=False)
+    bridge, started = _bridge([session])
+    answers = iter([False, False, True])
+
+    async def engine_up():
+        assert first_boot.room_wanted() is None, "asked for the room before the engine"
+        return next(answers)
+    slept = []
+
+    async def sleep(secs):
+        slept.append(secs)
+        await asyncio.sleep(0)
+
+    async def run():
+        wv.connectivity = _online("none")
+        dialler = asyncio.ensure_future(bridge())
+        try:
+            assert await first_boot.drive(sleep=sleep, engine_up=engine_up,
+                                          headless=_no_headless)
+        finally:
+            dialler.cancel()
+            wv.connectivity = _real_connectivity
+        assert slept.count(first_boot.ENGINE_POLL_SECS) == 2, slept
+        assert len(asks) == 1 and len(started) == 1
+        assert await started[0] is True
+        assert session.wifi.said[0] == EN._(wv.WELCOME_TEXT), session.wifi.said
+        assert session.wifi.calls == ["restart"]
+        # The ask is over, and no room session offers itself once the driver is done.
+        assert first_boot.room_wanted() is None and not first_boot.listening()
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+_real_connectivity = wv.connectivity
+
+
+async def _no_headless():
+    raise AssertionError("started the setup network with no voice")
+
+
+def test_the_room_session_up_already_takes_it_without_an_ask(box, monkeypatch):
+    """A wake-word room asleep, or a room nobody has spoken to yet: its session is up, so
+    there is nothing to ask the bridge for."""
+    asks = _asks(monkeypatch)
+
+    async def run():
+        session, _ = _room(asleep=True)
+        assert await _run(session, "none")
+        assert asks == [] and _run.headless == 0
+        assert not session.wake_gate.asleep
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_a_room_that_went_before_the_hand_over_is_asked_for_again(box, monkeypatch):
+    """The session the bridge opened ended at once (its STT not up after all): the brain
+    asks again, with a new ask the bridge dials, and the next session takes the setup."""
+    asks = _asks(monkeypatch)
+    gone, _ = _room(asleep=False)
+    gone.task.has_finished = lambda: True
+    session, _ = _room(asleep=False)
+    bridge, started = _bridge([gone, session])
+
+    async def run():
+        wv.connectivity = _online("none")
+        dialler = asyncio.ensure_future(bridge())
+        try:
+            assert await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                          headless=_no_headless)
+        finally:
+            dialler.cancel()
+            wv.connectivity = _real_connectivity
+        assert len(asks) == 2 and asks[0] != asks[1], asks
+        assert gone.wifi.said == [] and session.wifi.said[0] == EN._(wv.WELCOME_TEXT)
+        assert await started[1] is True
+        # The session that went is still waiting: its disconnect cancels it (gateway_server).
+        assert not started[0].done()
+        started[0].cancel()
+        await asyncio.gather(started[0], return_exceptions=True)
+        assert first_boot._room is None
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_no_room_mic_starts_the_setup_network_with_no_voice(box, monkeypatch):
+    """No room session came after ROOM_ASKS asks (no card, no bridge): the setup network
+    starts by itself, its screens in the box's own voice's language, so the screen shows
+    the network, the password and the code."""
+    asks = _asks(monkeypatch)
+    ran, langs = [], []
+
+    async def helper(action, unit):
+        ran.append((action, unit))
+        return 0, ""
+    from teaport_brain import wifi_setup
+    monkeypatch.setattr(wv, "_run_helper", helper)
+    monkeypatch.setattr(wifi_setup, "hand_language", langs.append)
+    settings = {"TTS_VOICE": "ef_dora", "TTS_LANGUAGE": None}
+    monkeypatch.setattr(first_boot, "setting", settings.get)
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert await first_boot.drive(sleep=_quick, engine_up=_engine_up)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+    assert len(asks) == first_boot.ROOM_ASKS == len(set(asks)), asks
+    assert ran == [("restart", wv.UNIT)]
+    assert langs == [i18n.for_espeak("es").lang] and langs[0] != i18n.for_espeak("en-us").lang
+    assert first_boot.room_wanted() is None, "the ask outlived the driver"
+    assert first_boot.tried_this_boot()
+
+
+def test_a_setup_network_that_will_not_start_is_said_in_the_log(box, monkeypatch):
+    async def helper(action, unit):
+        return 1, "synthetic: sudo refused"
+    from teaport_brain import wifi_setup
+    monkeypatch.setattr(wv, "_run_helper", helper)
+    monkeypatch.setattr(wifi_setup, "hand_language", lambda lang: None)
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert not await first_boot.drive(sleep=_quick, engine_up=_engine_up)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+
+
+def test_an_engine_that_never_answers_does_not_hold_setup_back(box, monkeypatch):
+    polls = []
+
+    async def engine_up():
+        polls.append(True)
+        return False
+    started = []
+
+    async def headless():
+        started.append(True)
+        return True
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert await first_boot.drive(sleep=_quick, engine_up=engine_up,
+                                          headless=headless)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+    assert len(polls) == first_boot.ENGINE_WAIT_SECS / first_boot.ENGINE_POLL_SECS + 1
+    assert started == [True]
+
+
+def test_online_meanwhile_starts_nothing(box, monkeypatch):
+    """Ethernet plugged in while the brain waits for a room session: the watcher writes
+    the marker, and the setup network is not started for a box that no longer needs it."""
+    asks = _asks(monkeypatch, then=lambda _ask: first_boot.reached_online("synthetic"))
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert not await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                              headless=_no_headless)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+    assert len(asks) == 1 and not first_boot.is_new()
+
+
+def test_a_room_session_that_never_answers_is_left_to_it(box, monkeypatch):
+    """The session took the setup and has not said how it went: it may have started, so
+    neither a second room session nor the voiceless start follows."""
+    monkeypatch.setattr(first_boot, "HANDOVER_SECS", 0.05)
+    asks = _asks(monkeypatch)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        hold = asyncio.Event()
+
+        async def stuck():
+            await hold.wait()
+            return True
+        session.wifi.begin_first_boot = stuck
+        assert not await _run(session, "none")
+        assert asks == [] and _run.headless == 0
+    asyncio.run(run())
+
+
+def test_no_setup_unit_no_first_boot(box, monkeypatch):
+    monkeypatch.setattr(wv, "available", lambda: False)
+
+    async def run():
+        session, _ = _room()
+        assert not await _run(session, "none")
+        assert _run.check.asked == 0 and not first_boot.tried_this_boot()
+        assert session.wifi.said == []
+    asyncio.run(run())
+
+
+def test_a_room_session_without_spoken_setup_does_not_offer_itself(box):
+    """A room with no Wi-Fi setup voice (its tool off) cannot take the setup: it never
+    answers the brain's ask, so the brain starts the setup network with no voice."""
+    async def run():
+        session = SimpleNamespace(wifi=None, task=_Task(), wake_gate=None)
+        assert not await first_boot.run(session)
+        assert first_boot._room is None
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
