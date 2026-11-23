@@ -480,6 +480,24 @@ async def config_logo_dark():  # the page's <picture> source in dark mode
     return FileResponse(os.path.join(STATIC_DIR, "teaport-logo-dark.svg"), media_type="image/svg+xml")
 
 
+# The page fonts (DM Sans, Archivo), self-hosted: the pages load nothing from Google, which
+# a browser on an EU network would otherwise tell about the device's visitor. Only these
+# names are served; each is static/font-<name>, flat so package-data "static/*" ships it.
+_FONTS = {
+    "dm-sans-latin-opsz-normal.woff2", "dm-sans-latin-ext-opsz-normal.woff2",
+    "dm-sans-latin-opsz-italic.woff2", "dm-sans-latin-ext-opsz-italic.woff2",
+    "archivo-latin-700-normal.woff2", "archivo-latin-ext-700-normal.woff2",
+}
+
+
+@router.get("/config/fonts/{name}", include_in_schema=False)
+async def config_font(name: str):
+    if name not in _FONTS:
+        raise HTTPException(status_code=404)
+    return FileResponse(os.path.join(STATIC_DIR, "font-" + name), media_type="font/woff2",
+                        headers={"Cache-Control": "public, max-age=86400"})  # a day: the names carry no version
+
+
 @router.get("/licenses", include_in_schema=False)
 async def licenses_page():
     return FileResponse(os.path.join(STATIC_DIR, "licenses.html"), media_type="text/html")

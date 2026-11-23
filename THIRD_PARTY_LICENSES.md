@@ -118,6 +118,26 @@ the source distribution on PyPI. Their license texts are in their `.dist-info` d
 Maintainers: re-audit the full dependency tree at each public release. A pipecat upgrade
 can add a dependency under a new license, and the versions shipped follow the lock.
 
+## Fonts (SIL Open Font License 1.1)
+
+The brain's configuration and licenses pages, and the docs site, set their text in two
+open fonts, served from our own origin (nothing is loaded from Google):
+
+- **DM Sans** — Copyright 2014 The DM Sans Project Authors
+  (https://github.com/googlefonts/dm-fonts).
+- **Archivo** — Copyright 2020 The Archivo Project Authors
+  (https://github.com/Omnibus-Type/Archivo).
+
+Both are licensed under the SIL Open Font License, Version 1.1
+(https://openfontlicense.org). The font files are the unmodified woff2 builds from the
+Fontsource npm packages `@fontsource-variable/dm-sans` and `@fontsource/archivo`, with
+the family names unchanged. The OFL lets you use, embed and redistribute them, including
+in a commercial product, provided the copyright notice and license travel with them and
+they are not sold on their own. The full license texts are shipped with the fonts, in
+`brain/teaport_brain/static/OFL-dm-sans.txt` and `OFL-archivo.txt`, and in each npm
+package's `LICENSE`. If a font is ever modified or subset by hand, check its license
+for a Reserved Font Name first.
+
 ## Plugin (`plugin/`, MIT)
 
 The OpenClaw realtime-voice provider. It has **no third-party runtime dependencies** —

@@ -720,7 +720,7 @@ run out, and asks you to connect your own account.
 3. Ask teaport something. The `answers (brain)` line reads `working`, and the
    note on the configuration page goes away, after the provider accepts a request.
 
-<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:820-826#b2285852 -->
+<!-- source: cli/teaport:104-107#5e2e8c16; brain/teaport_brain/config_ui.py:838-844#b2285852 -->
 
 ## teaport does not remember anything
 
@@ -798,7 +798,7 @@ Teaspoon AI device, the service account, the user the brain runs as, has no pass
 and no SSH key, so nobody can sign in before then. A device that you installed yourself
 has the login of the user you installed it as, and never offers this step.
 
-<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f; brain/teaport_brain/static/config.html:820#106e56e9 -->
+<!-- source: brain/teaport_brain/login_apply.py:288-297#5640328f; brain/teaport_brain/static/config.html:873#106e56e9 -->
 
 **Fix**
 

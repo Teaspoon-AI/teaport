@@ -218,6 +218,25 @@ def test_the_page_serves_both_logos():
             assert r.content == f.read(), path
 
 
+def test_the_pages_load_their_fonts_from_the_box_not_google():
+    """DM Sans and Archivo are served at /config/fonts/<name> (only the listed names), and
+    neither page links Google: a browser on an EU network would otherwise tell Google who
+    opened the device's page."""
+    client, etc, home, calls = setup()
+    for name in sorted(config_ui._FONTS):
+        r = client.get("/config/fonts/" + name)
+        assert r.status_code == 200 and r.headers["content-type"] == "font/woff2", name
+        assert r.content[:4] == b"wOF2", name
+    assert client.get("/config/fonts/config.html").status_code == 404
+    assert client.get("/config/fonts/..%2fconfig.html").status_code == 404
+    for page in ("config.html", "licenses.html"):
+        with open(os.path.join(config_ui.STATIC_DIR, page), encoding="utf-8") as f:
+            html = f.read()
+        assert "googleapis" not in html and "gstatic" not in html, page
+        for name in config_ui._FONTS:  # every face the page declares is one the route serves
+            assert "config/fonts/" + name in html, (page, name)
+
+
 def test_the_footer_names_the_release_and_the_running_build():
     """GET /api/config's build: the installed manifest's version once a release is cut (a
     placeholder or all zeros is none), and the build record of the venv this process runs
