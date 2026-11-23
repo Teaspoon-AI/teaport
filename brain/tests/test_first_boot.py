@@ -50,6 +50,7 @@ def box(monkeypatch):
                         ("_driven", False), ("_wanted", None)):
         monkeypatch.setattr(first_boot, name, value)
     monkeypatch.setattr(first_boot, "_box_busy", lambda: False)
+    monkeypatch.setattr(first_boot, "_taken_by_another", lambda: False)
 
     boots = iter(range(1, 1000))
 
@@ -989,6 +990,78 @@ def test_once_the_driver_is_done_no_room_session_waits_on_it(box):
         assert not first_boot.tried_this_boot() and not first_boot.listening()
         box.reboot()                       # the next start of the brain looks again
         assert first_boot.listening()
+    asyncio.run(run())
+
+
+def test_a_room_on_hold_for_a_call_is_not_handed_the_setup(box, monkeypatch):
+    """A room that said yes to a call is on hold, its session still up: handed the setup,
+    it would play the welcome into the hold and start the setup network under the call.
+    Nothing starts, the voiceless start neither, and this boot has had its try."""
+    monkeypatch.setattr(first_boot, "_taken_by_another", lambda: True)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        assert not await _run(session, "none")
+        assert session.wifi.said == [] and session.wifi.calls == []
+        assert _run.headless == 0 and first_boot.tried_this_boot()
+    asyncio.run(run())
+
+
+def test_taken_is_a_call_a_hold_or_talk_not_the_rooms_own_conversation(monkeypatch):
+    """_taken_by_another reads the arbiter: a call in or asking, a conversation on hold, a
+    live Talk session. The room's own session, awake or asleep, leaves it to the room."""
+    from teaport_brain import session_arbiter as arb
+    free = {"live": False, "call": False, "held": None, "holder": None}
+    cases = [({}, False),
+             ({"live": True, "holder": arb.ROOM}, False),    # the room's own conversation
+             ({"holder": arb.ROOM}, False),                  # a room asleep
+             ({"live": True, "holder": arb.TALK}, True),
+             ({"call": True}, True),
+             ({"held": arb.ROOM}, True),                     # "held" alone is enough
+             ({"live": True, "call": True, "held": arb.ROOM, "holder": arb.CALL}, True)]
+    for change, taken in cases:
+        status = {**free, **change}
+        monkeypatch.setattr(arb.ARBITER, "status", lambda status=status: dict(status))
+        assert first_boot._taken_by_another() is taken, status  # no box fixture: the real one
+
+
+def test_online_while_the_room_session_came_is_not_handed_the_setup(box, monkeypatch):
+    """The box came online (the watcher wrote the marker) while the brain waited for a room
+    session: that session is not handed a setup the box no longer needs."""
+    real = first_boot._a_room
+
+    async def a_room():
+        room = await real()
+        first_boot.reached_online("synthetic")
+        return room
+    monkeypatch.setattr(first_boot, "_a_room", a_room)
+
+    async def run():
+        session, _ = _room(asleep=False)
+        assert not await _run(session, "none")
+        assert session.wifi.said == [] and session.wifi.calls == []
+        assert _run.headless == 0
+    asyncio.run(run())
+
+
+def test_no_ask_is_left_out_for_the_voiceless_start(box, monkeypatch):
+    """No room session came: the last ask is withdrawn before the setup network starts, so
+    a late dial does not open a session (and its greeting) nobody waits for."""
+    asks = _asks(monkeypatch)
+    wanted = []
+
+    async def headless():
+        wanted.append(first_boot.room_wanted())
+        return True
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                          headless=headless)
+        finally:
+            wv.connectivity = _real_connectivity
+        assert len(asks) == first_boot.ROOM_ASKS and wanted == [None], (asks, wanted)
     asyncio.run(run())
 
 

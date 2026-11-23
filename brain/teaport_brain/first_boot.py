@@ -394,12 +394,15 @@ def listening() -> bool:
 
 
 async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
-                headless=None, busy=None) -> bool:
+                headless=None, busy=None, taken=None) -> bool:
     """First boot, from the brain's start-up: when due, hand the setup to a room session,
-    or start it with no voice (above) -- never under a conversation or a call (`busy`):
-    the setup network would take the box off the network they are on. True when this
-    started setup mode, either way. Runs as a task nobody awaits, so whatever goes wrong
-    is logged here."""
+    or start it with no voice (above) -- never under a conversation or a call: the setup
+    network would take the box off the network they are on. The voiceless start waits
+    for no conversation at all (`busy`); the room session's, for none but its own
+    (`taken`): a room in its own conversation says the welcome itself, while one on hold
+    for a call would play it into the hold and start the network under the call. True
+    when this started setup mode, either way. Runs as a task nobody awaits, so whatever
+    goes wrong is logged here."""
     global _driving, _room_came, _driven
     if not could_be_due():
         return False
@@ -418,9 +421,16 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
             room = await _a_room()
             if room is None:
                 continue
+            if not is_new():
+                return False  # online while the room session came
+            if (taken or _taken_by_another)():
+                logger.info("first boot: a call or another conversation has the box — not "
+                            "handing the room session the setup")
+                return False
             how = await _hand_over(room)
             if how != GONE:
                 return how == STARTED
+        room_answered()  # no more asks: a late dial would open a session nobody waits for
         if not is_new():
             return False
         if (busy or _box_busy)():
@@ -446,10 +456,20 @@ def _box_busy() -> bool:
     return bool(status["live"] or status["call"])
 
 
+def _taken_by_another() -> bool:
+    """Something other than the room's own session has the box: a call in or asking, a
+    conversation on hold for one, or a live Talk session (session_arbiter)."""
+    from teaport_brain import session_arbiter as arb
+    status = arb.ARBITER.status()
+    return bool(status["call"] or status["held"]
+                or (status["live"] and status["holder"] != arb.ROOM))
+
+
 async def _engine(up, sleep) -> bool:
-    """Wait for the speech engine to answer, ENGINE_WAIT_SECS at most: a room session
-    without its STT ends before it begins. Late, it goes on all the same (a box without a
-    room mic needs no engine for its setup network)."""
+    """Wait for the speech engine to answer: ENGINE_WAIT_SECS of waiting between looks at
+    most (each look takes up to a second more). A room session without its STT ends
+    before it begins. Late, it goes on all the same (a box without a room mic needs no
+    engine for its setup network)."""
     waited = 0.0
     while not await up():
         if waited >= ENGINE_WAIT_SECS:
