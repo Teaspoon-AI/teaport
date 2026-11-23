@@ -25,7 +25,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:118,854,1256#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec -->
+<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:118,855,1257#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec -->
 
 ## See the licenses on the device
 
@@ -37,13 +37,13 @@ The configuration page has an Open-source licenses link at the bottom. It opens 
 
 ## The engine's license
 
-The engine is a separate component with its own license terms. The installer shows the engine license and asks you to accept it by typing `accept`. It then asks who accepts it: your name, your email address, and whether the engine is for your personal use or under a Teaspoon AI license, whose ID it asks for.
+The engine is a separate component with its own license terms. The installer shows the engine license and asks you to accept it by typing `accept`. It then asks who accepts it: your email address, and whether the engine is for your personal use or under a Teaspoon AI license, whose ID it asks for.
 
 The installer records your acceptance with Teaspoon AI, together with the license version, the exact text you accepted, the installer's version, your device's IP address and a hash of its machine ID. The engine and its models download only after that. The installer also keeps a record in `eula-accepted.json` in the state directory, `/var/lib/teaport` by default, readable only by root. It asks again when the license version changes, when that record is missing, and when Teaspoon AI no longer has the acceptance on record, for example 7 years after it was made.
 
-To accept without the prompt, name the version you read: `--accept-eula=<version>`, with the version the license's title names, and give `--name` and `--email`, plus `--license-id` for licensed use. A bare `--accept-eula`, or another version, stops the installer.
+To accept without the prompt, name the version you read: `--accept-eula=<version>`, with the version the license's title names, and give `--email`, plus `--license-id` for licensed use. A bare `--accept-eula`, or another version, stops the installer.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:120,148-155,413-446,514-604#3cc96147; worker/src/index.js:198-204,250-255#290d30f9; install.sh:481-492#bffd8d4a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:120,147-157,415-447,515-605#15007c0b; worker/src/index.js:198-204,250-255#290d30f9; install.sh:482-493#bffd8d4a -->
 
 ## The LGPL libraries
 
