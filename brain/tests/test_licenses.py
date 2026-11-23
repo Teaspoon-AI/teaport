@@ -140,12 +140,23 @@ def test_the_documents_are_the_ones_on_the_device_and_a_long_one_is_cut():
     doc, prefix = tempdir("teaport-licenses-doc-"), tempdir("teaport-licenses-prefix-")
     (pathlib.Path(doc) / "THIRD_PARTY_LICENSES.md").write_text("third party\n")
     (pathlib.Path(prefix) / "THIRD_PARTY_NOTICES.txt").write_text("x" * (licenses.MAX_BYTES + 10))
-    got = {d["id"]: d for d in licenses.documents(doc, prefix)}
-    assert list(got) == ["third-party", "engine"], got.keys()  # no copyright file here: left out
+    static = tempdir("teaport-licenses-static-")
+    got = {d["id"]: d for d in licenses.documents(doc, prefix, static)}
+    assert list(got) == ["third-party", "engine"], got.keys()  # no copyright or font files here: left out
     assert got["third-party"]["text"] == "third party\n"
     assert got["third-party"]["path"] == os.path.join(doc, "THIRD_PARTY_LICENSES.md")
     assert "cut here" in got["engine"]["text"] and len(got["engine"]["text"]) < licenses.MAX_BYTES + 100
-    assert licenses.documents(tempdir("teaport-licenses-empty-"), tempdir("teaport-licenses-empty-")) == []
+    empty = lambda: tempdir("teaport-licenses-empty-")  # noqa: E731
+    assert licenses.documents(empty(), empty(), empty()) == []
+    # The fonts' licenses are the OFL texts the package ships beside the font files.
+    (pathlib.Path(static) / "OFL-dm-sans.txt").write_text("dm sans ofl\n")
+    (pathlib.Path(static) / "OFL-archivo.txt").write_text("archivo ofl\n")
+    fonts = {d["id"]: d for d in licenses.documents(empty(), empty(), static)}
+    assert list(fonts) == ["font-dm-sans", "font-archivo"] and fonts["font-archivo"]["text"] == "archivo ofl\n"
+    # And the real ones are there, and name the right holders.
+    real = {d["id"]: d["text"] for d in licenses.documents(empty(), empty())}
+    assert "DM Sans Project Authors" in real["font-dm-sans"] and "Archivo Project Authors" in real["font-archivo"]
+    assert all("SIL OPEN FONT LICENSE" in t for t in real.values())
 
 
 def _client(token="t0k3n"):
@@ -158,8 +169,9 @@ def _client(token="t0k3n"):
 def test_the_routes_answer_with_the_token_and_404_for_an_unknown_package():
     doc = tempdir("teaport-licenses-doc-")
     (pathlib.Path(doc) / "copyright").write_text("MIT text\n")
-    real = (licenses.DOC_DIR, licenses.PREFIX)
+    real = (licenses.DOC_DIR, licenses.PREFIX, licenses.STATIC_DIR)
     licenses.DOC_DIR, licenses.PREFIX = doc, tempdir("teaport-licenses-prefix-")
+    licenses.STATIC_DIR = tempdir("teaport-licenses-static-")
     try:
         c = _client()
         page = c.get("/licenses")  # the page is static, like the configuration page's
@@ -175,7 +187,7 @@ def test_the_routes_answer_with_the_token_and_404_for_an_unknown_package():
         assert one.status_code == 200 and one.json()["name"] == name and one.json()["text"], one.text
         assert c.get("/api/licenses/not-a-package-here", headers=auth).status_code == 404
     finally:
-        licenses.DOC_DIR, licenses.PREFIX = real
+        licenses.DOC_DIR, licenses.PREFIX, licenses.STATIC_DIR = real
 
 
 def test_the_configuration_page_links_to_it():
@@ -208,9 +220,11 @@ def test_the_command_lists_shows_a_package_and_shows_the_notices():
     (pathlib.Path(doc) / "THIRD_PARTY_LICENSES.md").write_text("the notices text\n")
     rc, out, err = _run("--notices", "--doc-dir", doc, "--prefix", tempdir("teaport-licenses-prefix-"))
     assert rc == 0 and "the notices text" in out and "THIRD_PARTY_LICENSES.md" in out, (rc, out, err)
-    rc, out, err = _run("--notices", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"))
+    rc, out, err = _run("--notices", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"),
+              "--static-dir", tempdir("teaport-licenses-e-"))
     assert rc == 1 and "not installed from the teaport-brain package" in err, (rc, err)
-    rc, out, err = _run("--notices", "--json", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"))
+    rc, out, err = _run("--notices", "--json", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"),
+              "--static-dir", tempdir("teaport-licenses-e-"))
     assert rc == 1 and out == "", (rc, out)  # the same answer with --json as without it
 
 
