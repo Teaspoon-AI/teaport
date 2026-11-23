@@ -437,6 +437,7 @@ def test_a_factory_receipt_the_server_no_longer_takes_means_the_owner_accepts():
     expired = '409 {"error": "maker_expired", "message": "this box\'s factory install record no longer gets downloads"}'
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN=expired)   # no terminal: nobody to accept
     assert rc == 1 and "no longer gets downloads" in out and "pass --accept-eula" in out, out
+    assert "accepted again" not in out, out   # nobody accepted it before
     # The record asked once, not again as if it were an acceptance of this version.
     assert [w for w, _ in _api(tmp_path)] == ["token"], _api(tmp_path)
     pathlib.Path(tmp_path, "api.log").unlink()
@@ -445,10 +446,15 @@ def test_a_factory_receipt_the_server_no_longer_takes_means_the_owner_accepts():
     r = _receipt(tmp_path)
     assert (r["method"], r["acceptance_id"]) == ("flag", "acc-0123456789"), r
     assert [w for w, _ in _api(tmp_path)] == ["accept"], _api(tmp_path)
-    # Revoked: refused outright, as a revoked acceptance is.
+    # Revoked: the maker's record says nothing about the owner, who accepts as when it ran
+    # out (a revoked acceptance, by contrast, is refused outright).
     _factory_receipt(tmp_path)
-    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='403 {"message": "this box\'s factory install record was revoked"}')
-    assert rc == 1 and "was revoked" in out, out
+    revoked = '403 {"message": "this box\'s factory install record was revoked"}'
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN=revoked)
+    assert rc == 1 and "was revoked" in out and "is to be accepted" in out and "pass --accept-eula" in out, out
+    pathlib.Path(tmp_path, "api.log").unlink()
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN=revoked, ACCEPT_EULA="1.0", **WHO)
+    assert rc == 0 and _receipt(tmp_path)["method"] == "flag" and [w for w, _ in _api(tmp_path)] == ["accept"], out
 
 
 def test_a_factory_receipt_with_the_server_down_stops_only_a_download_that_needs_it():

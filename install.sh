@@ -449,11 +449,13 @@ eula_identity() {
   fi
 }
 
-# eula_token <api> <acceptance id> — a new download token for an acceptance recorded
-# earlier, or a factory install record's (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
-# license changed, or it has no such acceptance): accept again; 2 when it cannot be asked
-# now (no answer, busy, failing). Dies for a revoked acceptance. The id gets tokens until
-# the license changes, so it goes to python in its environment, never its arguments.
+# eula_token <api> <acceptance id> [factory] — a new download token for an acceptance
+# recorded earlier, or with "factory" for a factory install record (into DL_TOKEN). Returns
+# 1 when the server will not give one for it any more (the license changed, it has no such
+# acceptance, or the factory record is past its time or revoked): accept; 2 when it cannot
+# be asked now (no answer, busy, failing). Dies for a revoked acceptance: a revoked factory
+# record says nothing about the box's owner, who may still accept. The id gets tokens, so
+# it goes to python in its environment, never its arguments.
 eula_token() {
   local out code why; out="$(mktemp)"
   code="$(api_post "$1/token" "$(TEAPORT_ACCEPTANCE_ID="$2" python3 -I -c 'import json,os
@@ -463,8 +465,12 @@ print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$o
   rm -f "$out"
   case "$code" in
     200) [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
-    409|404|400) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
-    403) die "the license server refuses this box's acceptance of the engine license${why:+: $why}" ;;
+    409|404|400|403)
+      if [ "${3:-}" = factory ]; then
+        warn "the license server no longer gives downloads for this box's factory install record (HTTP $code${why:+: $why}): the engine license is to be accepted"; return 1
+      fi
+      [ "$code" != 403 ] || die "the license server refuses this box's acceptance of the engine license${why:+: $why}"
+      warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
     *) warn "cannot get a download token from $1/token now (HTTP $code${why:+: $why})"; return 2 ;;
   esac
 }
@@ -541,7 +547,7 @@ eula_gate() {
         printf '  [dry-run] factory install record: get a download token from %s\n' "$api"; return
       fi
       local mrc=0
-      eula_token "$api" "$mid" || mrc=$?
+      eula_token "$api" "$mid" factory || mrc=$?
       if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
         EULA_API="$api" EULA_ID="$mid"
         log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"

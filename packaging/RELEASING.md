@@ -301,20 +301,25 @@ runs it is the review.
     boxes, and each gets every gated file (all of `dl/engine/` and `dl/models/`, the same
     files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
     `CHECK_TOKEN` reaches the same files. It downloads nothing itself and gets no token.
+    The station's `/provision` hands out the same records without the secret leaking, to
+    whoever can ask it: so it answers only on the boxes' USB network and only for boxes
+    the station flashed (below).
   - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (200) boxes
     are recorded in any 24 hours (a box recorded again within the day is not counted
-    again, so the cap limits made-up boxes, not records), and 20 requests a minute per IP
-    address. Each record holds its time, box, IP address and country, so records from
-    outside the factory's network, or for boxes it never built, stand out: `wrangler d1
-    execute teaport-gate --remote --command "SELECT created_at, device_id, ip, country
-    FROM maker_acceptances ORDER BY created_at DESC LIMIT 50"`. Neither brake stops one
-    holder: one record downloads everything.
+    again, so the cap limits made-up boxes, not records, nor how far the table grows), and
+    20 requests a minute per IP address. That limit is shared: the station's calls and its
+    boxes' token requests come from one address through its NAT, so a batch of boxes can
+    meet a 429, which their retries ride out. Each record holds its time, box, IP address
+    and country, so records from outside the factory's network, or for boxes it never
+    built, stand out: `wrangler d1 execute teaport-gate --remote --command "SELECT
+    created_at, device_id, ip, country FROM maker_acceptances ORDER BY created_at DESC
+    LIMIT 50"`. Neither brake stops one holder: one record downloads everything.
   - **Rotating it:** `wrangler secret put FACTORY_TOKEN` with a new value, then the
     station's copy. That stops new records; boxes already provisioned keep theirs. The
     daily cap counts from zero for the new secret. Rotate it when anyone who held it
     leaves, and on any doubt. To stop records a leak made, revoke them:
     `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP, by time, or all
-    since the leak; a revoked box's next run gets 403 and its owner has to accept). A
+    since the leak; a revoked box's next run gets no token, and its owner accepts). A
     Worker version carries the secrets it was deployed with, so a rollback (`wrangler
     rollback`, the way back above) to a version from before a rotation brings the old
     `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by redeploying a
@@ -337,13 +342,20 @@ runs it is the review.
       box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
       no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
       It calls `POST <access.api>/factory` (`Authorization: Bearer <FACTORY_TOKEN>`,
-      `{"device_id", "installer": "git:<12 hex of TEAPORT_PIN>"}`) and puts the returned
-      `acceptance_id` in its `/provision` answer (a new key in `ProvisionConfig`'s set).
-      So the station needs the internet at provisioning, as the box's install does just
-      after. When the call fails (no network, 429 from the per-IP limit or the daily cap,
-      401 or 503 for a wrong secret or setting), the station answers the box non-200, so
-      the box's own retry loop asks again later; nothing waits inside the box's 10-second
-      request.
+      `{"device_id", "installer": "git:<TEAPORT_PIN>"}`, the pin as it is) and puts the
+      returned `acceptance_id` at the top level of its `/provision` answer, beside
+      `ProvisionConfig`'s keys, not among them (`ProvisionConfig.from_payload` refuses a key
+      outside its set, so an agent baked before the change would never provision; and
+      teaport-factory's docs/09 §4 names the new key). So the station needs the internet
+      at provisioning, as the box's install does just after. Its call times out well
+      under the box's 10-second request (say 5 s). When it fails (no network, 429 from the
+      per-IP limit or the daily cap, 401 or 503 for a wrong secret or setting), the
+      station answers the box non-200, so the box's own retry loop asks again later.
+    - **Who may get one:** `/provision` hands out what downloads every gated file, so the
+      station serves it only on the boxes' USB network (bound to its address there, or a
+      firewall rule; today it listens on every interface, the factory Wi-Fi included),
+      and records a maker acceptance only for a module it flashed and has not yet
+      provisioned (today an unknown `module_serial` gets a new unit).
     - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
       marks the box provisioned for good, so a crash between the two must not leave a box
       without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
@@ -352,11 +364,13 @@ runs it is the review.
       `install.sh` reads `method` and `acceptance_id` from it; `version` is only a note.
       The receipt is never in the shared, baked image.
     - **The first-boot unit** runs an installer revision with this support (the
-      `TEAPORT_PIN` bump) and no longer sets `TEAPORT_ACCEPT_EULA`: with it set,
-      `install.sh` accepts the license instead of using the factory record, and stops on
-      a version that names no license.
+      `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
+      accepts the license instead of using the factory record, and stops on a version
+      that names no license), and runs only once the box is provisioned
+      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt.
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` (and checks the install
-      finished: a box whose install outlasts `MAKER_MAX_DAYS` needs provisioning again).
+      finished: a box whose install outlasts `MAKER_MAX_DAYS` needs provisioning again,
+      by removing its `/etc/appliance-id`, as the provisioning unit runs only without it).
       A box that ships with it would download engine updates for its owner, within the
       window, with no license accepted, recorded under the maker's id.
   - **After the factory:** the owner's acceptance (teaport#465) writes a receipt

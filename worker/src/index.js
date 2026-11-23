@@ -157,8 +157,8 @@ function makerTtl(env) {
   return Number.isSafeInteger(d) && d > 0 ? d * 86400 : null;
 }
 
-// A maker acceptance row's state at <now>: a Response refusing it, or null when it gets
-// tokens until <until> (seconds).
+// A maker acceptance row's state at <now>: {refuse: a Response refusing it}, or {until}
+// when it gets tokens until <until> (seconds).
 function makerState(env, row, now) {
   if (!row) return { refuse: fail(404, "unknown_acceptance", "no acceptance is recorded under this id: accept the license") };
   if (row.revoked_at) return { refuse: fail(403, "revoked", "this box's factory install record was revoked: contact stefano@teaspoon.tech") };
