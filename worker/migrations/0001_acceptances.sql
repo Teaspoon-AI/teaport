@@ -1,5 +1,5 @@
 -- teaport download gate: who accepted the Teaport Engine License, and what they downloaded.
--- Applied with: npx wrangler d1 migrations apply teaport-gate --remote (from worker/).
+-- Applied by .github/workflows/worker-deploy.yml before each deploy, never by hand from a branch.
 -- What each column holds, and how long it is kept: docs/engine-license-data.md.
 
 -- One row per acceptance (POST /api/accept). id is what the installer keeps in its receipt
