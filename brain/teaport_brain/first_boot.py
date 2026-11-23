@@ -226,7 +226,7 @@ async def run(session) -> bool:
         return False
     room = _Room(session)
     _offer(room)
-    started = False
+    began = False
     try:
         await room.turn
         if _finished(session):
@@ -236,12 +236,17 @@ async def run(session) -> bool:
             async def push(frame):
                 await session.task.queue_frames([frame])
             await gate.wake(push, None, why="first-boot setup", greet=False)
-        # False: setup is already asking or running here (the owner's own): the box is
-        # in setup all the same, so drive() has nothing more to do either way.
+        # False: the owner's own setup is asking or running here: drive() leaves it to
+        # them (BUSY), the boot's try spent as by any setup they start.
+        began = True
         started = await wifi.begin_first_boot()
         room.answered(STARTED if started else BUSY)
         return started
     except asyncio.CancelledError:
+        # The session ended mid-start: the start runs on (WifiSetupVoice._shielded), so
+        # the unit is on its way up -- not a session that went before it began.
+        if began:
+            room.answered(STARTED)
         raise
     except Exception:  # noqa: BLE001 — a task nobody awaits: say what went wrong
         logger.exception("first boot: could not go into setup mode")
@@ -323,8 +328,11 @@ def room_wanted() -> dict | None:
 # No room session took it: the box has no room mic that answers (no card, no bridge, a
 # room without spoken setup), and the setup network starts without a voice
 # (_start_headless): its screen shows the network's name, password and code
-# (wifi_setup.py), and its own time limit puts things back. Still one try a boot: due()
-# marked this one tried before any of this.
+# (wifi_setup.py), and its own time limit puts things back -- unless a conversation or a
+# call holds the box (a LAN with no internet reads as offline too), which it would cut
+# off its network unannounced. Still one try a boot: due() marked this one tried before
+# any of this. drive() looks once per start of the brain; a look that cannot tell
+# ("unknown": every check timed out) waits for the next.
 ENGINE_WAIT_SECS = 300.0
 ENGINE_POLL_SECS = 5.0
 ROOM_WAIT_SECS = 45.0
@@ -357,6 +365,9 @@ class _Room:
 _room: _Room | None = None
 _room_came: asyncio.Event | None = None  # drive()'s, while it waits for a room session
 _driving = False
+# drive() has been, in this process: its one look decided this boot (a look that could
+# not tell, "unknown", is not taken again before the next start of the brain).
+_driven = False
 
 
 def _offer(room: _Room) -> None:
@@ -375,20 +386,24 @@ def _withdraw(room: _Room) -> None:
 
 def listening() -> bool:
     """Should a room session offer itself to first boot (run)? While first boot could be
-    due, and while drive() is at work (which has marked this boot tried by then)."""
-    return ENABLED and is_new() and (_driving or not tried_this_boot())
+    due, and while drive() is at work (which has marked this boot tried by then): not
+    once it is done, so no room session waits on a hand-over that will not come."""
+    return ENABLED and is_new() and (_driving or not (_driven or tried_this_boot()))
 
 
 async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
-                headless=None) -> bool:
+                headless=None, busy=None) -> bool:
     """First boot, from the brain's start-up: when due, hand the setup to a room session,
-    or start it with no voice (above). True when setup mode began, either way. Runs as a
-    task nobody awaits, so whatever goes wrong is logged here."""
-    global _driving, _room_came
+    or start it with no voice (above) -- never under a conversation or a call (`busy`):
+    the setup network would take the box off the network they are on. True when this
+    started setup mode, either way. Runs as a task nobody awaits, so whatever goes wrong
+    is logged here."""
+    global _driving, _room_came, _driven
     if not could_be_due():
         return False
     if not wifi_voice.available():
         logger.info("first boot: no Wi-Fi setup unit on this box — nothing to start")
+        _driven = True
         return False
     _driving, _room_came = True, asyncio.Event()
     try:
@@ -403,8 +418,12 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
                 continue
             how = await _hand_over(room)
             if how != GONE:
-                return how in (STARTED, BUSY)
+                return how == STARTED
         if not is_new():
+            return False
+        if (busy or _box_busy)():
+            logger.info("first boot: no room session took the setup, and the box is in a "
+                        "conversation or a call — not taking it off its network")
             return False
         return await (headless or _start_headless)()
     except asyncio.CancelledError:
@@ -413,8 +432,16 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
         logger.exception("first boot: could not go into setup mode")
         return False
     finally:
-        _driving, _room_came = False, None
+        _driving, _room_came, _driven = False, None, True
         room_answered()
+
+
+def _box_busy() -> bool:
+    """A conversation is live (a room session in use, Talk, a call on hold) or a call is
+    in or asking (session_arbiter)."""
+    from teaport_brain import session_arbiter as arb
+    status = arb.ARBITER.status()
+    return bool(status["live"] or status["call"])
 
 
 async def _engine(up, sleep) -> bool:

@@ -47,8 +47,9 @@ def box(monkeypatch):
     monkeypatch.setattr(first_boot, "ROOM_WAIT_SECS", 0.05)
     monkeypatch.setattr(first_boot, "HANDOVER_SECS", 2.0)
     for name, value in (("_room", None), ("_room_came", None), ("_driving", False),
-                        ("_wanted", None)):
+                        ("_driven", False), ("_wanted", None)):
         monkeypatch.setattr(first_boot, name, value)
+    monkeypatch.setattr(first_boot, "_box_busy", lambda: False)
 
     boots = iter(range(1, 1000))
 
@@ -58,7 +59,7 @@ def box(monkeypatch):
             f.write((boot_id or f"boot-{next(boots)}") + "\n")
         with open(up, "w") as f:
             f.write(f"{uptime} 0.0\n")
-        first_boot._tried_here = False
+        first_boot._tried_here = first_boot._driven = False
     reboot()
     return SimpleNamespace(reboot=reboot, root=root)
 
@@ -335,7 +336,9 @@ def test_a_slow_or_passing_answer_is_not_offline(box):
             assert set(_run.check.timeouts) == {first_boot.CHECK_SECS}, _run.check.timeouts
             assert _run.check.asked == first_boot.READINGS
             assert not first_boot.tried_this_boot(), "an unknown answer spent the boot's try"
-        # Two answers that say so, with a timeout between them: offline.
+        # Two answers that say so, with a timeout between them: offline (the next start
+        # of the brain: this one's driver has had its look).
+        box.reboot()
         session, _ = _room()
         assert await _run(session, "limited", "", "none")
         await session.wifi._stop_following()
@@ -635,7 +638,8 @@ def _asks(monkeypatch, then=None):
 def _bridge(sessions):
     """The room mic's bridge, as far as first boot sees it: each ask it sees in
     /talk/status (first_boot.room_wanted) dialled once, and the next of `sessions` comes
-    up past its STT check (gateway_server starts first_boot.run on it)."""
+    up past its STT check -- where gateway_server starts first_boot.run on it, only while
+    first_boot.listening() (`started` holds None for a session it left out)."""
     started, seen = [], set()
 
     async def bridge():
@@ -643,7 +647,9 @@ def _bridge(sessions):
             wanted = first_boot.room_wanted()
             if wanted is not None and wanted["id"] not in seen and sessions:
                 seen.add(wanted["id"])
-                started.append(asyncio.ensure_future(first_boot.run(sessions.pop(0))))
+                session = sessions.pop(0)
+                started.append(asyncio.ensure_future(first_boot.run(session))
+                               if first_boot.listening() else None)
             await asyncio.sleep(0.005)
     return bridge, started
 
@@ -677,6 +683,7 @@ def test_the_brain_asks_the_room_mic_once_the_engine_answers(box, monkeypatch):
             wv.connectivity = _real_connectivity
         assert slept.count(first_boot.ENGINE_POLL_SECS) == 2, slept
         assert len(asks) == 1 and len(started) == 1
+        assert started[0] is not None, "the session asked for was left out (listening)"
         assert await started[0] is True
         assert session.wifi.said[0] == EN._(wv.WELCOME_TEXT), session.wifi.said
         assert session.wifi.calls == ["restart"]
@@ -689,8 +696,12 @@ def test_the_brain_asks_the_room_mic_once_the_engine_answers(box, monkeypatch):
 _real_connectivity = wv.connectivity
 
 
+class _VoicelessStart(BaseException):
+    """Not an Exception: drive() logs those and goes on, and the test would pass."""
+
+
 async def _no_headless():
-    raise AssertionError("started the setup network with no voice")
+    raise _VoicelessStart("started the setup network with no voice")
 
 
 def test_the_room_session_up_already_takes_it_without_an_ask(box, monkeypatch):
@@ -726,6 +737,7 @@ def test_a_room_that_went_before_the_hand_over_is_asked_for_again(box, monkeypat
             dialler.cancel()
             wv.connectivity = _real_connectivity
         assert len(asks) == 2 and asks[0] != asks[1], asks
+        assert None not in started, "a session asked for was left out (listening)"
         assert gone.wifi.said == [] and session.wifi.said[0] == EN._(wv.WELCOME_TEXT)
         assert await started[1] is True
         # The session that went is still waiting: its disconnect cancels it (gateway_server).
@@ -860,6 +872,111 @@ def test_a_room_session_without_spoken_setup_does_not_offer_itself(box):
         session = SimpleNamespace(wifi=None, task=_Task(), wake_gate=None)
         assert not await first_boot.run(session)
         assert first_boot._room is None
+
+        async def headless():
+            return True
+        assert not await _run(session, "none", headless=headless)
+        assert _run.headless == 1
+    asyncio.run(run())
+
+
+def test_a_session_that_ends_as_it_is_handed_the_setup_is_not_set_up(box):
+    """Taken for live, then ended before it woke to the hand-over: it starts nothing
+    (run's own check), and the brain goes on without it."""
+    async def run():
+        session, _ = _room(asleep=False)
+
+        def handed():
+            room = first_boot._room
+            return room is not None and room.session is session and room.turn.done()
+        session.task.has_finished = handed
+
+        async def headless():
+            return True
+        assert not await _run(session, "none", headless=headless)
+        assert session.wifi.said == [] and session.wifi.calls == []
+        assert _run.headless == 1
+    asyncio.run(run())
+
+
+def test_a_session_that_ends_mid_start_is_not_started_again(box):
+    """The bridge went while the room session was starting the setup network: that start
+    runs on (shielded), so neither another room session nor the voiceless start follows
+    -- two starts of the unit would fight."""
+    async def run():
+        session, _ = _room(asleep=False)
+        v = session.wifi
+        release = asyncio.Event()
+        real_run = v._run
+
+        async def slow_run(action, unit):
+            await release.wait()
+            return await real_run(action, unit)
+        v._run = slow_run
+        wv.connectivity = _online("none")
+        took = asyncio.ensure_future(first_boot.run(session))
+        await asyncio.sleep(0)
+        driver = asyncio.ensure_future(first_boot.drive(engine_up=_engine_up,
+                                                        headless=_no_headless))
+        try:
+            for _ in range(200):
+                if v.state == "running":
+                    break
+                await asyncio.sleep(0.01)
+            assert v.state == "running", "the start never began"
+            took.cancel()                        # the bridge disconnected mid-start
+            await asyncio.gather(took, return_exceptions=True)
+            assert await asyncio.wait_for(driver, 2) is True
+            release.set()
+            await asyncio.sleep(0.05)
+            assert v.calls == ["restart"], v.calls
+        finally:
+            wv.connectivity = _real_connectivity
+            await v._stop_following()
+    asyncio.run(run())
+
+
+def test_no_voiceless_setup_under_a_conversation_or_a_call(box, monkeypatch):
+    """A Talk session on a LAN with no internet (offline to the check), and no room
+    session came: the setup network would cut it off unannounced, so nothing starts."""
+    monkeypatch.setattr(first_boot, "_box_busy", lambda: True)
+
+    async def run():
+        wv.connectivity = _online("none")
+        try:
+            assert not await first_boot.drive(sleep=_quick, engine_up=_engine_up,
+                                              headless=_no_headless)
+        finally:
+            wv.connectivity = _real_connectivity
+    asyncio.run(run())
+
+
+def test_the_owners_own_setup_is_left_to_them(box):
+    """The room session is asking "do you want to set up Wi-Fi?": drive() leaves it, and
+    does not count it as setup mode begun (the owner may say no)."""
+    async def run():
+        session, _ = _room(asleep=False)
+        assert await session.wifi._heard("set up wifi")
+        took = asyncio.ensure_future(first_boot.run(session))
+        await asyncio.sleep(0)
+        wv.connectivity = _online("none")
+        try:
+            assert await first_boot.drive(engine_up=_engine_up, headless=_no_headless) is False
+        finally:
+            wv.connectivity = _real_connectivity
+        assert await took is False and session.wifi.state == "confirm"
+    asyncio.run(run())
+
+
+def test_once_the_driver_is_done_no_room_session_waits_on_it(box):
+    """A look that could not tell (every check timed out) ends this start's driver; the
+    room sessions that come later do not each wait on a hand-over that will not come."""
+    async def run():
+        session, _ = _room()
+        assert not await _run(session, "")
+        assert not first_boot.tried_this_boot() and not first_boot.listening()
+        box.reboot()                       # the next start of the brain looks again
+        assert first_boot.listening()
     asyncio.run(run())
 
 
