@@ -82,7 +82,7 @@ async function call(method, path, { body, headers = {} } = {}) {
   return res;
 }
 
-const ACCEPT = { eula_version: "1.0", eula_sha256: SHA, name: "Ada Lovelace", email: "ada@example.com",
+const ACCEPT = { eula_version: "1.0", eula_sha256: SHA, email: "ada@example.com",
                  use: "personal", device_id: "ab".repeat(16), method: "tty", installer: "git:0123456789ab" };
 
 async function accepted(extra = {}) {
@@ -95,15 +95,22 @@ const bearer = (t) => ({ authorization: `Bearer ${t}` });
 
 // --- /api/accept ---------------------------------------------------------------------------
 
+test("no name is recorded: an installer that still sends one is accepted, and the name dropped", async () => {
+  const r = await accepted({ name: "Ada Lovelace" });
+  const row = env.DB.db.prepare("SELECT * FROM acceptances WHERE id = ?").get(r.acceptance_id);
+  assert.ok(!("name" in row), "acceptances has no name column");
+  assert.ok(!Object.values(row).includes("Ada Lovelace"));
+});
+
 test("an acceptance is recorded with who, what and from where, and returns a token", async () => {
   const r = await accepted();
   assert.match(r.acceptance_id, /^[A-Za-z0-9_-]{24}$/);
   assert.match(r.token, /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
   const row = env.DB.db.prepare("SELECT * FROM acceptances").get();
   assert.equal(row.id, r.acceptance_id);
-  assert.deepEqual([row.channel, row.eula_version, row.eula_sha256, row.name, row.email, row.use_type,
+  assert.deepEqual([row.channel, row.eula_version, row.eula_sha256, row.email, row.use_type,
                     row.license_id, row.device_id, row.method, row.installer, row.ip],
-                   ["stable", "1.0", SHA, "Ada Lovelace", "ada@example.com", "personal",
+                   ["stable", "1.0", SHA, "ada@example.com", "personal",
                     null, "ab".repeat(16), "tty", "git:0123456789ab", "203.0.113.7"]);
   assert.ok(Math.abs(Date.parse(r.expires_at) - (Date.now() + TOKEN_TTL_SECS * 1000)) < 5000);
 });
@@ -130,8 +137,7 @@ test("licensed use needs a license id; personal use records none", async () => {
 });
 
 test("each field is checked", async () => {
-  for (const [field, value] of [["name", ""], ["name", "   "], ["name", "x".repeat(201)], ["name", "a\nb"],
-                                ["email", "not-an-email"], ["email", 42], ["use", "business"],
+  for (const [field, value] of [["email", "not-an-email"], ["email", 42], ["use", "business"],
                                 ["method", "env"], ["device_id", "XYZ"], ["channel", "nightly"],
                                 ["installer", undefined], ["installer", ""], ["installer", "git: x"],
                                 ["installer", "x".repeat(65)]]) {
