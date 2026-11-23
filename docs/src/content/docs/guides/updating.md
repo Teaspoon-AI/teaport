@@ -223,7 +223,7 @@ TEAPORT_MANIFEST_URL=https://get.teaspoon.tech/manifest/beta.json ./install.sh
 
 The installer takes its channel from that variable alone; `teaport update` passes the device's channel to the installer it runs. `teaport update --check` also takes `--channel stable` or `--channel beta` for one run. The brain checks every day too: set `TEAPORT_UPDATE_CHANNEL=beta` in `/etc/teaport/brain.env` to make `beta` the channel it and the command look at, and `TEAPORT_UPDATE_CHECK_SECS=0` to turn the daily check off. The brain sees `TEAPORT_MANIFEST_URL` only when it is in `/etc/teaport/brain.env`; exported in a shell, it changes the command and not the daily check.
 
-<!-- source: install.sh:144-167#6e7bbd15; brain/teaport_brain/updates.py:94-109,335-348#03e7c3dd -->
+<!-- source: install.sh:144-167#e841289d; brain/teaport_brain/updates.py:94-109,335-348#03e7c3dd -->
 
 ## Retained releases
 

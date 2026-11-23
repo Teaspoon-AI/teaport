@@ -150,9 +150,9 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] && [ -n "$2" ] || usage_err "$1 needs a value"
       case "$1" in --email) ACCEPT_EMAIL="$2" ;; *) ACCEPT_LICENSE_ID="$2" ;; esac; shift ;;
     # No name is recorded any more. Scripts written for the installers that asked for one
-    # still pass it: take it and drop it, so they keep working.
-    --name) [ $# -ge 2 ] && shift; printf 'note: --name is no longer used; ignored\n' >&2 ;;
-    --name=*) printf 'note: --name is no longer used; ignored\n' >&2 ;;
+    # still pass it: take it and drop it (noted once: installer_lock runs us twice).
+    --name) [ $# -ge 2 ] && shift; [ -n "${TEAPORT_INSTALL_LOCKED:-}" ] || printf 'note: --name is no longer used; ignored\n' >&2 ;;
+    --name=*) [ -n "${TEAPORT_INSTALL_LOCKED:-}" ] || printf 'note: --name is no longer used; ignored\n' >&2 ;;
     --email=*) ACCEPT_EMAIL="${1#*=}" ;;
     --license-id=*) ACCEPT_LICENSE_ID="${1#*=}" ;;
     --only|--rollback)

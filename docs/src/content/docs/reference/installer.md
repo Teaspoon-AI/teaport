@@ -64,7 +64,7 @@ You do not need to be root. As a regular user, the installer runs each privilege
 
 The parser exits with status 2 on an unknown argument, a missing value, or `--only` together with `--rollback`. The two component flags also take an equals form, for example `--only=brain`, and the component must be `brain` or `engine`.
 
-<!-- source: install.sh:143-173#6ffee660 -->
+<!-- source: install.sh:143-173#b0faaa82 -->
 
 | Flag | Argument | What it does |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ The parser exits with status 2 on an unknown argument, a missing value, or `--on
 | `--license-id` | A license ID | Accepts the engine license for use under that Teaspoon AI license. Without it, the acceptance is for personal use. |
 | `-h`, `--help` | None | Prints the usage text from the header comment and exits. |
 
-<!-- source: install.sh:9-66,147-157,180-187,568#425c8ea9 -->
+<!-- source: install.sh:9-66,147-157,180-187,568#07d6b395 -->
 
 A full install writes every unit and env file and restarts the engine and the brain in one step. It has no automatic rollback, but `--rollback brain` and `--rollback engine` still work after it.
 

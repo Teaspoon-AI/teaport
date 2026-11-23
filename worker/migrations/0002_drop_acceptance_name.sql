@@ -7,5 +7,7 @@
 -- or drop), and that Worker still inserts a name, so a `wrangler rollback` past this change
 -- keeps working. The Worker after it writes name = ''. A later release drops the column,
 -- once nothing can roll back to a Worker that writes it.
--- Applied by .github/workflows/worker-deploy.yml before each deploy, never by hand from a branch.
+-- Applied like every migration here: by .github/workflows/worker-deploy.yml before it deploys,
+-- or by hand from main (packaging/RELEASING.md). The schema does not change, so it is safe
+-- before or after the Worker that writes name = '' is deployed.
 UPDATE acceptances SET name = '' WHERE name <> '';
