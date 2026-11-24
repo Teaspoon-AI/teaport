@@ -300,7 +300,8 @@ runs it is the review.
   - **What a leak exposes:** whoever holds it can record maker acceptances for made-up
     boxes, and each gets every gated file (all of `dl/engine/` and `dl/models/`, the same
     files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
-    `CHECK_TOKEN` reaches the same files. It downloads nothing itself and gets no token.
+    `CHECK_TOKEN` reaches the same files. `FACTORY_TOKEN` itself downloads nothing and
+    gets no token.
     The station's `/provision` hands out the same records without the secret leaking, to
     whoever can ask it: so it answers only to the boxes' USB network (below). If the
     factory's public IP address is stable, a Cloudflare rule letting `/api/factory` in
@@ -344,24 +345,29 @@ runs it is the review.
       box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
       no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
       It calls `POST https://get.teaspoon.tech/api/factory` (`Authorization: Bearer
-      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<TEAPORT_PIN>"}`, the pin as it
-      is; the URL from its own config, not from a manifest, which would let whatever
-      publishes one decide where the secret goes) and puts the returned `acceptance_id` at
-      the top level of its `/provision` answer, beside `ProvisionConfig`'s keys, not among
-      them (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent
-      baked before the change would never provision; and teaport-factory's docs/09 §4 is
-      to name the new key). So the station needs the internet at provisioning, as the
-      box's install does just after. Its call times out well under the box's 10-second
-      request (say 5 s). When it fails (no network, 429 from the per-IP limit or a cap,
-      401 or 503 for a wrong secret or setting), the station answers the box non-200,
-      so the box's own retry loop asks again later.
+      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`, the pin of the image
+      the box runs, looked up from the request's `image_id`, not the station's own; with a
+      User-Agent of its own (it fills the record's `user_agent`, and Cloudflare's browser
+      check may refuse urllib's default); the URL from its own config, not from a
+      manifest, which would let whatever publishes one decide where the secret goes) and
+      puts the returned `acceptance_id` at the top level of its `/provision` answer,
+      beside `appliance_serial`, not inside `config` with `ProvisionConfig`'s keys
+      (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent baked
+      before the change would never provision; and teaport-factory's docs/09 §4 is to name
+      the new key). So the station needs the internet at provisioning, as the box's
+      install does just after. Its call times out well under the box's 10-second request
+      (say 5 s). When it fails (no network, 429 from the per-IP limit or a cap, 401 or 503
+      for a wrong secret or setting), the station answers the box non-200, so the box's
+      own retry loop asks again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
-      station takes it only from the boxes' USB interfaces: an input rule by interface
-      (nft `tcp dport 8080 iifname != "<the USB gadget interfaces>" drop`, in
-      `host-firewall.nft`) or `SO_BINDTODEVICE`. Binding to its USB address alone does not
-      do it: the station routes for the factory Wi-Fi (`host-nat.sh` turns on
-      forwarding), so a host there can reach 192.168.55.100 too. Today it listens on
-      every interface. (The station keeps no record of what it flashed or sealed by
+      station takes it only from the boxes' USB interfaces: an nft input rule by
+      interface, in a filter input chain in `host-firewall.nft`, on `serve`'s configured
+      port (`tcp dport <port> iifname != "<the USB interfaces, a wildcard such as enx*>"
+      drop`). Binding to its USB address does not do it: Linux takes traffic for any of
+      its addresses on any interface, so a host on the factory Wi-Fi can reach
+      192.168.55.100. Nor does `SO_BINDTODEVICE`: each box comes up as an interface of
+      its own, made again whenever the box re-enumerates. Today it listens on every
+      interface. (The station keeps no record of what it flashed or sealed by
       module, so "only modules it flashed" cannot be checked yet; if it comes to, the
       station should add it.)
     - **Where the code goes:** the Worker call and the loading of `FACTORY_TOKEN` live in
@@ -372,9 +378,11 @@ runs it is the review.
       handler refuses), and the header is set with `add_unredirected_header`: urllib
       follows a redirect of a POST and copies its headers, `Authorization` included, to
       whatever host it names.
-    - **When the Worker refuses:** after a 401 or 503 (a wrong secret or setting) the
-      station stops calling until it restarts, and after a 429 `factory_cap` it waits an
-      hour, answering boxes non-200 meanwhile: each box keeps asking every few minutes,
+    - **When the Worker refuses:** after an answer whose `error` is `bad_factory_token` or
+      `factory_misconfigured` (a wrong secret or setting) the station stops calling until
+      it restarts, and after `factory_cap` it waits an hour, answering boxes non-200
+      meanwhile; any other failure (a 5xx from Cloudflare itself, no network) is retried
+      at the box's next ask: each box keeps asking every few minutes,
       and every call shares the per-IP limit with the boxes' own token requests.
     - **Retries and provisioning again:** the station records a new maker acceptance on
       every `/provision` it answers, and never hands a stored one back: it cannot tell
@@ -389,10 +397,12 @@ runs it is the review.
       `factory_box_cap` means that box was recorded 10 times in 24 hours: look at why, as
       waiting a day is the only way past it short of a rotation; `factory_cap` is the
       daily cap.
-    - **Where it keeps `FACTORY_TOKEN`:** a file or environment only the station service's
-      account reads; never in `StationConfig`'s config (sent to every box), its event log
-      or its logs.
-    - **The box's agent** writes the receipt before it writes `/etc/appliance-id` (which
+    - **Where it keeps `FACTORY_TOKEN`:** a file of mode 0600, the operator's or root's,
+      that `factory serve` reads at startup; never the environment (the station copies
+      the operator's environment into the bake and flash commands that write box
+      images), `StationConfig`'s config (sent to every box), its event log or its logs.
+    - **The box's agent** writes the receipt atomically (a temporary file, fsync, rename,
+      fsync of the directory) before it writes `/etc/appliance-id` (which
       marks the box provisioned for good, so a crash between the two must not leave a box
       without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
       `{"method": "factory", "acceptance_id": "maker-…"}` and nothing else (no license
@@ -405,15 +415,17 @@ runs it is the review.
       `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
       accepts the license instead of using the factory record, and stops on a version
       that names no license), and runs only once the box is provisioned
-      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt; the
-      box's agent starts it once it has written `/etc/appliance-id`, as a start skipped
-      on the condition does not re-arm its timer.
+      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt. Its
+      boot start already waits for the provisioning unit, and its timer tries again 15
+      minutes after a skipped start. (If the agent is to start it sooner, it must be
+      `systemctl start --no-block`: a plain start from inside the provisioning unit, which
+      the first-boot unit is ordered after, waits on itself for ever.)
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
       it checks `setup-done`; no receipt at all passes. It refuses a box whose receipt is
       anything but a factory one
       (`"method": "factory"`): another means someone accepted the license on it at the
-      factory, in Teaspoon AI's name (to recover such a box: revoke that acceptance,
-      remove the receipt and `/etc/appliance-id`, and provision it again). It also refuses
+      factory, in Teaspoon AI's name (to recover such a box: revoke that acceptance and
+      remove the receipt; no receipt passes). It also refuses
       a box whose install has not finished. A box that ships with the receipt would
       download engine updates for its owner, within `MAKER_MAX_DAYS`, with no license
       accepted, recorded under the maker's id.
