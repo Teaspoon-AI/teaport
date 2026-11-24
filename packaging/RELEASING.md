@@ -302,8 +302,9 @@ runs it is the review.
     files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
     `CHECK_TOKEN` reaches the same files. It downloads nothing itself and gets no token.
     The station's `/provision` hands out the same records without the secret leaking, to
-    whoever can ask it: so it answers only on the boxes' USB network and only for boxes
-    the station flashed (below).
+    whoever can ask it: so it answers only to the boxes' USB network (below). If the
+    factory's public IP address is stable, a Cloudflare rule letting `/api/factory` in
+    only from it would make a leaked secret close to useless elsewhere (not set up).
   - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (200) boxes
     are recorded in any 24 hours (a box recorded again within the day is not counted
     again, so the cap limits made-up boxes; records for one box are limited to 10 in 24
@@ -355,11 +356,26 @@ runs it is the review.
       401 or 503 for a wrong secret or setting), the station answers the box non-200,
       so the box's own retry loop asks again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
-      station serves it only on the boxes' USB network (bound to its address there, or a
-      firewall rule; today it listens on every interface, the factory Wi-Fi included):
-      there, only the box being provisioned, on the USB link, can ask. (The station keeps
-      no record of what it flashed or sealed by module today, so "only modules it
-      flashed" cannot be checked yet; if it comes to, the station should add it.)
+      station takes it only from the boxes' USB interfaces: an input rule by interface
+      (nft `tcp dport 8080 iifname != "<the USB gadget interfaces>" drop`, in
+      `host-firewall.nft`) or `SO_BINDTODEVICE`. Binding to its USB address alone does not
+      do it: the station routes for the factory Wi-Fi (`host-nat.sh` turns on
+      forwarding), so a host there can reach 192.168.55.100 too. Today it listens on
+      every interface. (The station keeps no record of what it flashed or sealed by
+      module, so "only modules it flashed" cannot be checked yet; if it comes to, the
+      station should add it.)
+    - **Where the code goes:** the Worker call and the loading of `FACTORY_TOKEN` live in
+      the station's code (`station_api.py`), never in `device_provision.py` or anything it
+      imports: that module is baked verbatim into every box's image (`agent_fileset`).
+    - **Sending the secret safely:** the URL must be `https://` (the station refuses
+      anything else at startup), redirects are not followed (an opener whose redirect
+      handler refuses), and the header is set with `add_unredirected_header`: urllib
+      follows a redirect of a POST and copies its headers, `Authorization` included, to
+      whatever host it names.
+    - **When the Worker refuses:** after a 401 or 503 (a wrong secret or setting) the
+      station stops calling until it restarts, and after a 429 `factory_cap` it waits an
+      hour, answering boxes non-200 meanwhile: each box keeps asking every few minutes,
+      and every call shares the per-IP limit with the boxes' own token requests.
     - **Retries and provisioning again:** the station records a new maker acceptance on
       every `/provision` it answers, and never hands a stored one back: it cannot tell
       whether a stored one still stands (revoked, or near its end), nor a box retrying
@@ -389,9 +405,12 @@ runs it is the review.
       `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
       accepts the license instead of using the factory record, and stops on a version
       that names no license), and runs only once the box is provisioned
-      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt.
+      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt; the
+      box's agent starts it once it has written `/etc/appliance-id`, as a start skipped
+      on the condition does not re-arm its timer.
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
-      it checks `setup-done`. It refuses a box whose receipt is anything but a factory one
+      it checks `setup-done`; no receipt at all passes. It refuses a box whose receipt is
+      anything but a factory one
       (`"method": "factory"`): another means someone accepted the license on it at the
       factory, in Teaspoon AI's name (to recover such a box: revoke that acceptance,
       remove the receipt and `/etc/appliance-id`, and provision it again). It also refuses
