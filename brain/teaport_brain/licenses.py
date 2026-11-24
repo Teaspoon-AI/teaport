@@ -3,9 +3,10 @@
 One source for the two places that show it: the Settings page (config_ui: GET /licenses,
 /api/licenses) and `teaport licenses` (main, run under the brain's own venv like
 `teaport update --check`). Nothing here is a copy of a license text: the documents are the
-files the teaport-brain package installs under /usr/share/doc/teaport-brain/ and the
-engine's notices in the install root, and a Python package's text is whatever license files
-it ships in its .dist-info directory.
+files the teaport-brain package installs under /usr/share/doc/teaport-brain/, the engine's
+notices in the install root, and the font licenses the brain package carries in its own
+static/ directory beside the fonts; a Python package's text is whatever license files it
+ships in its .dist-info directory.
 """
 from __future__ import annotations
 
@@ -52,7 +53,9 @@ def _read(path: str) -> str | None:
 def documents(doc_dir: str | None = None, prefix: str | None = None,
               static_dir: str | None = None) -> list[dict]:
     """The license documents this device has, each {id, title, path, text}. A file that is
-    not there (a brain not installed from the package, an engine not installed) is left out."""
+    not there (a brain not installed from the package has no /usr/share/doc files; an engine
+    not installed has no notices) is left out. The font licenses are in the brain package
+    itself, so any brain that has the code has them."""
     where = {"doc": doc_dir or DOC_DIR, "prefix": prefix or PREFIX, "static": static_dir or STATIC_DIR}
     out = []
     for key, title, base, name in DOCUMENTS:
@@ -186,8 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.notices:
         docs = documents(a.doc_dir, a.prefix, a.static_dir)
         if not docs:
-            print(f"no license documents found in {a.doc_dir} or {a.prefix} "
-                  "(this brain was not installed from the teaport-brain package)", file=sys.stderr)
+            print(f"no license documents found in {a.doc_dir}, {a.prefix} or {a.static_dir}",
+                  file=sys.stderr)
             return 1
         if a.json:
             print(json.dumps(docs, indent=2))

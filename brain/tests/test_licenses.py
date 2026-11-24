@@ -222,7 +222,7 @@ def test_the_command_lists_shows_a_package_and_shows_the_notices():
     assert rc == 0 and "the notices text" in out and "THIRD_PARTY_LICENSES.md" in out, (rc, out, err)
     rc, out, err = _run("--notices", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"),
               "--static-dir", tempdir("teaport-licenses-e-"))
-    assert rc == 1 and "not installed from the teaport-brain package" in err, (rc, err)
+    assert rc == 1 and "no license documents found" in err, (rc, err)
     rc, out, err = _run("--notices", "--json", "--doc-dir", tempdir("teaport-licenses-e-"), "--prefix", tempdir("teaport-licenses-e-"),
               "--static-dir", tempdir("teaport-licenses-e-"))
     assert rc == 1 and out == "", (rc, out)  # the same answer with --json as without it

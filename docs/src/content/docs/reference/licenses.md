@@ -25,13 +25,13 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:118,854,1256#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec -->
+<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:118,854,1256#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec; brain/pyproject.toml:119-120#e59aebe7; brain/teaport_brain/licenses.py:22-32#c3bc2c75; packaging/build-deb.sh:38#636d2d54; THIRD_PARTY_LICENSES.md:121-139#490bc890; brain/teaport_brain/config_ui.py:483-498#baf6f752; brain/teaport_brain/static/licenses.html:13#2e66ca6d -->
 
 ## See the licenses on the device
 
 The configuration page has an Open-source licenses link at the bottom. It opens a page with the notices the package installs, including the two font licenses, and the Python packages in the brain with each one's version and license. Select a package to read its license text. The page is `/settings/licenses` on the Settings site and `http://127.0.0.1:7861/licenses` on the device itself. Like the configuration page, it loads its data with the Settings session or the token.
 
-<!-- source: brain/teaport_brain/static/config.html:389#8731c6bc; brain/teaport_brain/config_ui.py:501-512#526a7abf; brain/teaport_brain/gateway_server.py:710#db147ffa; brain/teaport_brain/config_ui.py:102-118#6e4abba8 -->
+<!-- source: brain/teaport_brain/static/config.html:389#8731c6bc; brain/teaport_brain/config_ui.py:501-512#526a7abf; brain/teaport_brain/gateway_server.py:710#db147ffa; brain/teaport_brain/config_ui.py:102-118#6e4abba8; brain/teaport_brain/licenses.py:26-32#71f1da32 -->
 
 `teaport licenses` shows the same on the command line. See the [teaport licenses](/reference/cli/#teaport-licenses) reference.
 
