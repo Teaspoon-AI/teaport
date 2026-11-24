@@ -51,16 +51,21 @@ way back), `key` (which file),
 ## What is not stored
 
 No name, from the Worker deployed with migration `0002_drop_acceptance_name.sql`. Earlier
-Workers stored the name the installer asks for; counsel advised dropping it, since an
-unverified typed name adds nothing to the email, the use and the accepted text's hash.
+installers asked for one and earlier Workers stored it; counsel advised dropping it, since
+an unverified typed name adds nothing to the email, the use and the accepted text's hash.
 
-- That Worker discards any name an installer sends. `install.sh` on `main` still asks for
-  one until the following change stops it; no release tag's installer sends one.
+- That Worker discards any name an installer sends. `install.sh` no longer asks for one or
+  sends one; `--name` and `TEAPORT_NAME` are taken and ignored, so older scripts keep
+  working. A box that cloned `main` before this change still sends one, which is discarded.
+  No release tag's installer has the acceptance flow.
 - 0002 blanks the names stored before it. They stay recoverable through D1 Time Travel
   until its restore window has passed (30 days on Workers Paid, 7 on Free).
 - A rollback to an earlier Worker stores names again, and D1 records 0002 as applied, so it
   will not run again by itself. After rolling forward, blank them by hand:
-  `UPDATE acceptances SET name = '' WHERE name <> ''`.
+  `UPDATE acceptances SET name = '' WHERE name <> ''`. Since this installer sends no name,
+  such a rollback also makes every fresh install fail: do not roll back past that Worker.
+- A box set up before this change may still hold the name in its own receipt (On the box,
+  below); that copy is the owner's and never leaves the box.
 
 Also not stored: the box's hostname or local user, the manifest, the request bodies of downloads, and the
 token itself (it is signed, not stored). A new token for an existing acceptance
@@ -70,8 +75,8 @@ token itself (it is signed, not stored). A new token for an existing acceptance
 
 `install.sh` keeps a copy in `/var/lib/teaport/eula-accepted.json`, readable only by root
 (mode 600). It holds the version, the hash, the box's timestamp, the local run user, the
-method, the acceptance `id`, the server's URL, the name, the email, the use, and the license
-ID for licensed use. Next to it, the installer keeps the accepted text as
+method, the acceptance `id`, the server's URL, the email, the use, and the license ID for
+licensed use. Next to it, the installer keeps the accepted text as
 `EULA-v<version>.txt`. Neither file leaves the box, apart from the `id`, which the box sends
 to get a new token.
 
@@ -88,8 +93,8 @@ to get a new token.
   request's headers are among them: the client's IP address, the user agent, and, on a
   download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
   it say whether the request body is recorded. The Worker itself writes nothing to the
-  logs (it has no `console.log`); the email (and, from `install.sh` on `main` until it stops asking, a name the Worker
-  discards) travel only in the body of
+  logs (it has no `console.log`); the email (and, from an older `install.sh`, a name the
+  Worker discards) travel only in the body of
   `POST /api/accept`. Setting `invocation_logs = false` under `[observability.logs]` turns
   the invocation logs off.
 

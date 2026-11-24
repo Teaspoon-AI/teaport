@@ -87,7 +87,7 @@ def _script(tmp, body, **env):
     head = STUBS + FAKE_CURL + "".join(_fn(f) for f in FNS)
     head += ('HERE="${HERE:-$T}"; STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
              'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID=""\n'
-             'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_NAME="${ACCEPT_NAME:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
+             'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
              'ACCEPT_LICENSE_ID="${ACCEPT_LICENSE_ID:-}"\n')
     # TMPDIR: the functions' own mktemp files (the manifest, the license text) land in the
     # test's dir, removed with it. ACCEPT_*: only what a test passes (GitHub's runner images
@@ -116,7 +116,7 @@ def _receipt(tmp):
 
 
 GATE = 'fetch_manifest; eula_gate; echo "TOKEN=$DL_TOKEN"\n'
-WHO = {"ACCEPT_NAME": "Ada Lovelace", "ACCEPT_EMAIL": "ada@example.com"}
+WHO = {"ACCEPT_EMAIL": "ada@example.com"}
 
 
 def test_accepting_by_flag_records_who_and_what_with_teaspoon_ai():
@@ -130,13 +130,13 @@ def test_accepting_by_flag_records_who_and_what_with_teaspoon_ai():
     device = body.pop("device_id")
     assert re.fullmatch(r"[0-9a-f]{64}", device) or device == "", device
     assert body == {"channel": "stable", "eula_version": "1.0", "eula_sha256": SHA, "method": "flag",
-                    "name": "Ada Lovelace", "email": "ada@example.com", "use": "personal",
+                    "email": "ada@example.com", "use": "personal",
                     "installer": "unknown"}, body   # HERE: the test dir, not a checkout
     r = _receipt(tmp_path)
-    assert {k: r[k] for k in ("version", "sha256", "method", "acceptance_id", "recorded_with", "name", "email", "use")} == {
+    assert {k: r[k] for k in ("version", "sha256", "method", "acceptance_id", "recorded_with", "email", "use")} == {
         "version": "1.0", "sha256": SHA, "method": "flag", "acceptance_id": "acc-0123456789",
-        "recorded_with": API, "name": "Ada Lovelace", "email": "ada@example.com", "use": "personal"}, r
-    assert "license_id" not in r
+        "recorded_with": API, "email": "ada@example.com", "use": "personal"}, r
+    assert "license_id" not in r and "name" not in r and "name" not in body
     sudo = pathlib.Path(tmp_path, "sudo.log").read_text()
     assert sudo.index("install -m 0600 /dev/null") < sudo.index("tee " + str(tmp_path / "state/eula-accepted.json")), sudo
     assert pathlib.Path(tmp_path, "state/EULA-v1.0.txt").read_text() == LICENSE
@@ -205,8 +205,8 @@ def test_without_a_terminal_it_needs_the_flag_and_who_accepts():
     _manifest(tmp_path)
     rc, out = _run(tmp_path, GATE)
     assert rc == 1 and "pass --accept-eula=<its version>" in out, out
-    rc, out = _run(tmp_path, GATE, ACCEPT_EULA="1.0", ACCEPT_NAME="Ada Lovelace")
-    assert rc == 1 and "needs who accepts it: --name and --email" in out, out
+    rc, out = _run(tmp_path, GATE, ACCEPT_EULA="1.0")
+    assert rc == 1 and "needs who accepts it: --email" in out, out
     assert _api(tmp_path) == []
 
 
@@ -310,7 +310,7 @@ def test_on_a_terminal_it_shows_the_license_then_asks_who_and_how():
     pid, fd = pty.fork()
     if pid == 0:
         os.execve("/bin/bash", ["bash", "-c", script], env)
-    answers = [("read the license", "\n"), ("Type \"accept\"", "accept\n"), ("full name", "Ada Lovelace\n"),
+    answers = [("read the license", "\n"), ("Type \"accept\"", "accept\n"),
                ("email address", "ada@example.com\n"), ("1 or 2", "3\n"), ("1 or 2", "2\n"),
                ("license id", "TS-7\n")]
     seen, asked, deadline = "", [], time.time() + 20
@@ -333,19 +333,28 @@ def test_on_a_terminal_it_shows_the_license_then_asks_who_and_how():
     assert os.waitstatus_to_exitcode(status) == 0, seen
     assert "The terms." in seen and "TOKEN=tok-first" in seen, seen
     [(_, body)] = _api(tmp_path)
-    assert (body["method"], body["name"], body["email"], body["use"], body["license_id"]) == \
-        ("tty", "Ada Lovelace", "ada@example.com", "licensed", "TS-7"), body
+    assert (body["method"], body["email"], body["use"], body["license_id"]) == \
+        ("tty", "ada@example.com", "licensed", "TS-7"), body
+    assert "name" not in body and "full name" not in seen, seen
 
 
 
 def test_the_parser_wants_a_version_and_values():
     for args, want in ((["--accept-eula"], "--accept-eula needs the license's version: --accept-eula=<version>"),
                        (["--accept-eula="], "--accept-eula needs the license's version"),
-                       (["--name"], "--name needs a value"), (["--email", ""], "--email needs a value")):
+                       (["--license-id"], "--license-id needs a value"), (["--email", ""], "--email needs a value")):
         p = subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True)
         assert p.returncode == 2 and want in p.stderr, (args, p.stderr)
     p = subprocess.run(["bash", str(INSTALL), "--help"], capture_output=True, text=True)
-    assert "--accept-eula=<version> --name <name> --email <email>" in p.stdout, p.stdout
+    assert "--accept-eula=<version> --email <email>" in p.stdout, p.stdout
+
+
+def test_a_name_from_an_older_script_is_taken_and_dropped():
+    # Scripts written when the installer asked for a name still pass --name: they must keep
+    # working, and the name must go nowhere.
+    for args in (["--name", "Ada Lovelace", "--help"], ["--name=Ada Lovelace", "--help"]):
+        p = subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True)
+        assert p.returncode == 0 and "--name is no longer used" in p.stderr, (args, p.stderr)
 
 
 
@@ -394,7 +403,7 @@ def test_a_part_left_whole_is_taken_and_one_past_the_end_starts_again():
 def test_the_acceptance_id_and_who_accepted_never_reach_a_command_line():
     for fn in ("eula_token", "eula_record", "eula_gate"):
         body = _fn(fn)
-        for secret in ('"$2")', '"$ACCEPTANCE_ID" "', '"$ACCEPT_NAME" "', '"$ACCEPT_EMAIL" "'):
+        for secret in ('"$2")', '"$ACCEPTANCE_ID" "', '"$ACCEPT_EMAIL" "'):
             assert secret not in body.replace('TEAPORT_ACCEPTANCE_ID="$2"', ""), (fn, secret)
 
 
