@@ -369,20 +369,24 @@ runs it is the review.
       again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station takes it only from the boxes' USB interfaces: an nft input rule by
-      interface, in a filter input chain in `host-firewall.nft`, on `serve`'s configured
-      port (`iifname "lo" accept`, then `tcp dport <port> iifname != "tpbox*" drop`, with
-      the boxes' interfaces named under that prefix by a udev rule on NVIDIA's USB ids,
-      such as `ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020", NAME="tpbox%n"`, so a
-      USB uplink never matches; not a `.link` file, whose `Name=` names one interface
-      only, while several boxes are attached at once), and `factory serve` refuses to
-      start unless that rule covers its port (reading the ruleset needs `sudo nft list
-      ruleset`). Binding to its USB address does not do it: Linux takes traffic for any of
-      its addresses on any interface, so a host on the factory Wi-Fi can reach
-      192.168.55.100. Nor does `SO_BINDTODEVICE`: each box comes up as an interface of its
-      own, made again whenever the box re-enumerates. Today it listens on every interface.
-      (The station keeps no record of what it flashed or sealed by module, so "only
-      modules it flashed" cannot be checked yet; if it comes to, the station should add
-      it.)
+      interface, in a filter input chain in `host-firewall.nft` (`table inet`, so IPv6 is
+      covered too; renaming the interfaces away from `usbN` also means updating what names
+      them, such as the NetworkManager profile for 192.168.55.100), on `serve`'s
+      configured port (`iifname "lo" accept`, then `tcp dport <port> iifname != "tpbox*"
+      drop`, with the boxes' interfaces named under that prefix by a udev rule on NVIDIA's
+      USB ids, such as `ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020",
+      NAME="tpbox$attr{ifindex}"` (unique while the station runs: `%n` is the kernel
+      name's number, `usb0` and `usb1` for every box, so a second box's rename would
+      collide and the rule would drop it), so a USB uplink never matches; not a `.link`
+      file, whose `Name=` names one interface only, while several boxes are attached at
+      once), and `factory serve` refuses to start unless that rule covers its port
+      (reading the ruleset needs `sudo nft list ruleset`). Binding to its USB address does
+      not do it: Linux takes traffic for any of its addresses on any interface, so a host
+      on the factory Wi-Fi can reach 192.168.55.100. Nor does `SO_BINDTODEVICE`: each box
+      comes up as an interface of its own, made again whenever the box re-enumerates.
+      Today it listens on every interface. (The station keeps no record of what it flashed
+      or sealed by module, so "only modules it flashed" cannot be checked yet; if it comes
+      to, the station should add it.)
     - **Where the code goes:** the Worker call and the loading of `FACTORY_TOKEN` live in
       the station's code (`station_api.py`), never in `device_provision.py` or anything it
       imports: that module is baked verbatim into every box's image (`agent_fileset`).
@@ -393,10 +397,11 @@ runs it is the review.
       whatever host it names.
     - **When the Worker refuses:** after an answer whose `error` is `bad_factory_token` or
       `factory_misconfigured` (a wrong secret or setting) the station stops calling until
-      it restarts, and after `factory_cap` it waits an hour, answering boxes non-200
-      meanwhile; any other failure (a 5xx from Cloudflare itself, no network) is retried
-      at the box's next ask: each box keeps asking every few minutes,
-      and every call shares the per-IP limit with the boxes' own token requests.
+      it restarts (so after fixing the Worker's settings, restart it too), and after
+      `factory_cap` it waits an hour, answering boxes non-200 meanwhile; any other failure
+      (a 5xx from Cloudflare itself, no network) is retried at the box's next ask: each
+      box keeps asking every few minutes, and every call shares the per-IP limit with the
+      boxes' own token requests.
     - **Retries and provisioning again:** the station records a new maker acceptance on
       every `/provision` it answers, and never hands a stored one back: it cannot tell
       whether a stored one still stands (revoked, or near its end), nor a box retrying

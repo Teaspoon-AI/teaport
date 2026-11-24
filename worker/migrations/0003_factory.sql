@@ -6,7 +6,7 @@
 -- One row each time the factory station provisions a box (POST /api/factory; a box
 -- provisioned again gets a new one): Teaspoon AI installing
 -- its own software on its own hardware, not anyone's acceptance of the license (the box's
--- owner is to accept it at setup, teaport#465). The station writes id into the box's receipt;
+-- owner is to accept it at setup, teaport#465). The box's agent writes id into its receipt;
 -- install.sh gets download tokens with it (POST /api/token) until it is MAKER_MAX_DAYS old.
 -- A download with one is a downloads row with acceptance_id = this id.
 CREATE TABLE maker_acceptances (

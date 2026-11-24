@@ -79,7 +79,7 @@ The parser exits with status 2 on an unknown argument, a missing value, or `--on
 | `--license-id` | A license ID | Accepts the engine license for use under that Teaspoon AI license. Without it, the acceptance is for personal use. |
 | `-h`, `--help` | None | Prints the usage text from the header comment and exits. |
 
-<!-- source: install.sh:9-69,150-160,183-190,602#b283fe06 -->
+<!-- source: install.sh:9-69,150-160,183-190,602#42e94600 -->
 
 A full install writes every unit and env file and restarts the engine and the brain in one step. It has no automatic rollback, but `--rollback brain` and `--rollback engine` still work after it.
 

@@ -63,8 +63,8 @@
 # $STATE/eula-accepted.json, so a later run gets a new token without asking again until the
 # license changes. Without a terminal, --accept-eula=<version> accepts it: the version must
 # be the one the license's title names, and --email (and --license-id for licensed use)
-# says who accepts it. A box the factory installed (teaport#464) has a receipt the factory
-# station wrote instead ("method": "factory"): Teaspoon AI's record for installing its own
+# says who accepts it. A box the factory installed (teaport#464) has a receipt its factory
+# provisioning wrote instead ("method": "factory"): Teaspoon AI's record for installing its own
 # box, no one's acceptance. Its downloads need no prompt while the license server still
 # takes that record; after, the box's owner accepts as above.
 #

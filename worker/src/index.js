@@ -26,8 +26,8 @@
 //                      -> {acceptance_id, expires_at}: the factory station's, as it
 //                      provisions a box (teaport#464). Teaspoon AI installs its own software
 //                      on its own hardware, so this is no one's acceptance of the license:
-//                      the box's owner is to accept it at setup (teaport#465). The station
-//                      writes the id into the box's receipt, and install.sh's first-boot run
+//                      the box's owner is to accept it at setup (teaport#465). The box's
+//                      agent writes the id into its receipt, and install.sh's first-boot run
 //                      gets tokens with it. One row each time (a box provisioned again gets
 //                      a new one); at most FACTORY_DAILY_MAX boxes, and MAKER_PER_BOX_DAY
 //                      records a box, in any 24 hours.
@@ -536,9 +536,13 @@ export async function expire(env, now) {
   // finds them (docs/engine-license-data.md: access and erasure). Downloads first, so the
   // subquery still sees the acceptances; a run cut short between the two finishes tomorrow.
   await env.DB.prepare(
-    `DELETE FROM downloads WHERE at < ?1 OR acceptance_id IN (SELECT id FROM acceptances WHERE created_at < ?1)
-       OR acceptance_id IN (SELECT id FROM maker_acceptances WHERE created_at < ?1)`,
+    "DELETE FROM downloads WHERE at < ?1 OR acceptance_id IN (SELECT id FROM acceptances WHERE created_at < ?1)",
   ).bind(cutoff).run();
   await env.DB.prepare("DELETE FROM acceptances WHERE created_at < ?1").bind(cutoff).run();
+  // The factory's (migrations/0003) the same way, apart, so the statements above never
+  // depend on its table.
+  await env.DB.prepare(
+    "DELETE FROM downloads WHERE acceptance_id IN (SELECT id FROM maker_acceptances WHERE created_at < ?1)",
+  ).bind(cutoff).run();
   await env.DB.prepare("DELETE FROM maker_acceptances WHERE created_at < ?1").bind(cutoff).run();
 }

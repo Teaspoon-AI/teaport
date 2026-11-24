@@ -411,7 +411,7 @@ MAKER_ID = "maker-" + "A" * 24
 
 
 def _factory_receipt(tmp, version="1.0"):
-    """The receipt the factory station writes into a box it provisions (teaport#464)."""
+    """The receipt a box's factory agent writes as it provisions (teaport#464)."""
     (tmp / "state").mkdir(exist_ok=True)
     (tmp / "state/eula-accepted.json").write_text(json.dumps(
         {"version": version, "method": "factory", "acceptance_id": MAKER_ID, "recorded_with": API}))
