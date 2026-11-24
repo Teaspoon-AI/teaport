@@ -318,20 +318,21 @@ runs it is the review.
     created_at, device_id, ip, country FROM maker_acceptances ORDER BY created_at DESC
     LIMIT 50"`. Neither brake stops one holder: one record downloads everything.
   - **Rotating it:** `wrangler secret put FACTORY_TOKEN` with a new value, then the
-    station's copy. That stops new records; boxes already provisioned keep theirs. The
-    daily cap counts from zero for the new secret. Rotate it when anyone who held it
-    leaves, and on any doubt. To stop records a leak made, revoke them:
-    `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP, by time, or all
-    since the leak; a revoked box's next run gets no token, and its owner accepts). A
-    Worker version carries the secrets it was deployed with, so a rollback (`wrangler
-    rollback`, the way back above) to a version from before a rotation brings the old
-    `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by redeploying a
-    fixed main and then `secret put` (a plain `secret put` is refused while the deployed
-    version is not the latest), or with `wrangler versions upload` from the rolled-back
-    commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler versions deploy
-    <the id that last command printed>@100%`. A rollback to a Worker from before the
-    factory kind refuses every maker acceptance (and its retention cron leaves them
-    alone) until main is deployed again.
+    station's copy, and restart `factory serve`, which reads it at startup (stripping the
+    trailing newline `openssl rand -hex 32 > file` leaves). That stops new records; boxes
+    already provisioned keep theirs. The daily cap counts from zero for the new secret.
+    Rotate it when anyone who held it leaves, and on any doubt. To stop records a leak
+    made, revoke them: `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP,
+    by time, or all since the leak; a revoked box's next run gets no token, and its owner
+    accepts). A Worker version carries the secrets it was deployed with, so a rollback
+    (`wrangler rollback`, the way back above) to a version from before a rotation brings
+    the old `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by
+    redeploying a fixed main and then `secret put` (a plain `secret put` is refused while
+    the deployed version is not the latest), or with `wrangler versions upload` from the
+    rolled-back commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler
+    versions deploy <the id that last command printed>@100%`. A rollback to a Worker from
+    before the factory kind refuses every maker acceptance (and its retention cron leaves
+    them alone) until main is deployed again.
   - **Turning it off:** `wrangler secret delete FACTORY_TOKEN`. The factory then records
     nothing until a new one is set and on the station; rotate instead to keep it going.
     Never fall back to an ordinary acceptance in Teaspoon AI's name: it records the
@@ -345,31 +346,36 @@ runs it is the review.
       box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
       no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
       It calls `POST https://get.teaspoon.tech/api/factory` (`Authorization: Bearer
-      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`, the pin of the image
-      the box runs, looked up from the request's `image_id`, not the station's own; with a
-      User-Agent of its own (it fills the record's `user_agent`, and Cloudflare's browser
-      check may refuse urllib's default); the URL from its own config, not from a
-      manifest, which would let whatever publishes one decide where the secret goes) and
-      puts the returned `acceptance_id` at the top level of its `/provision` answer,
-      beside `appliance_serial`, not inside `config` with `ProvisionConfig`'s keys
-      (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent baked
-      before the change would never provision; and teaport-factory's docs/09 §4 is to name
-      the new key). So the station needs the internet at provisioning, as the box's
-      install does just after. Its call times out well under the box's 10-second request
-      (say 5 s). When it fails (no network, 429 from the per-IP limit or a cap, 401 or 503
-      for a wrong secret or setting), the station answers the box non-200, so the box's
-      own retry loop asks again later.
+      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`, the pin the box's own
+      agent reports in its `/provision` request (its baked `TEAPORT_PIN`; the station
+      checks it is hex), not the station's own, as an `image_id` does not tell bakes
+      apart; with a User-Agent of its own (it fills the record's `user_agent`, and
+      Cloudflare's browser check may refuse urllib's default); the URL from its own
+      config, not from a manifest, which would let whatever publishes one decide where the
+      secret goes) and puts the returned `acceptance_id` at the top level of its
+      `/provision` answer, beside `appliance_serial`, not inside `config` with
+      `ProvisionConfig`'s keys (`ProvisionConfig.from_payload` refuses a key outside its
+      set, so an agent baked before the change would never provision; and
+      teaport-factory's docs/09 §4 is to name the new key). So the station needs the
+      internet at provisioning, as the box's install does just after. Its call has an
+      overall deadline well under the box's 10-second request (say 5 s, the call in a
+      thread joined with a timeout), as urllib's `timeout` bounds each socket step, not
+      the call, and not DNS. When it fails (no network, 429 from the per-IP limit or a
+      cap, 401 or 503 for a wrong secret or setting), the station answers the box non-200,
+      so the box's own retry loop asks again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station takes it only from the boxes' USB interfaces: an nft input rule by
       interface, in a filter input chain in `host-firewall.nft`, on `serve`'s configured
-      port (`tcp dport <port> iifname != "<the USB interfaces, a wildcard such as enx*>"
-      drop`). Binding to its USB address does not do it: Linux takes traffic for any of
-      its addresses on any interface, so a host on the factory Wi-Fi can reach
-      192.168.55.100. Nor does `SO_BINDTODEVICE`: each box comes up as an interface of
-      its own, made again whenever the box re-enumerates. Today it listens on every
-      interface. (The station keeps no record of what it flashed or sealed by
-      module, so "only modules it flashed" cannot be checked yet; if it comes to, the
-      station should add it.)
+      port (`iifname "lo" accept`, then `tcp dport <port> iifname != "<the boxes'
+      interfaces>" drop`; name those with a `.link` file on NVIDIA's USB vendor id, 0955,
+      so a USB uplink never matches), and `factory serve` refuses to start unless that
+      rule covers its port. Binding to its USB address does not do it: Linux takes traffic
+      for any of its addresses on any interface, so a host on the factory Wi-Fi can reach
+      192.168.55.100. Nor does `SO_BINDTODEVICE`: each box comes up as an interface of its
+      own, made again whenever the box re-enumerates. Today it listens on every interface.
+      (The station keeps no record of what it flashed or sealed by module, so "only
+      modules it flashed" cannot be checked yet; if it comes to, the station should add
+      it.)
     - **Where the code goes:** the Worker call and the loading of `FACTORY_TOKEN` live in
       the station's code (`station_api.py`), never in `device_provision.py` or anything it
       imports: that module is baked verbatim into every box's image (`agent_fileset`).
@@ -398,19 +404,22 @@ runs it is the review.
       waiting a day is the only way past it short of a rotation; `factory_cap` is the
       daily cap.
     - **Where it keeps `FACTORY_TOKEN`:** a file of mode 0600, the operator's or root's,
-      that `factory serve` reads at startup; never the environment (the station copies
-      the operator's environment into the bake and flash commands that write box
-      images), `StationConfig`'s config (sent to every box), its event log or its logs.
+      that `factory serve` reads at startup; never the environment (the station copies the
+      operator's environment into the bake and flash commands that write box images),
+      `StationConfig`'s config (sent to every box), its event log or its logs. Nor does it
+      store or log the maker ids it passes on (each downloads every gated file while it
+      stands): a prefix at most.
     - **The box's agent** writes the receipt atomically (a temporary file, fsync, rename,
-      fsync of the directory) before it writes `/etc/appliance-id` (which
-      marks the box provisioned for good, so a crash between the two must not leave a box
-      without one): `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600,
-      `{"method": "factory", "acceptance_id": "maker-…"}` and nothing else (no license
-      version, which would read as an acceptance of it; no name or email). An answer
-      without an `acceptance_id`, or with one not matching `^maker-[A-Za-z0-9_-]{24}$`
-      (a station from before the change, say), is a failed attempt: the agent writes
-      nothing, not `/etc/appliance-id` either, and asks again. The receipt is never in
-      the shared, baked image.
+      fsync of the directory) before it writes `/etc/appliance-id` (which marks the box
+      provisioned for good, so a crash between the two must not leave a box without one):
+      `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600, `{"method":
+      "factory", "acceptance_id": "maker-…"}` and nothing else, in `/var/lib/teaport`
+      (made root:root 0755 if it is not there yet) (no license version, which would read
+      as an acceptance of it; no name or email). An answer without an `acceptance_id`, or
+      with one not matching `^maker-[A-Za-z0-9_-]{24}$` (with `re.fullmatch`: Python's `$`
+      lets a trailing newline through) (a station from before the change, say), is a
+      failed attempt: the agent writes nothing, not `/etc/appliance-id` either, and asks
+      again. The receipt is never in the shared, baked image.
     - **The first-boot unit** runs an installer revision with this support (the
       `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
       accepts the license instead of using the factory record, and stops on a version
