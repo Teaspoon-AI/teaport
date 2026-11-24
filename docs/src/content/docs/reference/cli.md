@@ -187,20 +187,20 @@ teaport's own license, the engine's notices, and the licenses of the DM Sans and
 configuration page uses, for each of those that is on the device.
 `--json` prints the list, or with `--notices` the documents, as JSON.
 
-<!-- source: cli/teaport:11-13#c09ac9dc; brain/teaport_brain/licenses.py:160-221#b4d9eeae; brain/teaport_brain/licenses.py:115-157#a42773ed; brain/teaport_brain/licenses.py:37-40#09adb1b8 -->
+<!-- source: cli/teaport:11-13#c09ac9dc; brain/teaport_brain/licenses.py:163-224#8ed4bd6e; brain/teaport_brain/licenses.py:22-32#c3bc2c75; brain/teaport_brain/licenses.py:118-160#a42773ed; brain/teaport_brain/licenses.py:38-41#09adb1b8 -->
 
 The command runs under the brain's own Python environment, so it reads the same files as the
 open-source licenses page that the configuration page links to (see [Open-source licenses](/reference/licenses/)). A package's text is the
 license files in its `.dist-info` directory. A file longer than 256 KB is cut.
 
-<!-- source: cli/teaport:635-643#b0c7a666; brain/teaport_brain/licenses.py:33,42-49#8b2f47ba -->
+<!-- source: cli/teaport:635-643#b0c7a666; brain/teaport_brain/licenses.py:34,43-50#8b2f47ba -->
 
 The command exits with 0 when it shows something. It exits with 1, and says why, when the
 brain has no package of that name, or when `--notices` finds no document. A brain installed from
 the package always has the font licenses, which travel inside it. A package name together with `--notices`
 is a usage error and exits with 2.
 
-<!-- source: brain/teaport_brain/licenses.py:183-191,199-204#796513c7 -->
+<!-- source: brain/teaport_brain/licenses.py:186-194,202-207#dea379cf; brain/teaport_brain/licenses.py:22-23#3311553a; brain/pyproject.toml:119-120#e59aebe7 -->
 
 ## teaport key set
 
