@@ -25,7 +25,7 @@ The brain package installs these files. The table lists where each one is and wh
 | The `.dist-info` directory of each Python package, under `/opt/teaport/brain/lib/python3.12/site-packages/` | That package's own license files. |
 | `THIRD_PARTY_NOTICES.txt` in the install root, `/opt/teaport` by default | The attributions for the components the engine is built from. The installer downloads it with the engine. |
 
-<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:118,855,1257#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec; brain/pyproject.toml:119-120#e59aebe7; brain/teaport_brain/licenses.py:22-32#c3bc2c75; packaging/build-deb.sh:38#636d2d54; THIRD_PARTY_LICENSES.md:121-139#490bc890; brain/teaport_brain/config_ui.py:483-498#baf6f752; brain/teaport_brain/static/licenses.html:13#2e66ca6d -->
+<!-- source: packaging/nfpm.yaml:69-74,119-133#f61e6e53; packaging/deb/copyright:6-36#cbeddc17; THIRD_PARTY_LICENSES.md:81-86#6d99e3e2; install.sh:121,889,1291#12015c61; packaging/nfpm.yaml:69-74,119-134#873f7aec; brain/pyproject.toml:119-120#e59aebe7; brain/teaport_brain/licenses.py:22-32#c3bc2c75; packaging/build-deb.sh:38#636d2d54; THIRD_PARTY_LICENSES.md:121-139#490bc890; brain/teaport_brain/config_ui.py:483-498#baf6f752; brain/teaport_brain/static/licenses.html:13#2e66ca6d -->
 
 ## See the licenses on the device
 
@@ -43,7 +43,7 @@ The installer records your acceptance with Teaspoon AI, together with the licens
 
 To accept without the prompt, name the version you read: `--accept-eula=<version>`, with the version the license's title names, and give `--email`, plus `--license-id` for licensed use. A bare `--accept-eula`, or another version, stops the installer.
 
-<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:120,147-157,415-447,515-605#15007c0b; worker/src/index.js:198-204,250-255#290d30f9; install.sh:482-493#bffd8d4a -->
+<!-- source: THIRD_PARTY_LICENSES.md:3-5#1e314cfb; install.sh:123,150-160,418-450,524-639#6e62d947; worker/src/index.js:258-264,310-315#290d30f9; install.sh:491-502#bffd8d4a -->
 
 ## The LGPL libraries
 
