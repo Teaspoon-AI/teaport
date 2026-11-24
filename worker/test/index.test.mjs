@@ -433,7 +433,9 @@ test("a box gets at most MAKER_PER_BOX_DAY records in 24 hours, whatever the cap
     env.DB.db.exec("DELETE FROM maker_acceptances");
     env.FACTORY_DAILY_MAX = cap;
     for (let i = 0; i < MAKER_PER_BOX_DAY; i++) await maker({ device_id: box(1) });
-    assert.equal((await askFactory({ device_id: box(1) })).status, 429, String(cap));
+    const res = await askFactory({ device_id: box(1) });
+    assert.equal(res.status, 429, String(cap));
+    assert.equal((await res.json()).error, "factory_box_cap");
     await maker({ device_id: box(2) });                        // another box is not held up
   }
   env.DB.db.prepare("UPDATE maker_acceptances SET created_at = ?").run(ago(25 * 3600));
@@ -476,6 +478,8 @@ test("set up wrong, the factory records nothing", async () => {
     const res = await askFactory();
     assert.equal(res.status, 503, `${k}=${v}`);
     assert.equal((await res.json()).error, "factory_misconfigured");
+    // Only to whoever holds the secret: a wrong one learns nothing of the setup.
+    assert.equal((await askFactory({}, "wrong")).status, 401, `${k}=${v}`);
     env[k] = saved;
   }
   assert.equal(env.DB.db.prepare("SELECT count(*) AS n FROM maker_acceptances").get().n, 0);

@@ -382,7 +382,7 @@ async function factory(request, env, now) {
     "SELECT count(*) AS k FROM maker_acceptances WHERE device_id = ?1 AND created_at >= ?2 AND mark = ?3",
   ).bind(b.device_id, since, mark).first();
   if (k >= MAKER_PER_BOX_DAY) {
-    return fail(429, "factory_cap", `this box was recorded ${k} times in the last 24 hours, the most there may be`);
+    return fail(429, "factory_box_cap", `this box was recorded ${k} times in the last 24 hours, the most there may be`);
   }
   if (max > 0) {
     const seen = await env.DB.prepare(

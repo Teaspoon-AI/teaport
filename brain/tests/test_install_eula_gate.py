@@ -497,6 +497,18 @@ def test_an_owner_accepting_with_the_flag_is_recorded_even_while_the_factory_rec
     assert _receipt(tmp_path)["method"] == "flag"
 
 
+def test_the_receipt_the_station_writes_exactly_gets_tokens():
+    """RELEASING.md's receipt: method and acceptance_id, nothing else."""
+    tmp_path = pathlib.Path(tempdir())
+    _manifest(tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state/eula-accepted.json").write_text(json.dumps({"method": "factory", "acceptance_id": MAKER_ID}))
+    rc, out = _run(tmp_path, GATE)
+    assert rc == 0 and "TOKEN=tok-again" in out and _api(tmp_path) == [("token", {"acceptance_id": MAKER_ID})], out
+    rc, out = _run(tmp_path, GATE, FAKE_TOKEN='404 {"message": "no acceptance"}')
+    assert rc == 1 and "pass --accept-eula" in out, out
+
+
 def test_a_factory_dry_run_asks_nothing():
     tmp_path = pathlib.Path(tempdir())
     _manifest(tmp_path)

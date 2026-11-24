@@ -342,16 +342,18 @@ runs it is the review.
       SHA-256 of `teaport-appliance:` plus the appliance serial it assigns (as in the
       box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
       no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
-      It calls `POST <access.api>/factory` (`Authorization: Bearer <FACTORY_TOKEN>`,
-      `{"device_id", "installer": "git:<TEAPORT_PIN>"}`, the pin as it is) and puts the
-      returned `acceptance_id` at the top level of its `/provision` answer, beside
-      `ProvisionConfig`'s keys, not among them (`ProvisionConfig.from_payload` refuses a key
-      outside its set, so an agent baked before the change would never provision; and
-      teaport-factory's docs/09 §4 is to name the new key). So the station needs the internet
-      at provisioning, as the box's install does just after. Its call times out well
-      under the box's 10-second request (say 5 s). When it fails (no network, 429 from the
-      per-IP limit or the daily cap, 401 or 503 for a wrong secret or setting), the
-      station answers the box non-200, so the box's own retry loop asks again later.
+      It calls `POST https://get.teaspoon.tech/api/factory` (`Authorization: Bearer
+      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<TEAPORT_PIN>"}`, the pin as it
+      is; the URL from its own config, not from a manifest, which would let whatever
+      publishes one decide where the secret goes) and puts the returned `acceptance_id` at
+      the top level of its `/provision` answer, beside `ProvisionConfig`'s keys, not among
+      them (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent
+      baked before the change would never provision; and teaport-factory's docs/09 §4 is
+      to name the new key). So the station needs the internet at provisioning, as the
+      box's install does just after. Its call times out well under the box's 10-second
+      request (say 5 s). When it fails (no network, 429 from the per-IP limit or a cap,
+      401 or 503 for a wrong secret or setting), the station answers the box non-200,
+      so the box's own retry loop asks again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station serves it only on the boxes' USB network (bound to its address there, or a
       firewall rule; today it listens on every interface, the factory Wi-Fi included):
@@ -363,8 +365,14 @@ runs it is the review.
       whether a stored one still stands (revoked, or near its end), nor a box retrying
       after a lost answer (it gives up after 10 seconds and asks again) from one an
       operator provisions again. The Worker takes that: the daily cap counts boxes, and
-      a box gets up to 10 records in 24 hours. It calls the Worker after the unit's row is
-      committed, not inside the serial allocation.
+      a box gets up to 10 records in 24 hours. It calls the Worker last: after the unit's
+      row is committed (not inside the serial allocation) and after everything else in
+      the answer is built and checked, just before the 200, so a station failure after
+      the call (a bad config, say) cannot spend a box's 10 records on answers it never
+      gets. `factory serve` should check its `StationConfig` once at startup. A 429
+      `factory_box_cap` means that box was recorded 10 times in 24 hours: look at why, as
+      waiting a day is the only way past it short of a rotation; `factory_cap` is the
+      daily cap.
     - **Where it keeps `FACTORY_TOKEN`:** a file or environment only the station service's
       account reads; never in `StationConfig`'s config (sent to every box), its event log
       or its logs.
@@ -385,10 +393,11 @@ runs it is the review.
     - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
       it checks `setup-done`. It refuses a box whose receipt is anything but a factory one
       (`"method": "factory"`): another means someone accepted the license on it at the
-      factory, in Teaspoon AI's name. It also refuses a box whose install has not
-      finished. A box that ships with the receipt would download engine updates for its
-      owner, within `MAKER_MAX_DAYS`, with no license accepted, recorded under the
-      maker's id.
+      factory, in Teaspoon AI's name (to recover such a box: revoke that acceptance,
+      remove the receipt and `/etc/appliance-id`, and provision it again). It also refuses
+      a box whose install has not finished. A box that ships with the receipt would
+      download engine updates for its owner, within `MAKER_MAX_DAYS`, with no license
+      accepted, recorded under the maker's id.
     - **Provisioning a box again** (its install outlasted `MAKER_MAX_DAYS`, or its record
       was revoked): remove its `/etc/appliance-id` (the provisioning unit runs only
       without it), and it records a new maker acceptance at its next boot.
