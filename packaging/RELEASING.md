@@ -318,21 +318,22 @@ runs it is the review.
     created_at, device_id, ip, country FROM maker_acceptances ORDER BY created_at DESC
     LIMIT 50"`. Neither brake stops one holder: one record downloads everything.
   - **Rotating it:** `wrangler secret put FACTORY_TOKEN` with a new value, then the
-    station's copy, and restart `factory serve`, which reads it at startup (stripping the
-    trailing newline `openssl rand -hex 32 > file` leaves). That stops new records; boxes
-    already provisioned keep theirs. The daily cap counts from zero for the new secret.
-    Rotate it when anyone who held it leaves, and on any doubt. To stop records a leak
-    made, revoke them: `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP,
-    by time, or all since the leak; a revoked box's next run gets no token, and its owner
-    accepts). A Worker version carries the secrets it was deployed with, so a rollback
-    (`wrangler rollback`, the way back above) to a version from before a rotation brings
-    the old `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by
-    redeploying a fixed main and then `secret put` (a plain `secret put` is refused while
-    the deployed version is not the latest), or with `wrangler versions upload` from the
-    rolled-back commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler
-    versions deploy <the id that last command printed>@100%`. A rollback to a Worker from
-    before the factory kind refuses every maker acceptance (and its retention cron leaves
-    them alone) until main is deployed again.
+    station's copy, and, a minute later (an edge can answer for the old version that
+    long), restart `factory serve`, which reads it at startup (stripping the trailing
+    newline `openssl rand -hex 32 > file` leaves). That stops new records; boxes already
+    provisioned keep theirs. The daily cap counts from zero for the new secret. Rotate it
+    when anyone who held it leaves, and on any doubt. To stop records a leak made, revoke
+    them: `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP, by time, or
+    all since the leak; a revoked box's next run gets no token, and its owner accepts). A
+    Worker version carries the secrets it was deployed with, so a rollback (`wrangler
+    rollback`, the way back above) to a version from before a rotation brings the old
+    `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by redeploying a
+    fixed main and then `secret put` (a plain `secret put` is refused while the deployed
+    version is not the latest), or with `wrangler versions upload` from the rolled-back
+    commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler versions deploy
+    <the id that last command printed>@100%`. A rollback to a Worker from before the
+    factory kind refuses every maker acceptance (and its retention cron leaves them alone)
+    until main is deployed again.
   - **Turning it off:** `wrangler secret delete FACTORY_TOKEN`. The factory then records
     nothing until a new one is set and on the station; rotate instead to keep it going.
     Never fall back to an ordinary acceptance in Teaspoon AI's name: it records the
@@ -362,7 +363,8 @@ runs it is the review.
       describes the answer's shape, is to name the new key, not docs/09 §4, which is
       `config`'s set). So the station needs the internet at provisioning, as the box's
       install does just after. Its call has an overall deadline well under the box's
-      10-second request (say 5 s, the call in a thread joined with a timeout), as urllib's
+      10-second request (say 5 s, the call in a thread joined with a timeout; a call that
+      succeeds after it leaves a record no box gets, one of that box's 10), as urllib's
       `timeout` bounds each socket step, not the call, and not DNS. When it fails (no
       network, 429 from the per-IP limit or a cap, 401 or 503 for a wrong secret or
       setting), the station answers the box non-200, so the box's own retry loop asks

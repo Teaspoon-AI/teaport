@@ -361,7 +361,7 @@ async function factory(request, env, now) {
   if (!(Number.isSafeInteger(max) && max >= 0) || makerTtl(env) === null || env.FACTORY_TOKEN.length < 32
       || (env.CHECK_TOKEN && await sameSecret(env.FACTORY_TOKEN, env.CHECK_TOKEN))
       || await sameSecret(env.FACTORY_TOKEN, env.TOKEN_KEY)) {
-    return fail(503, "factory_misconfigured", "the factory kind is not set up right: FACTORY_TOKEN must be at least 32 characters and differ from CHECK_TOKEN and TOKEN_KEY, FACTORY_DAILY_MAX be a whole number and MAKER_MAX_DAYS one over 0");
+    return fail(503, "factory_misconfigured", "the factory kind is not set up right: FACTORY_TOKEN must be at least 32 characters and differ from CHECK_TOKEN and TOKEN_KEY, FACTORY_DAILY_MAX be a whole number and MAKER_MAX_DAYS one from 1 to 3650");
   }
   const b = await body(request);
   if (!b) return fail(400, "bad_request", "expected a JSON object of at most 4 KB");
