@@ -27,7 +27,7 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 | `channel` | `stable` or `beta`: whose manifest named the license | No |
 | `eula_version` | The license version accepted, such as `1.0` | No |
 | `eula_sha256` | SHA-256 of the exact text accepted. The server only takes the current one. | No |
-| `name` | The name the person typed or passed with `--name`. Not verified. | **Yes** |
+| `name` | Empty from the Worker deployed with migration 0002 on: it writes `''` whatever the installer sends, and 0002 blanks the names stored before. The column stays so a rollback to an earlier Worker still works; a later release drops it. | No, from then on |
 | `email` | The email address the person typed or passed with `--email`. Not verified. | **Yes** |
 | `use_type` | `personal` or `licensed` | No |
 | `license_id` | For licensed use: the Teaspoon AI license's ID | Linked to the licensee |
@@ -50,7 +50,19 @@ way back), `key` (which file),
 
 ## What is not stored
 
-The box's hostname or local user, the manifest, the request bodies of downloads, and the
+No name, from the Worker deployed with migration `0002_drop_acceptance_name.sql`. Earlier
+Workers stored the name the installer asks for; counsel advised dropping it, since an
+unverified typed name adds nothing to the email, the use and the accepted text's hash.
+
+- That Worker discards any name an installer sends. `install.sh` on `main` still asks for
+  one until the following change stops it; no release tag's installer sends one.
+- 0002 blanks the names stored before it. They stay recoverable through D1 Time Travel
+  until its restore window has passed (30 days on Workers Paid, 7 on Free).
+- A rollback to an earlier Worker stores names again, and D1 records 0002 as applied, so it
+  will not run again by itself. After rolling forward, blank them by hand:
+  `UPDATE acceptances SET name = '' WHERE name <> ''`.
+
+Also not stored: the box's hostname or local user, the manifest, the request bodies of downloads, and the
 token itself (it is signed, not stored). A new token for an existing acceptance
 (`POST /api/token`) writes no row; it only updates `last_token_at`.
 
@@ -76,7 +88,8 @@ to get a new token.
   request's headers are among them: the client's IP address, the user agent, and, on a
   download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
   it say whether the request body is recorded. The Worker itself writes nothing to the
-  logs (it has no `console.log`); the name and email travel only in the body of
+  logs (it has no `console.log`); the email (and, from `install.sh` on `main` until it stops asking, a name the Worker
+  discards) travel only in the body of
   `POST /api/accept`. Setting `invocation_logs = false` under `[observability.logs]` turns
   the invocation logs off.
 
