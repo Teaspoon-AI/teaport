@@ -1,10 +1,15 @@
 # teaport download gate (src/index.js). Deployed from main by .github/workflows/
 # worker-deploy.yml, after a reviewer approves its environment (D1 migrations, then
-# wrangler deploy). Set up once, by hand from worker/:
+# wrangler deploy). Set up once, by hand from worker/, with the locked wrangler
+# (../.github/wrangler/node_modules/.bin/wrangler, after `npm ci` in .github/wrangler/;
+# packaging/RELEASING.md, "Worker secrets"):
 #
-#   npx wrangler d1 create teaport-gate            # once: put its id in database_id below
-#   npx wrangler secret put TOKEN_KEY              # once: openssl rand -hex 32
-#   npx wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
+#   wrangler d1 create teaport-gate            # once: put its id in database_id below
+#   wrangler secret put TOKEN_KEY              # once: openssl rand -hex 32
+#   wrangler secret put CHECK_TOKEN            # once: openssl rand -hex 32, also the repo's DL_CHECK_TOKEN secret
+#   wrangler secret put FACTORY_TOKEN          # the factory station's (teaport#464): openssl rand -hex 32,
+#                                              # into the station and the password manager only; never a
+#                                              # GitHub secret (packaging/RELEASING.md, "Worker secrets")
 #
 # GATE is "enforce": a gated download without a token answers 401. The switchover
 # (packaging/RELEASING.md) ran with GATE = "open" until the installer that accepts through
@@ -28,9 +33,19 @@ routes = [
 # "enforce": a download needs a token. "open": one without an Authorization header is
 # served too: the switchover's, and the way back (src/index.js). Anything else enforces.
 GATE = "enforce"
-# Acceptances and downloads older than this are deleted daily. 2557 days, 7 years: a
+# Acceptances, maker acceptances and downloads older than this are deleted daily. 2557 days, 7 years: a
 # PROPOSAL to confirm with counsel (docs/engine-license-data.md); change both together.
 RETENTION_DAYS = "2557"
+# The factory (POST /api/factory, teaport#464). How long a box's maker acceptance gets
+# download tokens: from its provisioning (at the box's first boot in the factory) through
+# its first-boot install, with room for retries; the seal removes the receipt, and after it
+# the box's owner accepts. Unset, or not a whole number from 1 to 3650: the factory records
+# nothing, and existing records get 503 for their tokens and downloads.
+MAKER_MAX_DAYS = "3"
+# The most boxes the factory records in any 24 hours: a brake on a leaked FACTORY_TOKEN, to
+# be sized above the factory's busiest day (boxes, not records: a box provisioned again within
+# the day is not counted again). Unset or "0": no cap.
+FACTORY_DAILY_MAX = "50"
 
 [triggers]
 crons = ["17 4 * * *"]   # daily, 04:17 UTC: the retention cron
@@ -51,7 +66,7 @@ database_name = "teaport-gate"
 database_id = "b0da844a-354c-4907-bdcc-11b94c7630db"
 migrations_dir = "migrations"
 
-# /api/accept and /api/token: 20 requests a minute per IP address.
+# /api/accept, /api/token and /api/factory: 20 requests a minute per IP address.
 [[ratelimits]]
 name = "ACCEPT_LIMIT"
 namespace_id = "4301"

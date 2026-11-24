@@ -63,7 +63,10 @@
 # $STATE/eula-accepted.json, so a later run gets a new token without asking again until the
 # license changes. Without a terminal, --accept-eula=<version> accepts it: the version must
 # be the one the license's title names, and --email (and --license-id for licensed use)
-# says who accepts it.
+# says who accepts it. A box the factory installed (teaport#464) has a receipt its factory
+# provisioning wrote instead ("method": "factory"): Teaspoon AI's record for installing its own
+# box, no one's acceptance. Its downloads need no prompt while the license server still
+# takes that record; after, the box's owner accepts as above.
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -446,11 +449,13 @@ eula_identity() {
   fi
 }
 
-# eula_token <api> <acceptance id> — a new download token for an acceptance recorded
-# earlier (into DL_TOKEN). Returns 1 when the server will not give one for it any more (the
-# license changed, or it has no such acceptance): accept again; 2 when it cannot be asked
-# now (no answer, busy, failing). Dies for a revoked acceptance. The id gets tokens until
-# the license changes, so it goes to python in its environment, never its arguments.
+# eula_token <api> <acceptance id> [factory] — a new download token for an acceptance
+# recorded earlier, or with "factory" for a factory install record (into DL_TOKEN). Returns
+# 1 when the server will not give one for it any more (the license changed, it has no such
+# acceptance, or the factory record is past its time or revoked): accept; 2 when it cannot
+# be asked now (no answer, busy, failing). Dies for a revoked acceptance: a revoked factory
+# record says nothing about the box's owner, who may still accept. The id gets tokens, so
+# it goes to python in its environment, never its arguments.
 eula_token() {
   local out code why; out="$(mktemp)"
   code="$(api_post "$1/token" "$(TEAPORT_ACCEPTANCE_ID="$2" python3 -I -c 'import json,os
@@ -460,19 +465,23 @@ print(json.dumps({"acceptance_id": os.environ["TEAPORT_ACCEPTANCE_ID"]}))')" "$o
   rm -f "$out"
   case "$code" in
     200) [ -n "$DL_TOKEN" ] || die "the license server answered without a download token ($1/token)" ;;
-    409|404|400) warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
-    403) die "the license server refuses this box's acceptance of the engine license${why:+: $why}" ;;
+    409|404|400|403)
+      if [ "${3:-}" = factory ]; then
+        warn "the license server no longer gives downloads for this box's factory install record (HTTP $code${why:+: $why}): the engine license is to be accepted"; return 1
+      fi
+      [ "$code" != 403 ] || die "the license server refuses this box's acceptance of the engine license${why:+: $why}"
+      warn "the license server asks for the engine license to be accepted again: $why"; return 1 ;;
     *) warn "cannot get a download token from $1/token now (HTTP $code${why:+: $why})"; return 2 ;;
   esac
 }
 
 # dl_token <url> — the download token, got when the first gated download needs it: the
 # license server could not be asked when eula_gate ran (EULA_API, EULA_ID).
-EULA_API="" EULA_ID=""
+EULA_API="" EULA_ID="" EULA_FACTORY=""
 dl_token() {
   [ -n "$EULA_API" ] && [ -n "$EULA_ID" ] || die "no download token for $1: the engine license gate did not run"
   local rc=0
-  eula_token "$EULA_API" "$EULA_ID" || rc=$?
+  eula_token "$EULA_API" "$EULA_ID" "$EULA_FACTORY" || rc=$?
   [ "$rc" = 0 ] || die "cannot download $1 without a token from the license server: run the installer again"
 }
 
@@ -522,6 +531,31 @@ eula_gate() {
   # Idempotent re-run: this license version is already accepted -> no prompt; with a
   # license server, a new token for that acceptance.
   local prev; prev="$(receipt_get version)"
+
+  # A box the factory installed (teaport#464): the receipt holds the station's maker
+  # acceptance ("method": "factory"), no one's acceptance of any license version, so its
+  # version never counts as accepted. The license server says whether the record still
+  # gets downloads (for MAKER_MAX_DAYS after the box was provisioned); when it does not, or
+  # there is no license server to ask, or --accept-eula says someone accepts now, the
+  # license is accepted below, as on any box.
+  if [ "$(receipt_get method)" = factory ]; then
+    local mid; mid="$(receipt_get acceptance_id)"
+    if [ -n "$ACCEPT_EULA" ]; then
+      log "a factory install record is here, but --accept-eula (TEAPORT_ACCEPT_EULA) was given: the license is accepted instead"
+    elif [ -n "$api" ] && [ -n "$mid" ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        printf '  [dry-run] factory install record: get a download token from %s\n' "$api"; return
+      fi
+      local mrc=0
+      eula_token "$api" "$mid" factory || mrc=$?
+      if [ "$mrc" = 0 ] || [ "$mrc" = 2 ]; then
+        EULA_API="$api" EULA_ID="$mid" EULA_FACTORY=factory
+        log "factory install: the engine's files download under Teaspoon AI's record for this box (its owner accepts engine license v$ver later)"
+        return
+      fi
+    fi
+    prev=""
+  fi
   if [ -n "$prev" ] && [ "$prev" = "$ver" ]; then
     if [ -z "$api" ]; then log "engine license v$ver already accepted"; return; fi
     local id; id="$(receipt_get acceptance_id)"

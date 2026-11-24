@@ -261,10 +261,204 @@ lets through.
   workflow on any branch could read them.
 - **Repository secret `DL_CHECK_TOKEN`**: equal to the download gate Worker's
   `CHECK_TOKEN`; the publish check downloads the gated files with it on every run but a
-  pull request's. Change both together (`cd worker && npx wrangler secret put
-  CHECK_TOKEN`, then the secret), or the next check fails.
+  pull request's. Change both together (`wrangler secret put CHECK_TOKEN` with the locked
+  wrangler, under "Worker secrets", then the secret), or the next check fails.
 - **`.github/CODEOWNERS`** names who answers for the paths that ship to users or serve
   them. No rule requires the owner's review.
+
+## Worker secrets
+
+The download gate Worker's secrets are set on the Worker, from `worker/`, with the locked
+wrangler: `../.github/wrangler/node_modules/.bin/wrangler secret put <NAME>`, after `(cd
+.github/wrangler && npm ci)` from the repository's root (`wrangler` below means that one).
+They are never in `worker/wrangler.toml`, and the `worker-deploy` workflow leaves them
+alone. A `secret put` takes effect at once, as a new Worker version, without CI: whoever
+runs it is the review.
+
+- **`TOKEN_KEY`** signs every download token. Changing it stops every token issued (a box
+  gets a new one on its next run, from its receipt). It also keys the mark of
+  `FACTORY_TOKEN` in `maker_acceptances`, so the daily cap counts from zero again.
+- **`CHECK_TOKEN`** is the publish check's (the repository secret `DL_CHECK_TOKEN`, under
+  GitHub settings).
+- **`FACTORY_TOKEN`** is the factory station's (teaport#464), set by the product owner:
+  `openssl rand -hex 32` (the Worker records nothing for one shorter than 32 characters,
+  or one equal to `CHECK_TOKEN` or `TOKEN_KEY`), put on the Worker, on the station and in
+  the password manager, nowhere else (apart from Workers Logs, below). It is never a
+  GitHub secret or variable: no workflow needs it, and CI never sees it (the Worker's
+  tests use a made-up one). It is never on a box either.
+  - **What it does:** when a box provisions itself at its first boot in the factory (it
+    asks the station's `/provision` for its serial), the station sends `POST
+    /api/factory` with `FACTORY_TOKEN`, the box's `device_id` and the installer revision
+    the box will run. The Worker records a maker acceptance for that box
+    (`maker_acceptances`: Teaspoon AI installing its own box, no one's acceptance of the
+    license) and returns its id, which reaches the box in the `/provision` answer. The
+    box writes it as its license receipt (below). Its first-boot `install.sh` gets
+    download tokens with it, whatever the license's version, for `MAKER_MAX_DAYS` (3, in
+    `worker/wrangler.toml`) after provisioning. The seal removes the receipt, so the box
+    ships without one and its owner accepts the license (teaport#465) before its first
+    engine download or update.
+  - **What a leak exposes:** whoever holds it can record maker acceptances for made-up
+    boxes, and each gets every gated file (all of `dl/engine/` and `dl/models/`, the same
+    files a customer's token reaches) for `MAKER_MAX_DAYS`, with no license accepted.
+    `CHECK_TOKEN` reaches the same files. `FACTORY_TOKEN` itself downloads nothing and
+    gets no token.
+    The station's `/provision` hands out the same records without the secret leaking, to
+    whoever can ask it: so it answers only to the boxes' USB network (below). If the
+    factory's public IP address is stable, a Cloudflare rule letting `/api/factory` in
+    only from it would make a leaked secret close to useless elsewhere (not set up).
+  - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (50) boxes
+    are recorded in any 24 hours (a box recorded again within the day is not counted
+    again, so the cap limits made-up boxes; records for one box are limited to 10 in 24
+    hours), and
+    20 requests a minute per IP address. That limit is shared: the station's calls and its
+    boxes' token requests come from one address through its NAT, so a batch of boxes can
+    meet a 429, which their retries ride out. Each record holds its time, box, IP address
+    and country, so records from outside the factory's network, or for boxes it never
+    built, stand out: `wrangler d1 execute teaport-gate --remote --command "SELECT
+    created_at, device_id, ip, country FROM maker_acceptances ORDER BY created_at DESC
+    LIMIT 50"`. Neither brake stops one holder: one record downloads everything.
+  - **Rotating it:** `wrangler secret put FACTORY_TOKEN` with a new value, then the
+    station's copy, and, a minute later (an edge can answer for the old version that
+    long), restart `factory serve`, which reads it at startup (stripping the trailing
+    newline `openssl rand -hex 32 > file` leaves). That stops new records; boxes already
+    provisioned keep theirs. The daily cap counts from zero for the new secret. Rotate it
+    when anyone who held it leaves, and on any doubt. To stop records a leak made, revoke
+    them: `UPDATE maker_acceptances SET revoked_at = '<now>' WHERE …` (by IP, by time, or
+    all since the leak; a revoked box's next run gets no token, and its owner accepts). A
+    Worker version carries the secrets it was deployed with, so a rollback (`wrangler
+    rollback`, the way back above) to a version from before a rotation brings the old
+    `FACTORY_TOKEN` back (wrangler asks first): rotate again after it, by redeploying a
+    fixed main and then `secret put` (a plain `secret put` is refused while the deployed
+    version is not the latest), or with `wrangler versions upload` from the rolled-back
+    commit, `wrangler versions secret put FACTORY_TOKEN`, and `wrangler versions deploy
+    <the id that last command printed>@100%`. A rollback to a Worker from before the
+    factory kind refuses every maker acceptance (and its retention cron leaves them alone)
+    until main is deployed again.
+  - **Turning it off:** `wrangler secret delete FACTORY_TOKEN`. The factory then records
+    nothing until a new one is set and on the station; rotate instead to keep it going.
+    Never fall back to an ordinary acceptance in Teaspoon AI's name: it records the
+    maker as the box's licensee.
+  - It travels in the `Authorization` header of `POST /api/factory`, so Workers Logs may
+    keep it for their retention (docs/engine-license-data.md, "Who else sees it"), as
+    they may `CHECK_TOKEN`.
+  - **What teaport-factory does (not built yet):**
+    - **The station** (`handle_provision`), for a box it provisions: `device_id` is
+      SHA-256 of `teaport-appliance:` plus the appliance serial it assigns (as in the
+      box's `/etc/appliance-id`, without its trailing newline), in lowercase hex: the
+      station computes it, and the serial is what it knows (the box has its
+      `/etc/machine-id` by then, which its owner's acceptance will hash; whether that
+      acceptance sends this id instead is teaport#465's to decide). The Worker cannot
+      check how it was made. It calls `POST https://get.teaspoon.tech/api/factory`
+      (`Authorization: Bearer <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`,
+      the pin the box's own agent reports in its `/provision` request (its baked
+      `TEAPORT_PIN`, which the agent is to start sending; the station checks it is hex),
+      not the station's own, as an `image_id` does not tell bakes apart; with a User-Agent
+      of its own (it fills the record's `user_agent`, and Cloudflare's browser check may
+      refuse urllib's default); the URL from its own config, not from a manifest, which
+      would let whatever publishes one decide where the secret goes) and puts the returned
+      `acceptance_id` at the top level of its `/provision` answer, beside
+      `appliance_serial`, not inside `config` with `ProvisionConfig`'s keys
+      (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent baked
+      before the change would never provision; and teaport-factory's docs/06, which
+      describes the answer's shape, is to name the new key, not docs/09 §4, which is
+      `config`'s set). So the station needs the internet at provisioning, as the box's
+      install does just after. Its call has an overall deadline well under the box's
+      10-second request (say 5 s, the call in a thread joined with a timeout; a call that
+      succeeds after it leaves a record no box gets, one of that box's 10), as urllib's
+      `timeout` bounds each socket step, not the call, and not DNS. When it fails (no
+      network, 429 from the per-IP limit or a cap, 401 or 503 for a wrong secret or
+      setting), the station answers the box non-200, so the box's own retry loop asks
+      again later.
+    - **Who may get one:** `/provision` hands out what downloads every gated file, so the
+      station takes it only from the boxes' USB interfaces: an nft input rule by
+      interface, in a filter input chain in `host-firewall.nft` (`table inet`, so IPv6 is
+      covered too; renaming the interfaces away from `usbN` also means updating what names
+      them, such as the NetworkManager profile for 192.168.55.100), on `serve`'s
+      configured port (`iifname "lo" accept`, then `tcp dport <port> iifname != "tpbox*"
+      drop`, with the boxes' interfaces named under that prefix by a udev rule on NVIDIA's
+      USB ids, such as `ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020",
+      NAME="tpbox$attr{ifindex}"` (unique while the station runs: `%n` is the kernel
+      name's number, `usb0` and `usb1` for every box, so a second box's rename would
+      collide and the rule would drop it), so a USB uplink never matches; not a `.link`
+      file, whose `Name=` names one interface only, while several boxes are attached at
+      once), and `factory serve` refuses to start unless that rule covers its port
+      (reading the ruleset needs `sudo nft list ruleset`). Binding to its USB address does
+      not do it: Linux takes traffic for any of its addresses on any interface, so a host
+      on the factory Wi-Fi can reach 192.168.55.100. Nor does `SO_BINDTODEVICE`: each box
+      comes up as an interface of its own, made again whenever the box re-enumerates.
+      Today it listens on every interface. (The station keeps no record of what it flashed
+      or sealed by module, so "only modules it flashed" cannot be checked yet; if it comes
+      to, the station should add it.)
+    - **Where the code goes:** the Worker call and the loading of `FACTORY_TOKEN` live in
+      the station's code (`station_api.py`), never in `device_provision.py` or anything it
+      imports: that module is baked verbatim into every box's image (`agent_fileset`).
+    - **Sending the secret safely:** the URL must be `https://` (the station refuses
+      anything else at startup), redirects are not followed (an opener whose redirect
+      handler refuses), and the header is set with `add_unredirected_header`: urllib
+      follows a redirect of a POST and copies its headers, `Authorization` included, to
+      whatever host it names.
+    - **When the Worker refuses:** after an answer whose `error` is `bad_factory_token` or
+      `factory_misconfigured` (a wrong secret or setting) the station stops calling until
+      it restarts (so after fixing the Worker's settings, restart it too), and after
+      `factory_cap` it waits an hour, answering boxes non-200 meanwhile; any other failure
+      (a 5xx from Cloudflare itself, no network) is retried at the box's next ask: each
+      box keeps asking every few minutes, and every call shares the per-IP limit with the
+      boxes' own token requests.
+    - **Retries and provisioning again:** the station records a new maker acceptance on
+      every `/provision` it answers, and never hands a stored one back: it cannot tell
+      whether a stored one still stands (revoked, or near its end), nor a box retrying
+      after a lost answer (it gives up after 10 seconds and asks again) from one an
+      operator provisions again. The Worker takes that: the daily cap counts boxes, and
+      a box gets up to 10 records in 24 hours. It calls the Worker last: after the unit's
+      row is committed (not inside the serial allocation) and after everything else in
+      the answer is built and checked, just before the 200, so a station failure after
+      the call (a bad config, say) cannot spend a box's 10 records on answers it never
+      gets. `factory serve` should check its `StationConfig` once at startup. A 429
+      `factory_box_cap` means that box was recorded 10 times in 24 hours: look at why, as
+      waiting a day is the only way past it short of a rotation; `factory_cap` is the
+      daily cap.
+    - **Where it keeps `FACTORY_TOKEN`:** a file of mode 0600, the operator's or root's,
+      that `factory serve` reads at startup; never the environment (the station copies the
+      operator's environment into the bake and flash commands that write box images),
+      `StationConfig`'s config (sent to every box), its event log or its logs. Nor does it
+      store or log the maker ids it passes on (each downloads every gated file while it
+      stands): a prefix at most.
+    - **The box's agent** writes the receipt atomically (a temporary file, fsync, rename,
+      fsync of the directory) before it writes `/etc/appliance-id` (which marks the box
+      provisioned for good, so a crash between the two must not leave a box without one):
+      `/var/lib/teaport/eula-accepted.json`, owned by root, mode 0600, `{"method":
+      "factory", "acceptance_id": "maker-…"}` and nothing else, in `/var/lib/teaport`
+      (made root:root 0755 if it is not there yet) (no license version, which would read
+      as an acceptance of it; no name or email). An answer without an `acceptance_id`, or
+      with one not matching `^maker-[A-Za-z0-9_-]{24}$` (with `re.fullmatch`: Python's `$`
+      lets a trailing newline through) (a station from before the change, say), is a
+      failed attempt: the agent writes nothing, not `/etc/appliance-id` either, and asks
+      again. The receipt is never in the shared, baked image.
+    - **The first-boot unit** runs an installer revision with this support (the
+      `TEAPORT_PIN` bump), no longer sets `TEAPORT_ACCEPT_EULA` (with it set, `install.sh`
+      accepts the license instead of using the factory record, and stops on a version
+      that names no license), and runs only once the box is provisioned
+      (`ConditionPathExists=/etc/appliance-id`), so it never starts without a receipt. Its
+      boot start already waits for the provisioning unit, and its timer tries again 15
+      minutes after a skipped start. (If the agent is to start it sooner, it must be
+      `systemctl start --no-block`: a plain start from inside the provisioning unit, which
+      the first-boot unit is ordered after, waits on itself for ever.)
+    - **The seal** removes `/var/lib/teaport/eula-accepted.json` and checks it is gone, as
+      it checks `setup-done`; no receipt at all passes. It refuses a box whose receipt is
+      anything but a factory one
+      (`"method": "factory"`): another means someone accepted the license on it at the
+      factory, in Teaspoon AI's name (to recover such a box: revoke that acceptance and
+      remove the receipt; no receipt passes). It also refuses
+      a box whose install has not finished. A box that ships with the receipt would
+      download engine updates for its owner, within `MAKER_MAX_DAYS`, with no license
+      accepted, recorded under the maker's id.
+    - **Provisioning a box again** (its install outlasted `MAKER_MAX_DAYS`, or its record
+      was revoked): remove its `/etc/appliance-id` (the provisioning unit runs only
+      without it), and it records a new maker acceptance at its next boot.
+  - **After the factory:** the owner's acceptance (teaport#465) writes a receipt
+    `install.sh` takes as its own (`version`, `acceptance_id`), or every engine update
+    asks again. The maker record itself stays in `maker_acceptances`, with its age past
+    `MAKER_MAX_DAYS` soon after; nothing needs to revoke it.
 
 ## Release candidates
 

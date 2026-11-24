@@ -3,12 +3,12 @@
 Internal note (not published on the docs site). It exists so that the Teaport Engine
 License and a privacy notice can describe this processing accurately. If the code changes,
 change this note in the same PR. The code is `worker/src/index.js` (`accept()`, `token()`,
-`download()`, `expire()`), `worker/migrations/`, and `install.sh` (`eula_gate`,
+`factory()`, `download()`, `expire()`), `worker/migrations/`, and `install.sh` (`eula_gate`,
 `eula_record`).
 
 ## Where
 
-Two tables in the Cloudflare D1 database `teaport-gate`, in Teaspoon AI's Cloudflare
+Three tables in the Cloudflare D1 database `teaport-gate`, in Teaspoon AI's Cloudflare
 account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/api/*`,
 `/dl/engine/*` and `/dl/models/*`, writes them:
 
@@ -17,6 +17,8 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
   `--accept-eula=<version>`, and again if the box loses its receipt.
 - `downloads`: one row per download of a gated file (a GET; a HEAD request, or one for a
   file that does not exist, writes none). A resumed download is several rows.
+- `maker_acceptances`: one row each time the factory station provisions a box
+  (`POST /api/factory`). See "The factory's rows".
 
 ## What an acceptance row holds
 
@@ -42,11 +44,50 @@ account. The Worker `teaport-download-gate`, in front of get.teaspoon.tech's `/a
 
 ## What a download row holds
 
-`at` (UTC), `acceptance_id` (or `ci` for the publish workflow's check, or `open` for a
-download without a token while the gate is open: `GATE = "open"`, the switchover or the
-way back), `key` (which file),
+`at` (UTC), `acceptance_id` (an acceptance's or a maker acceptance's id, or `ci` for the
+publish workflow's check, or `open` for a download without a token while the gate is
+open: `GATE = "open"`, the switchover or the way back), `key` (which file),
 `range_start` (where a resumed download started), `status` (the HTTP status), `ip` and
 `country`. So the record shows which files an acceptance downloaded, when, and from where.
+
+## The factory's rows
+
+The factory installs the engine on each box before it ships, as Teaspoon AI on its own
+hardware (teaport#464). The box's owner is to accept the license later, at setup
+(teaport#465, not built yet), so the factory records no one's acceptance. Instead, as it
+provisions each box, the station records a maker acceptance:
+
+| Column of `maker_acceptances` | Content | Personal data? |
+| --- | --- | --- |
+| `id` | `maker-` and 18 random bytes (base64url). The box keeps it in its receipt. | See below |
+| `created_at` | UTC timestamp from the server's clock | See below |
+| `device_id` | SHA-256 of `teaport-appliance:` plus the appliance serial the station assigned the box, as the station computes it (the Worker cannot check how it was made). The serial itself is not sent, but the hash hides it from nobody: serials follow a simple pattern (a date and a number for the day), so anyone with a row or a log line can find the serial by trying them all, in seconds. Treat it as the serial. It is not the `device_id` of an acceptance made with `install.sh` (from `/etc/machine-id`), so the two do not match unless teaport#465 makes the owner's acceptance send this one. | See below |
+| `installer` | The installer revision the box will run, such as `git:0123456789ab` | No |
+| `ip`, `country` | The station's public IP address, and Cloudflare's country for it | No (the factory's); a row written with a leaked `FACTORY_TOKEN` holds someone else's |
+| `user_agent` | The station's user agent, at most 200 characters | No |
+| `mark` | Which `FACTORY_TOKEN` recorded it: an HMAC of the secret keyed with `TOKEN_KEY`, not the secret | No |
+| `last_token_at` | When the box last got a download token with it | See below |
+| `revoked_at` | Empty. Set only by hand, to revoke it. | No |
+
+The box's downloads are `downloads` rows with its `id`. A maker acceptance gets download
+tokens for `MAKER_MAX_DAYS` (3, in `worker/wrangler.toml`) after it is recorded, whatever
+the license's version: long enough for the box's first-boot install at the factory.
+
+When they are written, these rows describe Teaspoon AI's own unsold hardware on Teaspoon
+AI's network: nobody's personal data. Two exceptions. A leak: rows recorded with a leaked
+`FACTORY_TOKEN`, and the downloads made with them, hold the IP address and country of
+whoever used it. And a box that leaves the factory with its maker receipt (the seal is to
+remove it: packaging/RELEASING.md, "Worker secrets"): within `MAKER_MAX_DAYS` of its
+provisioning, its owner's engine downloads are recorded under the maker's id, with the
+owner's IP address and country. After the box is sold, its `device_id` can be linked to its owner:
+through Teaspoon AI's sales records (serial to buyer), and through the owner's acceptance
+if that sends the same `device_id` (teaport#465 decides). From then on, treat them as the
+box's serial, and so as personal data of its owner. What they are for: which engine files
+Teaspoon AI installed on which box, when (support, warranty, and the provenance of what
+shipped), and spotting a leaked `FACTORY_TOKEN` (records from outside the factory, or for
+boxes it never built: packaging/RELEASING.md, "Worker secrets"). Lawful basis, if GDPR
+applies once they are linkable: the legitimate interest in those purposes (Art. 6(1)(f));
+there is no contract with the owner behind them.
 
 ## What is not stored
 
@@ -76,9 +117,11 @@ token itself (it is signed, not stored). A new token for an existing acceptance
 `install.sh` keeps a copy in `/var/lib/teaport/eula-accepted.json`, readable only by root
 (mode 600). It holds the version, the hash, the box's timestamp, the local run user, the
 method, the acceptance `id`, the server's URL, the email, the use, and the license ID for
-licensed use. Next to it, the installer keeps the accepted text as
-`EULA-v<version>.txt`. Neither file leaves the box, apart from the `id`, which the box sends
-to get a new token.
+licensed use. Next to it, the installer keeps the accepted text as `EULA-v<version>.txt`.
+Neither file leaves the box, apart from the `id`, which the box sends to get a new token.
+A box being installed at the factory has, instead, the receipt its factory agent wrote (the seal
+removes it before the box ships): `"method": "factory"` and the maker acceptance's `id`,
+nothing else: no license version, name or email, and no license text.
 
 ## Who else sees it
 
@@ -91,7 +134,8 @@ to get a new token.
   ([Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)).
   That page does not list the fields and says nothing about redacting any, so assume the
   request's headers are among them: the client's IP address, the user agent, and, on a
-  download, the `Authorization` header with the download token or `CHECK_TOKEN`. Nor does
+  download, the `Authorization` header with the download token or `CHECK_TOKEN`, and on
+  `POST /api/factory` the station's `FACTORY_TOKEN`. Nor does
   it say whether the request body is recorded. The Worker itself writes nothing to the
   logs (it has no `console.log`); the email (and, from an older `install.sh`, a name the
   Worker discards) travel only in the body of
@@ -100,15 +144,19 @@ to get a new token.
 
 ## How long
 
-- **D1 rows:** 7 years after `created_at` (acceptances) or `at` (downloads). Then the
+- **D1 rows:** 7 years after `created_at` (acceptances, maker acceptances) or `at`
+  (downloads). Then the
   Worker's daily cron deletes them (`RETENTION_DAYS = "2557"` in `worker/wrangler.toml`).
   An acceptance's downloads go with it, even recent ones, so no download row outlives the
-  acceptance it names.
+  acceptance it names; a maker acceptance's go with it the same way.
   Seven years outlasts the usual limitation periods for a contract claim. After an
   acceptance is deleted, the box's next token request gets "unknown acceptance", and the
   installer asks for acceptance again.
   **This period is a proposal to confirm with counsel. It is an open item of the engine
   license work.** If the period changes, change `RETENTION_DAYS` and this note together.
+  The factory's rows follow the same period today. They prove no contract, so counsel may
+  want a shorter one for them (a box's warranty, say); that would need a retention
+  setting of their own.
 - **Workers Logs:** Cloudflare's retention for the plan: 3 days on Workers Free, 7 days
   on Workers Paid (the same page).
 - **The box's copy:** until the box is wiped. It is the owner's own record.
@@ -118,7 +166,8 @@ to get a new token.
 - **Purpose:** proof that this person accepted this exact license text, when, and for which
   use, and which files were downloaded under that acceptance. The record also lets Teaspoon
   AI enforce the license, including organizational use without a commercial license. The
-  engine downloads only after acceptance.
+  engine downloads only after acceptance, except the factory's install of Teaspoon AI's own
+  boxes ("The factory's rows").
 - **Lawful basis (if GDPR applies):** entering into and performing the license contract
   (Art. 6(1)(b)). The legitimate interest in establishing and defending legal claims
   (Art. 6(1)(f)) also applies.
@@ -126,6 +175,8 @@ to get a new token.
   list. Using it for anything other than the license would need its own notice and, for
   marketing, consent.
 - **Access and erasure requests:** find the person's rows by `email`, and their downloads
-  by those rows' `id`. Deleting an acceptance before its retention period ends removes the
+  by those rows' `id`. For a box bought from Teaspoon AI, also compute its factory
+  `device_id` from its serial (SHA-256 of `teaport-appliance:` plus the serial), then find
+  its `maker_acceptances` rows by that `device_id`, and their downloads by their `id`. Deleting an acceptance before its retention period ends removes the
   proof of acceptance and stops the box's downloads. The license and privacy notice should
   say so.
