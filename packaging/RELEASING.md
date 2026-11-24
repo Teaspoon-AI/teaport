@@ -293,7 +293,7 @@ runs it is the review.
     (`maker_acceptances`: Teaspoon AI installing its own box, no one's acceptance of the
     license) and returns its id, which reaches the box in the `/provision` answer. The
     box writes it as its license receipt (below). Its first-boot `install.sh` gets
-    download tokens with it, whatever the license's version, for `MAKER_MAX_DAYS` (14, in
+    download tokens with it, whatever the license's version, for `MAKER_MAX_DAYS` (3, in
     `worker/wrangler.toml`) after provisioning. The seal removes the receipt, so the box
     ships without one and its owner accepts the license (teaport#465) before its first
     engine download or update.
@@ -306,7 +306,7 @@ runs it is the review.
     whoever can ask it: so it answers only to the boxes' USB network (below). If the
     factory's public IP address is stable, a Cloudflare rule letting `/api/factory` in
     only from it would make a leaked secret close to useless elsewhere (not set up).
-  - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (200) boxes
+  - **What slows a leak down, and what shows it:** at most `FACTORY_DAILY_MAX` (50) boxes
     are recorded in any 24 hours (a box recorded again within the day is not counted
     again, so the cap limits made-up boxes; records for one box are limited to 10 in 24
     hours), and

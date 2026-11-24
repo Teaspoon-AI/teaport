@@ -41,11 +41,11 @@ RETENTION_DAYS = "2557"
 # its first-boot install, with room for retries; the seal removes the receipt, and after it
 # the box's owner accepts. Unset, or not a whole number from 1 to 3650: the factory records
 # nothing, and existing records get 503 for their tokens and downloads.
-MAKER_MAX_DAYS = "14"
+MAKER_MAX_DAYS = "3"
 # The most boxes the factory records in any 24 hours: a brake on a leaked FACTORY_TOKEN, to
 # be sized above the factory's busiest day (boxes, not records: a box provisioned again within
 # the day is not counted again). Unset or "0": no cap.
-FACTORY_DAILY_MAX = "200"
+FACTORY_DAILY_MAX = "50"
 
 [triggers]
 crons = ["17 4 * * *"]   # daily, 04:17 UTC: the retention cron

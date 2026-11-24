@@ -70,7 +70,7 @@ provisions each box, the station records a maker acceptance:
 | `revoked_at` | Empty. Set only by hand, to revoke it. | No |
 
 The box's downloads are `downloads` rows with its `id`. A maker acceptance gets download
-tokens for `MAKER_MAX_DAYS` (14, in `worker/wrangler.toml`) after it is recorded, whatever
+tokens for `MAKER_MAX_DAYS` (3, in `worker/wrangler.toml`) after it is recorded, whatever
 the license's version: long enough for the box's first-boot install at the factory.
 
 When they are written, these rows describe Teaspoon AI's own unsold hardware on Teaspoon
