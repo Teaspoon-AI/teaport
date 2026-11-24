@@ -156,10 +156,11 @@ async function factoryMark(env) {
 }
 
 // How long a maker acceptance gets tokens, in seconds: MAKER_MAX_DAYS, a whole number of
-// days over 0; anything else gives none (null), so a missing setting fails closed.
+// days from 1 to 3650; anything else gives none (null), so a missing or absurd setting
+// fails closed.
 function makerTtl(env) {
   const d = Number(env.MAKER_MAX_DAYS);
-  return Number.isSafeInteger(d) && d > 0 ? d * 86400 : null;
+  return Number.isSafeInteger(d) && d > 0 && d <= 3650 ? d * 86400 : null;
 }
 
 // A maker acceptance row's state at <now>: {refuse: a Response refusing it}, or {until}

@@ -471,7 +471,7 @@ test("the cap's window is 24 hours, for the count and for a box seen before; rot
 test("set up wrong, the factory records nothing", async () => {
   for (const [k, v] of [["FACTORY_DAILY_MAX", "two hundred"], ["FACTORY_DAILY_MAX", "-1"], ["FACTORY_DAILY_MAX", "Infinity"],
                         ["FACTORY_DAILY_MAX", "1.5"], ["MAKER_MAX_DAYS", undefined], ["MAKER_MAX_DAYS", "0"],
-                        ["MAKER_MAX_DAYS", "fourteen"], ["FACTORY_TOKEN", env.CHECK_TOKEN],
+                        ["MAKER_MAX_DAYS", "fourteen"], ["MAKER_MAX_DAYS", "100000000"], ["FACTORY_TOKEN", env.CHECK_TOKEN],
                         ["FACTORY_TOKEN", env.TOKEN_KEY], ["FACTORY_TOKEN", "short-but-sent-right"]]) {
     const saved = env[k];
     env[k] = v;

@@ -343,34 +343,41 @@ runs it is the review.
   - **What teaport-factory does (not built yet):**
     - **The station** (`handle_provision`), for a box it provisions: `device_id` is
       SHA-256 of `teaport-appliance:` plus the appliance serial it assigns (as in the
-      box's `/etc/appliance-id`, without its trailing newline), in lowercase hex; there is
-      no `/etc/machine-id` at provisioning, and the Worker cannot check how it was made.
-      It calls `POST https://get.teaspoon.tech/api/factory` (`Authorization: Bearer
-      <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`, the pin the box's own
-      agent reports in its `/provision` request (its baked `TEAPORT_PIN`; the station
-      checks it is hex), not the station's own, as an `image_id` does not tell bakes
-      apart; with a User-Agent of its own (it fills the record's `user_agent`, and
-      Cloudflare's browser check may refuse urllib's default); the URL from its own
-      config, not from a manifest, which would let whatever publishes one decide where the
-      secret goes) and puts the returned `acceptance_id` at the top level of its
-      `/provision` answer, beside `appliance_serial`, not inside `config` with
-      `ProvisionConfig`'s keys (`ProvisionConfig.from_payload` refuses a key outside its
-      set, so an agent baked before the change would never provision; and
-      teaport-factory's docs/09 §4 is to name the new key). So the station needs the
-      internet at provisioning, as the box's install does just after. Its call has an
-      overall deadline well under the box's 10-second request (say 5 s, the call in a
-      thread joined with a timeout), as urllib's `timeout` bounds each socket step, not
-      the call, and not DNS. When it fails (no network, 429 from the per-IP limit or a
-      cap, 401 or 503 for a wrong secret or setting), the station answers the box non-200,
-      so the box's own retry loop asks again later.
+      box's `/etc/appliance-id`, without its trailing newline), in lowercase hex: the
+      station computes it, and the serial is what it knows (the box has its
+      `/etc/machine-id` by then, which its owner's acceptance will hash; whether that
+      acceptance sends this id instead is teaport#465's to decide). The Worker cannot
+      check how it was made. It calls `POST https://get.teaspoon.tech/api/factory`
+      (`Authorization: Bearer <FACTORY_TOKEN>`, `{"device_id", "installer": "git:<pin>"}`,
+      the pin the box's own agent reports in its `/provision` request (its baked
+      `TEAPORT_PIN`, which the agent is to start sending; the station checks it is hex),
+      not the station's own, as an `image_id` does not tell bakes apart; with a User-Agent
+      of its own (it fills the record's `user_agent`, and Cloudflare's browser check may
+      refuse urllib's default); the URL from its own config, not from a manifest, which
+      would let whatever publishes one decide where the secret goes) and puts the returned
+      `acceptance_id` at the top level of its `/provision` answer, beside
+      `appliance_serial`, not inside `config` with `ProvisionConfig`'s keys
+      (`ProvisionConfig.from_payload` refuses a key outside its set, so an agent baked
+      before the change would never provision; and teaport-factory's docs/06, which
+      describes the answer's shape, is to name the new key, not docs/09 §4, which is
+      `config`'s set). So the station needs the internet at provisioning, as the box's
+      install does just after. Its call has an overall deadline well under the box's
+      10-second request (say 5 s, the call in a thread joined with a timeout), as urllib's
+      `timeout` bounds each socket step, not the call, and not DNS. When it fails (no
+      network, 429 from the per-IP limit or a cap, 401 or 503 for a wrong secret or
+      setting), the station answers the box non-200, so the box's own retry loop asks
+      again later.
     - **Who may get one:** `/provision` hands out what downloads every gated file, so the
       station takes it only from the boxes' USB interfaces: an nft input rule by
       interface, in a filter input chain in `host-firewall.nft`, on `serve`'s configured
-      port (`iifname "lo" accept`, then `tcp dport <port> iifname != "<the boxes'
-      interfaces>" drop`; name those with a `.link` file on NVIDIA's USB vendor id, 0955,
-      so a USB uplink never matches), and `factory serve` refuses to start unless that
-      rule covers its port. Binding to its USB address does not do it: Linux takes traffic
-      for any of its addresses on any interface, so a host on the factory Wi-Fi can reach
+      port (`iifname "lo" accept`, then `tcp dport <port> iifname != "tpbox*" drop`, with
+      the boxes' interfaces named under that prefix by a udev rule on NVIDIA's USB ids,
+      such as `ATTRS{idVendor}=="0955", ATTRS{idProduct}=="7020", NAME="tpbox%n"`, so a
+      USB uplink never matches; not a `.link` file, whose `Name=` names one interface
+      only, while several boxes are attached at once), and `factory serve` refuses to
+      start unless that rule covers its port (reading the ruleset needs `sudo nft list
+      ruleset`). Binding to its USB address does not do it: Linux takes traffic for any of
+      its addresses on any interface, so a host on the factory Wi-Fi can reach
       192.168.55.100. Nor does `SO_BINDTODEVICE`: each box comes up as an interface of its
       own, made again whenever the box re-enumerates. Today it listens on every interface.
       (The station keeps no record of what it flashed or sealed by module, so "only
