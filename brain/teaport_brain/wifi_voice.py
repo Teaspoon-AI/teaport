@@ -295,7 +295,13 @@ def _norm(text: str) -> str:
 
 def available() -> bool:
     """The setup unit and the helper that starts it are installed."""
-    return os.path.exists(UNIT_FILE) and os.path.exists(APPLY_HELPER)
+    return not missing()
+
+
+def missing() -> list[str]:
+    """What of available() is not there yet (on a factory box the claim's config_apply
+    writes the unit seconds after the brain starts, #472)."""
+    return [p for p in (UNIT_FILE, APPLY_HELPER) if not os.path.exists(p)]
 
 
 # Characters that are neither digits nor letters, by the name a voice says (catalog
@@ -1138,22 +1144,69 @@ async def connectivity(timeout: float | None = None) -> str | None:
     The check must be configured (Ubuntu's network-manager-config-connectivity-ubuntu,
     which install.sh puts there): without it NM says "full" whenever there is a default
     route, internet or not. A fresh check, not the cached answer, which can be minutes
-    old after the internet drops."""
-    enabled = await _output(
+    old after the internet drops.
+
+    Only NM saying its check is off is None: NM not answering yet (at boot, as the brain
+    starts) is "", a check that could not be made, read again by whoever asks -- never
+    "no check" (#472). Which step gave the answer is left in `last_why`, for a log."""
+    global last_why
+    state, last_why = await connectivity_reading(timeout)
+    return state
+
+
+# Which step gave connectivity()'s last answer, in words (first_boot logs it). For a log
+# only: a check made at the same time by someone else may have written it.
+last_why = ""
+
+
+async def connectivity_reading(timeout: float | None = None) -> tuple[str | None, str]:
+    """connectivity(), and which step gave that answer."""
+    enabled, why = await _ask(
         "busctl", "get-property", "org.freedesktop.NetworkManager",
         "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager",
         "ConnectivityCheckEnabled", timeout=NM_PROPERTY_SECS)
+    if enabled == "b false":
+        return None, "NetworkManager's connectivity check is off (ConnectivityCheckEnabled)"
     if enabled != "b true":
-        return None
+        return "", f"NetworkManager's ConnectivityCheckEnabled could not be read: {why}"
     # The check needs NetworkManager's network-control, which the run user no longer has:
     # it runs in the Wi-Fi helper, as root (wifi_apply.py, its sudoers line).
-    out = await _output("sudo", "-n", SYSTEM_PYTHON, WIFI_HELPER, "connectivity",
-                        timeout=ONLINE_CHECK_SECS if timeout is None else timeout)
+    out, why = await _ask("sudo", "-n", SYSTEM_PYTHON, WIFI_HELPER, "connectivity",
+                          timeout=ONLINE_CHECK_SECS if timeout is None else timeout)
     try:
         answer = json.loads(out or "").get("connectivity")
     except (ValueError, AttributeError):
-        return ""
-    return answer if isinstance(answer, str) else ""
+        return "", f"the Wi-Fi helper's connectivity check gave no answer: {why}"
+    if not isinstance(answer, str):
+        return "", f"the Wi-Fi helper's connectivity check gave no answer: {why}"
+    return answer, f"NetworkManager says {answer!r}"
+
+
+async def _ask(*cmd: str, timeout: float) -> tuple[str | None, str]:
+    """`cmd`'s stdout, stripped (None when it could not run or took longer than
+    `timeout`), and in words what happened -- its exit and the last line it wrote to
+    stderr -- for a log that says which step failed. Killed when it overruns."""
+    try:
+        p = await asyncio.create_subprocess_exec(
+            *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE)
+    except OSError as e:
+        return None, f"{cmd[0]} could not run ({e.strerror or e})"
+    try:
+        out, err = await asyncio.wait_for(p.communicate(), timeout)
+    except asyncio.TimeoutError:
+        return None, f"{cmd[0]} gave no answer within {timeout:g} s"
+    finally:
+        if p.returncode is None:
+            try:
+                p.kill()
+            except ProcessLookupError:
+                pass
+            await p.wait()
+    text = out.decode(errors="replace").strip()
+    last = (err.decode(errors="replace").strip().splitlines() or [""])[-1][:200]
+    why = f"{cmd[0]} exited {p.returncode}" + (f": {last}" if last else "")
+    return text, why
 
 
 async def _box_online() -> bool:

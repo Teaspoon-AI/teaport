@@ -157,10 +157,21 @@ def could_be_due() -> bool:
 
 
 
+_last_why = ""
+
+
 async def _check() -> str | None:
     """NetworkManager's connectivity, given longer than the phrase's check: a first look
-    that is merely slow must not read as offline (wifi_voice.connectivity)."""
-    return await wifi_voice.connectivity(timeout=CHECK_SECS)
+    that is merely slow must not read as offline (wifi_voice.connectivity). A reading
+    that is not an answer says which step it came from, once per reason (#472)."""
+    global _last_why
+    wifi_voice.last_why = ""
+    state = await wifi_voice.connectivity(timeout=CHECK_SECS)
+    why = wifi_voice.last_why
+    if (state is None or state == "") and why and why != _last_why:
+        logger.info(f"first boot: no connectivity answer yet — {why}")
+    _last_why = why
+    return state
 
 
 async def _reading(connectivity, sleep, still=lambda: True) -> str | None:
@@ -193,25 +204,39 @@ async def due(connectivity=None, sleep=asyncio.sleep, still=lambda: True) -> boo
     offline (_reading) once the grace period is over. Online: the marker is written
     instead. Due: this boot is marked tried before anything is said, so nothing starts it
     twice."""
+    return await _look(connectivity, sleep, still) == DUE
+
+
+# What a look saw (_look): DUE -- go into setup mode (this boot marked tried); DECIDED --
+# not now, and not this boot (online: the marker; set up, or tried, meanwhile); UNDECIDED
+# -- it could not tell yet (no check configured, or no two readings that agree), which
+# drive() looks at again later (#472).
+DUE, DECIDED, UNDECIDED = "due", "decided", "undecided"
+
+
+async def _look(connectivity=None, sleep=asyncio.sleep, still=lambda: True) -> str:
     if not could_be_due():
-        return False
+        return DECIDED
     state = await _reading(connectivity or _check, sleep, still)
     if state == "full":
         reached_online("online at boot")
-        return False
+        return DECIDED
     if state is None:
         logger.warning("first boot: NetworkManager has no connectivity check configured, "
-                       "so offline cannot be told from online — not going into setup mode")
-        return False
+                       "so offline cannot be told from online — not going into setup mode "
+                       "for now")
+        return UNDECIDED
+    if state == "gone":
+        return DECIDED
     if state != "offline":
-        logger.info(f"first boot: connectivity {state} — not going into setup mode")
-        return False
+        logger.info(f"first boot: connectivity {state} — not going into setup mode for now")
+        return UNDECIDED
     if not could_be_due() or not still():  # set up, or tried, while it waited
-        return False
+        return DECIDED
     _mark_tried()
     logger.info(f"first boot: a new box, still offline {GRACE_SECS:g} s after boot — "
                 "going into setup mode")
-    return True
+    return DUE
 
 
 async def run(session) -> bool:
@@ -332,8 +357,13 @@ def room_wanted() -> dict | None:
 # call holds the box at that moment (a LAN with no internet reads as offline too), which
 # it would cut off its network unannounced: then not before the brain starts again. Still
 # one try a boot: due() marked this one tried before
-# any of this. drive() looks once per start of the brain; a look that cannot tell
-# ("unknown": every check timed out) waits for the next.
+# any of this. A look that cannot tell yet -- no setup unit (a factory box's claim writes
+# it seconds after the brain starts), no connectivity check configured, or no two
+# readings that agree (NetworkManager not answering as the brain starts) -- is looked at
+# again, RETRY_SECS apart, for RETRY_FOR_SECS after the brain started (#472); before,
+# once-a-start latches took the first, transient answer for the boot's.
+RETRY_SECS = (30.0, 60.0, 120.0, 300.0)
+RETRY_FOR_SECS = 1800.0
 ENGINE_WAIT_SECS = 300.0
 ENGINE_POLL_SECS = 5.0
 ROOM_WAIT_SECS = 45.0
@@ -370,8 +400,8 @@ class _Room:
 _room: _Room | None = None
 _room_came: asyncio.Event | None = None  # drive()'s, while it waits for a room session
 _driving = False
-# drive() has been, in this process: its one look decided this boot (a look that could
-# not tell, "unknown", is not taken again before the next start of the brain).
+# drive() has been, in this process: it decided this boot, or gave up looking
+# (RETRY_FOR_SECS); not looked at again before the next start of the brain.
 _driven = False
 
 
@@ -406,46 +436,30 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
     (`taken`): a room in its own conversation says the welcome itself, while one on hold
     for a call would play it into the hold and start the network under the call. Each
     looks once, after the slot has stopped changing hands (_settled), and a busy box
-    means not before the brain starts again. True when this started setup mode, either
-    way. Runs as a task nobody awaits, so whatever
+    means not before the brain starts again. A look that could not tell yet is taken
+    again (RETRY_SECS, _attempt). True when this started setup mode, either way. Runs as a task nobody awaits, so whatever
     goes wrong is logged here."""
     global _driving, _room_came, _driven
     if not could_be_due():
         return False
-    if not wifi_voice.available():
-        logger.info("first boot: no Wi-Fi setup unit on this box — nothing to start")
-        _driven = True
-        return False
     _driving, _room_came = True, asyncio.Event()
     try:
-        if not await due(connectivity, sleep):
-            return False
-        await _engine(engine_up or _engine_answers, sleep)
-        for _ in range(ROOM_ASKS):
-            if not is_new():
-                return False  # online meanwhile (watch() wrote the marker)
-            room = await _a_room()
-            if room is None:
-                continue
-            if not await _settled(sleep):
+        waited, tries = 0.0, 0
+        while True:
+            outcome = await _attempt(connectivity, sleep, engine_up, headless, busy, taken)
+            if outcome is not None:
+                return outcome
+            if not could_be_due():
+                return False  # online, set up or tried meanwhile
+            if waited >= RETRY_FOR_SECS:
+                logger.warning(f"first boot: could not tell for {waited:g} s — not going "
+                               "into setup mode before the brain starts again")
                 return False
-            if not is_new():
-                return False  # online while the room session came, or the slot settled
-            if (taken or _taken_by_another)():
-                logger.info("first boot: a call or another conversation has the box — not "
-                            "handing the room session the setup")
-                return False
-            how = await _hand_over(room)
-            if how != GONE:
-                return how == STARTED
-        room_answered()  # no more asks: a late dial would open a session nobody waits for
-        if not await _settled(sleep) or not is_new():
-            return False
-        if (busy or _box_busy)():
-            logger.info("first boot: no room session took the setup, and the box is in a "
-                        "conversation or a call — not taking it off its network")
-            return False
-        return await (headless or _start_headless)()
+            delay = RETRY_SECS[min(tries, len(RETRY_SECS) - 1)]
+            tries += 1
+            logger.info(f"first boot: looking again in {delay:g} s")
+            await sleep(delay)
+            waited += delay
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 — a task nobody awaits: say what went wrong
@@ -454,6 +468,45 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
     finally:
         _driving, _room_came, _driven = False, None, True
         room_answered()
+
+
+async def _attempt(connectivity, sleep, engine_up, headless, busy, taken) -> bool | None:
+    """One look, and what follows it when due: True when setup mode started, False when
+    this boot is decided without it, None when it could not tell yet (drive looks again).
+    The rules for a call, a hold or a changing slot are #467's: any of them decides."""
+    gone = wifi_voice.missing()
+    if gone:
+        logger.info(f"first boot: no Wi-Fi setup unit yet ({', '.join(gone)} missing)")
+        return None
+    look = await _look(connectivity, sleep)
+    if look != DUE:
+        return None if look == UNDECIDED else False
+    await _engine(engine_up or _engine_answers, sleep)
+    for _ in range(ROOM_ASKS):
+        if not is_new():
+            return False  # online meanwhile (watch() wrote the marker)
+        room = await _a_room()
+        if room is None:
+            continue
+        if not await _settled(sleep):
+            return False
+        if not is_new():
+            return False  # online while the room session came, or the slot settled
+        if (taken or _taken_by_another)():
+            logger.info("first boot: a call or another conversation has the box — not "
+                        "handing the room session the setup")
+            return False
+        how = await _hand_over(room)
+        if how != GONE:
+            return how == STARTED
+    room_answered()  # no more asks: a late dial would open a session nobody waits for
+    if not await _settled(sleep) or not is_new():
+        return False
+    if (busy or _box_busy)():
+        logger.info("first boot: no room session took the setup, and the box is in a "
+                    "conversation or a call — not taking it off its network")
+        return False
+    return await (headless or _start_headless)()
 
 
 def _box_busy() -> bool:
