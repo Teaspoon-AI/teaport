@@ -44,6 +44,11 @@ def box(monkeypatch):
     # The setup unit is "installed" (first_boot.drive), the driver's waits are short, and
     # nothing is left from another test's driver or room session (another event loop's).
     monkeypatch.setattr(wv, "available", lambda: True)
+    monkeypatch.setattr(wv, "missing", lambda: [])
+    # One look per start unless a test asks for more (RETRY_FOR_SECS: #472's retries).
+    monkeypatch.setattr(first_boot, "RETRY_FOR_SECS", 0.0)
+    monkeypatch.setattr(first_boot, "RETRY_SECS", (0.01,))
+    monkeypatch.setattr(first_boot, "_last_why", "")
     monkeypatch.setattr(first_boot, "ROOM_WAIT_SECS", 0.05)
     monkeypatch.setattr(first_boot, "HANDOVER_SECS", 2.0)
     for name, value in (("_room", None), ("_room_came", None), ("_driving", False),
@@ -119,7 +124,8 @@ async def _run(session, *states, headless=None):
     took = asyncio.ensure_future(first_boot.run(session)) if first_boot.listening() else None
     try:
         await asyncio.sleep(0)  # it offers itself, as a session past its STT check does
-        await first_boot.drive(engine_up=_engine_up, headless=no_room)
+        # bounded: a driver that never gives up fails here instead of hanging the suite
+        await asyncio.wait_for(first_boot.drive(engine_up=_engine_up, headless=no_room), 60)
         if took is None or not took.done():
             return False
         return took.result()
@@ -858,6 +864,7 @@ def test_a_room_session_that_never_answers_is_left_to_it(box, monkeypatch):
 
 def test_no_setup_unit_no_first_boot(box, monkeypatch):
     monkeypatch.setattr(wv, "available", lambda: False)
+    monkeypatch.setattr(wv, "missing", lambda: [wv.UNIT_FILE])
 
     async def run():
         session, _ = _room()
@@ -1167,3 +1174,244 @@ def test_no_voiceless_start_once_online_while_the_slot_settled(box, monkeypatch)
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+# ---- #472: a first answer that is only early is looked at again ----------------------
+
+def _retrying(monkeypatch, for_secs=600.0):
+    monkeypatch.setattr(first_boot, "RETRY_FOR_SECS", for_secs)
+    monkeypatch.setattr(first_boot, "RETRY_SECS", (0.01, 0.02))
+
+
+def test_a_setup_unit_written_after_the_brain_started_is_found(box, monkeypatch):
+    """Race 1: the factory claim's config_apply writes the unit seconds after the brain
+    starts; the driver's first look finds no unit, a later one does."""
+    _retrying(monkeypatch)
+    looks = iter([[wv.UNIT_FILE], [wv.UNIT_FILE], []])
+    monkeypatch.setattr(wv, "missing", lambda: next(looks, []))
+
+    async def run():
+        session, _ = _room()
+        assert await _run(session, "none")
+        assert first_boot.tried_this_boot()
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_nm_not_answering_as_the_brain_starts_is_read_again(box, monkeypatch):
+    """Race 2: NetworkManager not answering yet reads "" (never "no check configured"):
+    a whole look of those is undecided, and the next look finds the box offline."""
+    _retrying(monkeypatch)
+
+    async def run():
+        session, _ = _room()
+        states = [""] * first_boot.READINGS + ["none"]
+        assert await _run(session, *states)
+        assert _run.check.asked == first_boot.READINGS + 2
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_a_check_configured_later_is_used(box, monkeypatch):
+    """None (the check off) is not this boot's answer either: the install may put the
+    check there after the brain started."""
+    _retrying(monkeypatch)
+
+    async def run():
+        session, _ = _room()
+        assert await _run(session, None, None, "none")
+        await session.wifi._stop_following()
+    asyncio.run(run())
+
+
+def test_retrying_stops_after_its_time(box, monkeypatch):
+    _retrying(monkeypatch, for_secs=0.5)
+
+    async def run():
+        session, _ = _room()
+        # bounded: a driver that never gave up would hang here, not pass
+        assert not await asyncio.wait_for(_run(session, ""), 10)
+        assert not first_boot.tried_this_boot() and not first_boot.listening()
+        assert _run.check.asked > first_boot.READINGS  # it did look again
+    asyncio.run(run())
+
+
+def test_a_room_session_still_offers_itself_between_looks(box, monkeypatch):
+    _retrying(monkeypatch)
+    seen = []
+
+    async def sleep(secs):
+        seen.append(first_boot.listening())
+        await asyncio.sleep(0)
+
+    async def run():
+        check = _online("", "", "", "", "", "", "none")
+        assert await first_boot.drive(connectivity=check, sleep=sleep, engine_up=_engine_up,
+                                      headless=_engine_up)
+        assert seen and all(seen)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["online", "busy", "taken"])
+def test_what_decides_is_not_looked_at_again(box, monkeypatch, outcome):
+    """#467's rules stand: online, or a conversation or a call on the box, decide this
+    boot -- the driver does not look again (a retry would start setup under them)."""
+    _retrying(monkeypatch)
+
+    async def run():
+        check = _online("full" if outcome == "online" else "none")
+        busy = (lambda: True) if outcome == "busy" else (lambda: False)
+        taken = (lambda: True) if outcome == "taken" else (lambda: False)
+        session, _ = _room()
+        took = asyncio.ensure_future(first_boot.run(session)) if outcome == "taken" else None
+        await asyncio.sleep(0)
+        started = []
+
+        async def headless():
+            started.append(1)
+            return True
+        assert not await first_boot.drive(connectivity=check, engine_up=_engine_up,
+                                          headless=headless, busy=busy, taken=taken)
+        assert started == [] and session.wifi.said == []
+        assert check.asked == (1 if outcome == "online" else 2), check.asked
+        if took is not None:
+            took.cancel()
+            await asyncio.gather(took, return_exceptions=True)
+    asyncio.run(run())
+
+
+def test_each_reason_for_no_answer_is_logged_once(box, monkeypatch):
+    lines = []
+    sink = first_boot.logger.add(lambda m: lines.append(str(m)), level="INFO")
+
+    async def fake(timeout=None):
+        wv.last_why = "busctl gave no answer within 1 s"
+        return ""
+    monkeypatch.setattr(wv, "connectivity", fake)
+    try:
+        async def run():
+            for _ in range(3):
+                await first_boot._check()
+        asyncio.run(run())
+    finally:
+        first_boot.logger.remove(sink)
+    said = [ln for ln in lines if "no connectivity answer yet" in ln]
+    assert len(said) == 1 and "busctl gave no answer within 1 s" in said[0]
+
+
+@pytest.mark.parametrize(("busctl", "helper", "state", "why"), [
+    (("b true", "busctl exited 0"), ('{"connectivity": "none"}', "sudo exited 0"),
+     "none", "NetworkManager says 'none'"),
+    (("b false", "busctl exited 0"), None, None, "check is off"),
+    ((None, "busctl gave no answer within 1 s"), None, "", "within 1 s"),
+    (("", "busctl exited 1: Failed to connect to bus"), None, "", "Failed to connect"),
+    (("b true", "busctl exited 0"), ("", "sudo exited 1: sudo: a password is required"),
+     "", "password is required"),
+    (("b true", "busctl exited 0"), (None, "sudo gave no answer within 10 s"), "", "10 s"),
+])
+def test_connectivity_says_which_step_answered(monkeypatch, busctl, helper, state, why):
+    answers = iter([busctl, helper])
+
+    async def ask(*cmd, timeout):
+        return next(answers)
+    monkeypatch.setattr(wv, "_ask", ask)
+
+    async def run():
+        got, said = await wv.connectivity_reading(timeout=10.0)
+        assert got == state and why in said, (got, said)
+    asyncio.run(run())
+
+
+def test_the_real_ask_reports_exit_and_stderr():
+    async def run():
+        out, why = await wv._ask("sh", "-c", "echo out; echo first >&2; echo last >&2; exit 3",
+                                 timeout=5)
+        assert out == "out" and why == "sh exited 3: last"
+        out, why = await wv._ask("sleep", "5", timeout=0.1)
+        assert out is None and "no answer within 0.1 s" in why
+        out, why = await wv._ask("/nonexistent/x", timeout=1)
+        assert out is None and "could not run" in why
+    asyncio.run(run())
+
+
+def test_the_watcher_waits_for_a_check_configured_later(box, monkeypatch):
+    """The install may turn NM's check on after the brain starts: within the retry
+    window a "check off" is read again, and the box seen online writes the marker."""
+    _retrying(monkeypatch)
+
+    async def run():
+        check = _online(None, None, "full")
+
+        async def sleep(_secs):
+            await asyncio.sleep(0)
+        await asyncio.wait_for(first_boot.watch(connectivity=check, sleep=sleep), 5)
+        assert check.asked == 3 and not first_boot.is_new()
+    asyncio.run(run())
+
+
+def test_the_retry_window_is_by_the_clock(box, monkeypatch):
+    """Looks take time too: no new look starts once RETRY_FOR_SECS have passed since the
+    driver started, however the time went (here: each look takes 400 s)."""
+    _retrying(monkeypatch, for_secs=1000.0)
+    now = [0.0]
+    monkeypatch.setattr(first_boot, "_clock", lambda: now[0])
+    looks = []
+
+    async def check(timeout=None):
+        looks.append(now[0])
+        now[0] += 400.0 / first_boot.READINGS
+        await asyncio.sleep(0)
+        return ""
+
+    async def sleep(secs):
+        now[0] += secs
+        await asyncio.sleep(0)  # yields, so wait_for can stop a driver that never gives up
+
+    async def run():
+        assert not await asyncio.wait_for(first_boot.drive(
+            connectivity=check, sleep=sleep, engine_up=_engine_up, headless=_engine_up), 5)
+    asyncio.run(run())
+    starts = looks[::first_boot.READINGS]
+    assert starts and max(starts) < 1000.0, starts
+    assert len(starts) == 3, starts  # at 0, 400 + 0.01, 800 + 0.03: the next would be >1000
+
+
+def test_an_empty_nmcli_answer_names_the_helper(monkeypatch):
+    answers = iter([("b true", "busctl exited 0"), ('{"connectivity": ""}', "sudo exited 0")])
+
+    async def ask(*cmd, timeout):
+        return next(answers)
+    monkeypatch.setattr(wv, "_ask", ask)
+
+    async def run():
+        got, said = await wv.connectivity_reading(timeout=10.0)
+        assert got == "" and "nmcli" in said, said
+    asyncio.run(run())
+
+
+def test_the_last_wait_is_cut_to_the_window(box, monkeypatch):
+    """A 500 s wait that would end past the window is cut to it: looks of 100 s at 0 and
+    600, then the last one at 1000 (not 1200)."""
+    _retrying(monkeypatch, for_secs=1000.0)
+    monkeypatch.setattr(first_boot, "RETRY_SECS", (500.0,))
+    now = [0.0]
+    monkeypatch.setattr(first_boot, "_clock", lambda: now[0])
+    looks = []
+
+    async def check(timeout=None):
+        looks.append(now[0])
+        now[0] += 100.0 / first_boot.READINGS
+        await asyncio.sleep(0)
+        return ""
+
+    async def sleep(secs):
+        now[0] += secs
+        await asyncio.sleep(0)
+
+    async def run():
+        assert not await asyncio.wait_for(first_boot.drive(
+            connectivity=check, sleep=sleep, engine_up=_engine_up, headless=_engine_up), 5)
+    monkeypatch.setattr(first_boot, "CONFIRM_SECS", 0.0)
+    asyncio.run(run())
+    starts = looks[::first_boot.READINGS]
+    assert starts == pytest.approx([0.0, 600.0, 1000.0]), starts
