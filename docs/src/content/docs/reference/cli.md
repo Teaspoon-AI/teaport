@@ -12,7 +12,7 @@ and the release manifest, and it reads the layout the installer creates: `/opt/t
 The `teaport-brain` package installs the command at `/usr/bin/teaport`. Run `teaport` with no arguments, or `teaport help`, to print the
 command summary. An unknown command or option prints an error and exits 1.
 
-<!-- source: install.sh:1698#9d1a0148; cli/teaport:43,1881-1895#c36cc6ea -->
+<!-- source: install.sh:1808#9d1a0148; cli/teaport:43,1886-1900#c36cc6ea -->
 
 The paths and ports in this reference are the defaults that the command reads at startup.
 `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`,
@@ -33,7 +33,7 @@ recent requests for a reply met at the model provider, whether a newer release i
 load average, and, on a device with OpenClaw, whether OpenClaw uses the brain's key. When the Session Initiation Protocol (SIP) gateway unit is enabled, it also shows the
 `teaport-sip` service and the brain's SIP front-end. It takes no options.
 
-<!-- source: cli/teaport:223-241#17a6a5ad -->
+<!-- source: cli/teaport:228-246#17a6a5ad -->
 
 Example:
 
@@ -54,7 +54,7 @@ teaport — status
   load                         0.03 0.19 0.20
 ```
 
-<!-- source: cli/teaport:235#a5805e19; cli/teaport:251-252#df9a8b07; cli/teaport:117-122#936558b1 -->
+<!-- source: cli/teaport:240#a5805e19; cli/teaport:256-257#df9a8b07; cli/teaport:117-122#936558b1 -->
 
 ## teaport doctor
 
@@ -75,7 +75,7 @@ the trunk registration. When it finds a NemoClaw sandbox record, it names the co
 sandbox. Each check prints one line: a check mark for pass, `!` for warning, and a cross
 for failure.
 
-<!-- source: cli/teaport:361-468#a156caf0; cli/teaport:69-116,339-346#cf26bf6b; cli/teaport:328-337#06ca79b5 -->
+<!-- source: cli/teaport:366-473#a156caf0; cli/teaport:69-116,344-351#cf26bf6b; cli/teaport:333-342#06ca79b5 -->
 
 Option:
 
@@ -83,13 +83,13 @@ Option:
 | --- | --- |
 | `--fix` | Restarts what failed: a service that is not active, the SIP gateway when it is down or has not registered, and the brain when its SIP front-end is not connected. |
 
-<!-- source: cli/teaport:399,455-460#b03ef28b -->
+<!-- source: cli/teaport:404,460-465#b03ef28b -->
 
 The final line is `doctor: all good` when every check passed, otherwise
 `doctor: issues above`. The command exits 0 in the first case and 1 in the second; a warning
 does not change the exit status.
 
-<!-- source: cli/teaport:365-366,469-470#4c8069a5 -->
+<!-- source: cli/teaport:370-371,474-475#4c8069a5 -->
 
 Example:
 
@@ -116,7 +116,7 @@ or when the device has no package. A channel that names an older brain or engine
 device has, or no brain package at all, offers nothing: the check says so, and
 `teaport update` installs nothing from it.
 
-<!-- source: brain/teaport_brain/updates.py:57,148-181,211-224,243-299#66490518 -->
+<!-- source: brain/teaport_brain/updates.py:64,169-202,232-245,264-320#66490518 -->
 
 | Option | Description |
 | --- | --- |
@@ -126,17 +126,21 @@ device has, or no brain package at all, offers nothing: the check says so, and
 | `--yes` | Installs without asking. Without it, the command asks first, and when it isn't run in a terminal it stops and names this option. |
 | `--status` | Prints how the last update went. It changes nothing. |
 
-<!-- source: cli/teaport:580-633#cdc96203; brain/teaport_brain/updates.py:484-523#8078c9b0 -->
+<!-- source: cli/teaport:585-638#cdc96203; brain/teaport_brain/updates.py:535-574#8078c9b0 -->
 
 Without `--channel`, the command uses the `TEAPORT_UPDATE_CHANNEL` setting in
 `/etc/teaport/brain.env`. When that is empty, it uses the channel the installed manifest
 came from, and `stable` when that names none. `TEAPORT_MANIFEST_URL` replaces the address
 for either channel. When nothing differs, the check prints `up to date.`. Otherwise it
 prints `changed:` and the names of the parts, then `teaport update installs:` with the
-parts the command installs by itself, and `needs a full install.sh run:` with the rest. It
-exits 1 when the installed manifest is missing or the channel's manifest can't be read.
+parts the command installs by itself and the release tag and commit of the installer it
+runs, and `needs a full install.sh run:` with the rest. A release whose installer is not the
+teaport repository's, at a release tag and its commit, is `not offered:`, and the command
+installs nothing from it. It exits 1 when the installed
+manifest is missing or the channel's manifest can't be read, which includes a manifest
+whose signature doesn't verify.
 
-<!-- source: brain/teaport_brain/updates.py:94-107,337-347,450-479,511-521#64a2bb43 -->
+<!-- source: brain/teaport_brain/updates.py:104-117,350-384,494-531,562-574#d34f211c -->
 
 Without `--check`, the command installs the update. It prints the same comparison and,
 when the engine, the models, or the brain changed, asks `Install it now?`. Then it starts
@@ -149,7 +153,7 @@ device's own channel, so `--channel` goes with `--check` only. It exits 0 when t
 is installed or there is nothing it installs, and 1 when the update fails.
 [Update teaport](/guides/updating/#apply-an-update) has the details.
 
-<!-- source: cli/teaport:485-495,517-558,580-633#7cef04d8; brain/teaport_brain/updates.py:59-64,302-307#7903fe49 -->
+<!-- source: cli/teaport:490-500,522-563,585-638#7cef04d8; brain/teaport_brain/updates.py:66-71,323-328#7903fe49 -->
 
 Press Ctrl+C to stop following: the update goes on. `teaport update --status` prints the
 last run's state, `running`, `done`, `failed`, or `interrupted` for a run that a power cut
@@ -157,13 +161,14 @@ stopped, with the step it is on and its message. The full output is in
 `/var/lib/teaport-update/log`, which the user that runs the brain can read, and in
 `journalctl -u teaport-update`.
 
-<!-- source: cli/teaport:496-497,559-578#8393ae64 -->
+<!-- source: cli/teaport:501-502,564-583#8393ae64 -->
 
 The brain also does the check by itself every day (the `TEAPORT_UPDATE_CHECK_SECS`
 setting; `0` turns it off), and `teaport status` shows the result on a `release` line, or
-`an update is being installed now` while one is.
+`an update is being installed now` while one is. A release that `teaport update` does not
+install is not shown as a new one.
 
-<!-- source: brain/teaport_brain/updates.py:353-382,427-442#0101cf37; cli/teaport:157-177#4f6e5e5b -->
+<!-- source: brain/teaport_brain/updates.py:389-425,471-486#d2ea8768; cli/teaport:157-183#f0b393cc -->
 
 Example:
 
@@ -193,7 +198,7 @@ The command runs under the brain's own Python environment, so it reads the same 
 open-source licenses page that the configuration page links to (see [Open-source licenses](/reference/licenses/)). A package's text is the
 license files in its `.dist-info` directory. A file longer than 256 KB is cut.
 
-<!-- source: cli/teaport:635-643#b0c7a666; brain/teaport_brain/licenses.py:34,43-50#8b2f47ba -->
+<!-- source: cli/teaport:640-648#b0c7a666; brain/teaport_brain/licenses.py:34,43-50#8b2f47ba -->
 
 The command exits with 0 when it shows something. It exits with 1, and says why, when the
 brain has no package of that name, or when `--notices` finds no document. A brain installed from
@@ -217,7 +222,7 @@ take the key, the brain keeps the key it had. In the rare case where OpenClaw mi
 the key before it failed, `teaport status` says that the two might be on different keys until
 the next save.
 
-<!-- source: cli/teaport:663-683#591dde97; brain/teaport_brain/provision.py:145-194#4e21552e -->
+<!-- source: cli/teaport:668-688#591dde97; brain/teaport_brain/provision.py:145-194#4e21552e -->
 
 The command runs with the brain's environment: the settings in `/etc/teaport/brain.env`,
 your user's home directory from the system's user database, and systemd's default `PATH`.
@@ -226,7 +231,7 @@ reads that copy first, so the command saves nothing and tells you to remove the 
 command as the user the brain runs as, not as root. A running brain uses the new key from
 the next conversation, without a restart.
 
-<!-- source: brain/teaport_brain/provision.py:73-78,100-113#37151763; cli/teaport:645-661#7e82c962 -->
+<!-- source: brain/teaport_brain/provision.py:73-78,100-113#37151763; cli/teaport:650-666#7e82c962 -->
 
 | Option | Description |
 | --- | --- |
@@ -250,7 +255,7 @@ takes effect when the check ends, after at most about 10 seconds, or 16 with `--
 With `--starter`, exit 2 can also mean that the key was saved but couldn't be marked as the
 trial key. In each of these cases, running the command again finishes the job.
 
-<!-- source: brain/teaport_brain/provision.py:48-53,82-86,239-298#0574ef8b; cli/teaport:43,653-661#95298e84 -->
+<!-- source: brain/teaport_brain/provision.py:48-53,82-86,239-298#0574ef8b; cli/teaport:43,658-666#95298e84 -->
 
 Example, with the key in a file:
 
@@ -273,7 +278,7 @@ card, and with 1 when it prints none: no password is fixed, setup mode doesn't a
 fixed one, the device has no Wi-Fi, or `--new-password` couldn't install the new
 file. Stopped by a signal, it prints no card and exits with another nonzero status.
 
-<!-- source: cli/teaport:685-731#8760cc59; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:202-217#73a41f3c -->
+<!-- source: cli/teaport:690-736#8760cc59; brain/teaport_brain/provision.py:212-234#2bf0bf62; brain/teaport_brain/wifi_setup.py:202-217#73a41f3c -->
 
 The card has no login for the device. On a device that ships ready to set up, the owner
 creates the login during setup, on the Wi-Fi setup page or in the settings, as
@@ -286,7 +291,7 @@ creates the login during setup, on the Wi-Fi setup page or in the settings, as
 | `--new-password` | Makes a new password, in the same format as the ones setup mode makes, and fixes it in `wifi-setup.env`. The command keeps the file's other setup settings and comments, installs the file owned by root and readable by the group of the user who runs the command (mode 640, like the installer's other settings files), and prints the card only after the file is in place. It uses `sudo`. If the file holds a line that isn't a setup setting (`WIFI_SETUP_...`) or a comment, or a carriage return, the command changes nothing and exits 1; fix the file by hand. |
 | `--json` | Prints the name, the password, and the QR code text as one JSON object. |
 
-<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:226-238#67817dfa; cli/teaport:685-731#8760cc59 -->
+<!-- source: brain/teaport_brain/provision.py:199-209#f749e8ed; brain/teaport_brain/wifi_setup.py:226-238#67817dfa; cli/teaport:690-736#8760cc59 -->
 
 Example:
 
@@ -315,11 +320,11 @@ unchanged, so `-f`, `-n LINES`, and `--since` work directly. With no further arg
 passes `-b`, so a bare `teaport logs` shows this boot's entries instead of the whole
 journal.
 
-<!-- source: cli/teaport:734-748#ec2c88d8 -->
+<!-- source: cli/teaport:739-753#ec2c88d8 -->
 
 The command exits with the exit status of `journalctl`.
 
-<!-- source: cli/teaport:748#2240fe1f -->
+<!-- source: cli/teaport:753#2240fe1f -->
 
 Example:
 
@@ -332,7 +337,7 @@ teaport logs engine -f
 `teaport sip` controls the opt-in telephony: phone calls over SIP. Telephony is off on a
 fresh install; `teaport sip configure` turns it on and `teaport sip disable` turns it off.
 
-<!-- source: cli/teaport:1862-1875#41b599bf -->
+<!-- source: cli/teaport:1867-1880#41b599bf -->
 
 The wizard writes the gateway configuration to `~/.config/teaport/teaport-sip.conf`. The
 gateway binary is `~/teaport-sip/build/teaport-sip`, and the gateway and the brain's SIP
@@ -344,7 +349,7 @@ front-end meet on the `/run/teaport/teaport-sip.sock` socket.
 The subcommands are `configure`, `status`, `aec`, `restart`, and `disable`. For a walk
 through of the setup, see [Set up phone calls](/guides/phone-calls/).
 
-<!-- source: cli/teaport:1855-1878#f2927b40 -->
+<!-- source: cli/teaport:1860-1883#f2927b40 -->
 
 ### teaport sip configure
 
@@ -360,13 +365,13 @@ host. A re-run keeps the settings of the installed configuration that it does no
 anything: if the registration fails, the configuration is not written and the units are
 left as they were.
 
-<!-- source: cli/teaport:1618-1685#135300db -->
+<!-- source: cli/teaport:1623-1690#135300db -->
 
 On success it writes the configuration with mode 600, enables and restarts the gateway, and
 prints `SIP enabled — telephony is on. Check: teaport sip status`. It then waits up to
 20 seconds for the first registration; a missing registration does not fail the command.
 
-<!-- source: cli/teaport:1612-1615,1684#30407607 -->
+<!-- source: cli/teaport:1617-1620,1689#30407607 -->
 
 With `--conf FILE` it adopts an existing gateway configuration instead of asking. The file
 must be readable and must set `id_uri`, `registrar_uri`, `username`, and `password`. The
@@ -374,7 +379,7 @@ must be readable and must set `id_uri`, `registrar_uri`, `username`, and `passwo
 services need, each change prints a note, and the result is test-registered exactly like
 the wizard.
 
-<!-- source: cli/teaport:1700-1710,1732-1752#db00ef74 -->
+<!-- source: cli/teaport:1705-1715,1737-1757#db00ef74 -->
 
 | Option | Description |
 | --- | --- |
@@ -387,14 +392,14 @@ the wizard.
 | `--conf FILE` | Adopt this gateway configuration instead of running the wizard. |
 | `-h`, `--help` | Print the usage. |
 
-<!-- source: cli/teaport:1619-1638,1646-1663#a33788a9 -->
+<!-- source: cli/teaport:1624-1643,1651-1668#a33788a9 -->
 
 The command exits 1 and leaves the installed configuration, if any, unchanged when a flag
 is unknown, an argument is missing, a check refuses the install, the gateway can't finish
 its check of the configuration, the test registration fails, or the configuration file
 changes while the test runs.
 
-<!-- source: cli/teaport:1606-1611,1633,1654-1680#b5fa4053 -->
+<!-- source: cli/teaport:1611-1616,1638,1659-1685#b5fa4053 -->
 
 Example:
 
@@ -418,7 +423,7 @@ this run's registration outcome. Without a configuration it prints `config` as `
 with the configure command, and it still reports the gateway's registration attempt from
 the journal. It takes no options.
 
-<!-- source: cli/teaport:1812-1839#e661c53b -->
+<!-- source: cli/teaport:1817-1844#e661c53b -->
 
 Example:
 
@@ -438,12 +443,12 @@ rewrite the `aec` key in place, print the old and new value, and restart the gat
 reads the setting at startup. The restart preconditions are checked before the file is
 touched.
 
-<!-- source: cli/teaport:1785-1809#2fb69cec -->
+<!-- source: cli/teaport:1790-1814#2fb69cec -->
 
 The command exits 1 when the argument is none of the accepted values, the telephony
 preconditions fail, or the rewrite fails; a failed rewrite leaves `aec` as it was.
 
-<!-- source: cli/teaport:1772-1776,1800,1804-1806#8a3e62a5 -->
+<!-- source: cli/teaport:1777-1781,1805,1809-1811#8a3e62a5 -->
 
 Example:
 
@@ -463,7 +468,7 @@ front-end reconnects to the gateway on its own; the brain service, and any Talk 
 is not touched. The command then waits up to 20 seconds for a fresh registration, and a
 missing one does not fail it. It takes no options.
 
-<!-- source: cli/teaport:1766-1783,1873#3bec60db -->
+<!-- source: cli/teaport:1771-1788,1878#3bec60db -->
 
 Example:
 
@@ -482,17 +487,17 @@ Stops and disables the `teaport-sip` service and prints
 configuration is kept and the command says where. Afterwards, `teaport status` and
 `teaport doctor` report telephony as off by choice.
 
-<!-- source: cli/teaport:419-420,1842-1851#2f9df694 -->
+<!-- source: cli/teaport:424-425,1847-1856#2f9df694 -->
 
 | Option | Description |
 | --- | --- |
 | `--purge` | Also deletes the configuration file and prints its path. |
 
-<!-- source: cli/teaport:1843,1846-1847#15f03923 -->
+<!-- source: cli/teaport:1848,1851-1852#15f03923 -->
 
 A failing `systemctl` call does not fail the command.
 
-<!-- source: cli/teaport:1844#adf95939 -->
+<!-- source: cli/teaport:1849#adf95939 -->
 
 Example:
 

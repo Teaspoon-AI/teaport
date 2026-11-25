@@ -16,13 +16,20 @@
 #      no more than their rights. Its answer is data, and only two things in it are used: the
 #      steps (each one of STEPS) and the channel (stable or beta). Nothing to do: done.
 #      The manifest is then read here, once, from the download host's fixed address for
-#      that channel (both steps install from this one copy), and the installer is the one
-#      it names in REPO (brain.tag): nothing the
+#      that channel (both steps install from this one copy), with its signature beside it
+#      (<channel>.json.sig): nothing of it is read until its exact bytes verify against
+#      the release keys the package ships (/usr/lib/teaport/allowed_signers, checked by
+#      /usr/lib/teaport/manifest_sig.py), and it must say it is that channel's. No
+#      signature, or one that does not verify: nothing is installed. Whoever can write
+#      to the download host cannot choose what root installs; only the release keys can.
+#      The installer is the one it names in REPO (brain.tag): nothing the
 #      brain says can point the run at another manifest or another repository. The most a
 #      lying answer does is install the release the channel names anyway.
 #   2. The installer: a shallow clone of REPO at brain.tag. A box keeps no checkout; this is what
 #      `bash <(curl -fsSL https://get.teaspoon.tech/teaport)` does too. Only a release's:
-#      brain.tag must be a tag (a branch is whatever was pushed last), and the installer must
+#      brain.tag must be a tag (a branch is whatever was pushed last) and must still be the
+#      commit the signed manifest names (brain.commit): the tag on GitHub, and the clone's
+#      HEAD, are both checked against it, so moving a tag runs nothing. The installer must
 #      say UPDATE_PROTOCOL=1, which an installer that kept the install trees root's and the
 #      run user's home as data does. An older one is never run as root from here.
 #   3. Each step, in order: install.sh --only engine, then --only brain, for the brain's run
@@ -41,8 +48,11 @@
 # (journalctl -u teaport-update).
 #
 # The SYSTEM python3, stdlib only, and nothing imported from the brain: the brain step
-# replaces the brain's venv, and this file with it, while it runs.
+# replaces the brain's venv, and this file with it, while it runs. The one module it loads,
+# the signature check, is the package's root-owned copy beside it, loaded by its path
+# before any step runs.
 #
+import importlib.util
 import json
 import os
 import pwd
@@ -65,8 +75,9 @@ CHANNELS = ("stable", "beta")
 MANIFEST_BASE = "https://get.teaspoon.tech/manifest"
 # The download host refuses urllib's default agent (updates.USER_AGENT says the same).
 USER_AGENT = "teaport-update (+https://github.com/Teaspoon-AI/teaport)"
-# The only repository whose installer runs here.
+# The only repository whose installer runs here, and where it is fetched from.
 REPO = "Teaspoon-AI/teaport"
+GIT_BASE = "https://github.com"
 BRAIN_UNIT = "teaport-brain.service"
 # How long a step waits for the conversation in progress to end before it gives up, its
 # downloads kept for the next try (install.sh's wait_for_idle).
@@ -149,23 +160,71 @@ def manifest_url(channel: str) -> str:
     return f"{MANIFEST_BASE}/{channel}.json"
 
 
+# The signature check and the keys it trusts: the package's own files, root's (nfpm.yaml).
+SIG_CHECK = "/usr/lib/teaport/manifest_sig.py"
+SIGNERS = "/usr/lib/teaport/allowed_signers"
+
+
+def _root_file(path: str) -> None:
+    """<path> is a regular file root alone can change (it and its directory root's, not
+    group- or world-writable). Raises RuntimeError."""
+    try:
+        st, parent = os.lstat(path), os.stat(os.path.dirname(path))
+    except OSError as e:
+        raise RuntimeError(f"cannot check the release manifest's signature: {e}") from None
+    if not os.path.isfile(path) or os.path.islink(path) \
+            or any(s.st_uid != ROOT_UID or s.st_mode & 0o022 for s in (st, parent)):
+        raise RuntimeError(f"cannot check the release manifest's signature: {path} is not "
+                           "root's own file; nothing was done")
+
+
+def signature_check():
+    """The package's manifest_sig module, loaded from SIG_CHECK (root's). Raises
+    RuntimeError."""
+    _root_file(SIG_CHECK)
+    _root_file(SIGNERS)
+    # No __pycache__ beside it: a root-written .pyc in /usr/lib/teaport is a file no package
+    # owns (left behind on purge).
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("teaport_manifest_sig", SIG_CHECK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def read_manifest(channel: str, dest: str, fetch=None) -> dict:
-    """The channel's manifest, from the download host's fixed address, saved to <dest> (in
-    this run's root-only work directory): both steps install from this one copy, so a
-    release published while the run goes on cannot mix with this one. Raises RuntimeError."""
+    """The channel's manifest, from the download host's fixed address, once its signature
+    (<url>.sig) has verified against the package's release keys and it says it is
+    <channel>'s. Saved, with the signature, to <dest> and <dest>.sig (in this run's root-only
+    work directory): both steps install from this one copy, so a release published while the
+    run goes on cannot mix with this one, and install.sh verifies the same pair again.
+    Raises RuntimeError: nothing is installed from a manifest that does not verify."""
     def load(url):
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310 -- a fixed https URL
             return r.read(4 << 20)
+    sig_check = signature_check()
+    url = manifest_url(channel)
     try:
-        body = (fetch or load)(manifest_url(channel))
-        manifest = json.loads(body)
-    except Exception as e:  # noqa: BLE001 -- unreadable, not JSON
+        body = (fetch or load)(url)
+    except Exception as e:  # noqa: BLE001 -- offline, refused, not there
         raise RuntimeError(f"cannot read the release manifest: {e}") from None
-    if not isinstance(manifest, dict):
-        raise RuntimeError("the release manifest is not a JSON object")
-    with open(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
-        f.write(body if isinstance(body, bytes) else body.encode())
+    try:
+        sig = (fetch or load)(url + ".sig")
+    except Exception as e:  # noqa: BLE001 -- not there is unsigned
+        raise RuntimeError(f"the release manifest has no signature ({url}.sig: {e}); nothing is "
+                           "installed from an unsigned manifest") from None
+    body = body if isinstance(body, bytes) else body.encode()
+    sig = sig if isinstance(sig, bytes) else sig.encode()
+    try:
+        manifest, _ = sig_check.accept(body, sig, url, SIGNERS, channel=channel)
+    except sig_check.SignatureError as e:
+        raise RuntimeError(f"{e}; nothing was installed") from None
+    except ValueError as e:   # signed, but not a JSON object
+        raise RuntimeError(f"cannot read the release manifest: {e}") from None
+    for path, data in ((dest, body), (dest + ".sig", sig)):
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+            f.write(data)
     return manifest
 
 
@@ -271,28 +330,51 @@ def not_older(manifest: dict, have: str | None, engine: str | None = None,
                            "--rollback engine does, by hand)")
 
 
-def read_source(manifest: dict) -> dict:
-    """{repo, tag}: the installer <manifest> names (brain.repo, brain.tag), only REPO's.
-    Raises RuntimeError."""
+# A full git commit id: what brain.commit must be.
+COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+def read_source(manifest: dict, sig_check=None) -> dict:
+    """{repo, tag, commit}: the installer <manifest> names (brain.repo, brain.tag, and
+    brain.commit, the commit that tag must be), only REPO's, at a release tag as
+    <sig_check> (the package's manifest_sig, signature_check()) reads one. Raises RuntimeError."""
     brain = manifest.get("brain") if isinstance(manifest, dict) else None
-    repo, tag = (brain or {}).get("repo"), (brain or {}).get("tag")
+    repo, tag, commit = ((brain or {}).get(k) for k in ("repo", "tag", "commit"))
     if repo != REPO or not isinstance(tag, str) or "TODO" in tag.upper():
         raise RuntimeError(f"the release manifest names no installer this installs from "
                            f"({repo!r} at {tag!r}; only {REPO}'s release tags)")
-    return {"repo": repo, "tag": tag}
+    if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
+        raise RuntimeError(f"the release manifest names no commit for its installer ({tag} has "
+                           f"brain.commit {commit!r}); nothing was done")
+    # A release tag (manifest_sig.release_version, and release_problem, which the signature
+    # check applies too): a candidate's brain-vX.Y.Z-rcN only from the beta channel.
+    sig_check = sig_check or signature_check()
+    version = sig_check.release_version(tag)
+    if version is None:
+        raise RuntimeError(f"the release manifest names {tag!r}, not a release tag (brain-vX.Y.Z); "
+                           "nothing was done")
+    if "~rc" in version and manifest.get("channel") != "beta":
+        raise RuntimeError(f"the release manifest names the release candidate {tag} on the "
+                           f"{manifest.get('channel')!r} channel: only beta offers one; nothing was done")
+    return {"repo": repo, "tag": tag, "commit": commit}
 
 
 def clone(source: dict, into: str, runner=subprocess.run) -> str:
-    """A shallow clone of github.com/<repo> at the release tag <tag> (anonymous, never a
-    prompt): the installer of the release. Returns the checkout's path. Refuses a <tag> that
-    is not a tag there (a branch moves), a checkout that is not at that tag's commit, and an
-    installer that does not declare UPDATE_PROTOCOL=1."""
-    repo, tag = source["repo"], source["tag"]
+    """The installer of the release: github.com/<repo>'s tag <tag>, fetched by its full ref
+    (refs/tags/<tag>: a branch of the same name is not it) at depth 1, anonymous and never a
+    prompt, over git's pack transport with transfer.fsckObjects (every object re-hashed and
+    checked as it arrives), then <commit> checked out by its id. Returns the checkout's
+    path. Refuses a <tag> that is not a tag there (a branch moves), a tag that is no longer
+    at <commit> (the one the signed manifest names), a checkout that is not at that commit,
+    and an installer that does not declare UPDATE_PROTOCOL=1."""
+    repo, tag, want = source["repo"], source["tag"], source.get("commit")
+    if not isinstance(want, str) or not COMMIT.fullmatch(want):
+        raise RuntimeError(f"no commit to hold {tag} to; nothing was fetched")
     # Checked again, as they reach git's command line.
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) \
             or not re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*", tag):
         raise RuntimeError(f"the manifest names no installer this can fetch ({repo!r} at {tag!r})")
-    url = f"https://github.com/{repo}.git"
+    url = f"{GIT_BASE}/{repo}.git"
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "GIT_TERMINAL_PROMPT": "0",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "HOME": into}
 
@@ -311,11 +393,20 @@ def clone(source: dict, into: str, runner=subprocess.run) -> str:
     if not commit:
         raise RuntimeError(f"the release manifest names {tag!r}, which is not a release tag of "
                            f"github.com/{repo} (an update installs only a release's installer)")
+    if commit != want:
+        raise RuntimeError(f"{tag} on github.com/{repo} is {commit[:12]}, not the commit the signed "
+                           f"release manifest names ({want[:12]}): the tag was moved; nothing was run")
     dest = os.path.join(into, "teaport")
-    git("clone", "--quiet", "--depth", "1", "--branch", tag, url, dest)
+    git("init", "--quiet", dest)
+    git("-c", "transfer.fsckObjects=true", "fetch", "--quiet", "--depth", "1", "--no-tags", url,
+        f"+refs/tags/{tag}:refs/tags/{tag}", cwd=dest)
+    fetched = git("rev-parse", f"refs/tags/{tag}^{{commit}}", cwd=dest).strip()
+    if fetched != want:
+        raise RuntimeError(f"the {tag} fetched is {fetched[:12]}, not the release's {want[:12]}; nothing was run")
+    git("-c", "advice.detachedHead=false", "checkout", "--quiet", want, cwd=dest)
     head = git("rev-parse", "HEAD", cwd=dest).strip()
-    if head != commit:
-        raise RuntimeError(f"the installer fetched is not at {tag} ({head[:12]}, the tag is {commit[:12]})")
+    if head != want:
+        raise RuntimeError(f"the installer fetched is not at {tag} ({head[:12]}, the release is {want[:12]})")
     with open(os.path.join(dest, "install.sh"), encoding="utf-8", errors="replace") as f:
         if "\nUPDATE_PROTOCOL=1\n" not in f.read():
             raise RuntimeError(f"the installer of {tag} predates teaport update; install it by hand "
@@ -327,7 +418,8 @@ def step_env(user: str, home: str, manifest: str) -> dict:
     """install.sh's environment: the brain's user (RUN_USER; install.sh finds their home
     itself, as data) and their secrets directory, root's own HOME (no tool root runs reads
     its configuration from the run user's home: a ~/.curlrc, a Python user site, a
-    ~/.gitconfig), this run's copy of the manifest, and the wait for nobody to be talking."""
+    ~/.gitconfig), this run's copy of the manifest (its signature beside it, which install.sh
+    verifies again; never TEAPORT_MANIFEST_UNSIGNED), and the wait for nobody to be talking."""
     return {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "LANG": "C.UTF-8", "HOME": "/root", "TEAPORT_USER": user,
             "TEAPORT_SECRETS_DIR": os.path.join(home, ".config", "teaport"),
@@ -396,7 +488,8 @@ def main() -> int:
             return 0
         record.set(step="fetch")
         work = tempfile.mkdtemp(prefix="teaport-update-")
-        manifest_copy = os.path.join(work, "manifest.json")
+        # Named for its channel: install.sh, given it, holds it to that channel too.
+        manifest_copy = os.path.join(work, f"{plan['channel']}.json")
         manifest = read_manifest(plan["channel"], manifest_copy)
         source = read_source(manifest)
         not_older(manifest, box_brain(), box_engine())   # before anything of it is fetched or run

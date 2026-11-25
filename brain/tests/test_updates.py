@@ -43,13 +43,13 @@ from teaport_brain import updates  # noqa: E402
 def _manifest(engine="1.6", brain="0.1.0", plugin="0.1.0", openclaw="2026.9.7", sha="aa",
               channel="stable", version="1.0.0"):
     deb = {"url": f"https://get.teaspoon.tech/dl/brain/teaport-brain_{brain}_arm64.deb",
-           "sha256": "dd"}
+           "sha256": "d" * 64}
     return {"version": version, "channel": channel,
             "engine": {"release": engine},
-            "brain": {"repo": "x/y", "tag": "main", "deb": deb},
+            "brain": {"repo": "Teaspoon-AI/teaport", "tag": f"brain-v{brain}", "commit": "a" * 40, "deb": deb},
             "plugin": {"npm": "p", "version": plugin},
             "openclaw": {"version": openclaw, "node": "24"},
-            "models": {"kokoro": {"sha256": sha}, "voxtral": {"sha256": "bb"}}}
+            "models": {"kokoro": {"sha256": sha * 32}, "voxtral": {"sha256": "b" * 64}}}
 
 
 # The installed brain package, for the tests that are not about it.
@@ -139,10 +139,10 @@ def test_the_floor_counts_a_brain_in_any_state_that_leaves_its_files():
 
 def test_a_placeholder_model_hash_does_not_hide_a_real_change_in_another():
     latest = _manifest()
-    latest["models"] = {"kokoro": {"sha256": "TODO"}, "voxtral": {"sha256": "cc"}}
+    latest["models"] = {"kokoro": {"sha256": "TODO"}, "voxtral": {"sha256": "c" * 64}}
     got = _compare(_manifest(), latest)
     assert got["changed"] == ["models"], got
-    latest["models"]["voxtral"]["sha256"] = "bb"
+    latest["models"]["voxtral"]["sha256"] = "b" * 64
     assert not _compare(_manifest(), latest)["available"]
 
 
@@ -192,10 +192,12 @@ def test_what_teaport_update_would_do():
         "steps": ["engine", "brain"], "manual": ["plugin", "openclaw"]}
     got = _compare(_manifest(), _manifest(plugin="0.2.0", brain="0.2.0"))
     assert got["steps"] == ["brain"] and got["manual"] == ["plugin"], got
-    # Where the installer comes from: a plain repo and ref, or nothing.
-    assert updates.source(_manifest()) == {"repo": "x/y", "tag": "main"}
-    for repo, tag in (("TODO", "main"), ("x/y", "TODO"), ("x/y/z", "main"), ("x/y", "-u"),
-                      ("x y/z", "main"), ("x/y", "a b"), (None, "main")):
+    # Where the installer comes from: a plain repo and ref, at the commit the manifest pins, or nothing.
+    assert updates.source(_manifest()) == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.0", "commit": "a" * 40}
+    # Only the release repository's installer (update_apply.REPO): any other is no source.
+    for repo, tag in (("TODO", "main"), ("Teaspoon-AI/teaport", "TODO"), ("x/y/z", "main"), ("Teaspoon-AI/teaport", "-u"),
+                      ("x y/z", "main"), ("Teaspoon-AI/teaport", "a b"), (None, "main"), ("x/y", "main"),
+                      ("evil/teaport", "brain-v1.0.0"), ("teaspoon-ai/teaport", "main")):
         m = _manifest()
         m["brain"]["repo"], m["brain"]["tag"] = repo, tag
         assert updates.source(m) is None, (repo, tag)
@@ -225,7 +227,19 @@ def test_a_look_reads_the_channels_manifest_and_names_it():
     got = updates.check("", fetch=fetch, installed=_manifest(channel="beta"), env={},
                         brain=lambda: BRAIN)
     assert got["channel"] == "beta", got
-    assert got["steps"] == ["engine"] and got["source"] == {"repo": "x/y", "tag": "main"}, got
+    assert got["steps"] == ["engine"] and got["source"] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.0", "commit": "a" * 40}, got
+    # Another repository's installer is not offered: no step, and it is said.
+    other = _manifest(engine="1.7")
+    other["brain"]["repo"] = "x/y"
+    got = updates.check("beta", fetch=lambda url: other, installed=_manifest(), env={}, brain=lambda: BRAIN)
+    assert got["steps"] == [] and got["not_offered"] == ["engine"] and got["changed"] == ["engine"], got
+    text = updates.render(got)
+    assert "not offered: engine" in text and "teaport update installs" not in text, text
+    # The installer's commit is part of where it comes from: none (or not a full id), no source.
+    for commit in (None, "TODO", "abc123"):
+        latest = _manifest(engine="1.7")
+        latest["brain"]["commit"] = commit
+        assert updates.source(latest) is None, commit
 
 
 
@@ -234,6 +248,12 @@ def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
     # The download host answers urllib's default agent with a 403, so `load` names itself.
     import http.server
     import threading
+
+    from release_keys import Keys   # the manifest is signed: its .sig is asked for the same way
+    from teaport_brain import manifest_sig
+    keys = Keys()
+    manifest = json.dumps({"version": "x", "channel": "stable"}).encode()
+    files = {"/stable.json": manifest, "/stable.json.sig": keys.sign(manifest)}
     seen = []
 
     class H(http.server.BaseHTTPRequestHandler):
@@ -242,7 +262,7 @@ def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
             if (self.headers.get("User-Agent") or "").startswith("Python-urllib"):
                 self.send_error(403)
                 return
-            body = json.dumps({"version": "x"}).encode()
+            body = files[self.path]
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -255,9 +275,11 @@ def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
     # A proxy in the environment must not stand between the test and its own loopback.
     kept = {k: os.environ.get(k) for k in ("no_proxy", "NO_PROXY")}
     os.environ["no_proxy"] = os.environ["NO_PROXY"] = "127.0.0.1"
+    saved_signers, manifest_sig.SIGNERS = manifest_sig.SIGNERS, keys.signers
     try:
         got = updates.load(f"http://127.0.0.1:{srv.server_port}/stable.json")
     finally:
+        manifest_sig.SIGNERS = saved_signers
         for k, v in kept.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -265,8 +287,8 @@ def test_a_manifest_over_http_is_asked_for_with_our_own_user_agent():
                 os.environ[k] = v
         srv.shutdown()
         srv.server_close()
-    assert got == {"version": "x"}, got
-    assert seen == [updates.USER_AGENT] and "urllib" not in seen[0], seen
+    assert got == {"version": "x", "channel": "stable"}, got
+    assert seen == [updates.USER_AGENT] * 2 and "urllib" not in seen[0], seen
 
 
 def test_the_monitor_keeps_the_last_answer_across_a_failed_look_and_a_restart():
@@ -321,7 +343,9 @@ def test_main_prints_the_status_and_says_why_it_cannot():
     latest = os.path.join(d, "latest.json")
     with open(latest, "w") as f:
         json.dump(_manifest(engine="1.7"), f)
-    env = {"TEAPORT_MANIFEST_URL": latest}
+    # An unsigned local manifest, allowed as install.sh allows it (test_manifest_sig.py
+    # checks the signature).
+    env = {"TEAPORT_MANIFEST_URL": latest, "TEAPORT_MANIFEST_UNSIGNED": "1"}
     saved = {k: os.environ.get(k) for k in env}
     saved_dirs = (updates.PREFIX, updates.ETC)
     saved_brain = updates.installed_brain
@@ -344,6 +368,7 @@ def test_main_prints_the_status_and_says_why_it_cannot():
         rc, out, err = run("check")
         assert rc == 0 and "engine" in out and "1.6  ->  1.7" in out and "changed: engine" in out, out
         assert "teaport update installs: engine" in out and "full install.sh" not in out, out
+        assert "with the installer of github.com/Teaspoon-AI/teaport brain-v0.1.0 (commit aaaaaaaaaaaa)" in out, out
         # --exit-code: 10 when there is a step to run, 0 when only a full run would do.
         assert run("check", "--exit-code")[0] == updates.EXIT_STEPS
         with open(latest, "w") as f:
@@ -387,6 +412,55 @@ def test_status_shows_the_release_line():
     got = line({"ok": True, "update": new})
     assert got.startswith("a new release is out on beta: engine, plugin") and "last check failed" in got, got
     assert got.endswith("-- teaport update"), got
+    # A release teaport update would not install (not_offered): no "new release" offer.
+    nope = {"state": "current", "channel": "stable", "fresh": True, "changed": ["engine"],
+            "not_offered": ["engine"]}
+    assert line({"ok": True, "update": nope}) == "the stable channel names a release teaport update does not install (engine)"
+    # With a part only a full install.sh run installs too: that part, and that run, not
+    # teaport update; and a change with no step at all points to the full run as well.
+    both = {"state": "available", "channel": "stable", "fresh": True, "changed": ["engine", "plugin"],
+            "steps": [], "manual": ["plugin"], "not_offered": ["engine"]}
+    assert line({"ok": True, "update": both}) == "a new release is out on stable: plugin -- a full install.sh run"
+    plugin = {"state": "available", "channel": "stable", "fresh": True, "changed": ["plugin"],
+              "steps": [], "manual": ["plugin"]}
+    assert line({"ok": True, "update": plugin}) == "a new release is out on stable: plugin -- a full install.sh run"
+    engine = {"state": "available", "channel": "stable", "fresh": True, "changed": ["engine"],
+              "steps": ["engine"], "manual": []}
+    assert line({"ok": True, "update": engine}) == "a new release is out on stable: engine -- teaport update"
+
+
+def test_the_monitor_does_not_offer_what_teaport_update_would_not_install():
+    # A release whose installer is another repository's: the look moves its steps to
+    # not_offered, and /health (Monitor.status) says the same, before and after a restart.
+    d = tempdir("teaport-updates-nope-")
+    path = os.path.join(d, "update.json")
+    saved_dirs = (updates.PREFIX, updates.ETC)
+    updates.PREFIX = updates.ETC = d
+    with open(os.path.join(d, "manifest.json"), "w") as f:
+        json.dump(_manifest(), f)
+    real = updates.CHECK_SECS, updates.installed_brain
+    updates.CHECK_SECS, updates.installed_brain = 86400.0, lambda: BRAIN
+    other = _manifest(engine="1.7")
+    other["brain"]["repo"] = "x/y"
+    try:
+        mon = updates.Monitor(fetch=lambda url: other, path=path)
+        assert asyncio.run(mon.refresh())
+        for st in (mon.status(), updates.Monitor(path=path).status()):
+            assert st["state"] == "current" and st["steps"] == [] and st["not_offered"] == ["engine"], st
+            assert st["changed"] == ["engine"], st
+        # With a full install.sh run to do too, the release is out, for that part only.
+        other["plugin"]["version"] = "0.2.0"
+        assert asyncio.run(mon.refresh())
+        st = mon.status()
+        assert st["state"] == "available" and st["steps"] == [] and st["manual"] == ["plugin"], st
+        # A release it would install: offered as before.
+        mon = updates.Monitor(fetch=lambda url: _manifest(engine="1.7"), path=path)
+        assert asyncio.run(mon.refresh())
+        st = mon.status()
+        assert st["state"] == "available" and st["steps"] == ["engine"] and "not_offered" not in st, st
+    finally:
+        updates.CHECK_SECS, updates.installed_brain = real
+        updates.PREFIX, updates.ETC = saved_dirs
 
 
 if __name__ == "__main__":

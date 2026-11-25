@@ -26,7 +26,7 @@ teaport logs        # what did the brain report?
 `teaport doctor --fix` runs the same checks and restarts a service whose unit
 has stopped. It prints the unit that it restarts.
 
-<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:361-470#af1eefc6 -->
+<!-- source: cli/teaport:6#fcb6da6d; cli/teaport:366-475#af1eefc6 -->
 
 You can run the installer again at any time. It repairs an installation without
 making a second one and keeps the settings that you added yourself.
@@ -50,7 +50,7 @@ pronunciation dictionary. See
 **Cause** You are not on a Jetson, or the Jetson image carries no
 `/etc/nv_tegra_release`. The installer works only on Jetson devices.
 
-<!-- source: install.sh:647,666#582f6f18 -->
+<!-- source: install.sh:748,767#582f6f18 -->
 
 **Fix**
 
@@ -62,7 +62,7 @@ pronunciation dictionary. See
 **Cause** The device runs a JetPack that the engine does not support. The engine
 ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-<!-- source: install.sh:642-648,653-659#bdfac419 -->
+<!-- source: install.sh:743-749,754-760#bdfac419 -->
 
 **Fix**
 
@@ -83,7 +83,7 @@ ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 **Cause** The engine links against `libopenblas.so.0`. JetPack does not include
 it.
 
-<!-- source: install.sh:698-705,715#ce9fbe14 -->
+<!-- source: install.sh:799-806,816#ce9fbe14 -->
 
 **Fix**
 
@@ -99,7 +99,7 @@ it.
 and sha256. A device installed without the pronunciation dictionary speaks with
 robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-<!-- source: install.sh:1214-1224#0ba66554 -->
+<!-- source: install.sh:1318-1328#0ba66554 -->
 
 **Fix**
 
@@ -114,7 +114,7 @@ its URL and sha256. A device installed without the watermark weights speaks
 without the machine-readable mark that identifies its speech as AI-generated.
 The watermark check is necessary, so keep it.
 
-<!-- source: install.sh:922,1262-1274#348d5c16 -->
+<!-- source: install.sh:1025,1366-1378#348d5c16 -->
 
 **Fix**
 
@@ -129,7 +129,7 @@ its URL and sha256. On a device installed without the Mandarin dictionary, the
 Mandarin voices speak without their tones. The dictionary check is necessary,
 so keep it.
 
-<!-- source: install.sh:923,1246-1254#aa0bbfbe -->
+<!-- source: install.sh:1026,1350-1358#aa0bbfbe -->
 
 **Fix**
 
@@ -141,7 +141,7 @@ so keep it.
 **Cause** A downloaded file does not agree with the checksum in the manifest.
 The installer removes the partial download, so the next run starts it again.
 
-<!-- source: install.sh:371-374#0e841fac -->
+<!-- source: install.sh:468-473#79c35ca0 -->
 
 **Fix**
 
@@ -154,12 +154,38 @@ The installer removes the partial download, so the next run starts it again.
 2. If the same file fails again, the published manifest and the published file
    disagree. [Open an issue](https://github.com/Teaspoon-AI/teaport/issues).
 
+### `the release manifest is refused`
+
+**Cause** The release manifest's signature is missing or doesn't verify against the
+keys the device trusts, or the manifest names another channel than its filename. A
+signed manifest is also refused when it names a release under a tag that isn't a release
+tag, when the stable channel's names a release candidate (`brain-vX.Y.Z-rcN`), or when its
+brain package isn't the version that its release tag builds. The
+installer reads nothing from a manifest it can't verify, so it changes nothing. On a
+manifest copied to a local disk or a mirror, the usual cause is a `.sig` file that wasn't
+copied with it, or one from another version of the manifest. The one-line installer
+stops the same way, before it downloads the repository, with `the release manifest's
+signature does not verify`, `the release manifest has no signature`, or, when the release
+tag no longer points at the commit the manifest names, `the tag was moved`.
+
+<!-- source: install.sh:335-383#44445033; brain/teaport_brain/manifest_sig.py:130-276#551854d4; install-bootstrap.sh:125-140,172-177#60c45e71 -->
+
+**Fix**
+
+1. For the published manifest, wait a minute and run the installer again: the
+   manifest and its signature are uploaded one after the other.
+2. For a copy, copy the manifest and its `.sig` file again, together.
+3. If the published manifest fails again,
+   [open an issue](https://github.com/Teaspoon-AI/teaport/issues).
+
+See [The signed release manifest](/guides/updating/#the-signed-release-manifest).
+
 ### `another install.sh is running on this box`
 
 **Cause** A second run of the installer started while one was running. Two runs at
 the same time replace the same files, so the second one stops before it changes anything.
 
-<!-- source: install.sh:224-232,233-250#05549d41 -->
+<!-- source: install.sh:227-235,236-253#05549d41 -->
 
 **Fix**
 
@@ -178,7 +204,7 @@ also needs up to a minute before the engine port listens.
 3. If the same check fails again, read the log. See
    [Where the logs are](#where-the-logs-are).
 
-<!-- source: cli/teaport:361-470#af1eefc6 -->
+<!-- source: cli/teaport:366-475#af1eefc6 -->
 
 ## The browser cannot open `https://teaport.local`
 
@@ -216,7 +242,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:2873#2ca3ef5a; install.sh:3321-3390#d970b544 -->
+<!-- source: install.sh:2983#2ca3ef5a; install.sh:3431-3500#d970b544 -->
 
 ## The page opens but nothing happens
 
@@ -241,7 +267,7 @@ Always use `#`.
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
-<!-- source: install.sh:2701-2714#3bb53588; install.sh:2700-2713#e0d335b8 -->
+<!-- source: install.sh:2811-2824#3bb53588; install.sh:2810-2823#e0d335b8 -->
 
 ## The gateway restarts again and again
 
@@ -272,7 +298,7 @@ From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 **Cause** The gateway is a systemd user service. A user service starts when the
 user signs in. A device with no screen never signs in.
 
-<!-- source: install.sh:2719-2723#bf1269bd -->
+<!-- source: install.sh:2829-2833#bf1269bd -->
 
 **Fix**
 
@@ -303,7 +329,7 @@ or configure plugins.entries.device-pair.config.publicUrl.
 front door. The pairing plugin does not know that the front door exists. It
 needs the public URL.
 
-<!-- source: install.sh:2261-2278#ffe8b2e4 -->
+<!-- source: install.sh:2371-2388#ffe8b2e4 -->
 
 **Fix**
 
@@ -374,7 +400,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:3321-3390#d970b544; install.sh:3188-3238#a3eb07c3; install.sh:3170-3173,3188-3242#49197cea -->
+<!-- source: install.sh:3431-3500#d970b544; install.sh:3298-3348#a3eb07c3; install.sh:3280-3283,3298-3352#49197cea -->
 
 ### The phone pairs, but it has no permissions
 
@@ -419,7 +445,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:3410-3414#3c1e6011; install.sh:3494-3497#b1e28ef5 -->
+<!-- source: install.sh:3520-3524#3c1e6011; install.sh:3604-3607#b1e28ef5 -->
 
 ## Phone calls go unanswered
 
@@ -428,7 +454,7 @@ the installation and keeps your settings. You do this one time.
 to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
 registration is missing, so calls from the provider never arrive.
 
-<!-- source: cli/teaport:361-470#af1eefc6 -->
+<!-- source: cli/teaport:366-475#af1eefc6 -->
 
 **Fix**
 
@@ -448,7 +474,7 @@ registration is missing, so calls from the provider never arrive.
 plain `espeak-ng`, which has no word stress: short words sound too long, and the
 rhythm is wrong.
 
-<!-- source: install.sh:697#649012b4; install.sh:1204-1205#12d8444d -->
+<!-- source: install.sh:798#649012b4; install.sh:1308-1309#12d8444d -->
 
 **Fix**
 
@@ -487,7 +513,7 @@ read Chinese through the Mandarin dictionary,
 speak without tones. The other voices are not affected. The installer's checks
 report `running WITHOUT the Mandarin dict`.
 
-<!-- source: install.sh:1416-1421#5b5b2217; install.sh:4204-4207#3dd0b60f -->
+<!-- source: install.sh:1526-1531#5b5b2217; install.sh:4336-4339#3dd0b60f -->
 
 **Fix**
 
@@ -517,7 +543,7 @@ when `engine.env` sets `VOX_TTS_WATERMARK=0`. If `engine.env` sets
 watermark, and the installer's checks report `running WITHOUT the AI
 watermark`.
 
-<!-- source: install.sh:1262-1264,3128-3132,4211-4213,1426-1428#41f37ed9 -->
+<!-- source: install.sh:1366-1368,3238-3242,4343-4345,1536-1538#41f37ed9 -->
 
 **Fix**
 
@@ -612,7 +638,7 @@ The installer's model question offers the name the endpoint takes:
 `openai/gpt-oss-120b` for OpenRouter, `gpt-oss-120b` for any other endpoint. A
 model you type yourself is written as you typed it.
 
-<!-- source: install.sh:2808-2816,2843-2849#4287c4a8; install.sh:2863-2866#cefd034b -->
+<!-- source: install.sh:2918-2926,2953-2959#4287c4a8; install.sh:2973-2976#cefd034b -->
 
 A re-run that names an endpoint and no model keeps the model the device has while
 the endpoint takes the same kind of name, and writes the new endpoint's name when it
@@ -620,7 +646,7 @@ moves between OpenRouter and any other endpoint. A move between two other endpoi
 Groq and Cerebras for example, keeps a model you chose yourself; if the new endpoint
 doesn't serve that name, give the model too, at the prompt or in `TEAPORT_LLM_MODEL`.
 
-<!-- source: install.sh:2853-2861#b3851890 -->
+<!-- source: install.sh:2963-2971#b3851890 -->
 
 ## teaport says it can't answer questions yet
 
@@ -728,7 +754,7 @@ run out, and asks you to connect your own account.
 token. It then skips the memory tools, and logs
 `no gateway token; skipping tool`.
 
-<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2701-2714#3bb53588; install.sh:2700-2713#e0d335b8 -->
+<!-- source: brain/teaport_brain/openclaw_client.py:149#d3cc622a; install.sh:2811-2824#3bb53588; install.sh:2810-2823#e0d335b8 -->
 
 **Fix**
 

@@ -1,0 +1,20 @@
+# The keys a teaport release is signed with (ssh-keygen -Y verify's allowed_signers format),
+# in two namespaces: teaport-manifest for the release manifests (manifest/<channel>.json is
+# trusted only when manifest/<channel>.json.sig verifies against one of these), and
+# teaport-bootstrap for the one-line installer (install-bootstrap.sh.sig). The brain
+# package ships this file as /usr/lib/teaport/allowed_signers, which `teaport update`, the
+# brain's release check and install.sh read; install.sh reads the copy in its own checkout
+# on a box that has no package yet, and install-bootstrap.sh carries a copy of this whole
+# file (a test keeps the two the same). packaging/RELEASING.md says how to sign.
+#
+# Two keys, each on its own line: the main key, which signs releases, and the backup, kept
+# elsewhere, which signs only when the main key is lost or leaked (RELEASING.md, rotation).
+# One line each:
+#   <principal> namespaces="teaport-manifest,teaport-bootstrap" ssh-ed25519 <public key>
+#
+# PLACEHOLDER: the release keys do not exist yet. Until the two lines below are real keys,
+# nothing verifies (every manifest is refused), and packaging/build-deb.sh refuses a
+# release build while the word PLACEHOLDER is anywhere in this file. Replace the two lines
+# with the keys' lines and delete this paragraph.
+# PLACEHOLDER release-main namespaces="teaport-manifest,teaport-bootstrap" ssh-ed25519 <main public key>
+# PLACEHOLDER release-backup namespaces="teaport-manifest,teaport-bootstrap" ssh-ed25519 <backup public key>

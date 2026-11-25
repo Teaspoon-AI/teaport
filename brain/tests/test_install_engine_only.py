@@ -101,7 +101,8 @@ LAYOUT += 'ENGINE_RECORD="$T/state/engine.release"\n'
 ENGINE_FNS = ["read_env_file", "write_root", "engine_fetch", "engine_entry_py", "engine_describe", "engine_copies",
               "engine_swap_abort", "engine_swap_recover",
               "engine_keep_live", "engine_swap_in", "engine_restore", "engine_rollback_target",
-              "engine_prune", "manifest_take_py", "manifest_take", "engine_record", "engine_release_from"]
+              "engine_prune", "manifest_take_py", "manifest_take", "engine_record", "voxtral_aux",
+              "sha256_ok", "engine_release_from"]
 
 
 def _run(tmp, script, fns=(), env=None):
@@ -199,7 +200,10 @@ def test_main_sends_each_component_to_its_own_path():
 def _dry_run(tmp):
     env = {"TEAPORT_PREFIX": f"{tmp}/opt", "TEAPORT_ETC": f"{tmp}/etc", "TEAPORT_STATE": f"{tmp}/state",
            "TEAPORT_SECRETS_DIR": f"{tmp}/secrets", "HOME": f"{tmp}/home", "TMPDIR": tempdir("teaport-mf-"),
-           "TEAPORT_MANIFEST_URL": str(REPO / "manifest/stable.json")}
+           "TEAPORT_MANIFEST_URL": str(REPO / "manifest/stable.json"),
+           # The checkout's manifest, signed or not: this is about the plan, not the
+           # signature (test_manifest_sig.py).
+           "TEAPORT_MANIFEST_UNSIGNED": "0" if (REPO / "manifest/stable.json.sig").exists() else "1"}
     for k in ("TEAPORT_ALLOW_NON_JETSON", "TEAPORT_BRAIN_SRC", "TEAPORT_ENGINE_PORT"):
         env[k] = ""
     return _install("--only", "engine", "--dry-run", env=env)
@@ -846,12 +850,12 @@ def test_a_partial_download_resumes_only_into_the_same_file():
     _engine(tmp, "old")
     dest = pathlib.Path(tmp, "opt/engine.staged/models/voxtral/consolidated.safetensors")
     _write(f"{dest}.part", "half\n")
-    _write(f"{dest}.sha256", "aaaa\n")
+    _write(f"{dest}.sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
     stub = 'download() { if [ -e "$2.part" ]; then echo "RESUME $(cat "$2.part")"; else echo FRESH; fi; }\n'
-    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors aaaa', ENGINE_FNS)
+    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ENGINE_FNS)
     assert rc == 0 and "RESUME half" in out, out
-    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors bbbb', ENGINE_FNS)
-    assert rc == 0 and "FRESH" in out and dest.with_name(dest.name + ".sha256").read_text() == "bbbb\n", out
+    rc, out = _run(tmp, stub + 'engine_fetch u models/voxtral/consolidated.safetensors bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', ENGINE_FNS)
+    assert rc == 0 and "FRESH" in out and dest.with_name(dest.name + ".sha256").read_text() == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n", out
 
 
 def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
@@ -859,7 +863,7 @@ def test_a_download_that_fails_its_sha_is_removed_not_resumed_forever():
     dest = pathlib.Path(tmp, "f.bin")
     script = ('curl() { local o; while [ $# -gt 0 ]; do [ "$1" = -o ] && o="$2"; shift; done; echo corrupt > "$o"; }\n'
               f'download https://x/f.bin "{dest}" {_sha("good" + chr(10))}')
-    rc, out = _run(tmp, script, ["download"])
+    rc, out = _run(tmp, script, ["download", "sha256_ok"])
     assert rc != 0 and "sha256 mismatch" in out and not pathlib.Path(f"{dest}.part").exists(), out
 
 

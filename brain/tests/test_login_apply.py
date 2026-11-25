@@ -728,8 +728,10 @@ def test_the_package_ships_the_helper_on_the_system_python():
     imports = set(re.findall(r"^(?:import|from) (\w+)", (ROOT / "brain/teaport_brain/login_apply.py").read_text(), re.M))
     assert imports <= {"ctypes", "fcntl", "json", "os", "resource", "signal", "stat", "subprocess",
                        "sys", "unicodedata"}, imports
-    ci = (ROOT / ".github/workflows/ci.yml").read_text()
-    assert "/usr/lib/teaport/login_apply.py" in ci   # compiled on the installed package
+    # compiled on the installed package, by the checks ci.yml and release-deb.yml share
+    ci = (ROOT / ".github/actions/brain-deb-check/action.yml").read_text()
+    assert "/usr/lib/teaport/login_apply.py" in ci
+    assert "./.github/actions/brain-deb-check" in (ROOT / ".github/workflows/ci.yml").read_text()
 
 
 def test_nothing_that_installs_or_updates_touches_the_marker():

@@ -164,11 +164,16 @@ if not isinstance(u, dict) or u.get("state") not in ("unknown", "current", "avai
 st = u["state"]
 ch = u.get("channel", "")
 stale = "" if u.get("fresh", True) else " (last check failed; this is the last known)"
+nope = ", ".join(u.get("not_offered") or [])
 text = {"unknown": "not checked yet",
-        "current": ("the %s channel names an older release than this box has%s" if u.get("older")
-                    else "up to date (%s)%s") % (ch, stale),
-        "available": "a new release is out on %s: %s%s -- teaport update" % (
-            ch, ", ".join(u.get("changed") or []), stale)}[st]
+        "current": ("the %s channel names an older release than this box has%s" % (ch, stale) if u.get("older")
+                    else "the %s channel names a release teaport update does not install (%s)%s" % (ch, nope, stale)
+                    if nope else "up to date (%s)%s" % (ch, stale)),
+        # What is out and what installs it: the parts teaport update would not install
+        # (not_offered) are not listed, and with no step a full install.sh run is the way.
+        "available": "a new release is out on %s: %s%s -- %s" % (
+            ch, ", ".join(u.get("manual") or [] if u.get("not_offered") else u.get("changed") or []), stale,
+            "teaport update" if u.get("steps") or "steps" not in u else "a full install.sh run")}[st]
 print("%s\t%s" % (st, text))' 2>/dev/null)" || return 0
   # One being installed says so instead: the brain's look predates it.
   if update_running; then line="available"$'\t'"an update is being installed now -- teaport update --status"; fi

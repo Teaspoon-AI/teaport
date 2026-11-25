@@ -42,6 +42,9 @@ import appliance
 from tempdirs import tempdir
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+# The commit a manifest names for its installer's tag (brain.commit), and another one.
+COMMIT = "c0ffee" + "0" * 34
+OTHER = "beef" + "0" * 36
 HELPER = ROOT / "packaging/deb/update_apply.py"
 INSTALL = ROOT / "install.sh"
 CLI = ROOT / "cli/teaport"
@@ -56,11 +59,16 @@ def _helper(state):
     mod.ROOT_UID = os.getuid()
     mod.run_user = lambda: os.environ.get("USER") or __import__("pwd").getpwuid(os.getuid()).pw_name
     def read_manifest(channel, dest):
-        manifest = {"channel": channel, "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1",
+        manifest = {"channel": channel, "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1", "commit": COMMIT,
                     "deb": {"url": "https://get.teaspoon.tech/dl/brain/teaport-brain_0.1.1_arm64.deb"}}}
         pathlib.Path(dest).write_text(json.dumps(manifest))
         return manifest
     mod.read_manifest = read_manifest
+    # The package's manifest_sig (read_source reads tags with it), from the repository.
+    sig_spec = importlib.util.spec_from_file_location("manifest_sig_for_apply", ROOT / "brain/teaport_brain/manifest_sig.py")
+    sig = importlib.util.module_from_spec(sig_spec)
+    sig_spec.loader.exec_module(sig)
+    mod.signature_check = lambda: sig
     mod.box_brain = lambda: "0.1.0"   # the brain on the box, in any state: older than the release
     mod.box_engine = lambda: None     # no installed engine record root alone can write
     return mod
@@ -126,13 +134,14 @@ def test_a_run_installs_the_steps_in_order_for_the_brains_user():
     # Root's own HOME: no tool the root run starts reads a config from the run user's home.
     assert env["TEAPORT_USER"] == user and env["HOME"] == "/root", env
     assert env["TEAPORT_SECRETS_DIR"] == os.path.join(home, ".config", "teaport"), env
-    # This run's own copy of the channel's manifest (read once, in the work directory).
-    assert env["TEAPORT_MANIFEST_URL"].endswith("/manifest.json"), env
+    # This run's own copy of the channel's manifest (read once, in the work directory), named
+    # for its channel (test_manifest_sig.py: verified, and verified again by install.sh).
+    assert env["TEAPORT_MANIFEST_URL"].endswith("/stable.json"), env
     assert int(env["TEAPORT_WAIT_IDLE_SECS"]) > 0, env
     # The channel is the run user's to pick: an update never installs an older brain.
     assert env["TEAPORT_NEWER_ONLY"] == "1", env
     # The installer the channel's manifest names (read_source), not one the plan names.
-    assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}
+    assert clones[0][0] == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1", "commit": COMMIT}
     assert not os.path.exists(clones[0][1]), "the clone is removed after the run"
     with open(mod.LOG) as f:
         assert f.read() == "output of engine\noutput of brain\n"
@@ -232,22 +241,24 @@ def test_the_brains_code_runs_as_the_run_user_and_its_answer_is_only_data():
 
 
 def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
-    spec = importlib.util.spec_from_file_location("ua_src", HELPER)
-    real = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(real)
+    from test_manifest_sig import KEYS, _apply   # throwaway release keys, the check trusting them
+    real = _apply(tempdir("teaport-apply-lib-"))
     asked = []
     w = tempdir("teaport-apply-man-")
 
     def fetch(manifest):
+        body = json.dumps(manifest).encode()
+
         def f(url):
             asked.append(url)
-            return json.dumps(manifest).encode()
+            return KEYS.sign(body) if url.endswith(".sig") else body
         return f
     got = real.read_manifest("beta", os.path.join(w, "m1.json"),
-                             fetch=fetch({"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}}))
-    assert asked == ["https://get.teaspoon.tech/manifest/beta.json"], asked
+                             fetch=fetch({"channel": "beta", "brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0", "commit": COMMIT}}))
+    assert asked == ["https://get.teaspoon.tech/manifest/beta.json",
+                     "https://get.teaspoon.tech/manifest/beta.json.sig"], asked
     assert json.loads(pathlib.Path(w, "m1.json").read_text()) == got   # the copy the steps install from
-    assert real.read_source(got) == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}
+    assert real.read_source(got) == {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0", "commit": COMMIT}
     for manifest in ({"brain": {"repo": "evil/teaport", "tag": "v1"}}, {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "TODO"}},
                      {"brain": {"repo": "Teaspoon-AI/teaport"}}, {}):
         try:
@@ -256,8 +267,22 @@ def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
             assert "names no installer" in str(e), e
         else:
             raise AssertionError(manifest)
-    for i, bad in enumerate((lambda url: (_ for _ in ()).throw(OSError("offline")), lambda url: b"not json",
-                             lambda url: b"[]")):
+    # The signed manifest pins the tag's commit: none, or not a full commit id, is no installer.
+    for commit in (None, "TODO", "c0ffee", COMMIT.upper(), 7):
+        brain = {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0"}
+        if commit is not None:
+            brain["commit"] = commit
+        try:
+            real.read_source({"brain": brain})
+        except RuntimeError as e:
+            assert "names no commit" in str(e), e
+        else:
+            raise AssertionError(commit)
+    # Offline; signed but not a JSON object (or no JSON at all); unsigned.
+    def signed(body):
+        return lambda url: KEYS.sign(body) if url.endswith(".sig") else body
+    for i, bad in enumerate((lambda url: (_ for _ in ()).throw(OSError("offline")), signed(b"not json"),
+                             signed(b"[]"), lambda url: b"{}")):
         try:
             real.read_manifest("stable", os.path.join(w, f"x{i}.json"), fetch=bad)
         except RuntimeError as e:
@@ -273,7 +298,7 @@ def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
     def read_manifest(channel, dest):
         seen.append(channel)
         pathlib.Path(dest).write_text("{}")
-        return {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0",
+        return {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.2.0", "commit": COMMIT,
                           "deb": {"url": "https://get.teaspoon.tech/dl/brain/teaport-brain_0.2.0_arm64.deb"}}}
     mod.read_manifest = read_manifest
     mod.clone = lambda source, into: (seen.append(source["tag"]), into)[1]
@@ -281,7 +306,7 @@ def test_the_installer_is_read_from_the_channels_manifest_and_only_teaports():
     assert mod.main() == 0
     assert seen == ["beta", "brain-v0.2.0"], seen
     assert {e["TEAPORT_MANIFEST_URL"] for e in envs} == {envs[0]["TEAPORT_MANIFEST_URL"]}
-    assert envs[0]["TEAPORT_MANIFEST_URL"].endswith("/manifest.json"), envs[0]
+    assert envs[0]["TEAPORT_MANIFEST_URL"].endswith("/beta.json"), envs[0]
 
 
 def test_an_absent_brain_unit_is_not_taken_for_a_root_brain():
@@ -308,45 +333,95 @@ def test_the_plan_and_the_clone_take_nothing_they_are_not_sure_of():
     mod = _helper(tempdir("teaport-apply-"))
     P = _P
     # A release tag, the checkout at its commit, an installer that says UPDATE_PROTOCOL=1.
-    def git_fake(tags, head="c0ffee", protocol=True):
+    def git_fake(tags, head=COMMIT, protocol=True, fetched=COMMIT):
         calls = []
 
         def runner(cmd, **k):
             calls.append((cmd, k))
-            if cmd[1] == "ls-remote":
+            sub = next(a for i, a in enumerate(cmd[1:], 1) if not a.startswith("-") and cmd[i - 1] != "-c")
+            if sub == "ls-remote":
                 return P(0, "".join(f"{sha}\t{ref}\n" for ref, sha in tags.items()))
-            if cmd[1] == "clone":
+            if sub == "init":
                 os.makedirs(cmd[-1])
-                pathlib.Path(cmd[-1], "install.sh").write_text(
+                return P(0)
+            if sub == "fetch":
+                pathlib.Path(k["cwd"], "install.sh").write_text(
                     "#!/bin/bash\nset -e\n" + ("UPDATE_PROTOCOL=1\n" if protocol else "") + "main\n")
                 return P(0)
-            if cmd[1] == "rev-parse":
-                return P(0, head + "\n")
+            if sub == "rev-parse":
+                return P(0, (head if cmd[-1] == "HEAD" else fetched) + "\n")
+            if sub == "checkout":
+                return P(0)
             raise AssertionError(cmd)
         return runner, calls
     w = tempdir("teaport-clone-")
-    runner, calls = git_fake({"refs/tags/brain-v0.1.1": "aaa", "refs/tags/brain-v0.1.1^{}": "c0ffee"})
-    got = mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}, w, runner=runner)
+    runner, calls = git_fake({"refs/tags/brain-v0.1.1": "aaa", "refs/tags/brain-v0.1.1^{}": COMMIT})
+    got = mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1", "commit": COMMIT}, w, runner=runner)
     assert got == os.path.join(w, "teaport"), got
-    clone_cmd, k = next((c, k) for c, k in calls if c[1] == "clone")
-    assert clone_cmd[-3:] == ["brain-v0.1.1", "https://github.com/Teaspoon-AI/teaport.git", got], clone_cmd
-    assert "--depth" in clone_cmd and k["env"]["GIT_TERMINAL_PROMPT"] == "0" and k["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
+    # The tag by its full ref (never a branch of the same name), over the pack transport with
+    # every object checked, then the signed commit by its id.
+    fetch_cmd, k = next((c, k) for c, k in calls if "fetch" in c)
+    assert fetch_cmd[1:3] == ["-c", "transfer.fsckObjects=true"], fetch_cmd
+    assert fetch_cmd[-2:] == ["https://github.com/Teaspoon-AI/teaport.git",
+                              "+refs/tags/brain-v0.1.1:refs/tags/brain-v0.1.1"], fetch_cmd
+    assert "--depth" in fetch_cmd and "--no-tags" in fetch_cmd and k["cwd"] == got, fetch_cmd
+    assert k["env"]["GIT_TERMINAL_PROMPT"] == "0" and k["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert any(c[-1] == COMMIT and "checkout" in c for c, _ in calls), calls
+    assert not any("clone" in c for c, _ in calls), calls
     # A branch (no such tag: "main" moves), a checkout not at the tag, an older installer.
-    for tags, head, protocol, why in (
-            ({}, "c0ffee", True, "not a release tag"),
-            ({"refs/tags/brain-v0.1.1": "c0ffee"}, "beef", True, "is not at brain-v0.1.1"),
-            ({"refs/tags/brain-v0.1.1": "c0ffee"}, "c0ffee", False, "predates teaport update")):
-        runner, calls = git_fake(tags, head, protocol)
+    # A tag moved off the commit the signed manifest names (lightweight or annotated), too:
+    # nothing of it is fetched.
+    for tags, head, protocol, fetched, why in (
+            ({}, COMMIT, True, COMMIT, "not a release tag"),
+            ({"refs/tags/brain-v0.1.1": OTHER}, COMMIT, True, COMMIT, "the tag was moved"),
+            ({"refs/tags/brain-v0.1.1": COMMIT, "refs/tags/brain-v0.1.1^{}": OTHER}, COMMIT, True, COMMIT, "the tag was moved"),
+            ({"refs/tags/brain-v0.1.1": COMMIT}, COMMIT, True, OTHER, "not the release's"),
+            ({"refs/tags/brain-v0.1.1": COMMIT}, OTHER, True, COMMIT, "is not at brain-v0.1.1"),
+            ({"refs/tags/brain-v0.1.1": COMMIT}, COMMIT, False, COMMIT, "predates teaport update")):
+        runner, calls = git_fake(tags, head, protocol, fetched)
         try:
-            mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}, tempdir("teaport-clone-"), runner=runner)
+            mod.clone({"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1", "commit": COMMIT}, tempdir("teaport-clone-"), runner=runner)
         except RuntimeError as e:
             assert why in str(e), (why, e)
         else:
             raise AssertionError(why)
+        if why == "the tag was moved":
+            assert not any("fetch" in c for c, _ in calls), calls
     try:
-        mod.clone({"repo": "a/b", "tag": "main"}, "/w", runner=lambda *a, **k: P(128, err="fatal: not found"))
+        mod.clone({"repo": "a/b", "tag": "main", "commit": COMMIT}, "/w", runner=lambda *a, **k: P(128, err="fatal: not found"))
     except RuntimeError as e:
         assert "fatal: not found" in str(e)
+
+
+def test_the_installer_is_fetched_by_its_tag_with_every_object_checked():
+    # A real repository: a branch named like the tag (git clone --branch would take it), and
+    # a copy that forges install.sh's blob under the signed commit (a plain-path clone would
+    # take it as it is). The tag is fetched by its full ref over the pack transport, which
+    # re-hashes every object: the release's commit, or nothing.
+    from test_install_bootstrap import TAG, Release, _forge, _git
+    r = Release()
+    _git(r.bare, "branch", TAG, r.first)
+    base = tempdir("teaport-apply-git-")
+    os.makedirs(os.path.join(base, "Teaspoon-AI"))
+    shutil.copytree(r.bare, os.path.join(base, "Teaspoon-AI", "teaport.git"))
+    mod = _helper(tempdir("teaport-apply-"))
+    source = {"repo": "Teaspoon-AI/teaport", "tag": TAG, "commit": r.commit}
+    for git_base in (base, f"file://{base}"):
+        mod.GIT_BASE = git_base
+        got = mod.clone(source, tempdir("teaport-apply-co-"))
+        assert _git(got, "rev-parse", "HEAD") == r.commit, git_base
+        assert "INSTALL ran" in pathlib.Path(got, "install.sh").read_text()
+    _forge(os.path.join(base, "Teaspoon-AI", "teaport.git"), r.commit)
+    for git_base in (base, f"file://{base}"):
+        mod.GIT_BASE = git_base
+        w = tempdir("teaport-apply-co-")
+        try:
+            mod.clone(source, w)
+        except RuntimeError as e:
+            assert "could not fetch the installer" in str(e), e
+        else:
+            raise AssertionError(f"a forged object was taken from {git_base}")
+        assert not os.path.exists(os.path.join(w, "teaport", "install.sh")), os.listdir(os.path.join(w, "teaport"))
 
 
 def test_a_step_reports_installs_last_error_line():
@@ -687,7 +762,7 @@ def test_an_older_release_is_refused_before_anything_of_it_is_fetched_or_run():
     st = _status(mod)
     assert st["state"] == "failed" and "older release (brain 0.1.1) than this box has (0.1.2)" in st["message"], st
     # A manifest naming no brain package cannot be told from an older one.
-    mod.read_manifest = lambda channel, dest: {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1"}}
+    mod.read_manifest = lambda channel, dest: {"brain": {"repo": "Teaspoon-AI/teaport", "tag": "brain-v0.1.1", "commit": COMMIT}}
     mod.box_brain = lambda: "0.1.0"
     assert mod.main() == 1 and "names no brain package" in _status(mod)["message"]
 
@@ -903,7 +978,10 @@ def test_a_root_run_reads_no_configuration_from_a_home():
                 continue   # an instruction for a person, not a command
             assert m.group(1) == "-q", f"curl without -q first: {ln}"
     git = [ln for ln in code if re.search(r"\bgit -C", ln)]
-    assert all("fetch" in ln or "config core.sshCommand" in ln for ln in git), git   # the operator's own fetch only
+    # The operator's own fetch, and the bridge's checkout, which root made itself (SUDO git
+    # init in $STATE: its config is the one git init wrote).
+    assert all("fetch" in ln or "config core.sshCommand" in ln or 'SUDO git -C "$work" ' in ln
+               for ln in git), git
     homes = [ln for ln in code if "$HOME" in ln]
     assert homes == ['RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6 || true)"; RUN_HOME="${RUN_HOME:-$HOME}"'], homes
     assert "\nUPDATE_PROTOCOL=1\n" in INSTALL.read_text()

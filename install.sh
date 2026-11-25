@@ -69,7 +69,10 @@
 # takes that record; after, the box's owner accepts as above.
 #
 # Env overrides (mainly for dev/testing):
-#   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
+#   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json);
+#                          its signature, <url>.sig or <path>.sig, must verify (see fetch_manifest)
+#   TEAPORT_MANIFEST_UNSIGNED=1  install from a LOCAL manifest that has no signature beside it
+#                          (a dev box's own manifest; a URL is always verified)
 #   TEAPORT_PREFIX         install root (default /opt/teaport; the brain package only installs there)
 #   TEAPORT_ETC            non-secret env dir (default /etc/teaport)
 #   TEAPORT_BRAIN_DEB      install the brain from this teaport-brain .deb (default: the manifest's)
@@ -292,23 +295,91 @@ brain_tree_needed() {
 }
 
 # --- manifest ----------------------------------------------------------------
-MF=""  # local path to the fetched manifest
-GATED=()     # the manifest's access.gated: URL prefixes that download only with DL_TOKEN
+# A release manifest is trusted for its signature, not for where it was read: <manifest>.sig
+# must verify against the release keys (brain/teaport_brain/manifest_sig.py, which runs
+# ssh-keygen -Y verify) before anything is read out of it, and a manifest named
+# <channel>.json must say it is that channel's. The keys are the brain package's
+# ($MANIFEST_SIGNERS_PKG), else, on a box with no package yet (a first install), this
+# checkout's manifest/allowed_signers. A URL, a file:// URL and a path are treated alike: the
+# signature is read from beside the manifest (<url>.sig, <path>.sig), so a local mirror that
+# copies both verifies as the download host does. Only a LOCAL manifest with no .sig beside
+# it can be let through, and only when the person running this asks for it on purpose:
+# TEAPORT_MANIFEST_UNSIGNED=1 (a dev box's own manifest). teaport update never sets it: it
+# hands this run its own copy of the manifest it verified, the signature beside it, and that
+# pair is verified again here.
+MANIFEST_SIGNERS_PKG=/usr/lib/teaport/allowed_signers
+# The download host: every artifact, and the license gate's api and gated prefixes, are on it
+# (manifest/check.py's HOST).
+DOWNLOAD_HOST=get.teaspoon.tech
+MANIFEST_CHECK_PY="$HERE/brain/teaport_brain/manifest_sig.py"
+MANIFEST_UNSIGNED="${TEAPORT_MANIFEST_UNSIGNED:-0}"
+MF=""      # local path to the fetched manifest (its signature, when it has one, at $MF.sig)
+GATED=()     # the verified manifest's access.gated: URL prefixes that download only with DL_TOKEN
 DL_TOKEN=""  # eula_gate's: the download token for this run's acceptance
+MF_DIR=""  # the private directory (mktemp -d) both are in, removed when the run exits
+manifest_cleanup() {
+  if [ -n "${MF_DIR:-}" ]; then rm -rf "$MF_DIR"; fi
+}
+# exit_trap_base — the run's standing EXIT trap: the manifest's cleanup, and the old SIP
+# brain put back while it is detached. A trap set for a while (the OpenClaw gateway's) runs
+# its own command and then this, and goes back to this when it is done, never clearing it.
+# Each cleanup runs on its own (|| true): one that fails, under set -e, does not skip the
+# next.
+exit_trap_base() {
+  if [ "${SIP_BRAIN_DETACHED:-0}" = 1 ]; then echo 'sip_brain_restore || true; manifest_cleanup || true'
+  else echo 'manifest_cleanup || true'; fi
+}
+manifest_signers() {
+  if [ -f "$MANIFEST_SIGNERS_PKG" ]; then echo "$MANIFEST_SIGNERS_PKG"; else echo "$HERE/manifest/allowed_signers"; fi
+}
 fetch_manifest() {
-  MF="$(mktemp)"
+  # A directory of the run's own: a name beside a mktemp file in /tmp ($MF.sig) is one
+  # another user could create first.
+  manifest_cleanup
+  MF_DIR="$(mktemp -d)" || die "cannot make a temporary directory for the manifest"
+  # The run's EXIT trap; sip_brain_detach's, when that came first, is kept in it.
+  trap "$(exit_trap_base)" EXIT
+  MF="$MF_DIR/manifest.json"
+  local src="${MANIFEST_URL#file://}" said rc=0 unsigned=()
   case "$MANIFEST_URL" in
-    /*|file://*) cp "${MANIFEST_URL#file://}" "$MF" ;;
-    *) curl -q -fsSL --retry 3 -o "$MF" "$MANIFEST_URL" || die "cannot fetch manifest: $MANIFEST_URL" ;;
+    /*|file://*)
+      cp "$src" "$MF" || die "cannot read manifest: $src"
+      if [ -f "$src.sig" ]; then cp "$src.sig" "$MF.sig" || die "cannot read the manifest's signature: $src.sig"; fi
+      # Local: an absolute path or file:// only (manifest_sig.is_local says the same).
+      [ "$MANIFEST_UNSIGNED" != 1 ] || unsigned=(--unsigned-ok) ;;
+    *)
+      curl -q -fsSL --retry 3 -o "$MF" "$MANIFEST_URL" || die "cannot fetch manifest: $MANIFEST_URL"
+      # No signature there: none here, and the check below refuses the manifest.
+      curl -q -fsSL --retry 3 -o "$MF.sig" "$MANIFEST_URL.sig" 2>/dev/null || rm -f "$MF.sig" ;;
   esac
-  python3 -I -c "import json;json.load(open('$MF'))" 2>/dev/null || die "manifest is not valid JSON"
-  mapfile -t GATED < <(python3 -I - "$MF" <<'PY'
-import json, sys
-for p in (json.load(open(sys.argv[1])).get("access") or {}).get("gated") or []:
-    if isinstance(p, str) and p.startswith("https://"):
-        print(p)
+  said="$(python3 -I "$MANIFEST_CHECK_PY" check "$MF" "$MF.sig" "$(manifest_signers)" \
+            --source "$MANIFEST_URL" ${unsigned[@]+"${unsigned[@]}"} 2>&1)" || rc=$?
+  [ "$rc" = 0 ] || die "the release manifest is refused, nothing was installed: $said"
+  if [ -f "$MF.sig" ]; then log "manifest $MANIFEST_URL: $said"; else warn "manifest: $said (TEAPORT_MANIFEST_UNSIGNED=1)"; fi
+  # Read only from the verified copy: which downloads carry the license gate's token, and
+  # where who accepts the license (and later the acceptance id) is sent. Both must be https
+  # on the download host, as manifest/check.py and the signing helper require: a backstop,
+  # so a manifest that names another host for them is refused here too.
+  local gated
+  gated="$(python3 -I - "$MF" "$DOWNLOAD_HOST" <<'PY'
+import json, re, sys
+access = json.load(open(sys.argv[1])).get("access")
+if access is None:
+    sys.exit(0)
+url = re.compile(r"https://" + re.escape(sys.argv[2]) + r"((?:/(?!\.\.?(?:/|$))[A-Za-z0-9._~-]+)+)(/?)")
+def ok(value, prefix):
+    m = url.fullmatch(value) if isinstance(value, str) else None
+    return bool(m) and (m.group(2) == "/" or not prefix)
+gated = access.get("gated") if isinstance(access, dict) else None
+if not (isinstance(access, dict) and ok(access.get("api"), False) and isinstance(gated, list)
+        and all(ok(p, True) for p in gated)):
+    sys.exit(f"the release manifest's access (api, gated) is not https on {sys.argv[2]}")
+for p in gated:
+    print(p)
 PY
-)
+)" || die "the release manifest is refused, nothing was installed: its license gate is not on $DOWNLOAD_HOST"
+  GATED=()
+  if [ -n "$gated" ]; then mapfile -t GATED <<<"$gated"; fi
 }
 # mget <dotted.key.path> — read a string leaf out of the manifest (python3 = always present).
 mget() { python3 -I - "$MF" "$1" <<'PY'
@@ -318,6 +389,25 @@ for k in sys.argv[2].split("."):
     d = d[k]
 print(d)
 PY
+}
+
+# voxtral_aux <aux|aux_sha256> <file name> — one entry of models.voxtral's aux maps ("" when
+# there is none); the names have dots in them, which mget's dotted path cannot say.
+voxtral_aux() { python3 -I - "$MF" "$1" "$2" <<'PY'
+import json, sys
+node = (json.load(open(sys.argv[1])).get("models") or {}).get("voxtral") or {}
+value = (node.get(sys.argv[2]) or {}).get(sys.argv[3], "")
+print(value if isinstance(value, str) else "")
+PY
+}
+
+# sha256_ok <sha256> <what> -- die unless <sha256> is exactly 64 lowercase hex characters.
+# sha256sum -c reads a value with a newline in it as several lines, and passes once one of them
+# checks out ("<sha of anything>  /dev/null\nx" would accept any file): every manifest sha256
+# goes through this before it reaches sha256sum.
+sha256_ok() {
+  [[ "$1" =~ ^[0-9a-f]{64}$ ]] \
+    || die "the manifest's sha256 for $2 is not 64 lowercase hex characters — nothing is installed unchecked; republish the manifest"
 }
 
 # gated <url> — whether <url> downloads only with the license gate's token (access.gated).
@@ -334,7 +424,14 @@ download() {
     [ "$DRY_RUN" = 1 ] && { warn "placeholder artifact $(basename "$dest") — a real install is blocked until artifacts publish"; return 0; }
     die "artifact not published yet: $(basename "$dest") — the manifest has a placeholder url/sha"
   fi
-  if [ -f "$dest" ] && [ -n "$sha" ] && echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
+  # Nothing is installed unchecked: a manifest that names no sha256 for an artifact (a key
+  # left out) would let whoever serves the url choose its bytes.
+  if [ -z "$sha" ]; then
+    [ "$DRY_RUN" = 1 ] && { warn "the manifest names no sha256 for $(basename "$dest") — a real install stops here"; return 0; }
+    die "the manifest names no sha256 for $(basename "$dest") ($url) — nothing is installed unchecked; republish the manifest"
+  fi
+  sha256_ok "$sha" "$(basename "$dest")"
+  if [ -f "$dest" ] && echo "$sha  $dest" | sha256sum -c --status 2>/dev/null; then
     log "have $(basename "$dest") (sha ok)"; return
   fi
   if [ "$DRY_RUN" = 1 ]; then
@@ -344,7 +441,7 @@ download() {
   fi
   # A .part a stopped run left whole (curl had finished, the check had not): asking for the
   # bytes after its end is refused (416), so it is taken as it is.
-  if [ -n "$sha" ] && [ -f "$dest.part" ] && echo "$sha  $dest.part" | sha256sum -c --status 2>/dev/null; then
+  if [ -f "$dest.part" ] && echo "$sha  $dest.part" | sha256sum -c --status 2>/dev/null; then
     SUDO mv "$dest.part" "$dest"; log "have $(basename "$dest") (sha ok)"; return
   fi
   log "download $(basename "$dest")"
@@ -370,7 +467,9 @@ download() {
   done
   # A bad .part is removed: `curl -C -` would resume it on every later run (the engine's
   # stage is kept across runs, #158), and fail the same way each time.
-  [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }; }
+  # Every download is checked against the signed manifest's sha256 (gated ones too: the token
+  # opens the gate, the sha256 decides what is installed).
+  echo "$sha  $dest.part" | sha256sum -c --status || { SUDO rm -f "$dest.part"; die "sha256 mismatch: $dest (the download is removed; the next run starts it again)"; }
   SUDO mv "$dest.part" "$dest"
 }
 
@@ -586,12 +685,14 @@ eula_gate() {
     die "the engine license text is not published yet (manifest engine.eula.url is a placeholder)"
   fi
 
-  # Fetch + verify the text. Fail closed: a license you cannot read cannot be accepted.
+  # Fetch + verify the text. Fail closed: a license you cannot read cannot be accepted, and one
+  # the manifest names no checksum for is not shown as the license (like every download).
+  [ -n "$sha" ] && [ "$sha" != TODO ] \
+    || die "the manifest names no sha256 for the engine license (engine.eula.sha256) — republish the manifest"
+  sha256_ok "$sha" "the engine license"
   local txt; txt="$(mktemp)"
   curl -q -fsSL --retry 3 -o "$txt" "$url" || die "cannot fetch the engine license: $url"
-  if [ -n "$sha" ] && [ "$sha" != TODO ]; then
-    echo "$sha  $txt" | sha256sum -c --status || die "engine license text failed sha256 verification"
-  fi
+  echo "$sha  $txt" | sha256sum -c --status || die "engine license text failed sha256 verification"
 
   local method="tty"
   if [ -n "$ACCEPT_EULA" ]; then
@@ -877,8 +978,8 @@ setup_logs() {
 # binary over bin/voxtral writes into its inode, and would rewrite a linked copy with it.
 # A model the run does not replace is not kept (it is the same in both). So a copy made by
 # a run that changed a model holds the old model (the Voxtral one is ~4.4 GB) until it is
-# pruned. The models' tekken.json/params.json have no sha256 in the manifest; they are
-# fetched in place on every run, as before, and are not kept.
+# pruned. The models' tekken.json/params.json are fetched in place (checked against their
+# sha256 in models.voxtral.aux_sha256), and are not kept.
 # Swapping a release directory behind one symlink would make the swap one rename; it would
 # move the engine out of bin/ (which uv shares) and THIRD_PARTY_NOTICES.txt out of
 # $PREFIX, where the unit, doctor and the docs name them: a follow-up, not this.
@@ -897,6 +998,8 @@ ENGINE_KEPT=""      # the rollback copy this run made (engine_keep_live)
 # added to ENGINE_CHANGED. download() resumes a partial one and skips a whole one.
 engine_fetch() {
   local url="$1" rel="$2" sha="$3" dest="$ENGINE_STAGE/$2"
+  # Checked before it is compared with the live file too (download() checks it again).
+  if [ -n "$sha" ] && [[ "$url" != *TODO* ]] && [ "$sha" != TODO ]; then sha256_ok "$sha" "$rel"; fi
   if [ -f "$PREFIX/$rel" ] && echo "$sha  $PREFIX/$rel" | sha256sum -c --status 2>/dev/null; then
     log "have ${rel##*/} (sha ok)"
     if [ -e "$dest" ] || [ -e "$dest.part" ]; then SUDO rm -f "$dest" "$dest.part" "$dest.sha256"; fi
@@ -1172,7 +1275,8 @@ manifest_take() {
 
 # Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
 # REQUIRED, which the publish workflow checks before a manifest goes up: add one there
-# when adding one here. models.voxtral.aux is optional (a missing aux file is skipped).
+# when adding one here. models.voxtral.aux is optional (a file it does not name is skipped);
+# one it names needs its sha256 in models.voxtral.aux_sha256.
 phase_engine() {
   log "engine + models -> $PREFIX"
   # Root's (own_install_trees, at the start of the run); the engine reads them as the run user.
@@ -1296,14 +1400,20 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   # itself, right before its restart, so that it can check the result and put the previous
   # engine back, models included (engine_swap).
   if [ "$ONLY" != engine ]; then engine_swap_in; fi
-  # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*),
-  # with their sha256 in aux_sha256: one in place is not downloaded again (and asks the
-  # license server for no token).
+  # tekken.json / params.json ride alongside the voxtral model: their urls in
+  # models.voxtral.aux, their sha256s in models.voxtral.aux_sha256 (a sibling, so the
+  # {name: url} shape older installers read stays as it is). One the manifest names
+  # without a sha256 is refused, as every other artifact is.
+  local aux u sha
   for aux in tekken.json params.json; do
-    local u s; u="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux',{}).get('$aux',''))")"
-    s="$(python3 -I -c "import json;print(json.load(open('$MF'))['models']['voxtral'].get('aux_sha256',{}).get('$aux',''))")"
-    [ "$s" != TODO ] || s=""
-    [ -n "$u" ] && [ "$u" != TODO ] && download "$u" "$PREFIX/models/voxtral/$aux" "$s"
+    u="$(voxtral_aux aux "$aux")"; sha="$(voxtral_aux aux_sha256 "$aux")"
+    if [ -z "$u" ] || [ "$u" = TODO ]; then continue; fi
+    if [ -z "$sha" ]; then
+      local aux_msg="manifest has no sha256 for models.voxtral.aux $aux (models.voxtral.aux_sha256) — nothing is installed unchecked; republish the manifest"
+      if [ "$DRY_RUN" = 1 ]; then warn "$aux_msg"; continue; fi
+      die "$aux_msg"
+    fi
+    download "$u" "$PREFIX/models/voxtral/$aux" "$sha"
   done
   # --only engine records what it installed once the engine has come up on it (main_engine_only).
   if [ "$ONLY" != engine ]; then
@@ -2612,7 +2722,7 @@ agent_openclaw() {
     # deactivating, one mid restart.
     if systemctl --user stop openclaw-gateway.service; then
       gw_stopped=1
-      trap 'systemctl --user start openclaw-gateway.service || true' EXIT
+      trap "systemctl --user start openclaw-gateway.service || true; $(exit_trap_base)" EXIT
     else
       warn "could not stop the OpenClaw gateway: it may restart itself while it is set up"
     fi
@@ -2686,7 +2796,7 @@ JSON
         esac
         warn "openclaw gateway start failed (it did not start or report ready): check it with openclaw gateway status --deep"
       fi
-      trap - EXIT
+      trap "$(exit_trap_base)" EXIT
     else
       "$OPENCLAW" gateway restart
     fi
@@ -3693,11 +3803,31 @@ phase_bridge() {
   [ -z "$src" ] && [ -d "$HERE/bridge/discord" ] && src="$HERE/bridge/discord"
   if [ -z "$src" ]; then
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
+    # The one repository a release names (update_apply.REPO, the bootstrap's RELEASE_REPO).
+    [ "$repo" = Teaspoon-AI/teaport ] \
+      || die "the release manifest names $repo, not Teaspoon-AI/teaport: the Discord bridge is not fetched from another repository"
     work="$STATE/bridge-src"; own_dir "$STATE"
-    # Same re-run == repair fix as resolve_brain_src: `git clone` dies on a non-empty destination.
-    # This clone is pure staging too — index.js/env.js/package.json are copied out below.
+    # Same re-run == repair fix as resolve_brain_src: `git init` + fetch wants a fresh destination.
+    # This checkout is pure staging too — index.js/env.js/package.json are copied out below.
     if [ -e "$work" ] || [ -L "$work" ]; then SUDO rm -rf "$work"; fi
-    SUDO git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
+    # The commit the signed manifest names for that tag: the tag by its full ref (a branch of
+    # the same name is not it), every object checked as it arrives, then that commit by its
+    # id; a tag moved since is not used. A manifest that names no commit names nothing to
+    # fetch (a checkout has the bridge's source itself, above).
+    local commit head; commit="$(mget brain.commit 2>/dev/null || true)"
+    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] \
+      || die "the release manifest names no brain.commit, so the Discord bridge's source cannot be fetched; run install.sh from a checkout of the release (it has bridge/discord), or set TEAPORT_BRIDGE_SRC"
+    SUDO git init --quiet "$work"
+    SUDO git -C "$work" -c transfer.fsckObjects=true fetch --quiet --depth 1 --no-tags \
+      "https://github.com/$repo.git" "+refs/tags/$tag:refs/tags/$tag" \
+      || die "cannot fetch $tag from github.com/$repo — the bridge was not installed"
+    SUDO git -C "$work" -c advice.detachedHead=false checkout --quiet "$commit" \
+      || die "github.com/$repo's $tag does not have the commit the release manifest names ($commit) — the bridge was not installed"
+    if [ "$DRY_RUN" != 1 ]; then
+      head="$(SUDO git -C "$work" rev-parse HEAD)"
+      [ "$head" = "$commit" ] && [ "$(SUDO git -C "$work" rev-parse "refs/tags/$tag^{commit}")" = "$commit" ] \
+        || die "github.com/$repo at $tag is $head, not the commit the release manifest names ($commit) — the bridge was not installed"
+    fi
     src="$work/bridge/discord"
   fi
   SUDO mkdir -p "$PREFIX/bridge"; SUDO chown -R -h -P "$RUN_USER" "$PREFIX/bridge"
@@ -3767,7 +3897,7 @@ sip_brain_detach() {
   # Ctrl-C, a kill while the old unit stops, a failed swap's own rollback) puts the old
   # pair back; retire clears it.
   SIP_BRAIN_DETACHED=1
-  trap sip_brain_restore EXIT
+  trap "$(exit_trap_base)" EXIT
   migrate_brain_dropins || die "the drop-in tuning could not be carried into $ETC/brain.env — nothing was swapped, the old SIP brain is untouched"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] drop Upholds=/PartOf=teaport-sip-brain from %s; stop %s (kept until the new brain is verified)\n' "$SIP_GW_UNIT" "$SIP_BRAIN_UNIT"
@@ -3802,7 +3932,10 @@ sip_brain_restore() {
 }
 
 sip_brain_retire() {
-  trap - EXIT
+  # From here the old pair is not put back (the new brain is verified): the standing trap
+  # without it.
+  SIP_BRAIN_DETACHED=0
+  trap "$(exit_trap_base)" EXIT
   [ -e "$SIP_BRAIN_UNIT" ] || return 0
   local stamp f d=/etc/systemd/system/teaport-sip-brain.service.d
   stamp="$(date +%Y%m%d)"
@@ -3815,7 +3948,6 @@ sip_brain_retire() {
   SUDO systemctl daemon-reload
   SUDO systemctl reset-failed teaport-sip-brain.service 2>/dev/null || true
   if [ -n "$SIP_GW_SAVED" ]; then SUDO rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""; fi
-  SIP_BRAIN_DETACHED=0
 }
 
 # migrate_brain_dropins — the per-path tuning an appliance kept in systemd drop-ins, carried

@@ -53,11 +53,18 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
-# brain/, cli/, packaging/, THIRD_PARTY_LICENSES.md, the user docs and the one unit the package ships are
-# what the package is built from — and only the files git sees there, tracked or
-# untracked-not-ignored (see "source" below), so this check covers everything that goes in.
+# brain/, cli/, packaging/, THIRD_PARTY_LICENSES.md, the user docs, the one unit the package
+# ships and the release signers file are what the package is built from — and only the files
+# git sees there, tracked or untracked-not-ignored (see "source" below), so this check covers
+# everything that goes in.
 # Every relative src: in nfpm.yaml must sit under one of these (test_wifi_root_env.py).
-SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md docs/src/content/docs systemd/teaport-wifi-setup-net.service.in)
+SRC_PATHS=(brain cli packaging THIRD_PARTY_LICENSES.md docs/src/content/docs systemd/teaport-wifi-setup-net.service.in manifest/allowed_signers)
+# The brain is built by its pyproject.toml's build backend alone: a setup.py or setup.cfg runs
+# code (or steers the backend) during uv sync, out of sight of the signer's review of the
+# package's root content, so a tree that has one is not built.
+for f in brain/setup.py brain/setup.cfg; do
+  [ ! -e "$REPO/$f" ] || die "$f exists: the brain is built from brain/pyproject.toml alone; remove it"
+done
 dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   given="$TEAPORT_DEB_VERSION"
@@ -85,6 +92,23 @@ else
 fi
 # The version a build here would have, and nothing else (tests; checking a tag before CI).
 if [ "${TEAPORT_DEB_PRINT_VERSION:-}" = 1 ]; then printf '%s\n' "$VERSION"; exit 0; fi
+if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
+  # The package's signers file is every box's trust in a release manifest: a release ships
+  # the real keys, never the placeholder this repo started with (or one key alone: the
+  # backup is what replaces a lost main key).
+  signers="$REPO/manifest/allowed_signers"
+  ! grep -q PLACEHOLDER "$signers" \
+    || die "release $VERSION: manifest/allowed_signers still has its PLACEHOLDER lines — put the release keys' public halves in it first (packaging/RELEASING.md)"
+  # Read as every box reads it (manifest_sig.keys: printable ASCII, one exact line per key,
+  # release-main and release-backup once each): the main key and the backup.
+  nkeys="$(python3 -I "$REPO/brain/teaport_brain/manifest_sig.py" signers "$signers")" \
+    || die "release $VERSION: manifest/allowed_signers is refused by the strict reader (above)"
+  [ "$nkeys" = 2 ] \
+    || die "release $VERSION: manifest/allowed_signers must name two keys (the main and the backup)"
+  # The one-line installer carries the same keys (a fresh install verifies with them).
+  ! grep -q PLACEHOLDER "$REPO/install-bootstrap.sh" \
+    || die "release $VERSION: install-bootstrap.sh still carries the PLACEHOLDER keys — copy manifest/allowed_signers into its trusted_signers block"
+fi
 
 case "$(uname -m)" in
   aarch64) ARCH=arm64; UV_TRIPLE=aarch64-unknown-linux-gnu; NFPM_ARCH=arm64
@@ -108,8 +132,11 @@ fetch() {
   fi
 }
 
+# A release build uses only the fetched, hash-checked uv and nfpm, never one found on PATH
+# (whatever its --version says); a dev build may use a PATH one of the same version.
+release=0; [ -z "${TEAPORT_DEB_VERSION:-}" ] || release=1
 UV=""
-if have uv && [ "$(uv --version | awk '{print $2}')" = "$UV_VERSION" ]; then
+if [ "$release" = 0 ] && have uv && [ "$(uv --version | awk '{print $2}')" = "$UV_VERSION" ]; then
   UV="$(command -v uv)"
 else
   tgz="$CACHE/uv-$UV_VERSION-$UV_TRIPLE.tar.gz"
@@ -119,7 +146,7 @@ else
 fi
 
 NFPM=""
-if have nfpm && [ "$(nfpm --version 2>/dev/null | sed -n 's/^GitVersion: *//p')" = "$NFPM_VERSION" ]; then
+if [ "$release" = 0 ] && have nfpm && [ "$(nfpm --version 2>/dev/null | sed -n 's/^GitVersion: *//p')" = "$NFPM_VERSION" ]; then
   NFPM="$(command -v nfpm)"
 else
   tgz="$CACHE/nfpm_${NFPM_VERSION}_Linux_$NFPM_ARCH.tar.gz"
@@ -147,8 +174,10 @@ fi
 parent_existed=0; [ -d "$(dirname "$DEST")" ] && parent_existed=1
 SUDO install -d -o "$(id -u)" -g "$(id -g)" -m 0755 "$DEST"
 SRC=""
+UVCACHE=""
 cleanup() {
   [ -z "$SRC" ] || rm -rf "$SRC"
+  [ -z "$UVCACHE" ] || rm -rf "$UVCACHE"
   rm -rf "$DEST" 2>/dev/null || SUDO rm -rf "$DEST"
   if [ "$parent_existed" = 0 ]; then SUDO rmdir "$(dirname "$DEST")" 2>/dev/null || true; fi
 }
@@ -177,12 +206,33 @@ git -C "$REPO" ls-files -z -co --exclude-standard -- "${SRC_PATHS[@]}" \
 #                         CPython, so the venv's interpreter is the box's /usr/bin one.
 # umask 022 for what uv creates; the chmod below settles what it does not honour it for.
 # The files go into the package with the modes they have here.
+# The build backend is pinned by hash too: uv.lock records no build dependencies, so
+# brain/build-requirements.txt names the one setuptools wheel (by version and sha256) that
+# builds teaport-brain and the lock's one sdist (docopt). It goes into the venv first
+# (--require-hashes), and the sync builds with it (--no-build-isolation) instead of whatever
+# setuptools the index serves that day; the sync then removes it, as nothing in the lock
+# needs it (exact sync). The venv is created here, with the interpreter and prompt uv sync
+# would give it, so the sync keeps it (were it recreated, the build would find no setuptools
+# and fail).
 umask 022
+# A release build starts from an empty uv cache: nothing built earlier (a docopt wheel another
+# setuptools made, say) is reused; every wheel is the lock's, every sdist built here.
+if [ "$release" = 1 ]; then
+  UVCACHE="$(mktemp -d "${TMPDIR:-/tmp}/teaport-deb-uv-cache.XXXXXX")"
+  export UV_CACHE_DIR="$UVCACHE"
+fi
+env UV_PYTHON_DOWNLOADS=never \
+  "$UV" venv --quiet --prompt teaport-brain --python "$PY" --python-preference only-system "$DEST"
+env UV_PYTHON_DOWNLOADS=never \
+  "$UV" pip install --quiet --python "$DEST/bin/python" --require-hashes --no-deps --link-mode copy \
+  -r "$SRC/brain/build-requirements.txt"
 log "uv sync --locked brain/ (staged from $REPO) -> $DEST (python $("$PY" -c 'import platform; print(platform.python_version())'))"
 env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
   "$UV" sync --locked --no-editable --no-dev --compile-bytecode --link-mode copy \
-  --reinstall-package teaport-brain \
+  --reinstall-package teaport-brain --no-build-isolation \
   --python "$PY" --python-preference only-system --project "$SRC/brain"
+[ ! -e "$DEST/lib/python3.12/site-packages/setuptools" ] \
+  || die "the build's setuptools is still in the venv (the sync did not remove it)"
 # uv's own bookkeeping in the venv root: its lock file (created 0666 whatever the umask,
 # and world-writable has no place in a root-owned tree) and the markers that keep a
 # project venv out of git and backups. None of them means anything once it is packaged.

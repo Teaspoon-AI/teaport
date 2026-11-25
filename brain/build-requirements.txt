@@ -1,0 +1,6 @@
+# The build backend packaging/build-deb.sh builds the brain with: teaport-brain and the
+# lock's one sdist (docopt). uv.lock records no build dependencies, so this file pins it, by
+# version and sha256 (installed with --require-hashes, then used with --no-build-isolation).
+# It must satisfy [build-system] requires and [tool.uv] build-constraint-dependencies in
+# pyproject.toml (test_manifest_sig.py checks). Change it with a green release build.
+setuptools==80.10.2 --hash=sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173

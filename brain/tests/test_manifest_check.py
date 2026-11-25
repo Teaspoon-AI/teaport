@@ -21,9 +21,12 @@ INSTALL = REPO / "install.sh"
 
 
 def _check():
+    """manifest/check.py, its signature check stood down: these manifests are unsigned, and
+    what is tested here is the gate (test_manifest_sig.py tests the signature)."""
     spec = importlib.util.spec_from_file_location("manifest_check", REPO / "manifest/check.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    mod.signature = lambda *a, **k: None
     return mod
 
 
@@ -167,7 +170,7 @@ def _run(check, manifest, token="", require_enforce=False):
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
-            ok = check.check(f.name, True, require_enforce)
+            ok = check.check(f.name, True, require_enforce=require_enforce)
     finally:
         os.unlink(f.name)
         if old is None:
@@ -314,12 +317,12 @@ def _publish_run(script, event, token):
 
 def test_only_the_weekly_run_requires_an_enforcing_gate():
     """publish.yml's check step, run with python3 stubbed: --require-enforce on a schedule
-    event, and on no other."""
+    event, and on no other (the manifests' checks; the bootstrap's downloads nothing)."""
     script, _ = _publish_step()
     for event in ("schedule", "push", "workflow_dispatch", "pull_request"):
         p = _publish_run(script, event, "t")
         assert p.returncode == 0, (event, p.stdout, p.stderr)
-        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
+        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py") and "--bootstrap" not in l]
         assert len(calls) == 2, (event, p.stdout)
         assert all(("--require-enforce" in c) == (event == "schedule") for c in calls), (event, calls)
 
@@ -338,52 +341,80 @@ def test_only_a_pull_requests_run_goes_without_the_download_token():
         assert "::error::DL_CHECK_TOKEN is not set" in p.stdout, (event, p.stdout)
         assert "python3 manifest/check.py" not in p.stdout, (event, p.stdout)
         p = _publish_run(script, event, token_for(event, "s3cret"))
-        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
+        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py") and "--bootstrap" not in l]
         assert p.returncode == 0 and len(calls) == 2 and all(c.endswith("token=s3cret") for c in calls), (event, p.stdout)
     for secret in ("s3cret", ""):
         p = _publish_run(script, "pull_request", token_for("pull_request", secret))
-        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py")]
+        calls = [l for l in p.stdout.splitlines() if l.startswith("python3 manifest/check.py") and "--bootstrap" not in l]
         assert p.returncode == 0 and len(calls) == 2 and all(c.endswith("token=") for c in calls), (secret, p.stdout)
 
 
 def _origin(tmp):
     """A repository standing in for github.com/o/r (check.GITHUB = file://<tmp>): tag
-    brain-old's install.sh predates the gate, tag brain-new's and branch dev's read access."""
+    brain-v1.0.0's install.sh predates the gate, tag brain-v1.1.0's and branch dev's read access.
+    Also a branch and a tag of the same name at different commits (git clone --branch would
+    take the branch): brain-v9.9.9 the tag at the gate, the branch before it, and
+    brain-v9.9.8 the other way round. Returns (the GITHUB url, {name: commit})."""
     bare = pathlib.Path(tmp, "o/r.git")
     work = pathlib.Path(tmp, "work")
     g = lambda *a, cwd=work: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a],
-                                            cwd=cwd, check=True, capture_output=True)
+                                            cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
     work.mkdir()
     g("init", "-q", "-b", "dev")
     (work / "install.sh").write_text("#!/bin/bash\nUPDATE_PROTOCOL=1\n")
     g("add", "install.sh")
     g("commit", "-qm", "before the gate")
-    g("tag", "brain-old")
+    g("tag", "brain-v1.0.0")
+    old = g("rev-parse", "HEAD")
     (work / "install.sh").write_text("#!/bin/bash\nUPDATE_PROTOCOL=1\nACCESS_PROTOCOL=1\n")
     g("commit", "-qam", "the gate")
-    g("tag", "brain-new")
+    g("tag", "brain-v1.1.0")
+    new = g("rev-parse", "HEAD")
+    g("tag", "brain-v9.9.9", new)
+    g("branch", "brain-v9.9.9", old)
+    g("tag", "brain-v9.9.8", old)
+    g("branch", "brain-v9.9.8", new)
     bare.parent.mkdir()
-    g("clone", "-q", "--bare", str(work), str(bare), cwd=tmp)
+    g("clone", "-q", "--bare", "--mirror", str(work), str(bare), cwd=tmp)
     g("config", "uploadpack.allowFilter", "true", cwd=bare)
-    return f"file://{tmp}"
+    g("config", "uploadpack.allowAnySHA1InWant", "true", cwd=bare)
+    return f"file://{tmp}", {"brain-v1.0.0": old, "brain-v1.1.0": new, "dev": new, "brain-v9.9.9": new, "brain-v9.9.8": old}
+
+
+def _here(check, tmp):
+    """check.HERE in a repository of the test's own (git_show fetches commits into it)."""
+    repo = pathlib.Path(tmp, "checkout")
+    (repo / "manifest").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    check.HERE = str(repo / "manifest")
 
 
 def test_with_access_a_release_tag_must_be_an_installer_that_reads_it():
-    """teaport update runs brain.tag's install.sh as root: with access in the manifest, a tag
-    from before the gate would download every gated file without a token. A branch is not
-    asked (teaport update refuses one), nor is anything without access."""
+    """teaport update runs brain.commit's install.sh as root (the tag must be at it): with
+    access in the manifest, an installer from before the gate would download every gated file
+    without a token. The commit is read, not what `git clone --branch <tag>` takes, so a
+    branch named like the tag stands in for nothing. Nothing without access is asked."""
     from tempdirs import tempdir
     check = _check()
-    check.GITHUB = _origin(tempdir())
-    assert "predates the license gate" in check.reads_access("o/r", "brain-old")
-    assert check.reads_access("o/r", "brain-new") is None
-    assert check.reads_access("o/r", "dev") is None
+    tmp = tempdir()
+    check.GITHUB, at = _origin(tmp)
+    _here(check, tmp)
+    assert "predates the license gate" in check.reads_access("o/r", "brain-v1.0.0", at["brain-v1.0.0"])
+    assert check.reads_access("o/r", "brain-v1.1.0", at["brain-v1.1.0"]) is None
+    assert check.reads_access("o/r", "brain-v1.1.0", None) is None   # no commit: said elsewhere
+    # A branch of the tag's name, at another commit: the tag's commit decides, either way.
+    assert check.resolves("o/r", "brain-v9.9.9", at["brain-v9.9.9"]) is None
+    assert check.reads_access("o/r", "brain-v9.9.9", at["brain-v9.9.9"]) is None
+    assert check.resolves("o/r", "brain-v9.9.8", at["brain-v9.9.8"]) is None
+    assert "predates the license gate" in check.reads_access("o/r", "brain-v9.9.8", at["brain-v9.9.8"])
     check.bypassed = lambda u: None
     check.refused = lambda u: None
-    for tag, access, passes in (("brain-old", True, False), ("brain-new", True, True), ("dev", True, True),
-                                ("brain-old", False, True)):
+    check._commit_keys = lambda manifest: None   # the keys rule is test_manifest_sig.py's
+    for tag, access, passes in (("brain-v1.0.0", True, False), ("brain-v1.1.0", True, True),
+                                ("brain-v9.9.9", True, True), ("brain-v9.9.8", True, False),
+                                ("brain-v1.0.0", False, True)):
         manifest = _gated_manifest(check)
-        manifest["brain"] = {"repo": "o/r", "tag": tag}
+        manifest["brain"] = {"repo": "o/r", "tag": tag, "commit": at[tag]}
         if not access:
             del manifest["access"]
             manifest["engine"]["f"]["url"] = f"https://{check.HOST}/dl/brain/f.deb"
@@ -403,10 +434,69 @@ def test_access_api_must_not_end_in_a_slash():
     assert check.gate({"access": {"api": f"{h}/api", "gated": gated}}) == (gated, [])
     for api in (f"{h}/api/", f"{h}/"):
         _, problems = check.gate({"access": {"api": api, "gated": gated}})
-        assert len(problems) == 1 and "ends in /" in problems[0], (api, problems)
+        assert len(problems) == 1 and "without a trailing slash" in problems[0], (api, problems)
     for name in ("stable", "beta"):
         manifest = json.loads((REPO / f"manifest/{name}.json").read_text())
         assert check.gate(manifest)[1] == [], name
+
+
+# Access URLs that are not https on the download host, or not a plain path: each refused.
+ELSEWHERE = ("https://evil.example/api", "http://get.teaspoon.tech/api", "https://get.teaspoon.tech.evil.example/api",
+             "https://user@get.teaspoon.tech/api", "https://get.teaspoon.tech:8443/api", "https://get.teaspoon.tech/../api",
+             "https://get.teaspoon.tech/api?x=1", "https://get.teaspoon.tech/api#x", "https://get.teaspoon.tech/a/./api",
+             "https://GET.teaspoon.tech/api", " https://get.teaspoon.tech/api", "https://get.teaspoon.tech/api\n")
+
+
+def test_access_is_on_the_download_host():
+    """access.api takes who accepts the license, and later each box's acceptance id (a
+    credential that mints download tokens): the check refuses any api or gated prefix that is
+    not https on the download host with a plain path, and install.sh refuses it too."""
+    import os
+    check = _check()
+    h = f"https://{check.HOST}"
+    for bad in ELSEWHERE:
+        _, problems = check.gate({"access": {"api": bad, "gated": [f"{h}/dl/engine/"]}})
+        assert problems and "access.api" in problems[0], (bad, problems)
+        _, problems = check.gate({"access": {"api": f"{h}/api", "gated": [bad + "/"]}})
+        assert problems and "access.gated" in problems[0], (bad, problems)
+    # install.sh, on the verified manifest (an unsigned local one here, by request).
+    from tempdirs import tempdir
+    from test_install_engine_only import _fn
+    tmp = tempdir()
+    for api, gated, ok in ((f"{h}/api", [f"{h}/dl/engine/"], True), (f"{h}/api/", [f"{h}/dl/engine/"], True),
+                           ("https://evil.example/api", [f"{h}/dl/engine/"], False),
+                           (f"{h}/api", ["https://evil.example/dl/engine/"], False),
+                           (f"{h}/api", [f"{h}/dl/engine"], False), (f"{h}/api", "x", False)):
+        mf = pathlib.Path(tmp, "mf.json")
+        mf.write_text(json.dumps({"channel": "stable", "access": {"api": api, "gated": gated}}))
+        script = ('log() { :; }\nwarn() { :; }\ndie() { printf "DIE %s\\n" "$*"; exit 1; }\n'
+                  f'HERE="{REPO}" MANIFEST_URL="{mf}" MANIFEST_UNSIGNED=1 DOWNLOAD_HOST={check.HOST}\n'
+                  f'MANIFEST_CHECK_PY="{REPO}/brain/teaport_brain/manifest_sig.py" GATED=()\n'
+                  f'MANIFEST_SIGNERS_PKG="{tmp}/none"\n'
+                  + _fn("manifest_cleanup") + _fn("exit_trap_base") + _fn("manifest_signers") + _fn("fetch_manifest")
+                  + 'fetch_manifest\nprintf "GATED %s\\n" "${GATED[@]}"\n')
+        pr = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**os.environ, "TMPDIR": tmp})
+        if ok:
+            assert pr.returncode == 0 and f"GATED {gated[0]}" in pr.stdout, (api, gated, pr.stdout, pr.stderr)
+        else:
+            assert pr.returncode == 1 and "its license gate is not on get.teaspoon.tech" in pr.stdout, (api, gated, pr.stdout)
+    # The EXIT trap that removes the verified manifest's directory stays: a trap set for a
+    # while (the OpenClaw gateway's) chains it and goes back to it, never clears it.
+    text = INSTALL.read_text()
+    exits = [ln.strip() for ln in text.splitlines() if re.match(r"\s*trap .* EXIT$", ln)]
+    assert exits and all("$(exit_trap_base)" in t for t in exits), exits
+    assert 'trap "systemctl --user start openclaw-gateway.service || true; $(exit_trap_base)" EXIT' in exits
+    # Each cleanup on its own: a failing one (a daemon-reload, a mv) does not skip the next.
+    from test_install_engine_only import _fn as fn
+    for detached, want in (("1", ["RESTORE", "CLEANUP"]), ("0", ["CLEANUP"])):
+        # (Under `|| true` the failing restore runs on past its failure: errexit does not apply
+        # inside it. What matters here is that the manifest's cleanup still runs.)
+        script = ("set -euo pipefail\nsip_brain_restore() { echo RESTORE; false; echo NOT-HERE; }\n"
+                  "manifest_cleanup() { echo CLEANUP; }\n" + fn("exit_trap_base")
+                  + f'SIP_BRAIN_DETACHED={detached}\ntrap "$(exit_trap_base)" EXIT\nexit 3\n')
+        pr = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        got = [w for w in pr.stdout.split() if w != "NOT-HERE"]
+        assert got == want and pr.returncode == 3, (detached, pr.stdout, pr.stderr)
 
 
 if __name__ == "__main__":
@@ -422,4 +512,5 @@ if __name__ == "__main__":
     test_only_a_pull_requests_run_goes_without_the_download_token()
     test_with_access_a_release_tag_must_be_an_installer_that_reads_it()
     test_access_api_must_not_end_in_a_slash()
+    test_access_is_on_the_download_host()
     print("ok")

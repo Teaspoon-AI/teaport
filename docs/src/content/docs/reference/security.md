@@ -17,7 +17,7 @@ root, in `/usr/lib/teaport/`. It runs on the system Python, never the brain's ow
 environment. The `teaport-brain` package installs the helpers, and
 `/usr/lib/teaport/sudoers-sync` writes their rules into `/etc/sudoers.d/teaport-config`.
 
-<!-- source: packaging/deb/sudoers-sync:5-11#e895c837; packaging/deb/sudoers-sync:82-105#e1a1abd8; packaging/nfpm.yaml:86,95,104#54fe789f -->
+<!-- source: packaging/deb/sudoers-sync:5-11#e895c837; packaging/deb/sudoers-sync:82-105#e1a1abd8; packaging/nfpm.yaml:88,97,106#54fe789f -->
 
 | Helper | What the run user can ask it to do |
 | --- | --- |
