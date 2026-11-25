@@ -45,6 +45,11 @@ def _functions(root: str) -> str:
     body = text[text.index(START):text.index(END)]
     # sudo_python runs the step as root on the box; here, as us.
     body = body.replace('sudo python3 -I "$@"', 'python3 -I "$@"')
+    # The run's EXIT trap also removes the manifest's temporary directory (fetch_manifest),
+    # and is the one exit_trap_base prints.
+    for fn in ("exit_trap_base", "manifest_cleanup"):
+        start = text.index(f"{fn}() {{\n")
+        body = text[start:text.index("\n}\n", start) + 3] + body
     return body.replace("/etc/systemd/system", f"{root}/sys")
 
 

@@ -19,18 +19,26 @@ To install teaport without a checkout, run:
 bash <(curl -fsSL https://get.teaspoon.tech/teaport)
 ```
 
-That URL serves a bootstrap script. A piped script arrives as a single file, and the installer needs the whole repository, so the bootstrap makes a shallow clone of the teaport repository in a temporary directory, runs `install.sh` from the clone, and removes the clone when the installer exits. The bootstrap needs `git`; without it, it prints the `apt-get` command to run and stops.
+That URL serves a bootstrap script. A piped script arrives as a single file, and the installer needs the whole repository, so the bootstrap clones the teaport repository in a temporary directory, runs `install.sh` from the clone, and removes the clone when the installer exits. What it clones is what the release keys signed:
 
-<!-- source: install-bootstrap.sh:7-10,21-34#506e1330 -->
+1. The bootstrap carries the release keys, the same lines as `manifest/allowed_signers`. It downloads the channel's release manifest and its signature, and checks them with `ssh-keygen` against those keys. The manifest must name the channel.
+2. From the checked manifest, it takes the repository, the release tag, and the commit (`brain.repo`, `brain.tag`, `brain.commit`). The repository must be `Teaspoon-AI/teaport`, and the tag on the server and the clone must both be at that commit.
+3. It runs the clone's `install.sh` against the manifest it checked, with the signature next to it, so the installer checks it again.
 
-Two environment variables apply only to the one-line form:
+When a check fails, the bootstrap stops and runs nothing it downloaded. All the checks come before it fetches the repository except two: that the fetched tag is at the commit, and that the checkout is. It needs `git`, `curl`, `ssh-keygen` (the `openssh-client` package), and `python3`; without one, it prints the `apt-get` command to run and stops. The bootstrap is signed too: [Install teaport](/getting-started/installation/#check-the-installer-before-you-run-it) shows how to check it before you run it.
+
+<!-- source: install-bootstrap.sh:7-24#fc65da45; install-bootstrap.sh:73-81,97-197#374ac4e9 -->
+
+These environment variables apply only to the one-line form:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TEAPORT_REPO` | `https://github.com/Teaspoon-AI/teaport.git` | The Git URL to clone. |
-| `TEAPORT_REF` | `main` | The branch or tag to install. |
+| `TEAPORT_CHANNEL` | `stable` | The release channel to install, `stable` or `beta`. |
+| `TEAPORT_MANIFEST_URL` | `https://get.teaspoon.tech/manifest/CHANNEL.json` | Where the bootstrap reads the manifest and its `.sig`: a URL, a `file://` URL, or a path, such as a local mirror. The bootstrap checks it all the same. |
+| `TEAPORT_REPO` | `https://github.com/` followed by the manifest's `brain.repo` | The Git URL to clone, such as a mirror. The clone must still be at the manifest's commit. |
+| `TEAPORT_REF` | None | For development only: install this branch or tag as the server has it, with no release signature checked. The bootstrap prints a warning when it is set. |
 
-<!-- source: install-bootstrap.sh:12-14,18-19#3a71b953 -->
+<!-- source: install-bootstrap.sh:26-40#caae6919; install-bootstrap.sh:83-95#564f1778 -->
 
 Every other argument and environment variable passes through to `install.sh` unchanged:
 
@@ -38,7 +46,7 @@ Every other argument and environment variable passes through to `install.sh` unc
 bash <(curl -fsSL https://get.teaspoon.tech/teaport) --dry-run
 ```
 
-<!-- source: install-bootstrap.sh:15,34#1517947f -->
+<!-- source: install-bootstrap.sh:34,197#3ac9a34d -->
 
 ### From a checkout
 
@@ -50,21 +58,21 @@ cd teaport
 ./install.sh
 ```
 
-<!-- source: install-bootstrap.sh:18#cccc51ae -->
+<!-- source: install-bootstrap.sh:85#845aa81a -->
 
 The checkout is the source: the brain, the plugin, and the unit templates come from the tree the script runs in.
 
-<!-- source: install.sh:143-144#d3312094 -->
+<!-- source: install.sh:146-147#d3312094 -->
 
 You do not need to be root. As a regular user, the installer runs each privileged command under `sudo`; as root, it runs the command directly. Either way, `/opt/teaport` and `/var/lib/teaport` belong to root, and the installer writes there only as root. When root runs it for another user, named in `TEAPORT_USER`, that user's own part of the work, such as their secrets folder, runs as them. `teaport update` runs the installer this way.
 
-<!-- source: install.sh:183-204,253-292#3e94d774 -->
+<!-- source: install.sh:186-207,256-295#3e94d774 -->
 
 ## Command-line flags
 
 The parser exits with status 2 on an unknown argument, a missing value, or `--only` together with `--rollback`. The two component flags also take an equals form, for example `--only=brain`, and the component must be `brain` or `engine`.
 
-<!-- source: install.sh:146-176#b0faaa82 -->
+<!-- source: install.sh:149-179#b0faaa82 -->
 
 | Flag | Argument | What it does |
 | --- | --- | --- |
@@ -79,21 +87,22 @@ The parser exits with status 2 on an unknown argument, a missing value, or `--on
 | `--license-id` | A license ID | Accepts the engine license for use under that Teaspoon AI license. Without it, the acceptance is for personal use. |
 | `-h`, `--help` | None | Prints the usage text from the header comment and exits. |
 
-<!-- source: install.sh:9-69,150-160,183-190,602#42e94600 -->
+<!-- source: install.sh:9-69,153-163,186-193,703#42e94600 -->
 
 A full install writes every unit and env file and restarts the engine and the brain in one step. It has no automatic rollback, but `--rollback brain` and `--rollback engine` still work after it.
 
-<!-- source: install.sh:33-35#03976d35; install.sh:52-54,1298#4a7c6879 -->
+<!-- source: install.sh:33-35#03976d35; install.sh:52-54,1402#4a7c6879 -->
 
 ## Environment variables
 
-The installer honors the overrides in this table; the default applies when the variable is unset. `TEAPORT_REPO` and `TEAPORT_REF` belong to the one-line form alone.
+The installer honors the overrides in this table; the default applies when the variable is unset. `TEAPORT_CHANNEL`, `TEAPORT_REPO`, and `TEAPORT_REF` belong to the one-line form alone.
 
-<!-- source: install.sh:71-106,120-138,662,2874,3664,3671,4143,4151,4166#376e0439 -->
+<!-- source: install.sh:71-109,123-141,763,2984,3774,3781,4275,4283,4298#d1ef78df -->
 
 | Variable | Default | Controls |
 | --- | --- | --- |
-| `TEAPORT_MANIFEST_URL` | `https://get.teaspoon.tech/manifest/stable.json` | The release manifest URL, or a local path. |
+| `TEAPORT_MANIFEST_URL` | `https://get.teaspoon.tech/manifest/stable.json` | The release manifest URL, or a local path. Its signature, the same name with `.sig` added, must verify; see [the signed release manifest](/guides/updating/#the-signed-release-manifest). |
+| `TEAPORT_MANIFEST_UNSIGNED` | `0` | `1` installs from a local manifest, an absolute path or a `file://` URL, that has no signature next to it. It doesn't apply to a URL, and a signature that is there is still checked. |
 | `TEAPORT_PREFIX` | `/opt/teaport` | The install root. The brain package installs only to `/opt/teaport`: an install of it with another value stops. |
 | `TEAPORT_ETC` | `/etc/teaport` | The directory for the non-secret env files. |
 | `TEAPORT_BRAIN_DEB` | None | Install the brain from this `teaport-brain` package file instead of the one the manifest names. |
@@ -116,7 +125,7 @@ The installer honors the overrides in this table; the default applies when the v
 | `TEAPORT_TLS_CERT`, `TEAPORT_TLS_KEY` | The certificate an earlier run was given, else none | Your own certificate and key for the front door, in place of the device's own. Set both empty to go back to the device's own. See [Use your own certificate](#use-your-own-certificate). |
 | `TEAPORT_REGENERATE_CA` | `0` | `1` replaces the device's own certificate authority, on every run where it is set. See [Replace the device's certificate](#replace-the-devices-certificate). |
 
-<!-- source: install.sh:99-105,3188-3238#8db56ee2; install.sh:99-105,3170-3173,3188-3242#4a45fbd7 -->
+<!-- source: install.sh:102-108,3298-3348#8db56ee2; install.sh:102-108,3280-3283,3298-3352#4a45fbd7 -->
 
 ## OpenClaw memory search
 
@@ -126,7 +135,7 @@ The installer then rebuilds OpenClaw's memory index. If the index cannot be buil
 
 While OpenRouter is unreachable, OpenClaw's memory search returns an error instead of results. The language model is unreachable at the same time when it also runs on OpenRouter.
 
-<!-- source: install.sh:2356,2376-2510#26e5ec87 -->
+<!-- source: install.sh:2466,2486-2620#26e5ec87 -->
 
 ## The front door's certificate
 
@@ -181,7 +190,7 @@ Renewal is up to you. Replace both files, then reload Caddy:
 sudo systemctl reload caddy.service
 ```
 
-<!-- source: install.sh:99-105,3242-3267,3188-3238#6819c2bb; install.sh:99-105,3246-3271,3170-3173,3188-3242#24d3909f -->
+<!-- source: install.sh:102-108,3352-3377,3298-3348#6819c2bb; install.sh:102-108,3356-3381,3280-3283,3298-3352#24d3909f -->
 
 ### Replace the device's certificate
 
@@ -196,13 +205,13 @@ After the replacement, no phone or laptop trusts the device until it installs an
 trusts the new certificate. Remove the old entry from each one.
 :::
 
-<!-- source: install.sh:3273-3283#48dc5507 -->
+<!-- source: install.sh:3383-3393#48dc5507 -->
 
 ## Files and directories
 
 A full install creates the paths in this section. `TEAPORT_PREFIX`, `TEAPORT_ETC`, `TEAPORT_SECRETS_DIR`, and `TEAPORT_STATE` relocate the install root, the env directory, the secrets directory, and the state directory.
 
-<!-- source: install.sh:120-129#4557a911 -->
+<!-- source: install.sh:123-132#4557a911 -->
 
 **`/opt/teaport/`**
 
@@ -215,59 +224,59 @@ An older installer gave these files to the user that runs the brain. On such a d
 - The engine's kept rollback copies don't come along; the next engine update keeps a new one.
 - `bridge/`, and anything else of that user's at the top of `/opt/teaport`, moves over as it is and stays theirs. Hidden entries there, whose names start with a dot, don't move over; they go with the old tree.
 
-<!-- source: packaging/install/root_layout.py:3-37#5c63f406; packaging/install/root_layout.py:55-64,207-224#74debc26; install.sh:253-292#ac60c7e4 -->
+<!-- source: packaging/install/root_layout.py:3-37#5c63f406; packaging/install/root_layout.py:55-64,207-224#74debc26; install.sh:256-295#ac60c7e4 -->
 
 **`/var/cache/teaport/`**
 
 The brain packages the installer has installed, one `teaport-brain_VERSION_ARCH.deb` each. It keeps the newest three, plus the installed one, and removes the rest after an install. `--rollback brain` installs the newest other package in this directory.
 
-<!-- source: install.sh:1698,1699-1700,1814-1823#ce27d92b -->
+<!-- source: install.sh:1808,1809-1810,1924-1933#ce27d92b -->
 
 **`/opt/teaport/engine.staged/` and `engine.rollback/`**
 
 A run downloads the engine files and models that differ from the manifest into `engine.staged/`, moves them into place after all of them verify, and then removes the directory. A download that is interrupted stays there, and the next run continues it. Before the run moves the files in, it keeps the engine they replace in `engine.rollback/`: its files, any model it replaces, the unit it ran under, and its manifest entry, in a numbered directory that also names the time and the release. `--rollback engine` puts the newest one back. The newest two stay on the device. `engine.swapping` exists only while a run moves files in or back; if a run stops there, the next run puts the kept engine back first.
 
-<!-- source: install.sh:854-869,885-890,1009-1014,1050-1072#7302d6e9 -->
+<!-- source: install.sh:955-970,986-991,1112-1117,1153-1175#7302d6e9 -->
 
 **`/etc/teaport/`**
 
 The non-secret configuration. The installer writes `engine.env` and `brain.env` here, group-readable with mode 640.
 
-<!-- source: install.sh:122,2943,3472,3499#33a4a431 -->
+<!-- source: install.sh:125,3053,3582,3609#33a4a431 -->
 
 **`~/.config/teaport/`**
 
 The secrets directory, created with mode 700. The installer seeds `persona.md` when it is absent and never overwrites it, and keeps the `openclaw_token` and `discord_bot_token` files at mode 600.
 
-<!-- source: install.sh:129,2712,2819,3686#70f18d40; install.sh:3513-3518#a0504365 -->
+<!-- source: install.sh:132,2822,2929,3796#70f18d40; install.sh:3623-3628#a0504365 -->
 
 **`/var/lib/teaport/`**
 
 Download space: release archives and the brain package the manifest names. It also holds `engine.release`, the engine release the installer last put live, which `teaport update` reads so that it never installs an older engine. The installer creates it, owned by root. The first run on a device that an older installer set up keeps only the record and text of the engine license you accepted, and the notes on the journal and network settings; downloads are fetched again.
 
-<!-- source: install.sh:123,1747#40b78c24; install.sh:1135#b03a764b; packaging/deb/update_apply.py:209#dd7d014b; packaging/install/root_layout.py:30-31,70-71#78e4ef3b -->
+<!-- source: install.sh:126,1857#40b78c24; install.sh:1238#b03a764b; packaging/deb/update_apply.py:268#dd7d014b; packaging/install/root_layout.py:30-31,70-71#78e4ef3b -->
 
 The lock that keeps a second run of the installer from starting while one is running is `/run/teaport-install.lock`.
 
-<!-- source: install.sh:233-251#40d31441 -->
+<!-- source: install.sh:236-254#40d31441 -->
 
 **`/var/lib/teaport-update/`**
 
 The last `teaport update` run: `run.json`, its state, and `log`, its output. The `teaport-update` unit creates the directory; root owns it, and the files are readable by the group of the user that runs the brain.
 
-<!-- source: packaging/deb/teaport-update.service:16-20#91e78218; packaging/deb/update_apply.py:36-41#8b1ac790 -->
+<!-- source: packaging/deb/teaport-update.service:16-20#91e78218; packaging/deb/update_apply.py:43-48#8b1ac790 -->
 
 **`/usr/local/lib/teaport/`**
 
 Root-owned helpers that run outside the brain: the Wi-Fi setup helper and its captive DNS configuration. The brain package does not install anything here.
 
-<!-- source: install.sh:4110#40276f47 -->
+<!-- source: install.sh:4242#40276f47 -->
 
 **`/usr/bin/teaport` and `/usr/lib/teaport/`**
 
-The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the three `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
+The `teaport-brain` package installs the `teaport` command at `/usr/bin/teaport`, and the helpers that run as root in `/usr/lib/teaport/`: `config_apply.py`, which the configuration page runs through `sudo`; `wifi_apply.py`, through which Wi-Fi setup and the configuration page make every change to NetworkManager, and which takes only Wi-Fi requests; `login_apply.py`, through which the Wi-Fi setup page and the settings create the owner's login, one time only, on a device that ships ready to set up; `update_apply.py`, which the `teaport-update` unit runs to install a newer release; `manifest_sig.py` and `allowed_signers`, the check of a release manifest's signature and the keys it accepts; and `sudoers-sync`, which writes the grants of the user that runs the brain: the `sudo` rules for the three `sudo` helpers, and the polkit rule `/etc/polkit-1/rules.d/50-teaport-update.rules`, which lets that user start `teaport-update` and nothing else. Where the Wi-Fi setup polkit rule is installed, it also rewrites that rule from the package's copy, so that it lets the user scan for Wi-Fi networks and nothing else. The files are owned by root. The package also installs the licence texts of what it ships, with the third-party summary and where the source of the LGPL parts is, in `/usr/share/doc/teaport-brain/`. [Open-source licenses](/reference/licenses/) lists them.
 
-<!-- source: packaging/nfpm.yaml:65-179#784777fe; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:107-110#835838b5 -->
+<!-- source: packaging/nfpm.yaml:67-198#5273a71b; packaging/deb/sudoers-sync:1-33#83a35e17; packaging/deb/sudoers-sync:107-110#835838b5 -->
 
 `sudoers-sync` writes one rule per helper into `/etc/sudoers.d/teaport-config`. Each rule lets the user that runs the brain run that one script as root, with the system Python, and nothing else:
 
@@ -283,7 +292,7 @@ Where the installed `sudo` is classic `sudo`, the login helper's rule also says 
 
 The package also installs the user documentation, these pages as Markdown, in `/usr/share/teaport/docs/`, and `docs-wiki-sync` in `/usr/lib/teaport/`. With OpenClaw on the device, the installer turns on OpenClaw's memory wiki and runs `docs-wiki-sync`, which writes one wiki page for each section of the documentation, so that the agent can look up how to set up or fix teaport. Each update of the package refreshes those pages, as the user that runs the brain. Your own wiki pages are not changed, and a plain memory search does not return the documentation.
 
-<!-- source: packaging/nfpm.yaml:76-177#38a15b6f; install.sh:2297-2326#be0cb5c5; packaging/deb/postinst:107#34a9a5ff -->
+<!-- source: packaging/nfpm.yaml:78-196#ca945a75; install.sh:2407-2436#be0cb5c5; packaging/deb/postinst:107#34a9a5ff -->
 
 **`/var/lib/teaport-owner/`**
 
@@ -293,66 +302,66 @@ The owner's login marker, `pending`, in a folder only root can open. Neither the
 
 Smaller system configuration lands outside these trees: a journald drop-in, a systemd-resolved drop-in, a sysctl drop-in (`/etc/sysctl.d/60-teaport-multihome.conf`) so that Ethernet and Wi-Fi on one subnet each answer ARP only for their own addresses, and the polkit rule that lets the user that runs the brain scan for Wi-Fi networks, and nothing else.
 
-<!-- source: install.sh:763,791,2059,2104,4102-4107#41b1eb60; packaging/wifi-setup/50-teaport-wifi-setup.rules.in:14-19#029e8371 -->
+<!-- source: install.sh:864,892,2169,2214,4234-4239#41b1eb60; packaging/wifi-setup/50-teaport-wifi-setup.rules.in:14-19#029e8371 -->
 
 ## systemd units
 
 The installer renders the templates in `systemd/*.service.in` into `/etc/systemd/system/`, as root-owned files with mode 644.
 
-<!-- source: install.sh:752-758#eca2a531; install.sh:2907-2942#5225fc85 -->
+<!-- source: install.sh:853-859#eca2a531; install.sh:3017-3052#5225fc85 -->
 
 **`teaport-engine.service`**
 
 The speech engine: Voxtral for speech-to-text and Kokoro for text-to-speech. Rendered on every install and enabled.
 
-<!-- source: install.sh:3529,3540#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478 -->
+<!-- source: install.sh:3639,3650#fc2fd203; systemd/teaport-engine.service.in:5#5e0b3478 -->
 
 **`teaport-brain.service`**
 
 The voice pipeline. The brain serves Talk and the phone line's front end. Rendered on every install and enabled.
 
-<!-- source: install.sh:24,3530,3540#bd4f4709; systemd/teaport-brain.service.in:6#dd1fa334 -->
+<!-- source: install.sh:24,3640,3650#bd4f4709; systemd/teaport-brain.service.in:6#dd1fa334 -->
 
 **`teaport-sandbox-recover.service`**
 
 NemoClaw sandbox recovery at boot. Rendered and enabled only when the install has a NemoClaw sandbox.
 
-<!-- source: install.sh:3531,3551#c4ac276c; systemd/teaport-sandbox-recover.service.in:6#32a2e52e -->
+<!-- source: install.sh:3641,3661#c4ac276c; systemd/teaport-sandbox-recover.service.in:6#32a2e52e -->
 
 **`teaport-discord-bridge.service`**
 
 The Discord voice bridge. It runs on the host, owns the media leg, and pipes audio to the brain's `/talk` endpoint. The installer renders it when `TEAPORT_ENABLE_BRIDGE=1` or a bot token is already present, and enables it; the unit starts only after the guild, followed user, and token are configured.
 
-<!-- source: install.sh:3659,3664,3712,3714-3722#fb1ef353; systemd/teaport-discord-bridge.service.in:8#f85a03b3 -->
+<!-- source: install.sh:3769,3774,3842,3844-3852#fb1ef353; systemd/teaport-discord-bridge.service.in:8#f85a03b3 -->
 
 **`teaport-sip.service`**
 
 The SIP front end for phone calls. Rendered on every run, never enabled by the installer: the unit carries a `ConditionPathExists` on the SIP configuration, and `teaport sip configure` is what registers a trunk and turns it on. A repair re-renders the unit and leaves its enabled state alone. The gateway binary itself comes from the separate teaport-sip repository. While it renders the SIP unit, the installer also removes a leftover `teaport-sip-brain` unit from older installs.
 
-<!-- source: install.sh:3804-3812,4018-4025,4030-4040#e99260ed; systemd/teaport-sip.service.in:13,17#65131321 -->
+<!-- source: install.sh:3934-3945,4150-4157,4162-4172#5faac737; systemd/teaport-sip.service.in:13,17#65131321 -->
 
 **`teaport-local-audio.service`**
 
 The local microphone and speaker bridge for a USB mic array, piping audio to the brain's `/talk` endpoint. Rendered on every install but inert until `.env` exists. `TEAPORT_ENABLE_LOCAL_AUDIO=1` seeds that file and enables the unit; a repair without it leaves the enabled state alone, so a bridge the operator disabled stays off.
 
-<!-- source: install.sh:4044-4048,4149,4168#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
+<!-- source: install.sh:4176-4180,4281,4300#df1caeef; systemd/teaport-local-audio.service.in:10,14#e3a2bd5b -->
 
 **`teaport-wifi-setup.service`**
 
 The Wi-Fi setup flow: a temporary setup network and a page where a phone enters the password. The brain starts it when the user asks for setup. Rendered when NetworkManager and iptables are present; never enabled by the installer. It runs as the run user. Its changes to the Wi-Fi, such as the setup network and joining your network, go through `wifi_apply.py` under `sudo`.
 
-<!-- source: install.sh:4090-4094,4097-4099#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:25-27#7524bbbc -->
+<!-- source: install.sh:4222-4226,4229-4231#37beefe0; systemd/teaport-wifi-setup.service.in:30-33,37#6beef5ed; systemd/teaport-wifi-setup.service.in:13-15#43d7126a; brain/teaport_brain/wifi.py:25-27#7524bbbc -->
 
 **`teaport-wifi-setup-net.service`**
 
 The root side of Wi-Fi setup: the rule that sends port 80 on the setup network to the page, and the captive DNS file. It starts before `teaport-wifi-setup.service` and stops after it, however that ends. It loads no settings file: the settings in `/etc/teaport` are written on the run user's behalf, so no command that runs as root takes its environment from them. The brain package installs it in `/usr/lib/systemd/system`, and the installer also renders it into `/etc/systemd/system`.
 
-<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:4097-4098#4a54cd32; packaging/nfpm.yaml:185-186#7b0f03ce -->
+<!-- source: systemd/teaport-wifi-setup-net.service.in:1-25#ca2eede8; install.sh:4229-4230#4a54cd32; packaging/nfpm.yaml:204-205#7b0f03ce -->
 
 Teaspoon AI appliances come with an OLED face; this installer does not install it, and leaves one that is already on the box alone.
 
-<!-- source: install.sh:4139-4146#6384d3ce -->
+<!-- source: install.sh:4271-4278#6384d3ce -->
 
 The installer also enables `avahi-daemon` and `caddy`.
 
-<!-- source: install.sh:3627#e72e75fe -->
+<!-- source: install.sh:3737#e72e75fe -->

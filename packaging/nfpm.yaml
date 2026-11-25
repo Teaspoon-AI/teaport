@@ -35,8 +35,9 @@ description: |-
 # Ubuntu install lacks. Then the interpreter the venv was built on (pyvenv.cfg home =
 # /usr/bin), the system python3 that runs the root-owned config helper, and curl for
 # the CLI, sudo (visudo checks the config page's sudoers line before it is installed), git
-# (the update fetches the release's installer, as the one-line installer does), and polkitd
-# (the rule that lets the run user start the update).
+# (the update fetches the release's installer, as the one-line installer does), polkitd
+# (the rule that lets the run user start the update), and openssh-client (ssh-keygen checks
+# the release manifest's signature).
 # libpam-modules-bin for mkhomedir_helper, which the owner's login helper (login_apply.py)
 # runs to finish an account a create left without its home directory; Ubuntu installs it
 # everywhere (priority required), the line says the package needs it.
@@ -50,6 +51,7 @@ depends:
   - curl
   - git
   - polkitd
+  - openssh-client
   - libc6
   - libgcc-s1
   - libstdc++6
@@ -104,6 +106,23 @@ contents:
     dst: /usr/lib/teaport/login_apply.py
     file_info:
       mode: 0o755
+      owner: root
+      group: root
+
+  # The release manifest's signature check (see manifest_sig.py) and the keys it trusts:
+  # update_apply.py loads the check from here by its path, and it, the brain's release check
+  # and install.sh verify every manifest against these keys before they read it.
+  - src: brain/teaport_brain/manifest_sig.py
+    dst: /usr/lib/teaport/manifest_sig.py
+    file_info:
+      mode: 0o644
+      owner: root
+      group: root
+
+  - src: manifest/allowed_signers
+    dst: /usr/lib/teaport/allowed_signers
+    file_info:
+      mode: 0o644
       owner: root
       group: root
 

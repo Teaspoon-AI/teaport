@@ -68,7 +68,8 @@ own_dir() { mkdir -p "$1"; }
 less() { cat "$@"; }
 '''
 
-FNS = ("fetch_manifest", "mget", "gated", "download", "receipt_get", "api_post", "api_field",
+FNS = ("manifest_cleanup", "exit_trap_base", "manifest_signers", "fetch_manifest", "mget", "gated", "sha256_ok", "download",
+       "receipt_get", "api_post", "api_field",
        "device_id", "git_read", "installer_revision", "eula_identity", "eula_token", "dl_token", "eula_record",
        "eula_gate")
 
@@ -85,6 +86,10 @@ def _manifest(tmp, access=True, version="1.0"):
 
 def _script(tmp, body, **env):
     head = STUBS + FAKE_CURL + "".join(_fn(f) for f in FNS)
+    # The manifest, a local one with no signature: taken as given only because the test says
+    # so (TEAPORT_MANIFEST_UNSIGNED=1), and checked by the repository's manifest_sig.
+    head += (f'MANIFEST_CHECK_PY="{INSTALL.parent}/brain/teaport_brain/manifest_sig.py"; MANIFEST_UNSIGNED=1\n'
+             'MANIFEST_SIGNERS_PKG="$T/no-package/allowed_signers"; DOWNLOAD_HOST=get.teaspoon.tech\n')
     head += ('HERE="${HERE:-$T}"; STATE="$T/state"; EULA_RECEIPT="$STATE/eula-accepted.json"; GATED=(); DL_TOKEN=""\n'
              'ACCEPTANCE_ID=""; ACCEPT_USE=""; MANIFEST_URL="$T/mf.json"; EULA_API="" EULA_ID="" EULA_FACTORY=""\n'
              'ACCEPT_EULA="${ACCEPT_EULA:-}" ACCEPT_EMAIL="${ACCEPT_EMAIL:-}"\n'
@@ -276,10 +281,10 @@ def test_gated_downloads_carry_the_token_on_stdin_and_others_none():
     tmp_path = pathlib.Path(tempdir())
     _manifest(tmp_path)
     body = ('fetch_manifest; DL_TOKEN=tok-xyz\n'
-            'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n'
-            'download https://get.teaspoon.tech/dl/models/kokoro/k "$T/k" ""\n'
-            'download https://get.teaspoon.tech/dl/brain/b.deb "$T/b" ""\n'
-            'download https://get.teaspoon.tech/dl/engineering/x "$T/x" ""\n')
+            'download https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\n'
+            'download https://get.teaspoon.tech/dl/models/kokoro/k "$T/k" 7a7e47fb713f59bb0e0f13d1814484740518c8e789a875160fb8d004fae350f2\n'
+            'download https://get.teaspoon.tech/dl/brain/b.deb "$T/b" 54fecd91a7c88b8345a565c0b9ce312a5776f8fc6ea70b5f15c168b3c664f9c3\n'
+            'download https://get.teaspoon.tech/dl/engineering/x "$T/x" 99e70066e16964d8162b4e12feac063a4a81fac80fb3ce76616ea478259dd593\n')
     rc, out = _run(tmp_path, body)
     assert rc == 0, out
     assert pathlib.Path(tmp_path, "dl.log").read_text().splitlines() == [
@@ -288,7 +293,7 @@ def test_gated_downloads_carry_the_token_on_stdin_and_others_none():
         "https://get.teaspoon.tech/dl/brain/b.deb|",
         "https://get.teaspoon.tech/dl/engineering/x|"]
     assert "tok-xyz" not in pathlib.Path(tmp_path, "curl.log").read_text() + pathlib.Path(tmp_path, "sudo.log").read_text()
-    rc, out = _run(tmp_path, 'fetch_manifest\ndownload https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n')
+    rc, out = _run(tmp_path, 'fetch_manifest\ndownload https://get.teaspoon.tech/dl/engine/e "$T/e-again" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\n')
     assert rc == 1 and "no download token" in out, out
 
 
@@ -365,13 +370,13 @@ def test_a_server_that_cannot_be_asked_now_stops_only_a_download_that_needs_it()
     down = '503 {"message": "down"}'
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN=down)   # a repair with everything in place
     assert rc == 0 and "cannot get a download token" in out and "(HTTP 503: down)" in out and "TOKEN=\n" in out, out
-    get = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n'
+    get = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\necho GOT\n'
     rc, out = _run(tmp_path, get, FAKE_TOKEN=down)
     assert rc == 1 and "cannot download https://get.teaspoon.tech/dl/engine/e without a token" in out, out
     assert [w for w, _ in _api(tmp_path)][-2:] == ["token", "token"]   # asked again at the download
     pathlib.Path(tmp_path, "api.log").unlink()
     rc, out = _run(tmp_path, GATE + 'FAKE_TOKEN=\'200 {"token": "tok-later"}\'\n'
-                   + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n', FAKE_TOKEN=down)
+                   + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\necho GOT\n', FAKE_TOKEN=down)
     assert rc == 0 and "GOT" in out, out
     assert pathlib.Path(tmp_path, "dl.log").read_text().splitlines()[-1].endswith("Bearer tok-later")
 
@@ -421,7 +426,7 @@ def test_a_factory_receipt_gets_tokens_whatever_the_license_version_without_a_pr
     tmp_path = pathlib.Path(tempdir())
     _manifest(tmp_path, version="2.0")   # the license moved on since the box was provisioned
     _factory_receipt(tmp_path, version="1.0")
-    body = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\necho GOT\n'
+    body = GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\necho GOT\n'
     rc, out = _run(tmp_path, body)   # no terminal, no flag, no email
     assert rc == 0 and "GOT" in out and "TOKEN=tok-again" in out, out
     assert "factory install: the engine's files download under Teaspoon AI's record" in out, out
@@ -463,12 +468,12 @@ def test_a_factory_receipt_with_the_server_down_stops_only_a_download_that_needs
     _factory_receipt(tmp_path)
     rc, out = _run(tmp_path, GATE, FAKE_TOKEN='503 {"message": "down"}')
     assert rc == 0 and "factory install" in out and "TOKEN=\n" in out, out
-    rc, out = _run(tmp_path, GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n', FAKE_TOKEN='503 {}')
+    rc, out = _run(tmp_path, GATE + 'download https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\n', FAKE_TOKEN='503 {}')
     assert rc == 1 and "without a token" in out, out
     assert [w for w, b in _api(tmp_path)][-2:] == ["token", "token"]
     # The server back, but the record revoked meanwhile: said as the factory record's, not
     # as an acceptance this box never made.
-    body = GATE + 'FAKE_TOKEN=\'403 {"message": "revoked"}\'\ndownload https://get.teaspoon.tech/dl/engine/e "$T/e" ""\n'
+    body = GATE + 'FAKE_TOKEN=\'403 {"message": "revoked"}\'\ndownload https://get.teaspoon.tech/dl/engine/e "$T/e" 699e02e23f9e17f9e5a847cb2630b9067e00e2f56e7bd26de79eec15463359f5\n'
     rc, out = _run(tmp_path, body, FAKE_TOKEN='503 {}')
     assert rc == 1 and "factory install record" in out and "refuses this box's acceptance" not in out, out
 

@@ -14,20 +14,72 @@ name: publish
 # file back from the public URL. A manifest therefore goes up only when its artifacts
 # are already in the bucket; upload the artifacts first, then merge.
 #
-# The upload runs in the r2-publish environment. Its secrets are read by the upload step
-# only and never on pull_request. Restrict the environment's deployment branches to
-# main (Settings > Environments) so no other branch's workflow can read them:
+# Signatures: boxes install nothing from a manifest whose signature does not verify against
+# the release keys (manifest/allowed_signers), so the check verifies manifest/<channel>.json.sig
+# first, and the upload carries it with the manifest. Nothing here can sign: the signature is
+# made offline with a key CI never sees (packaging/RELEASING.md) and committed beside the
+# manifest. The bucket's token can replace a manifest, but not make boxes install from it.
+# check.py --boxes-signers holds each manifest to more than this commit's keys, with all
+# trust state taken from git at --base (the commit last uploaded; see below), never from the
+# bucket:
+#   - every release's brain.commit carries exactly this tree's manifest/allowed_signers (and
+#     its .deb the commit's), so a key swapped at a tagged commit fails whoever signed;
+#   - the signature must also verify with the keys boxes on the channel have: the signers
+#     file at the brain.commit --base's manifest/<channel>.json names (not the newest
+#     release tag, which a release pushes before its manifest PR), or, while that names no
+#     release with keys, the keys of --base's install-bootstrap.sh; a key change passes
+#     only signed by a key they already carry;
+#   - the one manifest let through with other keys than the tree's is a re-signature: byte
+#     for byte --base's, naming the release --base names (a rotation PR's).
+# --base is what was actually uploaded: the head commit of the last of main's own publish runs
+# (push or dispatch, this repository's workflow file, any attempt) whose upload and read-back
+# both succeeded, taken from GitHub's record of the runs (manifest/last_upload.py, actions:
+# read), and an ancestor of main; a PR (into main only) is measured against its base, and its
+# merge's run again against the last upload. While another of main's publish runs is still
+# running the lookup stops (re-run when it finishes): it may be uploading. A run that went
+# red before its upload (missing credentials included) changed nothing and
+# is answered by a revert or a fix, measured against the last upload; one whose upload ran
+# but did not read back may have changed the bucket, and the next lookup stops and asks for
+# an explicit base. A renamed job or step stops it too (keep the names). GitHub drops a
+# queued run when a newer one queues in the same group: wait for each manifest or bootstrap
+# merge's run to finish green before merging the next (above all before a rotation PR), and
+# dispatch a dropped one with base = the last uploaded commit. --base must resolve and the
+# lookup must answer, or the job fails; with no upload yet, the fallback (main before the
+# push, HEAD weekly) holds only while signing is not on there. The check is a tripwire, not
+# a barrier: whoever can push can edit this file.
+# The bootstrap (/teaport) is signed the same way, in its own namespace (teaport-bootstrap),
+# and goes up as /teaport.sig, then /teaport. It carries the keys itself and verifies the
+# manifest before it clones anything; its signature must verify with the keys --base's
+# bootstrap carries too, so a key a push adds is not taken until a trusted key signs for it.
+# None of this is the real control: the signer reviewing the commit, keys included, is
+# (packaging/RELEASING.md), and what protects boxes from whatever the bucket serves is the
+# box side, which verifies every manifest itself.
+# The .sig goes up first, then the manifest: R2 swaps no two objects at once, so for the
+# seconds between the two a box reads a manifest and a signature that do not match, and
+# refuses it (no install, no update offered; the next look gets the pair). That window fails
+# closed, which is the side to fail on.
+#
+# The upload runs in the r2-publish environment. Its secrets are read by the credentials
+# check and the upload step only, and never on pull_request. Restrict the environment's
+# deployment branches to main (Settings > Environments) so no other branch's workflow can
+# read them:
 #   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  an R2 API token with write access to the
 #                                           teaport-get bucket
 #   R2_ENDPOINT                             https://<account id>.r2.cloudflarestorage.com
 #
 # The engine's files and models are gated (manifest access.gated: the download gate Worker
 # in worker/ serves them from a private bucket, only with a token). The check downloads them
-# with DL_CHECK_TOKEN, a repository secret equal to the Worker's CHECK_TOKEN, on every run
-# but a pull request's; a pull request's run checks only that each refuses a download
-# without a token. Every run also checks that none is served at a percent-encoded path
-# around the Worker's routes (a copy left in teaport-get), and the weekly run fails while
-# the gate is open.
+# with DL_CHECK_TOKEN, equal to the Worker's CHECK_TOKEN, on every run but a pull request's.
+# It is a secret of the gate-check environment, never the repository's: that environment's
+# deployment branches are main only, with no reviewer (the weekly run uses it unattended),
+# and only the artifacts job of a run on main enters it. A workflow on any other branch, a
+# pull request's run included, cannot read it. A pull request's run checks only that each
+# gated file refuses a download without a token and is not served around the gate; its
+# sha256 is compared by the merge's run (and by the release PR's local check, RELEASING.md).
+# Every run also checks that none is served at a percent-encoded path around the Worker's
+# routes (a copy left in teaport-get), and the weekly run fails while the gate is open. Run
+# it by hand (workflow_dispatch) from main: from another branch, the artifacts job stops at
+# gate-check's branch policy.
 
 on:
   push:
@@ -35,19 +87,39 @@ on:
     paths:
       - manifest/**
       - install-bootstrap.sh
+      - install-bootstrap.sh.sig
       - .github/workflows/publish.yml
   pull_request:
+    # Only a PR into main: it is measured against main (its base). `edited` covers a PR
+    # retargeted onto main; last_upload.py refuses any other base branch as well.
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
     paths:
       - manifest/**
       - install-bootstrap.sh
+      - install-bootstrap.sh.sig
       - .github/workflows/publish.yml
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
+    inputs:
+      base:
+        description: >-
+          The commit this run is measured against (check.py --base), as a commit id. Empty
+          (the default): the last commit a publish run uploaded and read back. Name one after
+          a hand upload, or for a run that GitHub dropped.
+        required: false
+        default: ""
 
+# Concurrency groups are repository-wide: a fork PR's own workflow file could join these
+# and cancel or hold a publish run. Requiring approval for all external contributors' fork
+# PR workflows is what keeps outsiders out (packaging/RELEASING.md, GitHub settings).
 # Never two uploads at once, and never cancel one halfway; a PR's newer push replaces
 # its older check. The weekly check has its own group: queued behind a merge's run it
 # would otherwise displace that run while it waits, and the merge would go unpublished.
+# The base step stops while another of main's runs is in flight (a queued one too) and
+# never counts its own run: a running run that stops for a queued one ends, which starts
+# the queued one, whose lookup then finds nothing in flight. Nothing waits: no deadlock.
 concurrency:
   group: publish-${{ github.event_name == 'schedule' && 'weekly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -57,18 +129,45 @@ permissions:
 
 jobs:
   artifacts:
+    name: artifacts
     runs-on: ubuntu-latest
+    # The gate's check token: only on main's runs (push, dispatch, the weekly one), from the
+    # gate-check environment (main only). A pull request's run has no environment, no token.
+    environment: ${{ github.event_name != 'pull_request' && 'gate-check' || '' }}
+    permissions:
+      contents: read
+      actions: read   # the publish runs' record (the base step)
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 1   # other commits are fetched by id when needed (last_upload.py, check.py)
       - name: The bootstrap parses
         # ci.yml checks it too, but publish does not wait for ci.yml.
         run: bash -n install-bootstrap.sh
+      - name: The base this run is measured against
+        # check.py --base (manifest/last_upload.py): the PR's base on pull_request; a
+        # dispatch's explicit `base`; else the last commit a publish run uploaded and read
+        # back, from GitHub's own record of the runs (actions: read). With no upload yet,
+        # main before the push (HEAD for the weekly run) only while signing is not on there.
+        # A lookup that fails fails the job: never a guess.
+        id: base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          INPUT: ${{ inputs.base }}
+        run: |
+          base="$(python3 manifest/last_upload.py base --event "$EVENT" --pr-base "$PR_BASE" \
+                  --base-ref "$BASE_REF" --before "$BEFORE" --input "$INPUT")"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
       - name: The manifests name everything install.sh needs, published as named
         # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
         env:
+          BASE: ${{ steps.base.outputs.base }}
           DL_CHECK_TOKEN: ${{ github.event_name != 'pull_request' && secrets.DL_CHECK_TOKEN || '' }}
           EVENT: ${{ github.event_name }}
         run: |
@@ -83,19 +182,27 @@ jobs:
           # Every other run warns (packaging/RELEASING.md).
           strict=()
           if [ "$EVENT" = schedule ]; then strict=(--require-enforce); fi
-          python3 manifest/check.py "${strict[@]}" manifest/stable.json
-          python3 manifest/check.py "${strict[@]}" --placeholders-ok manifest/beta.json
+          python3 manifest/check.py "${strict[@]}" --base "$BASE" --boxes-signers manifest/stable.json
+          python3 manifest/check.py "${strict[@]}" --base "$BASE" --boxes-signers --placeholders-ok manifest/beta.json
+          python3 manifest/check.py --base "$BASE" --boxes-signers --bootstrap install-bootstrap.sh
 
   publish:
+    # The name the base step looks for (manifest/last_upload.py JOB): keep it, and the upload
+    # and read-back steps' names, as they are.
+    name: publish
     needs: artifacts
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: r2-publish
+    permissions:
+      contents: read
+      actions: read   # the publish runs' record (the base step)
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+          fetch-depth: 1   # other commits are fetched by id when needed (last_upload.py, check.py)
       - name: Only what main serves now is published
         # A re-run of an older run checks out that run's commit: uploading it would put
         # an older manifest over a newer one. So compare this commit's files with main's
@@ -105,10 +212,52 @@ jobs:
         id: tip
         run: |
           git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main
-          if git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- manifest/stable.json manifest/beta.json install-bootstrap.sh; then
+          if git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- manifest/stable.json manifest/beta.json \
+              manifest/stable.json.sig manifest/beta.json.sig install-bootstrap.sh install-bootstrap.sh.sig; then
             echo "publish=1" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::main's tip $(git rev-parse FETCH_HEAD) has other manifests or bootstrap than ${GITHUB_SHA}: not publishing an older commit (the later commit's own run publishes)"
+          fi
+      - name: The base this run is measured against
+        # check.py --base (manifest/last_upload.py): the PR's base on pull_request; a
+        # dispatch's explicit `base`; else the last commit a publish run uploaded and read
+        # back, from GitHub's own record of the runs (actions: read). With no upload yet,
+        # main before the push (HEAD for the weekly run) only while signing is not on there.
+        # A lookup that fails fails the job: never a guess.
+        id: base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          INPUT: ${{ inputs.base }}
+        run: |
+          base="$(python3 manifest/last_upload.py base --event "$EVENT" --pr-base "$PR_BASE" \
+                  --base-ref "$BASE_REF" --before "$BEFORE" --input "$INPUT")"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      - name: The signatures still verify
+        # The artifacts job checked this commit; this is the same check (no downloads),
+        # right before the upload, on the files about to go up.
+        if: steps.tip.outputs.publish == '1'
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          python3 manifest/check.py --signature-only --base "$BASE" --boxes-signers manifest/stable.json
+          python3 manifest/check.py --signature-only --base "$BASE" --boxes-signers --placeholders-ok manifest/beta.json
+          python3 manifest/check.py --base "$BASE" --boxes-signers --bootstrap install-bootstrap.sh
+      - name: The bucket's credentials are set
+        # Its own step, so that missing secrets leave the upload step skipped: the lookup
+        # (last_upload.py) then reads the run as one that uploaded nothing, which it is.
+        if: steps.tip.outputs.publish == '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
+            echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT are not set in the r2-publish environment: nothing was published"
+            exit 1
           fi
       - name: Upload to the download bucket
         if: steps.tip.outputs.publish == '1'
@@ -118,17 +267,24 @@ jobs:
           AWS_DEFAULT_REGION: auto
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
-            echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT are not set in the r2-publish environment: nothing was published"
-            exit 1
-          fi
           put() {  # put <file> <key> <content type>: the types the bucket already serves
             aws s3 cp "$1" "s3://teaport-get/$2" --endpoint-url "$R2_ENDPOINT" \
               --content-type "$3" --only-show-errors
             echo "uploaded $1 -> https://get.teaspoon.tech/$2"
           }
-          put manifest/stable.json manifest/stable.json application/json
-          put manifest/beta.json manifest/beta.json application/json
+          # Each manifest after its signature (see the top). A manifest the check let go
+          # unsigned (all placeholders, --placeholders-ok) takes any older signature down
+          # with it: a stale one would only make boxes refuse it for the wrong reason.
+          for ch in stable beta; do
+            if [ -f "manifest/$ch.json.sig" ]; then
+              put "manifest/$ch.json.sig" "manifest/$ch.json.sig" text/plain
+            else
+              aws s3 rm "s3://teaport-get/manifest/$ch.json.sig" --endpoint-url "$R2_ENDPOINT" --only-show-errors
+            fi
+            put "manifest/$ch.json" "manifest/$ch.json" application/json
+          done
+          # The bootstrap after its signature, the same way (the check above requires one).
+          put install-bootstrap.sh.sig teaport.sig text/plain
           put install-bootstrap.sh teaport text/x-shellscript
       - name: Read each file back from get.teaspoon.tech
         if: steps.tip.outputs.publish == '1'
@@ -136,8 +292,10 @@ jobs:
         # the bucket holds. A cache rule on the domain would make it fail here, loudly.
         run: |
           for pair in manifest/stable.json:manifest/stable.json manifest/beta.json:manifest/beta.json \
-                      install-bootstrap.sh:teaport; do
+                      manifest/stable.json.sig:manifest/stable.json.sig manifest/beta.json.sig:manifest/beta.json.sig \
+                      install-bootstrap.sh.sig:teaport.sig install-bootstrap.sh:teaport; do
             file="${pair%%:*}"; key="${pair#*:}"
+            [ -f "$file" ] || continue   # an unsigned placeholder channel has no .sig
             curl -fsS "https://get.teaspoon.tech/$key" | cmp - "$file" \
               || { echo "::error::https://get.teaspoon.tech/$key does not serve $file"; exit 1; }
             echo "ok https://get.teaspoon.tech/$key == $file"

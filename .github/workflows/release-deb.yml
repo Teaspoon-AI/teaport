@@ -1,0 +1,146 @@
+name: release-deb
+
+# A brain-vX.Y.Z (or brain-vX.Y.Z-rcN) tag's .deb and its sha256, for the signing laptop, in
+# a workflow of its own: no other job shares its run, so nothing else in the repository runs
+# beside the jobs here, and only release-deb-check, after the hash, runs the package's code.
+# release-deb-build builds the package from the tag (packaging/build-deb.sh, whose tools and
+# build backend are pinned) and uploads it; brain-deb-sha256 has no checkout and no
+# repository code: it checks GitHub's record of that one artifact (by its id) carries the
+# digest the build job reported, downloads it (digest-checked), checks the .deb's sha256
+# against the build's, and prints the sha256 as a check-run annotation
+# (teaport-brain-deb-sha256). The signing helper reads it anonymously through GitHub's API,
+# from this workflow file only, as a cross-check of its own reading of the .deb
+# (packaging/RELEASING.md). Its artifact is teaport-brain-release-deb (ci.yml's builds are
+# teaport-brain-deb). No job here takes a name main's ruleset requires (ci.yml's brain,
+# brain-deb, plugin, worker, formal, installer; docs.yml's docs): a tag's run must not
+# stand in for them. Keep the file, job, artifact and annotation names.
+
+on:
+  push:
+    tags: ["brain-v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-deb-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-deb-build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      deb-sha256: ${{ steps.build.outputs.deb-sha256 }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Build the .deb
+        id: build
+        shell: bash
+        run: |
+          # checkout fetched the commit, not the tag; build-deb.sh checks HEAD is it.
+          git fetch --no-tags --depth=1 origin "+$GITHUB_REF:$GITHUB_REF"
+          export TEAPORT_DEB_VERSION="${GITHUB_REF_NAME#brain-v}"
+          packaging/build-deb.sh
+          cd dist
+          debs=(teaport-brain_*.deb)
+          [ "${#debs[@]}" = 1 ] || { echo "not exactly one .deb: ${debs[*]}"; exit 1; }
+          sha256sum "${debs[0]}" | tee "${debs[0]}.sha256"
+          echo "deb-sha256=$(sha256sum "${debs[0]}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload
+        with:
+          name: teaport-brain-release-deb
+          path: |
+            dist/teaport-brain_*.deb
+            dist/teaport-brain_*.deb.sha256
+          if-no-files-found: error
+          compression-level: 0 # already compressed
+
+  brain-deb-sha256:
+    needs: release-deb-build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: The artifact is the one the build uploaded
+        # GitHub's record of the artifact (by the id the build reported) must carry the digest
+        # the build reported; download-artifact then checks what it downloads against that record.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.release-deb-build.outputs.artifact-id }}
+          WANT_DIGEST: ${{ needs.release-deb-build.outputs.artifact-digest }}
+        run: |
+          [ -n "$ARTIFACT_ID" ] && [ -n "$WANT_DIGEST" ] || { echo "the build reported no artifact id or digest"; exit 1; }
+          got="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" | jq -r .digest)"
+          [ "${got#sha256:}" = "${WANT_DIGEST#sha256:}" ] || { echo "artifact $ARTIFACT_ID has digest $got, not $WANT_DIGEST"; exit 1; }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.release-deb-build.outputs.artifact-id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+      - name: The .deb's sha256
+        shell: bash
+        env:
+          WANT_SHA256: ${{ needs.release-deb-build.outputs.deb-sha256 }}
+        run: |
+          cd dist
+          debs=(teaport-brain_*.deb)
+          [ "${#debs[@]}" = 1 ] || { echo "not exactly one .deb: ${debs[*]}"; exit 1; }
+          got="$(sha256sum "${debs[0]}" | cut -d' ' -f1)"
+          [ "$got" = "$WANT_SHA256" ] || { echo "the downloaded .deb is not the one built"; exit 1; }
+          sha256sum -c "${debs[0]}.sha256"
+          echo "::notice title=teaport-brain-deb-sha256::$(sha256sum "${debs[0]}")"
+
+  release-deb-check:
+    # The release .deb itself, installed and checked as ci.yml checks every build (the
+    # brain's code runs here, as root too). It runs only after the sha256 is printed, and
+    # takes the artifact by the build's id, checked against the build's digest: nothing here
+    # can change what was hashed, and what is checked is what was hashed.
+    needs: [release-deb-build, brain-deb-sha256]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: The artifact is the one the build uploaded
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.release-deb-build.outputs.artifact-id }}
+          WANT_DIGEST: ${{ needs.release-deb-build.outputs.artifact-digest }}
+        run: |
+          [ -n "$ARTIFACT_ID" ] && [ -n "$WANT_DIGEST" ] || { echo "the build reported no artifact id or digest"; exit 1; }
+          got="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" | jq -r .digest)"
+          [ "${got#sha256:}" = "${WANT_DIGEST#sha256:}" ] || { echo "artifact $ARTIFACT_ID has digest $got, not $WANT_DIGEST"; exit 1; }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.release-deb-build.outputs.artifact-id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+      - name: The .deb, the one hashed
+        shell: bash
+        env:
+          WANT_SHA256: ${{ needs.release-deb-build.outputs.deb-sha256 }}
+        run: |
+          debs=(dist/teaport-brain_*.deb)
+          [ "${#debs[@]}" = 1 ] || { echo "not exactly one .deb: ${debs[*]}"; exit 1; }
+          [ "$(sha256sum "${debs[0]}" | cut -d' ' -f1)" = "$WANT_SHA256" ] || { echo "not the .deb hashed"; exit 1; }
+          echo "DEB=${debs[0]}" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/brain-deb-check
+        with:
+          deb: ${{ env.DEB }}

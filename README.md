@@ -42,8 +42,10 @@ full procedure.
 - `manifest/` — the release manifest for the installer and `teaport update`.
   Merging a change to it, or to `install-bootstrap.sh` (the one-liner), publishes it to
   get.teaspoon.tech (`.github/workflows/publish.yml`), after checking that every
-  artifact the manifest names is already uploaded with that sha256. Upload a release's
-  artifacts first, then merge its manifest.
+  artifact the manifest names is already uploaded with that sha256, and that each file's
+  `.sig` verifies against the release keys in `manifest/allowed_signers`. Upload a
+  release's artifacts first, sign its manifest offline (`packaging/RELEASING.md`), then
+  merge.
 - `install.sh` · `cli/teaport` · `systemd/` — install and operate the product
 - `docs/` — the documentation site, published at
   [docs.teaspoon.tech](https://docs.teaspoon.tech): installation, guides, and the

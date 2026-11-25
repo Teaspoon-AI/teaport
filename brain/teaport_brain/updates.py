@@ -22,7 +22,13 @@
 # older than it has).
 #
 # What looking costs: one GET of a small JSON file from get.teaspoon.tech, the same address
-# the installer reads. Never in a turn. A failed read keeps the last answer, marked stale.
+# the installer reads, and one of its signature beside it. Never in a turn. A failed read
+# keeps the last answer, marked stale.
+#
+# A manifest is believed only once its signature verifies against the release keys the
+# package ships (manifest_sig, the check update_apply.py and install.sh run too): one that
+# does not is an error here ("cannot read the release manifest: ..."), never an update to
+# offer. This look is only what the box shows; the root step verifies again for itself.
 #
 # No Pipecat import (the CLI runs this under the brain venv's python, isolated).
 #
@@ -39,6 +45,7 @@ from urllib.parse import urlparse
 
 from loguru import logger
 
+from teaport_brain import manifest_sig
 from teaport_brain.settings import parse_env, setting, state_dir
 
 CHANNELS = ("stable", "beta")
@@ -64,6 +71,9 @@ COMPONENTS = ("version", "engine", "brain", "plugin", "openclaw", "models")
 STEPS = (("engine", ("engine", "models")), ("brain", ("brain",)))
 
 BRAIN_PACKAGE = "teaport-brain"
+# The one repository a release's installer comes from (update_apply.REPO): a manifest naming
+# another is offered as nothing teaport update installs.
+RELEASE_REPO = "Teaspoon-AI/teaport"
 # packaging/RELEASING.md names the file so: teaport-brain_<version>_<arch>.deb.
 # An engine release dpkg can order ("1.6", "1.7"); update_apply.VERSION is the same.
 _ENGINE_VERSION = re.compile(r"[0-9][A-Za-z0-9.+~-]*")
@@ -106,20 +116,31 @@ def manifest_url(channel: str, env=os.environ) -> str:
     return env.get("TEAPORT_MANIFEST_URL") or f"{MANIFEST_BASE}/{channel}.json"
 
 
-def load(source: str) -> dict:
-    """A manifest from a URL, a file:// URL or a path. Raises OSError/ValueError."""
+def _read(source: str) -> bytes:
+    """The bytes at a URL, a file:// URL or a path. Raises OSError."""
     parsed = urlparse(source)
     if parsed.scheme in ("http", "https"):
         req = urllib.request.Request(source, headers={"User-Agent": USER_AGENT})  # noqa: S310
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECS) as r:  # noqa: S310
-            data = json.load(r)
-    else:
-        path = parsed.path if parsed.scheme == "file" else source
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("the manifest is not a JSON object")
-    return data
+            return r.read(4 << 20)
+    with open(parsed.path if parsed.scheme == "file" else source, "rb") as f:
+        return f.read(4 << 20)
+
+
+def load(source: str, env=os.environ) -> dict:
+    """A manifest from a URL, a file:// URL or a path, once its signature (<source>.sig)
+    has verified against the release keys (manifest_sig.SIGNERS) and a <channel>.json says
+    it is that channel's. A local manifest with no signature passes only with
+    TEAPORT_MANIFEST_UNSIGNED=1, as install.sh's does. Raises OSError, ValueError or
+    manifest_sig.SignatureError."""
+    body = _read(source)
+    try:
+        sig = _read(source + ".sig")
+    except OSError:   # none there (a 404 is an HTTPError, an OSError)
+        sig = None
+    manifest, _ = manifest_sig.accept(body, sig, source, manifest_sig.SIGNERS,
+                                      unsigned_ok=env.get("TEAPORT_MANIFEST_UNSIGNED") == "1")
+    return manifest
 
 
 def _get(manifest: dict, *keys):
@@ -308,14 +329,22 @@ def plan(changed: list[str]) -> dict:
 
 
 def source(latest: dict) -> dict | None:
-    """Where the installer for `latest` comes from: the {repo, tag} the one-line installer
-    (install-bootstrap.sh) and install.sh's own clones use, brain.repo at brain.tag. None
-    when the manifest names no usable one (update_apply.py then installs nothing)."""
+    """Where the installer for `latest` comes from: the {repo, tag, commit} the one-line
+    installer (install-bootstrap.sh) and install.sh's own clones use, brain.repo (RELEASE_REPO
+    only) at brain.tag, which must be brain.commit (the signed manifest pins the tag's
+    commit: update_apply.py refuses a tag that has moved). None when the manifest names no
+    usable one (update_apply.py then installs nothing)."""
     repo, tag = _get(latest, "brain", "repo"), _get(latest, "brain", "tag")
-    ok = (isinstance(repo, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
-          and isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*", tag)
+    commit = _get(latest, "brain", "commit")
+    # A release tag (manifest_sig.release_version), a candidate's only on beta
+    # (release_problem): what update_apply.read_source takes, so nothing is offered that it
+    # would refuse.
+    ok = (repo == RELEASE_REPO
+          and manifest_sig.release_version(tag) is not None
+          and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit)
+          and manifest_sig.release_problem(latest) is None
           and released(repo + tag))
-    return {"repo": repo, "tag": tag} if ok else None
+    return {"repo": repo, "tag": tag, "commit": commit} if ok else None
 
 
 def check(channel: str | None = None, *, fetch=load, installed: dict | None = None,
@@ -328,10 +357,17 @@ def check(channel: str | None = None, *, fetch=load, installed: dict | None = No
     ch = channel_of(channel, installed)
     url = manifest_url(ch, env)
     latest = fetch(url)
-    return {"channel": ch, "url": url, "checked": clock(), "fresh": True,
-            "source": source(latest),
-            **compare(installed, latest, (brain or installed_brain)(),
-                      (floor or brain or box_brain)())}
+    status = {"channel": ch, "url": url, "checked": clock(), "fresh": True,
+              "source": source(latest),
+              **compare(installed, latest, (brain or installed_brain)(),
+                        (floor or brain or box_brain)())}
+    if status["steps"] and status["source"] is None:
+        # Nothing teaport update would run: update_apply.py refuses a release whose installer
+        # is not RELEASE_REPO's at a tag and its commit. Not offered, and said; and no new
+        # release is "available" unless a full install.sh run has something to do.
+        status["not_offered"], status["steps"] = status["steps"], []
+        status["available"] = bool(status["manual"])
+    return status
 
 
 def configured_channel() -> str:
@@ -375,11 +411,18 @@ class Monitor:
         if self._last is None:
             return {"state": "unknown", "fresh": False}
         last = self._last
+        # What the look found teaport update would do, as check() said it: a release it would
+        # not install (not_offered) stays not offered, and is not "available".
+        what = plan(last["changed"])
+        if isinstance(last.get("steps"), list) and isinstance(last.get("manual"), list):
+            what = {"steps": last["steps"], "manual": last["manual"]}
+        if isinstance(last.get("not_offered"), list) and last["not_offered"]:
+            what["not_offered"] = last["not_offered"]
         return {"state": "available" if last["available"] else "current",
                 "channel": last["channel"], "checked": last["checked"],
                 "fresh": not self._failed, "changed": last["changed"],
                 "older": bool(last.get("older")),
-                "components": last["components"], **plan(last["changed"])}
+                "components": last["components"], **what}
 
     def _load(self) -> None:
         try:
@@ -390,7 +433,8 @@ class Monitor:
         if isinstance(found, dict) and isinstance(found.get("components"), dict) \
                 and isinstance(found.get("changed"), list) and "channel" in found \
                 and isinstance(found.get("checked"), (int, float)):
-            found["available"] = bool(found["changed"])
+            found["available"] = bool(found["changed"]) if not isinstance(found.get("available"), bool) \
+                else found["available"]
             self._last = found
 
     def _save(self) -> None:
@@ -472,6 +516,13 @@ def render(status: dict) -> str:
     if status["steps"]:
         lines.append("teaport update installs: " + ", ".join(status["steps"])
                      + " (the download can take a while; restarts wait until nobody is talking)")
+        src = status["source"]
+        lines.append(f"  with the installer of github.com/{src['repo']} {src['tag']} "
+                     f"(commit {src['commit'][:12]})")
+    if status.get("not_offered"):
+        lines.append("not offered: " + ", ".join(status["not_offered"]) + " — the release names no "
+                     f"installer teaport update takes (brain.repo {RELEASE_REPO} at a tag, and its "
+                     "brain.commit)")
     if status["manual"]:
         lines.append("needs a full install.sh run: " + ", ".join(status["manual"]))
     return "\n".join(lines)

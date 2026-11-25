@@ -3,8 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
-    # brain-v<X.Y.Z>: brain-deb builds the release package. It is uploaded as a run
-    # artifact like any other build; publishing it is a separate, manual step.
+    # brain-v<X.Y.Z>: brain-deb builds the tag here too, and brain-deb-check installs and
+    # checks that build. The release .deb itself (published, and signed for) is
+    # release-deb.yml's, a workflow of the tag alone.
     tags: ["brain-v*"]
   pull_request:
 
@@ -67,8 +68,8 @@ jobs:
         run: |
           pip install uv==0.9.24
           uv sync --locked --no-editable --project brain
-      - name: Brain self-check (what the brain-deb job runs against the built package)
-        # The same gate the brain-deb job applies to the built package: import both
+      - name: Brain self-check (what the brain-deb-check job runs against the built package)
+        # The same gate the brain-deb-check job applies to the built package: import both
         # front-ends and push audio through Silero VAD + Smart Turn v3, the compiled
         # extensions (onnxruntime, loudness) a numpy major would break. brain-deb builds
         # on the arm runner only; this step runs on both legs, so it is also what checks
@@ -111,8 +112,10 @@ jobs:
       group: ci-brain-deb-${{ github.ref }}
       cancel-in-progress: false
     timeout-minutes: 30
+    # This job only builds and uploads; the self-check and the other checks of the package
+    # run in brain-deb-check.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build the .deb
@@ -133,72 +136,7 @@ jobs:
           # The checksum names the file, not dist/<file>: `sha256sum -c` works from wherever
           # the artifact is downloaded.
           ls -l "$deb"; (cd dist && sha256sum "$(basename "$deb")" | tee "$(basename "$deb").sha256")
-      - name: Install it
-        run: sudo apt-get install -y "./$DEB"
-      - name: Self-check the installed package
-        # From /, isolated (-I), as the runner user and then as root. Root is the strict
-        # case: a root python writes a __pycache__ wherever a .pyc is missing or stale,
-        # which the next step would see as a file the package does not own, or as a
-        # changed one. The run user on the box cannot write the tree at all, so a stale
-        # .pyc there would cost a recompile on every start instead.
-        run: |
-          cd /
-          /opt/teaport/brain/bin/python -I -m teaport_brain.selfcheck
-          sudo /opt/teaport/brain/bin/python -I -m teaport_brain.selfcheck
-          /opt/teaport/brain/bin/teaport-brain --help >/dev/null
-          test -x /usr/bin/teaport && bash -n /usr/bin/teaport
-          # compile(), not py_compile: that would write a __pycache__ beside the helper.
-          for p in /usr/lib/teaport/config_apply.py /usr/lib/teaport/update_apply.py /usr/lib/teaport/wifi_apply.py /usr/lib/teaport/login_apply.py; do
-            /usr/bin/python3 -I -c 'import sys; p = sys.argv[1]; compile(open(p).read(), p, "exec")' "$p"
-          done
-          # The update's unit, as systemd reads it (it is static: nothing enables it).
-          systemd-analyze verify /usr/lib/systemd/system/teaport-update.service
-          [ "$(systemctl show -p UnitFileState --value teaport-update.service)" = static ]
-      - name: dpkg -V is clean, and the package owns every file under its root
-        run: |
-          out="$(dpkg -V teaport-brain)"
-          [ -z "$out" ] || { printf '%s\n' "$out"; echo "dpkg -V: files changed after install"; exit 1; }
-          stray="$(comm -13 <(dpkg -L teaport-brain | sort -u) <(find /opt/teaport/brain | sort -u))"
-          [ -z "$stray" ] || { printf '%s\n' "$stray" | head -50; echo "files under /opt/teaport/brain that the package does not own (written at run time?)"; exit 1; }
-          echo "dpkg -V clean; $(dpkg -L teaport-brain | wc -l) paths owned"
-      - name: Shared libraries (what Depends must cover)
-        # Every ELF object in the venv, through ldd. Anything unresolved fails the job.
-        # Anything resolved OUTSIDE the venv is a system library the package relies on:
-        # listed with the Debian package that ships it and one .so that needs it, and
-        # every such package must be named in the .deb's Depends: (what dpkg-shlibdeps
-        # would have derived, for a package nfpm builds without it).
-        run: |
-          find /opt/teaport/brain -type f \( -name '*.so' -o -name '*.so.*' \) > "$RUNNER_TEMP/elfs"
-          echo "$(wc -l < "$RUNNER_TEMP/elfs") shared objects in the venv"
-          missing=0; : > "$RUNNER_TEMP/sys"
-          while IFS= read -r f; do
-            out="$(ldd "$f" 2>&1 || true)"
-            if grep -q 'not found' <<<"$out"; then echo "UNRESOLVED in $f:"; grep 'not found' <<<"$out"; missing=1; fi
-            awk -v so="${f#/opt/teaport/brain/lib/python3.12/site-packages/}" \
-              '/=> \//{print $3, so} /^\t\/[^ ]+ \(/{print $1, so}' <<<"$out" \
-              | grep -v '^/opt/teaport/brain/' >> "$RUNNER_TEMP/sys" || true
-          done < "$RUNNER_TEMP/elfs"
-          # dpkg -S by the path ldd printed, then by its resolved one: since the /usr
-          # merge a library can be registered under either spelling. Diversion notes
-          # (the dynamic loader has one) are not owners.
-          owner() { { dpkg -S "$1"; dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | grep -v '^diversion by' | head -1 | cut -d: -f1; }
-          echo "system libraries the venv links against:"
-          : > "$RUNNER_TEMP/pkgs"
-          while read -r lib so; do
-            pkg="$(owner "$lib" || true)"
-            printf '  %-44s %-12s e.g. %s\n' "$lib" "${pkg:-?}" "$so"
-            echo "${pkg:-?}" >> "$RUNNER_TEMP/pkgs"
-          done < <(sort -u -k1,1 "$RUNNER_TEMP/sys")
-          echo "packages: $(sort -u "$RUNNER_TEMP/pkgs" | paste -sd' ')"
-          depends="$(dpkg-query -W -f='${Depends}' teaport-brain)"
-          echo "Depends: $depends"
-          # Package names only (version constraints dropped), matched as whole lines.
-          sed 's/ *([^)]*)//g; s/, */\n/g' <<<"$depends" > "$RUNNER_TEMP/depends"
-          for pkg in $(sort -u "$RUNNER_TEMP/pkgs"); do
-            if ! grep -qxF "$pkg" "$RUNNER_TEMP/depends"; then echo "not in Depends: $pkg"; missing=1; fi
-          done
-          [ "$missing" = 0 ]
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teaport-brain-deb
           path: |
@@ -206,6 +144,29 @@ jobs:
             dist/teaport-brain_*.deb.sha256
           if-no-files-found: error
           compression-level: 0 # already compressed
+
+  brain-deb-check:
+    # The package itself, installed and run (the brain's code, as root too). A release's
+    # .deb, its hash for the signing laptop and the same checks of it are release-deb.yml's.
+    needs: brain-deb
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: teaport-brain-deb
+          path: dist
+      - name: The .deb
+        run: echo "DEB=$(ls dist/teaport-brain_*.deb)" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/brain-deb-check
+        with:
+          deb: ${{ env.DEB }}
 
   plugin:
     runs-on: ubuntu-latest
@@ -301,8 +262,21 @@ jobs:
           done
       - name: Installer dry-run (voice-only path)
         # No Jetson, no sandbox, not a TTY: exercises the full dry-run without touching the box.
-        run: TEAPORT_ALLOW_NON_JETSON=1 TEAPORT_MANIFEST_URL="$PWD/manifest/stable.json" bash install.sh --dry-run
+        # The checkout's manifest is verified with the .sig beside it. Read unsigned only while
+        # the tree has no stable.json.sig at all (before signing was turned on). Once it has
+        # one, a manifest PR fails here until its new .sig is committed: the .sig in the tree
+        # is the previous release's, and does not verify the edited file. That is by design.
+        run: |
+          unsigned=0; [ -f manifest/stable.json.sig ] || unsigned=1
+          TEAPORT_ALLOW_NON_JETSON=1 TEAPORT_MANIFEST_URL="$PWD/manifest/stable.json" \
+            TEAPORT_MANIFEST_UNSIGNED="$unsigned" bash install.sh --dry-run
       - name: Installer dry-run (--only brain)
         # The incremental brain update path. Off-appliance it warns that there is no
         # install to update and shows the plan anyway: stage, self-check, swap, restart.
-        run: bash install.sh --only brain --dry-run
+        # Against the checkout's manifest, as the step above, so CI reads nothing from the
+        # bucket: verified with the .sig beside it, unsigned only while the tree has none, and
+        # failing on a manifest PR until its new .sig is committed (as the step above).
+        run: |
+          unsigned=0; [ -f manifest/stable.json.sig ] || unsigned=1
+          TEAPORT_MANIFEST_URL="$PWD/manifest/stable.json" TEAPORT_MANIFEST_UNSIGNED="$unsigned" \
+            bash install.sh --only brain --dry-run
