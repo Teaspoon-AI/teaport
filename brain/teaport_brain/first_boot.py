@@ -63,6 +63,7 @@ READINGS = 6
 # How often the watcher looks again while the box has never been online.
 WATCH_SECS = 30.0
 _BOOT_ID = "/proc/sys/kernel/random/boot_id"
+_clock = time.monotonic
 _UPTIME = "/proc/uptime"
 
 
@@ -291,16 +292,19 @@ async def watch(connectivity=None, sleep=asyncio.sleep) -> None:
     """While the box has never been online: look after the grace period and every
     WATCH_SECS, and write the marker the first time it is. Covers an install or a boot
     that is online, and Ethernet plugged in later, with no room session involved. Gives
-    up when no connectivity check is configured (nobody can tell)."""
+    up when no connectivity check is configured (nobody can tell) RETRY_FOR_SECS after
+    it started, as drive() does: the install may configure the check after the brain
+    starts (#472), and a box that is online then must still be seen to be."""
     if not ENABLED:
         return
     check = connectivity or _check
+    start = _clock()
     while is_new():
         state = await _reading(check, sleep)
         if state == "full":
             reached_online("online")
             return
-        if state is None:
+        if state is None and _clock() - start >= RETRY_FOR_SECS:
             return
         await sleep(WATCH_SECS)
 
@@ -363,6 +367,8 @@ def room_wanted() -> dict | None:
 # again, RETRY_SECS apart, for RETRY_FOR_SECS after the brain started (#472); before,
 # once-a-start latches took the first, transient answer for the boot's.
 RETRY_SECS = (30.0, 60.0, 120.0, 300.0)
+# Since the driver started, by the clock (a look's own readings count too): no new look
+# begins after it.
 RETRY_FOR_SECS = 1800.0
 ENGINE_WAIT_SECS = 300.0
 ENGINE_POLL_SECS = 5.0
@@ -444,22 +450,22 @@ async def drive(connectivity=None, sleep=asyncio.sleep, engine_up=None,
         return False
     _driving, _room_came = True, asyncio.Event()
     try:
-        waited, tries = 0.0, 0
+        start, tries = _clock(), 0
         while True:
             outcome = await _attempt(connectivity, sleep, engine_up, headless, busy, taken)
             if outcome is not None:
                 return outcome
             if not could_be_due():
                 return False  # online, set up or tried meanwhile
-            if waited >= RETRY_FOR_SECS:
-                logger.warning(f"first boot: could not tell for {waited:g} s — not going "
+            took = _clock() - start
+            if took >= RETRY_FOR_SECS:
+                logger.warning(f"first boot: could not tell for {took:.0f} s — not going "
                                "into setup mode before the brain starts again")
                 return False
-            delay = RETRY_SECS[min(tries, len(RETRY_SECS) - 1)]
+            delay = min(RETRY_SECS[min(tries, len(RETRY_SECS) - 1)], RETRY_FOR_SECS - took)
             tries += 1
-            logger.info(f"first boot: looking again in {delay:g} s")
+            logger.info(f"first boot: looking again in {delay:.0f} s")
             await sleep(delay)
-            waited += delay
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 — a task nobody awaits: say what went wrong

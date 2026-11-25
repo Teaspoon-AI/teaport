@@ -1179,6 +1179,8 @@ async def connectivity_reading(timeout: float | None = None) -> tuple[str | None
         return "", f"the Wi-Fi helper's connectivity check gave no answer: {why}"
     if not isinstance(answer, str):
         return "", f"the Wi-Fi helper's connectivity check gave no answer: {why}"
+    if not answer:  # wifi_apply's nmcli timed out or printed nothing
+        return "", "the Wi-Fi helper's nmcli connectivity check gave nothing back"
     return answer, f"NetworkManager says {answer!r}"
 
 

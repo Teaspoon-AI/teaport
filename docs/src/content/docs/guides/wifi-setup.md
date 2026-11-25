@@ -31,7 +31,7 @@ voice in the first minute counts as that start-up's try. The first time the devi
 online, it stops doing this for good; if that happens during setup mode, for example when
 you plug in a network cable, it leaves setup mode by itself.
 
-<!-- source: brain/teaport_brain/wifi_voice.py:118-122#3b3a158c; brain/teaport_brain/first_boot.py:217-239#09ec2e2b; brain/teaport_brain/wifi_voice.py:737-745#4eeee6c0 -->
+<!-- source: brain/teaport_brain/wifi_voice.py:118-122#3b3a158c; brain/teaport_brain/first_boot.py:218-240#09ec2e2b; brain/teaport_brain/wifi_voice.py:737-745#4eeee6c0 -->
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it. If no model is set up yet, there is no agent to ask, so the phrase starts setup mode online too.
 
