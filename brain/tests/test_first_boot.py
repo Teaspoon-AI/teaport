@@ -1387,3 +1387,31 @@ def test_an_empty_nmcli_answer_names_the_helper(monkeypatch):
         got, said = await wv.connectivity_reading(timeout=10.0)
         assert got == "" and "nmcli" in said, said
     asyncio.run(run())
+
+
+def test_the_last_wait_is_cut_to_the_window(box, monkeypatch):
+    """A 500 s wait that would end past the window is cut to it: looks of 100 s at 0 and
+    600, then the last one at 1000 (not 1200)."""
+    _retrying(monkeypatch, for_secs=1000.0)
+    monkeypatch.setattr(first_boot, "RETRY_SECS", (500.0,))
+    now = [0.0]
+    monkeypatch.setattr(first_boot, "_clock", lambda: now[0])
+    looks = []
+
+    async def check(timeout=None):
+        looks.append(now[0])
+        now[0] += 100.0 / first_boot.READINGS
+        await asyncio.sleep(0)
+        return ""
+
+    async def sleep(secs):
+        now[0] += secs
+        await asyncio.sleep(0)
+
+    async def run():
+        assert not await asyncio.wait_for(first_boot.drive(
+            connectivity=check, sleep=sleep, engine_up=_engine_up, headless=_engine_up), 5)
+    monkeypatch.setattr(first_boot, "CONFIRM_SECS", 0.0)
+    asyncio.run(run())
+    starts = looks[::first_boot.READINGS]
+    assert starts == pytest.approx([0.0, 600.0, 1000.0]), starts
