@@ -22,7 +22,7 @@ require_pinned()
 from pipecat.frames.frames import OutputTransportMessageUrgentFrame  # noqa: E402
 
 import test_wifi_voice as wvt  # noqa: E402
-from teaport_brain import first_boot, i18n, wifi_voice as wv  # noqa: E402
+from teaport_brain import first_boot, i18n, wifi_apply, wifi_voice as wv  # noqa: E402
 from teaport_brain.wake_gate import MicConversation, WakeGate  # noqa: E402
 
 EN = i18n.get("en")
@@ -108,14 +108,14 @@ async def _engine_up():
     return True
 
 
-async def _run(session, *states, headless=None):
+async def _run(session, *states, headless=None, check=None):
     """First boot as the brain runs it, with the connectivity check faked: `session` is
     the room session up (gateway_server starts first_boot.run on it while
     first_boot.listening()), and first_boot.drive decides and hands it the setup. True
     when the setup began on `session`. No voiceless start unless `headless` is given (an
     async fake): `_run.headless` counts the starts asked for."""
     orig = wv.connectivity
-    wv.connectivity = check = _online(*states)
+    wv.connectivity = check = check or _online(*states)
     _run.check, _run.headless = check, 0
 
     async def no_room():
@@ -358,6 +358,35 @@ def test_a_slow_or_passing_answer_is_not_offline(box):
             session, _ = _room()
             assert not await _run(session, *states), states
             assert session.wifi.said == [] and not first_boot.is_new(), states
+    asyncio.run(run())
+
+
+def _behind_a_dead_link():
+    """The check as an offline box behind a link that drops what it can't route sees it
+    (#472's bench: USB up, the station not forwarding): NetworkManager's probe gets no
+    reply and says "limited" only when its own NM_PROBE_SECS run out, and the Wi-Fi helper
+    (sudo, python, nmcli) takes a moment more. A check given less than that, or a helper
+    whose nmcli stops before NM does, has no answer: "" (killed)."""
+    arrives = wifi_apply.NM_PROBE_SECS + 2.0
+    async def check(timeout=None):
+        check.asked += 1
+        check.timeouts.append(timeout)
+        if wifi_apply.CONNECTIVITY_SECS <= wifi_apply.NM_PROBE_SECS:
+            return ""  # the helper's nmcli is killed before NM answers
+        return "limited" if timeout is not None and timeout >= arrives else ""
+    check.asked, check.timeouts = 0, []
+    return check
+
+
+def test_offline_behind_a_dead_link_still_goes_into_setup_mode(box):
+    """On the bench, every check timed out at 10 s while NM's probe took its 20 s: 32
+    minutes of "unknown", no setup network, no QR (#472, factory O-phase 2026-11-26). The
+    first-boot check waits for NM's own answer, so the box is offline and offers setup."""
+    async def run():
+        session, _ = _room()
+        assert await _run(session, check=_behind_a_dead_link())
+        assert session.wifi.calls, "no setup began"
+        assert set(_run.check.timeouts) == {first_boot.CHECK_SECS}
     asyncio.run(run())
 
 
