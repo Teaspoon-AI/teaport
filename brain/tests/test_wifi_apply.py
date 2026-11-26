@@ -415,5 +415,20 @@ def test_an_old_setup_unit_gets_sudo_back_from_the_package():
     assert p.returncode == 0 and not dropin.exists(), p.stderr
 
 
+def test_the_connectivity_check_waits_out_networkmanagers_own_probe():
+    # Offline behind a link that drops packets, NM's probe takes its whole 20 s and then
+    # says "limited": an nmcli stopped at 20 s is killed just as the answer comes, and the
+    # box never learns it is offline (#472's bench, 2026-11-26).
+    seen = []
+
+    def run(argv, timeout=60):
+        seen.append((argv, timeout))
+        return 0, "limited\n", ""
+
+    assert wifi_apply.Ops(run).connectivity() == "limited"
+    assert seen == [(["nmcli", "networking", "connectivity", "check"], wifi_apply.CONNECTIVITY_SECS)]
+    assert wifi_apply.CONNECTIVITY_SECS >= wifi_apply.NM_PROBE_SECS + 5
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

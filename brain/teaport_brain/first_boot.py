@@ -46,7 +46,7 @@ import time
 
 from loguru import logger
 
-from teaport_brain import wifi_voice
+from teaport_brain import wifi_apply, wifi_voice
 from teaport_brain import settings
 from teaport_brain.settings import setting
 
@@ -56,8 +56,11 @@ ENABLED = setting("TEAPORT_SETUP_ON_FIRST_BOOT")
 GRACE_SECS = 60.0
 # Each connectivity check's time (the phrase's own, wifi_voice.ONLINE_CHECK_SECS, is
 # short: someone is waiting on it), the gap between the two readings that make offline,
-# and how many readings before giving up on an answer.
-CHECK_SECS = 10.0
+# and how many readings before giving up on an answer. The check is the Wi-Fi helper's
+# (sudo, python, nmcli), which waits out NetworkManager's own probe: offline, that probe
+# takes its full 20 s before it says "limited", so anything shorter reads every offline
+# check as no answer -- 32 minutes of "unknown" on the bench, and no setup (#472).
+CHECK_SECS = wifi_apply.CONNECTIVITY_SECS + 5.0
 CONFIRM_SECS = 10.0
 READINGS = 6
 # How often the watcher looks again while the box has never been online.

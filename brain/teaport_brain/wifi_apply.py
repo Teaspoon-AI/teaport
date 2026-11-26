@@ -55,6 +55,13 @@ AP_CONNECTION = "teaport-setup"
 AP_ADDRESS = "10.42.0.1"
 AP_PREFIX = 24
 CONNECT_WAIT_SECS = 45
+# NetworkManager gives its connectivity probe 20 s, then answers "limited"
+# (src/core/nm-connectivity.c: the 20 s timeout and _timeout_cb). Behind a link that
+# drops what it can't route (no internet past the router, a USB host not forwarding), the
+# box's lookups get no reply and every probe takes all 20 s: wait well past it, or an
+# offline box never gets an answer and never offers setup (#472).
+NM_PROBE_SECS = 20
+CONNECTIVITY_SECS = NM_PROBE_SECS + 10
 WIFI_TYPE = "802-11-wireless"
 # Key managements whose secret is a passphrase (802-11-wireless-security.psk): a saved
 # profile of these takes a new password, and gets its old one back if that fails.
@@ -187,7 +194,8 @@ class Ops:
         return f is not None and self._is_client(f)
 
     def connectivity(self) -> str:
-        _, out, _ = self.nmcli("networking", "connectivity", "check", timeout=20)
+        _, out, _ = self.nmcli("networking", "connectivity", "check",
+                              timeout=CONNECTIVITY_SECS)
         return out.strip()
 
     # --- changes (root, through handle()) ----------------------------------------------
